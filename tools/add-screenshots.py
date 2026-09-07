@@ -7,7 +7,7 @@ How to use:
          pocketge.png      -> the PocketGE card
          fliptracker.png   -> the Flip Tracker card
          iracehud.png      -> the iRaceHUD card
-         tcrescue.png      -> the Town & Country card
+         dalecarnegie.png  -> the Dale Carnegie block in the Sales section
      (.png, .jpg and .webp all work.)
   2. Double-click  Add-Screenshots.bat
   3. Refresh the site.
@@ -32,7 +32,7 @@ SHOTS = {
     "pocketge": "PocketGE running in the browser",
     "fliptracker": "The PocketGE Flip Tracker panel inside RuneLite",
     "iracehud": "iRaceHUD overlaid on an iRacing session",
-    "tcrescue": "The Town & Country Animal Rescue spec build",
+    "dalecarnegie": "Dale Carnegie course in Los Angeles",
 }
 
 WIDTHS = [1200, 700]
@@ -61,10 +61,10 @@ def build(key):
     return True
 
 
-def panel_markup(key, alt):
+def panel_markup(key, alt, wrapper):
     p = "assets/img/work/" + key
     return (
-        '<div class="card__shot" data-shot="' + key + '">\n'
+        '<div class="' + wrapper + '" data-shot="' + key + '">\n'
         '          <picture>\n'
         '            <source type="image/webp" srcset="' + p + '-700.webp 700w, ' + p + '-1200.webp 1200w" sizes="(max-width: 900px) 100vw, 560px">\n'
         '            <img src="' + p + '-1200.jpg" srcset="' + p + '-700.jpg 700w, ' + p + '-1200.jpg 1200w" sizes="(max-width: 900px) 100vw, 560px" alt="' + alt + '" loading="lazy" decoding="async">\n'
@@ -91,10 +91,13 @@ def main():
     for key in built:
         # Replace whichever panel is currently there — placeholder or a previous image.
         pattern = re.compile(
-            r'<div class="card__shot[^"]*" data-shot="' + re.escape(key) + r'">.*?</div>',
+            r'<div class="(card__shot|training__shot)[^"]*" data-shot="' + re.escape(key) + r'">.*?</div>',
             re.S,
         )
-        html, n = pattern.subn(lambda m: panel_markup(key, SHOTS[key]), html, count=1)
+        # Keep whichever wrapper class the panel already uses (card vs training).
+        html, n = pattern.subn(
+            lambda m: panel_markup(key, SHOTS[key], m.group(1)), html, count=1
+        )
         if not n:
             print("  ! could not find the " + key + " panel in index.html")
     io.open(PAGE, "w", encoding="utf-8", newline="\n").write(html)
