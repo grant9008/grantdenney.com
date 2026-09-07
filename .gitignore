@@ -1,0 +1,10 @@
+# OS / editor noise
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.swp
+
+# Raw screenshots waiting to be processed — the optimized output is committed,
+# the originals are not.
+assets/img/work/incoming/*
+!assets/img/work/incoming/READ-ME.txt
