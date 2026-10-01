@@ -137,6 +137,45 @@
 
     <div class="work">
 
+      <!-- Personal Space -->
+      <article class="card" data-reveal>
+        <div class="card__body">
+          <p class="card__tag"><span class="card__live">Live</span> &middot; Java &middot; Official RuneLite Plugin Hub</p>
+          <h3>Personal Space</h3>
+          <p>
+            Old School RuneScape only draws one player per tile. Stand six people on the same square
+            at a bank and five of them disappear. Personal Space draws the ones the game hides,
+            spread out around their tile, so a packed room actually looks packed.
+          </p>
+          <ul class="card__points">
+            <li><strong>~171k views, 1.4k upvotes and 238 comments in its first two hours</strong> when I posted it to r/2007scape &mdash; overwhelmingly positive, and people were installing it that day</li>
+            <li><strong>Cosmetic only, on purpose.</strong> Jagex forbids moving the click zones of 3D components, so nothing real moves: not positions, not click targets, not overheads. Only what gets drawn</li>
+            <li><strong>Working out why the obvious fix failed meant decompiling the client.</strong> Actors draw sorted but without depth, and the GPU plugin batches a whole frame of them into one pass with depth writes off &mdash; so whoever is drawn <em>later</em> ends up on top, however far away they are. Moving a model toward the camera does nothing. The fix was re-sorting the draw pass itself</li>
+            <li><strong>Crowds that behave.</strong> Four formations, plus rules for bank counters, anvils, fires and riverbanks so people line up facing the thing they&rsquo;re using instead of standing inside each other</li>
+            <li><strong>At 1.8.55 after repeated Hub reviews.</strong> Every release needs a fresh pull request into <code>runelite/plugin-hub</code> and another maintainer pass &mdash; a merged one can&rsquo;t be reused</li>
+          </ul>
+          <div class="stack">
+            <span>Java</span><span>RuneLite API</span><span>Gradle</span><span>JUnit</span><span>Git &amp; GitHub</span>
+          </div>
+          <div class="card__links">
+            <a href="https://runelite.net/plugin-hub/show/personal-space" target="_blank" rel="noopener">
+              Plugin Hub listing
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+            </a>
+            <a href="https://github.com/grant9008/personal-space" target="_blank" rel="noopener">
+              Source on GitHub
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+            </a>
+          </div>
+        </div>
+        <div class="card__shot" data-shot="personalspace">
+          <picture>
+            <source type="image/webp" srcset="assets/img/work/personalspace-700.webp 700w, assets/img/work/personalspace-1200.webp 1200w" sizes="(max-width: 900px) 100vw, 560px">
+            <img src="assets/img/work/personalspace-1200.jpg" srcset="assets/img/work/personalspace-700.jpg 700w, assets/img/work/personalspace-1200.jpg 1200w" sizes="(max-width: 900px) 100vw, 560px" alt="Before and after at Varrock West Bank: the same 39 players on 5 tiles, first mostly hidden by the game, then all drawn and spread out" loading="lazy" decoding="async">
+          </picture>
+        </div>
+      </article>
+
       <!-- PocketGE -->
       <article class="card" data-reveal>
         <div class="card__body">
@@ -630,47 +669,94 @@
   <div class="wrap">
     <div class="section__head" data-reveal>
       <p class="eyebrow">Search &amp; analytics</p>
-      <h2>Ranking a one-person shop next to Amazon</h2>
+      <h2>What the numbers actually say</h2>
       <p>
-        Scootywraps.com was built from scratch, SEO included. The lever was page architecture: one landing page
-        per scooter model, titles structured to match how people actually search, and the whole thing measured
-        in GA4 so the next decision came from data instead of a hunch.
+        Scootywraps.com ranks for its category. I&rsquo;d like to tell you that was a clever SEO
+        strategy. Honestly, it&rsquo;s mostly that the niche is tiny and I made the thing people were
+        looking for &mdash; then put up a page per scooter model, named the way people type it.
+        What I&rsquo;ll stand behind is the measurement: I set it up, I read it, and I can tell you
+        what it does and doesn&rsquo;t prove.
       </p>
     </div>
 
     <dl class="metrics" data-reveal>
-      <div class="metric">
-        <dt>Category search</dt>
-        <dd>Page&nbsp;1<small>For category terms, alongside Amazon and national vinyl retailers</small></dd>
-      </div>
-      <div class="metric">
-        <dt>Inbound demand</dt>
-        <dd>Thousands<small>Inbound wrap requests driven through the site</small></dd>
-      </div>
-      <div class="metric">
-        <dt>Operating since</dt>
-        <dd>2019<small>Six years running the storefront, fulfilment and support</small></dd>
-      </div>
-      <div class="metric">
-        <dt>Owned end&#8209;to&#8209;end</dt>
-        <dd>1<small>One person on storefront, product design, paid social, email and analytics</small></dd>
-      </div>
+      <div class="metric"><dt>Clicks</dt><dd>5.44K<small>From Google search, in the last 12 months</small></dd></div>
+      <div class="metric"><dt>Impressions</dt><dd>77.6K<small>Times the site appeared in results</small></dd></div>
+      <div class="metric"><dt>Click&#8209;through rate</dt><dd>7&#37;<small>Of the people who saw it, this many came</small></dd></div>
+      <div class="metric"><dt>Average position</dt><dd>7.7<small>Across every query the site shows up for</small></dd></div>
     </dl>
+    <p class="metrics__src" data-reveal>Google Search Console &middot; scootywraps.com &middot; rolling 12 months to 8 Sep 2026</p>
 
-    <!--
-      ▸ TO FILL IN: real GA4 numbers.
-        Send Grant's GA4 figures (sessions, top organic queries, conversion rate,
-        date range) and these tiles get swapped for the actual numbers.
-        Nothing here is invented — every value above traces to the résumé.
-    -->
+    <figure class="chart" data-reveal>
+      <figcaption class="chart__head">
+        <p class="chart__title">What people type to find scootywraps.com</p>
+        <p class="chart__src">Google Search Console &middot; top 15 queries by clicks &middot; rolling 12 months to 25 Jun 2026</p>
+      </figcaption>
+      <div class="chart__legend">
+        <span><i style="--swatch: var(--cat-model)"></i> A specific scooter model</span>
+        <span><i style="--swatch: var(--cat-category)"></i> Generic category</span>
+        <span><i style="--swatch: var(--cat-brand)"></i> My brand name</span>
+      </div>
+      <div class="chart__rows">
+        <div class="chart__row" tabindex="0" data-detail="scooty wraps &middot; 193 clicks &middot; 410 impressions"><span class="chart__q">scooty wraps</span><span class="chart__track"><i style="width: 100.0&#37;; --swatch: var(--cat-brand)"></i></span><span class="chart__v">193</span></div>
+        <div class="chart__row" tabindex="0" data-detail="kukirin g2 wrap &middot; 192 clicks &middot; 1,245 impressions"><span class="chart__q">kukirin g2 wrap</span><span class="chart__track"><i style="width: 99.5&#37;; --swatch: var(--cat-model)"></i></span><span class="chart__v">192</span></div>
+        <div class="chart__row" tabindex="0" data-detail="scooter wraps &middot; 113 clicks &middot; 1,025 impressions"><span class="chart__q">scooter wraps</span><span class="chart__track"><i style="width: 58.5&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">113</span></div>
+        <div class="chart__row" tabindex="0" data-detail="scooter wrap &middot; 98 clicks &middot; 1,866 impressions"><span class="chart__q">scooter wrap</span><span class="chart__track"><i style="width: 50.8&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">98</span></div>
+        <div class="chart__row" tabindex="0" data-detail="kukirin g2 vinyl wrap &middot; 56 clicks &middot; 269 impressions"><span class="chart__q">kukirin g2 vinyl wrap</span><span class="chart__track"><i style="width: 29.0&#37;; --swatch: var(--cat-model)"></i></span><span class="chart__v">56</span></div>
+        <div class="chart__row" tabindex="0" data-detail="scooty wrap &middot; 52 clicks &middot; 1,680 impressions"><span class="chart__q">scooty wrap</span><span class="chart__track"><i style="width: 26.9&#37;; --swatch: var(--cat-brand)"></i></span><span class="chart__v">52</span></div>
+        <div class="chart__row" tabindex="0" data-detail="e scooter wrap &middot; 52 clicks &middot; 370 impressions"><span class="chart__q">e scooter wrap</span><span class="chart__track"><i style="width: 26.9&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">52</span></div>
+        <div class="chart__row" tabindex="0" data-detail="electric scooter wrap &middot; 50 clicks &middot; 440 impressions"><span class="chart__q">electric scooter wrap</span><span class="chart__track"><i style="width: 25.9&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">50</span></div>
+        <div class="chart__row" tabindex="0" data-detail="electric scooter wraps &middot; 47 clicks &middot; 375 impressions"><span class="chart__q">electric scooter wraps</span><span class="chart__track"><i style="width: 24.4&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">47</span></div>
+        <div class="chart__row" tabindex="0" data-detail="kukirin g4 wrap &middot; 43 clicks &middot; 261 impressions"><span class="chart__q">kukirin g4 wrap</span><span class="chart__track"><i style="width: 22.3&#37;; --swatch: var(--cat-model)"></i></span><span class="chart__v">43</span></div>
+        <div class="chart__row" tabindex="0" data-detail="e scooter wraps &middot; 39 clicks &middot; 171 impressions"><span class="chart__q">e scooter wraps</span><span class="chart__track"><i style="width: 20.2&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">39</span></div>
+        <div class="chart__row" tabindex="0" data-detail="scootywraps &middot; 39 clicks &middot; 51 impressions"><span class="chart__q">scootywraps</span><span class="chart__track"><i style="width: 20.2&#37;; --swatch: var(--cat-brand)"></i></span><span class="chart__v">39</span></div>
+        <div class="chart__row" tabindex="0" data-detail="electric scooter decals &middot; 27 clicks &middot; 462 impressions"><span class="chart__q">electric scooter decals</span><span class="chart__track"><i style="width: 14.0&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">27</span></div>
+        <div class="chart__row" tabindex="0" data-detail="e scooter decals &middot; 27 clicks &middot; 324 impressions"><span class="chart__q">e scooter decals</span><span class="chart__track"><i style="width: 14.0&#37;; --swatch: var(--cat-category)"></i></span><span class="chart__v">27</span></div>
+        <div class="chart__row" tabindex="0" data-detail="kukirin g2 vinyl &middot; 23 clicks &middot; 86 impressions"><span class="chart__q">kukirin g2 vinyl</span><span class="chart__track"><i style="width: 11.9&#37;; --swatch: var(--cat-model)"></i></span><span class="chart__v">23</span></div>
+      </div>
+      <p class="chart__note">
+        <b>73&#37; of those clicks are people who had never heard of me.</b> They typed a scooter
+        model, or just &ldquo;scooter wrap&rdquo;. That is the part worth anything &mdash; not the brand, the model pages.
+      </p>
+      <details>
+        <summary>View the data as a table</summary>
+        <table>
+          <thead><tr><th scope="col">Query</th><th scope="col">How it finds me</th><th scope="col">Clicks</th><th scope="col">Impressions</th></tr></thead>
+          <tbody>
+            <tr><td>scooty wraps</td><td>My brand name</td><td>193</td><td>410</td></tr>
+            <tr><td>kukirin g2 wrap</td><td>A specific scooter model</td><td>192</td><td>1,245</td></tr>
+            <tr><td>scooter wraps</td><td>Generic category</td><td>113</td><td>1,025</td></tr>
+            <tr><td>scooter wrap</td><td>Generic category</td><td>98</td><td>1,866</td></tr>
+            <tr><td>kukirin g2 vinyl wrap</td><td>A specific scooter model</td><td>56</td><td>269</td></tr>
+            <tr><td>scooty wrap</td><td>My brand name</td><td>52</td><td>1,680</td></tr>
+            <tr><td>e scooter wrap</td><td>Generic category</td><td>52</td><td>370</td></tr>
+            <tr><td>electric scooter wrap</td><td>Generic category</td><td>50</td><td>440</td></tr>
+            <tr><td>electric scooter wraps</td><td>Generic category</td><td>47</td><td>375</td></tr>
+            <tr><td>kukirin g4 wrap</td><td>A specific scooter model</td><td>43</td><td>261</td></tr>
+            <tr><td>e scooter wraps</td><td>Generic category</td><td>39</td><td>171</td></tr>
+            <tr><td>scootywraps</td><td>My brand name</td><td>39</td><td>51</td></tr>
+            <tr><td>electric scooter decals</td><td>Generic category</td><td>27</td><td>462</td></tr>
+            <tr><td>e scooter decals</td><td>Generic category</td><td>27</td><td>324</td></tr>
+            <tr><td>kukirin g2 vinyl</td><td>A specific scooter model</td><td>23</td><td>86</td></tr>
+          </tbody>
+        </table>
+      </details>
+    </figure>
+
+    <dl class="ga" data-reveal>
+      <div class="ga__cell"><dt>New users this year</dt><dd><strong>7.2K</strong> <span class="ga__delta">&uarr; 57.3&#37;</span></dd></div>
+      <div class="ga__cell"><dt>Page views this year</dt><dd><strong>16K</strong> <span class="ga__delta">&uarr; 45.9&#37;</span></dd></div>
+      <div class="ga__cell"><dt>Measured in</dt><dd><strong>GA4</strong></dd></div>
+    </dl>
+    <p class="metrics__src" data-reveal>Google Analytics 4 &middot; 1 Jan &ndash; 30 Sep 2026 vs the previous period</p>
 
     <div class="serp" data-reveal>
-      <p class="serp__head"><i></i> The page architecture that did it</p>
+      <p class="serp__head"><i></i> The honest version of what I did</p>
       <ul>
-        <li><code>/{scooter-model}-wrap</code> <span>One landing page per model</span></li>
-        <li><code>&lt;title&gt;{Model} Wrap &mdash; Custom Vinyl Kit&lt;/title&gt;</code> <span>Structured, not clever</span></li>
-        <li><code>Exact-fit kit + install imagery</code> <span>Matches buyer intent on arrival</span></li>
-        <li><code>GA4 events on quote + checkout</code> <span>Measures what the page is for</span></li>
+        <li><code>One page per scooter model</code> <span>Because that&rsquo;s what gets typed</span></li>
+        <li><code>Titles named plainly, not cleverly</code> <span>&ldquo;Kukirin G2 wrap&rdquo;, not a slogan</span></li>
+        <li><code>Actually stocking the thing</code> <span>Probably most of it, if I&rsquo;m honest</span></li>
+        <li><code>GA4 events on quote + checkout</code> <span>So I could tell what was working</span></li>
       </ul>
     </div>
 
@@ -719,7 +805,7 @@
             <li>Built and have run the business for six years, selling thousands of wraps and owning the Shopify storefront, product design, paid social, email, fulfilment and customer support.</li>
             <li>Segway engages directly for one-off marketing wrap jobs; produce retail kits for Segway/Ninebot and Apollo Scooters using 3D scanning and digital cutting software.</li>
             <li>Supplied the multi-panel templates and vinyl kits behind the Red Bull Showrun Houston go-karts.</li>
-            <li>Built the site and its SEO from scratch, putting a one-person shop on page one next to Amazon.</li>
+            <li>Built the site, its search presence and its analytics from scratch &mdash; a page per scooter model, and GA4 wired up so I could see what was working. It now pulls ~5.4k clicks a year from Google.</li>
           </ul>
         </div>
       </article>
