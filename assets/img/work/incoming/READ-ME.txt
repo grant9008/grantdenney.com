@@ -5,7 +5,6 @@ Name each file after the project it belongs to:
 
     pocketge.png       ->  the PocketGE card
     fliptracker.png    ->  the PocketGE Flip Tracker card
-    iracehud.png       ->  the iRaceHUD card
 
 .png, .jpg and .webp all work. Bigger is better - they get resized and
 compressed automatically. Wide shots (roughly 3:2 or 16:9) fit the panel best.

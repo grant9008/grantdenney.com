@@ -6,10 +6,8 @@ How to use:
      Name each file after the project it belongs to:
          pocketge.png      -> the PocketGE card
          fliptracker.png   -> the Flip Tracker card
-         iracehud.png      -> the iRaceHUD card
          personalspace.png -> the Personal Space card
          realmforge.png    -> the RealmForge card
-         dalecarnegie.png  -> the Dale Carnegie block in the Sales section
      (.png, .jpg and .webp all work.)
   2. Double-click  Add-Screenshots.bat
   3. Refresh the site.
@@ -34,9 +32,7 @@ SHOTS = {
     "personalspace": "Before and after with the Personal Space plugin: players the game hid, drawn and spread out",
     "pocketge": "PocketGE running in the browser",
     "fliptracker": "The PocketGE Flip Tracker panel inside RuneLite",
-    "iracehud": "iRaceHUD overlaid on an iRacing session",
     "realmforge": "RealmForge running on a phone",
-    "dalecarnegie": "Dale Carnegie course in Los Angeles",
 }
 
 WIDTHS = [1200, 700]

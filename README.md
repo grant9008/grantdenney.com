@@ -10,11 +10,11 @@ browser. Leave the black window open while you're looking; close it when done.
 
 ## Adding screenshots and photos
 
-The three project cards (PocketGE, Flip Tracker, iRaceHUD) and the Dale Carnegie
-block in the Sales section show a placeholder panel until you supply an image.
+The project cards (Personal Space, PocketGE, Flip Tracker, RealmForge) show a
+placeholder panel until you supply an image.
 
 1. Put your images in `assets/img/work/incoming/`
-2. Name them `pocketge.png`, `fliptracker.png`, `iracehud.png`, `dalecarnegie.png`
+2. Name them `personalspace.png`, `pocketge.png`, `fliptracker.png`, `realmforge.png`
 3. Double-click **`Add-Screenshots.bat`**
 4. Refresh the site
 

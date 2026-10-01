@@ -176,4 +176,62 @@
       if (e.key === 'ArrowLeft') show(at - 1);
     });
   }
+
+  /* ---------- live plugin stats ------------------------------------------
+     The numbers in the markup are the last known good values, so the block
+     is correct with JS off or the API down. A successful fetch replaces them
+     and turns the indicator green; a failure leaves the baked values alone.
+     ---------------------------------------------------------------------- */
+
+  document.querySelectorAll('[data-live]').forEach(function (box) {
+    var plugin = box.dataset.livePlugin;
+    var repo = box.dataset.liveRepo;
+    if (!plugin) return;
+
+    var usersEl = box.querySelector('[data-live-users]');
+    var updEl = box.querySelector('[data-live-updated]');
+    var noteEl = box.querySelector('[data-live-note]');
+
+    function setValue(el, main) {
+      if (!el) return;
+      var small = el.querySelector('small');
+      el.textContent = main;
+      if (small) el.appendChild(small);
+    }
+
+    function fmtDate(iso) {
+      var d = new Date(iso);
+      if (isNaN(d)) return null;
+      return d.getDate() + ' ' +
+        ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()] +
+        ' ' + d.getFullYear();
+    }
+
+    // RuneLite keys its counts by the client version, so ask which one is current.
+    fetch('https://static.runelite.net/bootstrap.json')
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        if (!b || !b.version) throw new Error('no version');
+        return fetch('https://api.runelite.net/runelite-' + b.version + '/pluginhub');
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (counts) {
+        var n = counts && counts[plugin];
+        if (typeof n !== 'number') throw new Error('no count');
+        setValue(usersEl, n.toLocaleString());
+        box.dataset.liveOk = 'true';
+        if (noteEl) noteEl.textContent = '· checked just now';
+      })
+      .catch(function () { /* keep the baked-in number */ });
+
+    if (repo && updEl) {
+      fetch('https://api.github.com/repos/' + repo)
+        .then(function (r) { return r.json(); })
+        .then(function (j) {
+          var d = j && j.pushed_at && fmtDate(j.pushed_at);
+          if (d) setValue(updEl, d);
+        })
+        .catch(function () { /* keep the baked-in date */ });
+    }
+  });
 })();
