@@ -356,7 +356,12 @@ h1, h2, h3, h4 {
 }
 .card:hover { border-color: #2b313c; }
 
-@media (max-width: 900px) {
+/* One column below 1040px, not 900px. Between ~900 and ~1040 the two columns
+   DIVERGE rather than converge: the body gets taller as its column narrows
+   while the images get shorter, so the gap reopens even with a full stack.
+   Measured on the RealmForge card: 272px at 910px, 178px at 960px, 27px at
+   1020px, 2px at 1100px. Collapsing to one column removes that band. */
+@media (max-width: 1040px) {
   .card { grid-template-columns: 1fr; }
 }
 
@@ -455,6 +460,8 @@ h1, h2, h3, h4 {
 /* screenshot panel — works filled or empty */
 .card__shot {
   position: relative;
+  /* the scrolling stack inside would otherwise set this column's width */
+  min-width: 0;
   background: var(--bg-sunk);
   border-left: 1px solid var(--line);
   min-height: 280px;
@@ -462,7 +469,7 @@ h1, h2, h3, h4 {
   align-items: start;
   /* NOT overflow:hidden — that kills the sticky below. .card already clips. */
 }
-@media (max-width: 900px) {
+@media (max-width: 1040px) {
   .card__shot { border-left: 0; border-top: 1px solid var(--line); order: -1; min-height: 220px; }
 }
 /* <picture> is inline, so height:100% on the img never resolves and object-fit
@@ -723,10 +730,16 @@ h1, h2, h3, h4 {
 
 /* ---------- experience --------------------------------------------------- */
 
-.roles { display: grid; gap: 0; }
+/* min-width:0 all the way down: the PURE Sets photo strip is a horizontally
+   scrolling grid, and without this every ancestor sizes to its full content
+   instead of letting it scroll — which widened the whole Experience section
+   (and therefore every role, since .roles is one shared grid column) to
+   552px at a 360px viewport. */
+.roles { display: grid; gap: 0; min-width: 0; }
 
 .role {
   display: grid;
+  min-width: 0;
   grid-template-columns: 190px minmax(0, 1fr);
   gap: 32px;
   padding: 34px 0;
@@ -738,6 +751,8 @@ h1, h2, h3, h4 {
 @media (max-width: 760px) {
   .role { grid-template-columns: 1fr; gap: 12px; }
 }
+
+.role > div { min-width: 0; }
 
 .role__when {
   font-family: var(--font-mono);
@@ -1650,7 +1665,16 @@ body[data-lb-open="true"] { overflow: hidden; }
 
 .card__shot { padding: 16px; }
 
-.shotstack { display: grid; gap: 12px; align-content: start; }
+.shotstack {
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  /* As a grid item this defaults to min-width:auto, so in the horizontal
+     mode below it would grow to fit its columns and overflow-x:auto would
+     never engage — the page scrolls sideways instead of the strip. */
+  min-width: 0;
+  max-width: 100%;
+}
 
 .shotstack figure {
   margin: 0;
@@ -1682,7 +1706,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   border-top: 1px solid var(--line-soft);
 }
 
-@media (max-width: 900px) {
+@media (max-width: 1040px) {
   .shotstack {
     grid-auto-flow: column;
     grid-auto-columns: minmax(170px, 1fr);
