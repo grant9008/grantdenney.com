@@ -1665,15 +1665,74 @@ body[data-lb-open="true"] { overflow: hidden; }
 
 .card__shot { padding: 16px; }
 
+/* The stack is positioned absolutely so it contributes NOTHING to the card's
+   row height — the body alone decides how tall the card is, and the photo
+   column is clipped to exactly that. Anything that doesn't fit becomes a
+   slider rather than making the card taller than its text. */
+.card__shot { position: relative; overflow: hidden; }
+
 .shotstack {
+  position: absolute;
+  inset: 16px;
   display: grid;
+  /* The stack has a definite height (inset above), and `auto` rows shrink to
+     fit inside one — squashing every figure to a fraction of its image and
+     cropping it. max-content makes each row take its full height so the
+     stack genuinely overflows, which is what the slider is for. */
+  grid-auto-rows: max-content;
   gap: 12px;
   align-content: start;
-  /* As a grid item this defaults to min-width:auto, so in the horizontal
-     mode below it would grow to fit its columns and overflow-x:auto would
-     never engage — the page scrolls sideways instead of the strip. */
   min-width: 0;
   max-width: 100%;
+  overflow-y: auto;
+  overflow-x: hidden;
+  scroll-snap-type: y proximity;
+  scroll-behavior: smooth;
+  scrollbar-width: none;
+}
+.shotstack::-webkit-scrollbar { width: 0; height: 0; }
+.shotstack > figure { scroll-snap-align: start; }
+
+/* controls, injected by site.js only when the stack actually overflows */
+.shotnav {
+  position: absolute;
+  right: 22px;
+  bottom: 22px;
+  display: none;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--bg) 84%, transparent);
+  backdrop-filter: blur(10px);
+  border: 1px solid var(--line);
+  z-index: 2;
+}
+.card__shot[data-overflowing="true"] .shotnav { display: flex; }
+.shotnav button {
+  width: 28px; height: 28px;
+  border-radius: 50%;
+  border: 1px solid var(--line);
+  background: transparent;
+  color: var(--text-mid);
+  display: grid; place-items: center;
+  cursor: pointer;
+  transition: border-color .2s, color .2s, opacity .2s;
+}
+.shotnav button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+.shotnav button:disabled { opacity: .3; cursor: default; }
+.shotnav svg { width: 14px; height: 14px; }
+.shotnav span {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  font-variant-numeric: tabular-nums;
+  min-width: 34px;
+  text-align: center;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .shotstack { scroll-behavior: auto; }
 }
 
 .shotstack figure {
@@ -1707,13 +1766,19 @@ body[data-lb-open="true"] { overflow: hidden; }
 }
 
 @media (max-width: 1040px) {
+  .card__shot { overflow: visible; }
   .shotstack {
+    position: static;
+    inset: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x proximity;
     grid-auto-flow: column;
     grid-auto-columns: minmax(170px, 1fr);
     overflow-x: auto;
     scrollbar-width: thin;
     scrollbar-color: var(--line) transparent;
   }
-  .shotstack::-webkit-scrollbar { height: 4px; }
+  .card__shot[data-overflowing] .shotnav { display: none; }
+  .shotstack::-webkit-scrollbar { height: 4px; width: 4px; }
   .shotstack::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
 }

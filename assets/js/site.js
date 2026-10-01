@@ -234,4 +234,77 @@
         .catch(function () { /* keep the baked-in date */ });
     }
   });
+
+  /* ---------- shot stacks that overflow their card ------------------------
+     The photo column is clipped to the body's height. When the stack is
+     taller than that, it becomes a slider: arrows step one figure at a time
+     and a counter says where you are. When everything fits, no controls
+     appear at all.
+     ---------------------------------------------------------------------- */
+
+  var ARROW = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 15l6-6 6 6"/></svg>';
+
+  document.querySelectorAll('.card__shot').forEach(function (panel) {
+    var stack = panel.querySelector('.shotstack');
+    if (!stack) return;
+    var figures = Array.prototype.slice.call(stack.querySelectorAll('figure'));
+    if (figures.length < 2) return;
+
+    var nav = document.createElement('div');
+    nav.className = 'shotnav';
+    nav.innerHTML =
+      '<button type="button" data-up aria-label="Previous photo">' + ARROW + '</button>' +
+      '<span data-count></span>' +
+      '<button type="button" data-down aria-label="Next photo" style="transform:rotate(180deg)">' + ARROW + '</button>';
+    panel.appendChild(nav);
+
+    var up = nav.querySelector('[data-up]');
+    var down = nav.querySelector('[data-down]');
+    var count = nav.querySelector('[data-count]');
+
+    function current() {
+      var top = stack.scrollTop;
+      var best = 0, bestGap = Infinity;
+      figures.forEach(function (fig, i) {
+        var gap = Math.abs(fig.offsetTop - figures[0].offsetTop - top);
+        if (gap < bestGap) { bestGap = gap; best = i; }
+      });
+      return best;
+    }
+
+    function sync() {
+      // Only a slider when it actually overflows — a resize can change that.
+      var overflowing = stack.scrollHeight > stack.clientHeight + 4;
+      panel.dataset.overflowing = overflowing ? 'true' : 'false';
+      if (!overflowing) return;
+      var max = stack.scrollHeight - stack.clientHeight;
+      var atEnd = stack.scrollTop >= max - 2;
+      var i = atEnd ? figures.length - 1 : current();
+      count.textContent = (i + 1) + ' / ' + figures.length;
+      up.disabled = stack.scrollTop <= 2;
+      down.disabled = atEnd;
+    }
+
+    function step(dir) {
+      var target = figures[Math.min(Math.max(current() + dir, 0), figures.length - 1)];
+      if (target) stack.scrollTop = target.offsetTop - figures[0].offsetTop;
+    }
+
+    up.addEventListener('click', function () { step(-1); });
+    down.addEventListener('click', function () { step(1); });
+
+    var raf = null;
+    stack.addEventListener('scroll', function () {
+      if (raf) return;
+      raf = requestAnimationFrame(function () { raf = null; sync(); });
+    }, { passive: true });
+
+    window.addEventListener('resize', sync);
+    // images settle late; re-check as they land
+    stack.querySelectorAll('img').forEach(function (img) {
+      if (!img.complete) img.addEventListener('load', sync, { once: true });
+    });
+    sync();
+    setTimeout(sync, 600);
+  });
 })();
