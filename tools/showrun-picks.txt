@@ -1,22 +1,21 @@
 # Red Bull Showrun Houston — curated for the site.
+#
+# Picked kart-first: these are the Segway go-karts the Scooty Wraps templates
+# and printed kits went onto. All four colourways are covered. Shots where the
+# F1 show car or the crowd is the subject were dropped — that part wasn't our work.
+#
 # Format:  filename.jpg | Caption shown under the slide
-# Add or remove lines, then re-run:  python tools/build-images.py
-2X9A0096.jpg | Red Bull Racing show car in the Houston fan zone
-2X9A9889.jpg | The show car staged trackside at Showrun Houston
-2X9A9856.jpg | Segway go-kart in the yellow variant, built from the multi-panel template
-2X9A9857.jpg | The same template, printed and laid onto the chassis
-2X9A9848.jpg | Yellow livery, side profile - panels wrap the full chassis geometry
-2X9A9833.jpg | Two colorways running side by side on the sim rigs
-2X9A0150.jpg | Red variant on the deck, template seams hidden in the body lines
+# Add or remove lines, then double-click Rebuild-Photos.bat
+2X9A0240.jpg | Red kart from above - the livery panels wrap the whole body
+2X9A9986.jpg | Side pod and event decal, printed on our template
+2X9A9852.jpg | Yellow kart, full side profile
+2X9A0219.jpg | Red kart on the deck, show car parked behind
+2X9A9973.jpg | Blue colourway - same template, different artwork
 2X9A0444.jpg | Overhead: the wrap has to survive a full day of public driving
-2X9A0164.jpg | Cut lines follow the hardware, not the sticker
-2X9A0240.jpg | Red Bull colorway on a Segway GoKart Pro
-2X9A9867.jpg | Kart detail - every panel is cut to the part it covers
-2X9A0258.jpg | Karts staged for the activation queue
-2X9A0047.jpg | The activation set up on the waterfront deck
-2X9A9893.jpg | Show car and the activation running behind it
-2X9A9899.jpg | The fan zone at full flow
-2X9A9895.jpg | Show car detail
-2X9A9887.jpg | Red Bull branding across the stage apron
-2X9A0092.jpg | The gaming zone the karts anchored
-2X9A9940.jpg | Wheel and deck detail
+2X9A9797.jpg | Rear three-quarter, lined up at the sim rigs
+2X9A9867.jpg | Cut lines follow the hardware, not the sticker
+2X9A0432.jpg | The karts ran all day against the racing sims
+2X9A9916.jpg | Blue kart in the paddock between runs
+2X9A0315.jpg | Yellow and red side by side - two variants off one template
+2X9A9930.jpg | Out on the lawn at the activation
+2X9A0096.jpg | The event the karts were built for: Red Bull Showrun Houston

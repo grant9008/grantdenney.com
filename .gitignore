@@ -8,3 +8,6 @@ Desktop.ini
 # the originals are not.
 assets/img/work/incoming/*
 !assets/img/work/incoming/READ-ME.txt
+
+# workflow / analysis scratch output
+tools/_wf.json
