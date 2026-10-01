@@ -2,3 +2,6 @@ User-agent: *
 Allow: /
 
 Sitemap: https://grantdenney.com/sitemap.xml
+
+# the game build is served but kept out of search
+Disallow: /ebike/

@@ -1,0 +1,9 @@
+{
+  "name": "E-Bike Speedrunner",
+  "short_name": "Speedrunner",
+  "start_url": "./",
+  "display": "fullscreen",
+  "orientation": "landscape",
+  "background_color": "#0d0f14",
+  "theme_color": "#0d0f14"
+}

@@ -11,3 +11,6 @@ assets/img/work/incoming/*
 
 # workflow / analysis scratch output
 tools/_wf.json
+
+# the game build is committed on purpose (it is what gets served);
+# its source lives in C:\Users\gdenn\ebike-speedrunner
