@@ -7,6 +7,8 @@ How to use:
          pocketge.png      -> the PocketGE card
          fliptracker.png   -> the Flip Tracker card
          iracehud.png      -> the iRaceHUD card
+         personalspace.png -> the Personal Space card
+         realmforge.png    -> the RealmForge card
          dalecarnegie.png  -> the Dale Carnegie block in the Sales section
      (.png, .jpg and .webp all work.)
   2. Double-click  Add-Screenshots.bat
@@ -29,9 +31,11 @@ PAGE = os.path.join(ROOT, "index.html")
 
 # data-shot value -> human label used in the alt text
 SHOTS = {
+    "personalspace": "Before and after with the Personal Space plugin: players the game hid, drawn and spread out",
     "pocketge": "PocketGE running in the browser",
     "fliptracker": "The PocketGE Flip Tracker panel inside RuneLite",
     "iracehud": "iRaceHUD overlaid on an iRacing session",
+    "realmforge": "RealmForge running on a phone",
     "dalecarnegie": "Dale Carnegie course in Los Angeles",
 }
 
