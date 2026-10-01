@@ -615,8 +615,8 @@ h1, h2, h3, h4 {
 
 .credits {
   display: grid;
-  /* 6 credits: 3-up on desktop, 2-up on tablet, 1-up on phones — no orphan row. */
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  /* 6 credits. Column counts must divide 6, or a cell is left empty. */
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1px;
   background: var(--line-soft);
   border: 1px solid var(--line-soft);
@@ -640,7 +640,7 @@ h1, h2, h3, h4 {
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   background: var(--line-soft);
   border: 1px solid var(--line-soft);
@@ -1046,7 +1046,7 @@ body[data-lb-open="true"] { overflow: hidden; }
 
 .range__grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 1px;
   background: var(--line-soft);
 }
@@ -1346,7 +1346,7 @@ body[data-lb-open="true"] { overflow: hidden; }
 
 /* ---------- GA4 strip ----------------------------------------------------- */
 
-.ga { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 1px;
+.ga { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1px;
       background: var(--line-soft); border: 1px solid var(--line-soft);
       border-radius: var(--r-md); overflow: hidden; margin-top: clamp(30px, 4vw, 44px); }
 .ga__cell { background: var(--bg); padding: 24px 22px; }
@@ -1368,7 +1368,7 @@ body[data-lb-open="true"] { overflow: hidden; }
 
 .about {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(330px, 1fr));
+  grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 22px;
 }
 
@@ -1592,7 +1592,8 @@ body[data-lb-open="true"] { overflow: hidden; }
   animation: livePulse 2.4s ease-in-out infinite;
 }
 @media (max-width: 460px) {
-  .live { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* 3 stats: two columns would leave one cell empty, so stack them */
+  .live { grid-template-columns: 1fr; }
 }
 
 @keyframes livePulse {
@@ -1601,4 +1602,30 @@ body[data-lb-open="true"] { overflow: hidden; }
 }
 @media (prefers-reduced-motion: reduce) {
   .live[data-live-ok="true"] .live__src i { animation: none; }
+}
+
+
+/* ---------- grid column counts that always divide the item count ---------
+   auto-fit picks whatever fits, which leaves a dead cell whenever the column
+   count doesn't divide the number of items (4 items in 3 columns, 6 in 4).
+   These grids have a fixed item count, so the breakpoints are explicit.
+   ------------------------------------------------------------------------ */
+
+@media (max-width: 980px) {
+  .metrics,
+  .range__grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 960px) {
+  .credits { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 760px) {
+  .about { grid-template-columns: 1fr; }
+}
+@media (max-width: 640px) {
+  .ga { grid-template-columns: 1fr; }
+}
+@media (max-width: 560px) {
+  .metrics,
+  .range__grid,
+  .credits { grid-template-columns: 1fr; }
 }
