@@ -116,13 +116,20 @@
   if (lb) {
     var lbImg = lb.querySelector('[data-lb-img]');
     var lbCap = lb.querySelector('[data-lb-cap]');
-    var openers = Array.prototype.slice.call(document.querySelectorAll('.slide[data-full]'));
+    // Anything with data-full opens the viewer. data-gallery keeps prev/next
+    // inside its own set, so the car photos don't page into the Showrun slider.
+    var openers = Array.prototype.slice.call(document.querySelectorAll('[data-full]'));
+    var group = [];
     var at = 0;
     var lastFocus = null;
 
+    function galleryOf(el) {
+      return el.dataset.gallery || (el.classList.contains('slide') ? 'showrun' : 'default');
+    }
+
     function show(i) {
-      at = (i + openers.length) % openers.length;
-      var el = openers[at];
+      at = (i + group.length) % group.length;
+      var el = group[at];
       lbImg.src = el.dataset.full;
       lbImg.alt = el.dataset.cap || '';
       lbCap.textContent = el.dataset.cap || '';
@@ -130,7 +137,9 @@
 
     function open(i) {
       lastFocus = document.activeElement;
-      show(i);
+      var name = galleryOf(openers[i]);
+      group = openers.filter(function (o) { return galleryOf(o) === name; });
+      show(group.indexOf(openers[i]));
       lb.dataset.open = 'true';
       lb.setAttribute('aria-hidden', 'false');
       document.body.dataset.lbOpen = 'true';
