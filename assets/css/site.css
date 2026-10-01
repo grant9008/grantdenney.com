@@ -1493,3 +1493,10 @@ body[data-lb-open="true"] { overflow: hidden; }
   line-height: 1.35;
   border-top: 1px solid var(--line-soft);
 }
+
+/* a quiet aside in an about card — said once, not dressed up */
+.about__note {
+  margin: 16px 0 0 !important;
+  font-size: 15.5px;
+  color: var(--text-mid);
+}
