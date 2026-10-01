@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Grant Denney | AI Solutions, Implementation &amp; Sales</title>
-<meta name="description" content="Grant Denney failed college Java; two of his plugins now run on an official, code-reviewed marketplace. AI-assisted product delivery, client-facing implementation, and six years running a wrap business Segway hires directly, whose templates went into a Red Bull activation. Omaha, NE , open to remote.">
+<meta name="description" content="Grant Denney dropped Java 1 in college; two of his plugins now run on an official, code-reviewed marketplace. AI-assisted product delivery, client-facing implementation, and six years running a wrap business Segway hires directly, whose templates went into a Red Bull activation. Omaha, NE , open to remote.">
 <link rel="canonical" href="https://grantdenney.com/">
 
 <meta property="og:type" content="website">
@@ -76,13 +76,13 @@
     <p class="hero__role">AI Solutions &amp; Implementation <b>·</b> Product Direction <b>·</b> Sales &amp; Client-Facing Delivery</p>
 
     <p class="hero__lede">
-      I failed college Java. Two of my plugins now run on an official, code-reviewed
-      marketplace with 2,000 active installs between them.
+      I dropped Java 1 before it could fail me. Two of my plugins now run on an official,
+      code-reviewed marketplace with 2,000 active installs between them.
     </p>
     <p class="hero__sub">
-      There is also a market-data tool people use daily, and a game prototype still in progress.
-      Before that, standing up Covid testing operations on-site from Boston to Bali for production
-      crews of 100+, where one missed deadline stopped the shoot.
+      One of them is half of a trading terminal whose other half is a site I also built. There is a
+      game prototype still in progress too. Before that, standing up Covid testing operations on-site
+      from Boston to Bali for production crews of 100+, where one missed deadline stopped the shoot.
     </p>
 
     <div class="hero__actions">
@@ -197,77 +197,46 @@
       <!-- PocketGE -->
       <article class="card" data-reveal>
         <div class="card__body">
-          <p class="card__tag"><span class="card__live">Live</span> · Open source · PWA</p>
+          <p class="card__tag"><span class="card__live">Live</span> &middot; Web app + RuneLite plugin &middot; Open source</p>
           <h3>PocketGE</h3>
-          <p>A free, mobile-first trading tool for the Old School RuneScape Grand Exchange. No login, no accounts. Every piece of user data stays in the browser.</p>
+          <p class="card__alias">A trading terminal for the Old School RuneScape Grand Exchange, in two halves that talk to each other. The plugin is listed on the Plugin Hub as <em>PocketGE Trading Terminal</em>.</p>
+          <p>
+            <strong>pocketge.com</strong> is the screen you plan on: live margin scanning with the 2%
+            transaction tax in every calculation, volume-profile charts from one day out to five years,
+            watchlists with push alerts and portfolio tracking. No login, no accounts, and every piece of
+            user data stays in the browser.
+          </p>
+          <p>
+            <strong>The RuneLite plugin</strong> is the half that watches the real thing. It records
+            incremental Grand Exchange fills across all 8 offer slots, matches sells against earlier buys
+            FIFO per item, and books profit net of the same 2% tax, so the number on screen is the real one.
+          </p>
           <ul class="card__points">
-            <li><strong>Live margin scanning</strong> with the 2% transaction tax built into every calculation</li>
-            <li><strong>5-day breakout scanner</strong> and volume-profile charts from 1 day out to 5 years</li>
-            <li><strong>Watchlists with push alerts</strong> plus portfolio tracking, all client-side</li>
-            <li>Plain HTML, CSS and vanilla JS, with no framework and no bundler, against the public OSRS Wiki price API, with client-side caching and rate-limited background scanning to stay fast on phones</li>
+            <li><strong>The two halves share a watchlist</strong> over a loopback-only bridge on your own machine. Mark an item in game and it is already there on the site. Nothing leaves the computer</li>
+            <li><strong>The tax rule is implemented identically in both codebases</strong>, so the website&rsquo;s projected profit and the plugin&rsquo;s booked profit agree</li>
+            <li><strong>Merged into the official <code>runelite/plugin-hub</code></strong>, which requires maintainer code review before anything ships, and a fresh review for every release since</li>
+            <li><strong>21,278 lines of Java behind 287 JUnit tests</strong>, with CI compiling and testing against the real RuneLite client on every push</li>
+            <li><strong>The web half is plain HTML, CSS and vanilla JS</strong>, with no framework and no bundler, against the public OSRS Wiki price API. 11,018 lines of it, plus a page per item: 1,895 URLs in the sitemap</li>
           </ul>
+          <dl class="live" data-live data-live-plugin="pocketge-flip-tracker" data-live-repo="grant9008/pocketge-flip-tracker">
+            <div><dt>Plugin installs</dt><dd data-live-users>59<small>right now</small></dd></div>
+            <div><dt>Version</dt><dd>0.7.0<small>on the Hub</small></dd></div>
+            <div><dt>Last updated</dt><dd data-live-updated>24 Sep 2026<small>last push</small></dd></div>
+            <div class="live__src"><i></i> Live from RuneLite&rsquo;s plugin-hub API <span data-live-note></span></div>
+          </dl>
+          <p class="card__caveat">
+            A far smaller number than Personal Space, and it should be: this one is for flippers rather
+            than everyone who stands in a bank, and it never had a Reddit post behind it. It grows slowly,
+            on its own.
+          </p>
           <div class="stack">
-            <span>JavaScript</span><span>PWA</span><span>REST / JSON</span><span>Service Workers</span><span>Push API</span>
+            <span>JavaScript</span><span>Java</span><span>PWA</span><span>REST / JSON</span><span>Service Workers</span><span>JUnit</span><span>Gradle</span>
           </div>
           <div class="card__links">
             <a href="https://pocketge.com" target="_blank" rel="noopener">
               pocketge.com
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
             </a>
-          </div>
-        </div>
-        <div class="card__shot" data-shot="pocketge">
-          <div class="shotstack">
-            <figure data-full="assets/img/work/pocketge-1200.jpg" data-gallery="pocketge" data-cap="Live chart with target buy and sell levels." tabindex="0" role="button" aria-label="Open larger: Live chart with target buy and sell levels.">
-              <picture><source type="image/webp" srcset="assets/img/work/pocketge-1200.webp"><img src="assets/img/work/pocketge-1200.jpg" alt="Live chart with target buy and sell levels." loading="lazy" decoding="async"></picture>
-              <figcaption>Live chart with target buy and sell levels.</figcaption>
-            </figure>
-            <figure data-full="assets/img/work/pge-chart-640.jpg" data-gallery="pocketge" data-cap="A month of Gold amulet, with the volume profile on." tabindex="0" role="button" aria-label="Open larger: A month of Gold amulet, with the volume profile on.">
-              <picture><source type="image/webp" srcset="assets/img/work/pge-chart-640.webp"><img src="assets/img/work/pge-chart-640.jpg" alt="A month of Gold amulet, with the volume profile on." loading="lazy" decoding="async"></picture>
-              <figcaption>A month of Gold amulet, with the volume profile on.</figcaption>
-            </figure>
-            <figure data-full="assets/img/work/pge-rating-640.jpg" data-gallery="pocketge" data-cap="Analyst rating against the selected timeframe." tabindex="0" role="button" aria-label="Open larger: Analyst rating against the selected timeframe.">
-              <picture><source type="image/webp" srcset="assets/img/work/pge-rating-640.webp"><img src="assets/img/work/pge-rating-640.jpg" alt="Analyst rating against the selected timeframe." loading="lazy" decoding="async"></picture>
-              <figcaption>Analyst rating against the selected timeframe.</figcaption>
-            </figure>
-            <figure data-full="assets/img/work/pge-linked-640.jpg" data-gallery="pocketge" data-cap="The watchlist, linked live to the RuneLite plugin." tabindex="0" role="button" aria-label="Open larger: The watchlist, linked live to the RuneLite plugin.">
-              <picture><source type="image/webp" srcset="assets/img/work/pge-linked-640.webp"><img src="assets/img/work/pge-linked-640.jpg" alt="The watchlist, linked live to the RuneLite plugin." loading="lazy" decoding="async"></picture>
-              <figcaption>The watchlist, linked live to the RuneLite plugin.</figcaption>
-            </figure>
-          </div>
-        </div>
-      </article>
-
-      <!-- Flip Tracker -->
-      <article class="card" data-reveal>
-        <div class="card__body">
-          <p class="card__tag"><span class="card__live">Live</span> · Java · Code-reviewed marketplace</p>
-          <h3>PocketGE Flip Tracker</h3>
-          <p class="card__alias">Listed on the Plugin Hub as <em>PocketGE Trading Terminal</em></p>
-          <p>A RuneLite plugin that does the accounting the game doesn&rsquo;t. Submitted to and merged into the official <code>runelite/plugin-hub</code> repository, which requires maintainer code review before anything ships to users.</p>
-          <ul class="card__points">
-            <li>Records <strong>incremental Grand Exchange fills</strong> across all 8 offer slots</li>
-            <li>Matches sells against earlier buys <strong>FIFO, per item</strong></li>
-            <li>Books profit <strong>net of the 2% GE tax</strong>, so the number on screen is the real one</li>
-            <li>Passed external maintainer review to reach the official Plugin Hub</li>
-            <li><strong>The plugin and the website share a watchlist</strong> over a loopback-only bridge on your own machine. Mark an item in game and it is already there on pocketge.com. Nothing leaves the computer</li>
-            <li><strong>21,278 lines of Java behind 287 JUnit tests</strong>, with CI compiling and testing against the real RuneLite client on every push</li>
-          </ul>
-          <dl class="live" data-live data-live-plugin="pocketge-flip-tracker" data-live-repo="grant9008/pocketge-flip-tracker">
-            <div><dt>Active users</dt><dd data-live-users>59<small>right now</small></dd></div>
-            <div><dt>Version</dt><dd>0.7.0<small>on the Hub</small></dd></div>
-            <div><dt>Last updated</dt><dd data-live-updated>24 Sep 2026<small>last push</small></dd></div>
-            <div class="live__src"><i></i> Live from RuneLite&rsquo;s plugin-hub API <span data-live-note></span></div>
-          </dl>
-          <p class="card__caveat">
-            A far smaller number than Personal Space, and it should be: this one is for
-            flippers rather than everyone who stands in a bank, and it never had a Reddit
-            post behind it. It grows slowly, on its own.
-          </p>
-          <div class="stack">
-            <span>Java</span><span>RuneLite API</span><span>Gradle</span><span>Git / GitHub</span>
-          </div>
-          <div class="card__links">
             <a href="https://runelite.net/plugin-hub/show/pocketge-flip-tracker" target="_blank" rel="noopener">
               Plugin Hub listing
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
@@ -278,29 +247,43 @@
             </a>
           </div>
         </div>
-        <div class="card__shot" data-shot="fliptracker">
+        <div class="card__shot" data-shot="pocketge">
           <div class="shotstack">
-            <figure data-full="assets/img/work/fliptracker-1200.jpg" data-gallery="fliptracker" data-cap="RuneLite with the Exchange open and the sidebar beside it." tabindex="0" role="button" aria-label="Open larger: RuneLite with the Exchange open and the sidebar beside it.">
-              <picture><source type="image/webp" srcset="assets/img/work/fliptracker-1200.webp"><img src="assets/img/work/fliptracker-1200.jpg" alt="RuneLite with the Exchange open and the sidebar beside it." loading="lazy" decoding="async"></picture>
-              <figcaption>RuneLite with the Exchange open and the sidebar beside it.</figcaption>
+            <figure data-full="assets/img/work/pocketge-1200.jpg" data-gallery="pocketge" data-cap="The site: live chart with target buy and sell levels." tabindex="0" role="button" aria-label="Open larger: the site">
+              <picture><source type="image/webp" srcset="assets/img/work/pocketge-1200.webp"><img src="assets/img/work/pocketge-1200.jpg" alt="PocketGE open in a browser: a price chart with target buy and sell levels, a volume histogram, and a favourites watchlist down the right" loading="lazy" decoding="async"></picture>
+              <figcaption>The site: live chart with target buy and sell levels.</figcaption>
             </figure>
-            <figure data-full="assets/img/work/ft-card-640.jpg" data-gallery="fliptracker" data-cap="The flip card: score, buy and sell, capital tied up." tabindex="0" role="button" aria-label="Open larger: The flip card: score, buy and sell, capital tied up.">
-              <picture><source type="image/webp" srcset="assets/img/work/ft-card-640.webp"><img src="assets/img/work/ft-card-640.jpg" alt="The flip card: score, buy and sell, capital tied up." loading="lazy" decoding="async"></picture>
+            <figure data-full="assets/img/work/fliptracker-1200.jpg" data-gallery="pocketge" data-cap="The plugin: RuneLite with the Exchange open and the sidebar beside it." tabindex="0" role="button" aria-label="Open larger: the plugin in RuneLite">
+              <picture><source type="image/webp" srcset="assets/img/work/fliptracker-1200.webp"><img src="assets/img/work/fliptracker-1200.jpg" alt="RuneLite with the Grand Exchange open and the PocketGE sidebar beside it, the same live sell offer ringed red in both" loading="lazy" decoding="async"></picture>
+              <figcaption>The plugin: RuneLite with the Exchange open beside it.</figcaption>
+            </figure>
+            <figure data-full="assets/img/work/pge-linked-640.jpg" data-gallery="pocketge" data-cap="The watchlist, linked live between the plugin and the site." tabindex="0" role="button" aria-label="Open larger: the linked watchlist">
+              <picture><source type="image/webp" srcset="assets/img/work/pge-linked-640.webp"><img src="assets/img/work/pge-linked-640.jpg" alt="The plugin sidebar and the website side by side, showing the same watchlist items with a LINKED badge" loading="lazy" decoding="async"></picture>
+              <figcaption>The watchlist, linked live between the two.</figcaption>
+            </figure>
+            <figure data-full="assets/img/work/ft-card-640.jpg" data-gallery="pocketge" data-cap="The flip card: score, buy and sell, capital tied up." tabindex="0" role="button" aria-label="Open larger: the flip card">
+              <picture><source type="image/webp" srcset="assets/img/work/ft-card-640.webp"><img src="assets/img/work/ft-card-640.jpg" alt="The plugin's flip card showing a flip score, buy and sell prices, projected profit and the capital required" loading="lazy" decoding="async"></picture>
               <figcaption>The flip card: score, buy and sell, capital tied up.</figcaption>
             </figure>
-            <figure data-full="assets/img/work/ft-stats-640.jpg" data-gallery="fliptracker" data-cap="Session stats: profit, ROI, gp per hour." tabindex="0" role="button" aria-label="Open larger: Session stats: profit, ROI, gp per hour.">
-              <picture><source type="image/webp" srcset="assets/img/work/ft-stats-640.webp"><img src="assets/img/work/ft-stats-640.jpg" alt="Session stats: profit, ROI, gp per hour." loading="lazy" decoding="async"></picture>
+            <figure data-full="assets/img/work/ft-stats-640.jpg" data-gallery="pocketge" data-cap="Session stats: profit, ROI, gp per hour." tabindex="0" role="button" aria-label="Open larger: session stats">
+              <picture><source type="image/webp" srcset="assets/img/work/ft-stats-640.webp"><img src="assets/img/work/ft-stats-640.jpg" alt="The plugin's stats header: session profit, unrealized profit, flips made, ROI, hourly profit and portfolio value" loading="lazy" decoding="async"></picture>
               <figcaption>Session stats: profit, ROI, gp per hour.</figcaption>
             </figure>
-            <figure data-full="assets/img/work/ft-history-640.jpg" data-gallery="fliptracker" data-cap="Flip history, newest first." tabindex="0" role="button" aria-label="Open larger: Flip history, newest first.">
-              <picture><source type="image/webp" srcset="assets/img/work/ft-history-640.webp"><img src="assets/img/work/ft-history-640.jpg" alt="Flip history, newest first." loading="lazy" decoding="async"></picture>
+            <figure data-full="assets/img/work/pge-chart-640.jpg" data-gallery="pocketge" data-cap="A month of Gold amulet, with the volume profile on." tabindex="0" role="button" aria-label="Open larger: volume profile">
+              <picture><source type="image/webp" srcset="assets/img/work/pge-chart-640.webp"><img src="assets/img/work/pge-chart-640.jpg" alt="A one-month price chart with the volume profile overlay turned on" loading="lazy" decoding="async"></picture>
+              <figcaption>A month of Gold amulet, with the volume profile on.</figcaption>
+            </figure>
+            <figure data-full="assets/img/work/ft-history-640.jpg" data-gallery="pocketge" data-cap="Flip history, newest first." tabindex="0" role="button" aria-label="Open larger: flip history">
+              <picture><source type="image/webp" srcset="assets/img/work/ft-history-640.webp"><img src="assets/img/work/ft-history-640.jpg" alt="The plugin's flip history listing recent completed flips with profit per item" loading="lazy" decoding="async"></picture>
               <figcaption>Flip history, newest first.</figcaption>
+            </figure>
+            <figure data-full="assets/img/work/pge-rating-640.jpg" data-gallery="pocketge" data-cap="Analyst rating against the selected timeframe." tabindex="0" role="button" aria-label="Open larger: analyst rating">
+              <picture><source type="image/webp" srcset="assets/img/work/pge-rating-640.webp"><img src="assets/img/work/pge-rating-640.jpg" alt="The site's analyst rating grading the current price against the selected timeframe's range" loading="lazy" decoding="async"></picture>
+              <figcaption>Analyst rating against the selected timeframe.</figcaption>
             </figure>
           </div>
         </div>
       </article>
-
-
 
       <!-- RealmForge -->
       <article class="card" data-reveal>
@@ -1055,17 +1038,23 @@
           Why I build
         </h3>
         <p>
-          I always wanted to code. I went to UNO assuming that liking computers and games
-          would make me a programmer. It didn&rsquo;t. <strong>Java and I never meshed, and I failed
-          it.</strong> For a long time that was the end of the story.
+          I always wanted to code. I went to UNO for Computer Science assuming that liking
+          computers and games would make me a programmer. <strong>Java 1 and I were not vibing,
+          and I dropped it before it could fail me.</strong>
         </p>
         <p>
-          What changed isn&rsquo;t that I became a different person. The bottleneck moved. AI
-          tooling took technical know-how off the critical path, and what&rsquo;s left is the part I
-          was always any good at: <strong>deciding what to build, how it should work, and where it
-          goes next.</strong> I&rsquo;m the one making the calls on design and direction. I&rsquo;m
-          picking up the code bit by bit as I go, on projects people actually use, instead of on
-          a course I failed.
+          Around the same time my dad and I were watching <em>Shark Tank</em> together. He had run
+          several Sport Clips stores, and that looked like the coolest thing in the world, so I
+          switched to Business with an entrepreneurship focus. Years later I got to the producer
+          video-interview stage of <em>Shark Tank</em> myself, with a company I built.
+        </p>
+        <p>
+          What changed about the code isn&rsquo;t that I became a different person. The friction
+          dropped. AI tooling took technical know-how off the critical path, and what&rsquo;s left is
+          the part I was always any good at: <strong>deciding what to build, how it should work,
+          and where it goes next.</strong> I&rsquo;m the one making the calls on design and
+          direction, picking up the code as I go. <strong>I had the ideas the whole time. It took
+          AI to get them built.</strong>
         </p>
         <p>
           Both products started the same way. I didn&rsquo;t want to pay for the tool.
