@@ -19,7 +19,7 @@ END = "<!-- SLIDES-END -->"
 
 def main():
     if not os.path.exists(SLIDES):
-        print("No generated slides at " + SLIDES + " — run tools/gen-slides.py first.")
+        print("No generated slides at " + SLIDES + ", run tools/gen-slides.py first.")
         return 1
 
     slides = io.open(SLIDES, encoding="utf-8").read().rstrip("\n")

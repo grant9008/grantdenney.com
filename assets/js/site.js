@@ -1,4 +1,4 @@
-/* grantdenney.com — no dependencies, no build step. */
+/* grantdenney.com, no dependencies, no build step. */
 (function () {
   'use strict';
 
@@ -273,7 +273,7 @@
     }
 
     function sync() {
-      // Only a slider when it actually overflows — a resize can change that.
+      // Only a slider when it actually overflows, a resize can change that.
       var overflowing = stack.scrollHeight > stack.clientHeight + 4;
       panel.dataset.overflowing = overflowing ? 'true' : 'false';
       if (!overflowing) return;

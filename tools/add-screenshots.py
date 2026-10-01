@@ -89,7 +89,7 @@ def main():
 
     html = io.open(PAGE, encoding="utf-8").read()
     for key in built:
-        # Replace whichever panel is currently there — placeholder or a previous image.
+        # Replace whichever panel is currently there, placeholder or a previous image.
         pattern = re.compile(
             r'<div class="(card__shot|training__shot)[^"]*" data-shot="' + re.escape(key) + r'">.*?</div>',
             re.S,

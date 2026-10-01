@@ -1,8 +1,8 @@
-# Red Bull Showrun Houston — curated for the site.
+# Red Bull Showrun Houston, curated for the site.
 #
 # Picked kart-first: these are the Segway go-karts the Scooty Wraps templates
 # and printed kits went onto. All four colourways are covered. Shots where the
-# F1 show car or the crowd is the subject were dropped — that part wasn't our work.
+# F1 show car or the crowd is the subject were dropped, that part wasn't our work.
 #
 # Format:  filename.jpg | Caption shown under the slide
 # Add or remove lines, then double-click Rebuild-Photos.bat

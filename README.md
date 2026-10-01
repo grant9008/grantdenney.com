@@ -1,6 +1,6 @@
 # grantdenney.com
 
-Personal site for Grant Denney. Plain HTML, CSS and JavaScript — no framework,
+Personal site for Grant Denney. Plain HTML, CSS and JavaScript, no framework,
 no bundler, no build step. Open `index.html` and what you see is what ships.
 
 ## Looking at it locally
@@ -18,7 +18,7 @@ placeholder panel until you supply an image.
 3. Double-click **`Add-Screenshots.bat`**
 4. Refresh the site
 
-They're resized and compressed automatically. You can add them one at a time —
+They're resized and compressed automatically. You can add them one at a time -
 anything missing just keeps its placeholder.
 
 ## Changing the Red Bull Showrun photos
@@ -31,7 +31,7 @@ caption says. One line per photo:
 ```
 
 Edit that file, then double-click **`Rebuild-Photos.bat`**. That now does the
-whole job — optimizes the images, regenerates the slide markup and splices it
+whole job, optimizes the images, regenerates the slide markup and splices it
 into `index.html` between the `SLIDES-START` / `SLIDES-END` markers, and updates
 the slide counter. Adding or removing photos needs nothing extra.
 
@@ -43,7 +43,7 @@ writes optimized copies into `assets/img/showrun/`.
 ```
 index.html                 the whole page
 assets/css/site.css        design tokens first, then layout, then components
-assets/js/site.js          nav, scroll reveal, slider, lightbox — no dependencies
+assets/js/site.js          nav, scroll reveal, slider, lightbox, no dependencies
 assets/img/showrun/        optimized Showrun photos (generated)
 tools/_slides.html         generated slide markup (intermediate)
 tools/_template-g30p.svg   the G30P cut file, cleaned up for inlining
@@ -55,7 +55,7 @@ CNAME                      the custom domain, for GitHub Pages
 
 ## Still to fill in
 
-- **Project screenshots and the Dale Carnegie photo** — see above.
+- **Project screenshots and the Dale Carnegie photo**, see above.
 - **The résumé PDF still lists Town & Country Animal Rescue.** It has been
   removed from the site, but `Grant-Denney-Resume.pdf` (linked from the hero and
   the contact section) hasn't been regenerated, so the two disagree right now.
@@ -68,4 +68,4 @@ CNAME                      the custom domain, for GitHub Pages
 
 `CNAME` and `.nojekyll` are already in place for GitHub Pages on the apex domain
 `grantdenney.com`. Publishing needs a GitHub repo and a DNS change at your
-registrar — not done yet.
+registrar, not done yet.

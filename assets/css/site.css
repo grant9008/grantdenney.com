@@ -54,7 +54,7 @@ body {
   overflow-x: hidden;
 }
 
-/* height:auto is required — without it the width/height attributes on <img>
+/* height:auto is required, without it the width/height attributes on <img>
    win over aspect-ratio and the images render at their attribute height. */
 img { max-width: 100%; height: auto; display: block; }
 
@@ -457,7 +457,7 @@ h1, h2, h3, h4 {
 .card__links a:hover { border-bottom-color: var(--accent); }
 .card__links svg { width: 13px; height: 13px; }
 
-/* screenshot panel — works filled or empty */
+/* screenshot panel, works filled or empty */
 .card__shot {
   position: relative;
   /* the scrolling stack inside would otherwise set this column's width */
@@ -467,7 +467,7 @@ h1, h2, h3, h4 {
   min-height: 280px;
   display: grid;
   align-items: start;
-  /* NOT overflow:hidden — that kills the sticky below. .card already clips. */
+  /* NOT overflow:hidden, that kills the sticky below. .card already clips. */
 }
 @media (max-width: 1040px) {
   .card__shot { border-left: 0; border-top: 1px solid var(--line); order: -1; min-height: 220px; }
@@ -732,7 +732,7 @@ h1, h2, h3, h4 {
 
 /* min-width:0 all the way down: the PURE Sets photo strip is a horizontally
    scrolling grid, and without this every ancestor sizes to its full content
-   instead of letting it scroll — which widened the whole Experience section
+   instead of letting it scroll, which widened the whole Experience section
    (and therefore every role, since .roles is one shared grid column) to
    552px at a 360px viewport. */
 .roles { display: grid; gap: 0; min-width: 0; }
@@ -1001,7 +1001,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   border: 1px solid var(--line-soft);
   border-radius: var(--r-md);
   padding: clamp(16px, 2.6vw, 30px);
-  /* the drawing is wide and thin — let it breathe */
+  /* the drawing is wide and thin, let it breathe */
   display: grid;
   place-items: center;
 }
@@ -1133,7 +1133,7 @@ body[data-lb-open="true"] { overflow: hidden; }
 /* ---------- training block ----------------------------------------------- */
 
 .training {
-  /* single column — no photo, and a stranger's course photo isn't ours to use */
+  /* single column, no photo, and a stranger's course photo isn't ours to use */
   display: block;
   margin-top: clamp(40px, 6vw, 62px);
   border: 1px solid var(--line);
@@ -1188,7 +1188,7 @@ body[data-lb-open="true"] { overflow: hidden; }
 /* ---------- analytics chart ---------------------------------------------
    Categorical hues validated against the dark surface with the dataviz
    validator (lightness band, chroma, CVD separation, contrast): all pass.
-   Fixed slot order — never cycled, never reassigned by rank.
+   Fixed slot order, never cycled, never reassigned by rank.
    ------------------------------------------------------------------------ */
 
 :root {
@@ -1286,7 +1286,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   font-variant-numeric: tabular-nums;
 }
 
-/* hover / focus detail — impressions and position, without a permanent label */
+/* hover / focus detail, impressions and position, without a permanent label */
 .chart__row::after {
   content: attr(data-detail);
   position: absolute;
@@ -1457,7 +1457,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   color: var(--text-dim);
 }
 
-/* source line under a data block — says where the numbers came from */
+/* source line under a data block, says where the numbers came from */
 .metrics__src {
   margin: 12px 0 0;
   font-family: var(--font-mono);
@@ -1532,7 +1532,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   border-top: 1px solid var(--line-soft);
 }
 
-/* a quiet aside in an about card — said once, not dressed up */
+/* a quiet aside in an about card, said once, not dressed up */
 .about__note {
   margin: 16px 0 0 !important;
   font-size: 15.5px;
@@ -1660,13 +1660,13 @@ body[data-lb-open="true"] { overflow: hidden; }
    The card body runs long; one image left most of the right-hand column
    empty. The panel now holds the whole set, stacked, so its height tracks
    the body. Below 900px the panel sits above the body, where a tall stack
-   would be wrong — there it becomes a horizontal scrolling strip instead.
+   would be wrong, there it becomes a horizontal scrolling strip instead.
    ------------------------------------------------------------------------ */
 
 .card__shot { padding: 16px; }
 
 /* The stack is positioned absolutely so it contributes NOTHING to the card's
-   row height — the body alone decides how tall the card is, and the photo
+   row height, the body alone decides how tall the card is, and the photo
    column is clipped to exactly that. Anything that doesn't fit becomes a
    slider rather than making the card taller than its text. */
 .card__shot { position: relative; overflow: hidden; }
@@ -1676,7 +1676,7 @@ body[data-lb-open="true"] { overflow: hidden; }
   inset: 16px;
   display: grid;
   /* The stack has a definite height (inset above), and `auto` rows shrink to
-     fit inside one — squashing every figure to a fraction of its image and
+     fit inside one, squashing every figure to a fraction of its image and
      cropping it. max-content makes each row take its full height so the
      stack genuinely overflows, which is what the slider is for. */
   grid-auto-rows: max-content;
