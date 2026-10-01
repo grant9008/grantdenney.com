@@ -1640,3 +1640,56 @@ body[data-lb-open="true"] { overflow: hidden; }
 @media (max-width: 520px) {
   .training .strip { grid-template-columns: 1fr; max-width: none; }
 }
+
+/* ---------- stacked shot panel -------------------------------------------
+   The card body runs long; one image left most of the right-hand column
+   empty. The panel now holds the whole set, stacked, so its height tracks
+   the body. Below 900px the panel sits above the body, where a tall stack
+   would be wrong — there it becomes a horizontal scrolling strip instead.
+   ------------------------------------------------------------------------ */
+
+.card__shot { padding: 16px; }
+
+.shotstack { display: grid; gap: 12px; align-content: start; }
+
+.shotstack figure {
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--r-sm);
+  overflow: hidden;
+  background: var(--bg-raise);
+  cursor: zoom-in;
+  transition: border-color .25s var(--ease);
+  min-width: 0;
+}
+.shotstack figure:hover { border-color: var(--accent); }
+/* A tall narrow screenshot would otherwise set the whole card's height, so
+   cap it. Landscape shots (every before/after) sit well under this and are
+   never cropped; a tall one shows its top and opens in full from the viewer. */
+.shotstack img {
+  width: 100%;
+  height: auto;
+  max-height: 440px;
+  object-fit: cover;
+  object-position: top center;
+  display: block;
+}
+.shotstack figcaption {
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--text-dim);
+  padding: 7px 10px 8px;
+  border-top: 1px solid var(--line-soft);
+}
+
+@media (max-width: 900px) {
+  .shotstack {
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(170px, 1fr);
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: var(--line) transparent;
+  }
+  .shotstack::-webkit-scrollbar { height: 4px; }
+  .shotstack::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
+}
