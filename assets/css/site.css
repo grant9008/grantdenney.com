@@ -1782,3 +1782,68 @@ body[data-lb-open="true"] { overflow: hidden; }
   .shotstack::-webkit-scrollbar { height: 4px; width: 4px; }
   .shotstack::-webkit-scrollbar-thumb { background: var(--line); border-radius: 99px; }
 }
+
+/* ---------- live hero backdrop -------------------------------------------
+   A real chart of the install numbers, drawn behind the name. It must never
+   compete with the type: low opacity, masked away from the text, and it only
+   appears once real data has actually loaded.
+   ------------------------------------------------------------------------ */
+
+.heroplot {
+  position: absolute;
+  /* Kept to the lower right so it never crosses the name or the lede. With only
+     a couple of points a full-width plot is one hard diagonal through the text. */
+  left: 56%;
+  right: var(--gutter);
+  top: 14%;
+  bottom: 58%;
+  z-index: 0;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 1.2s var(--ease);
+  mask-image: linear-gradient(90deg, transparent 0%, #000 22%);
+  -webkit-mask-image: linear-gradient(90deg, transparent 0%, #000 22%);
+}
+.heroplot[data-ready="true"] { opacity: 1; }
+.heroplot svg { width: 100%; height: 100%; display: block; }
+
+.heroplot .hp-line { fill: none; stroke: var(--accent); stroke-width: 2; opacity: .38; }
+.heroplot .hp-area { fill: var(--accent); opacity: .05; }
+.heroplot .hp-dot  { fill: var(--accent); opacity: .55; }
+.heroplot .hp-grid { stroke: var(--line); stroke-width: 1; opacity: .5; }
+.heroplot .hp-tick {
+  fill: var(--text-dim);
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: .08em;
+  opacity: .5;
+}
+
+/* the caption that says what the line is, bottom right of the hero */
+.heroplot__label {
+  position: absolute;
+  right: var(--gutter);
+  top: calc(42% + 6px);
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  opacity: .75;
+}
+.heroplot__label i {
+  width: 6px; height: 6px; border-radius: 50%;
+  background: #43d17c;
+  box-shadow: 0 0 0 3px #43d17c22;
+  flex: none;
+}
+
+@media (max-width: 1040px) {
+  .heroplot { display: none; }   /* the hero is tight enough on a phone */
+}
+@media (prefers-reduced-motion: reduce) {
+  .heroplot { transition: none; }
+}

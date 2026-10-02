@@ -1,0 +1,20 @@
+{
+  "note": "Daily snapshots of active installs from RuneLite's plugin-hub API. The API reports only a current count with no history, so this file IS the history: it starts the day recording began and grows by one point a day. Nothing here is estimated or back-filled.",
+  "source": "https://api.runelite.net/runelite-<client>/pluginhub",
+  "plugins": {
+    "personal-space": "Personal Space",
+    "pocketge-flip-tracker": "PocketGE Trading Terminal"
+  },
+  "points": [
+    {
+      "date": "2026-10-01",
+      "personal-space": 1952,
+      "pocketge-flip-tracker": 59
+    },
+    {
+      "date": "2026-10-02",
+      "personal-space": 1998,
+      "pocketge-flip-tracker": 67
+    }
+  ]
+}

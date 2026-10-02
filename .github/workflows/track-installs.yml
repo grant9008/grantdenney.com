@@ -1,0 +1,67 @@
+name: Track plugin installs
+
+# RuneLite's plugin-hub API reports a current count and keeps no history, so the
+# only way to have a growth chart is to record one. This runs daily and appends
+# today's numbers to data/installs.json, which the site's hero chart reads.
+on:
+  schedule:
+    - cron: "17 9 * * *"   # 09:17 UTC daily
+  workflow_dispatch:        # and on demand from the Actions tab
+
+permissions:
+  contents: write
+
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Append today's install counts
+        run: |
+          python - <<'PY'
+          import json, urllib.request, datetime, sys
+
+          def get(url):
+              with urllib.request.urlopen(url, timeout=30) as r:
+                  return json.load(r)
+
+          version = get("https://static.runelite.net/bootstrap.json")["version"]
+          counts = get("https://api.runelite.net/runelite-%s/pluginhub" % version)
+
+          with open("data/installs.json") as fh:
+              data = json.load(fh)
+
+          today = datetime.date.today().isoformat()
+          point = {"date": today}
+          for slug in data["plugins"]:
+              n = counts.get(slug)
+              if not isinstance(n, int):
+                  print("no count for %s, skipping today" % slug)
+                  sys.exit(0)
+              point[slug] = n
+
+          pts = data["points"]
+          if pts and pts[-1]["date"] == today:
+              pts[-1] = point          # same day, replace
+          else:
+              pts.append(point)
+
+          with open("data/installs.json", "w", newline="\n") as fh:
+              json.dump(data, fh, indent=2)
+              fh.write("\n")
+
+          print("recorded", point)
+          PY
+
+      - name: Commit if the numbers changed
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          if git diff --quiet data/installs.json; then
+            echo "no change today"
+          else
+            git add data/installs.json
+            git commit -m "Record plugin installs for $(date -u +%Y-%m-%d)"
+            git push
+          fi

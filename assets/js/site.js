@@ -307,4 +307,70 @@
     sync();
     setTimeout(sync, 600);
   });
+
+  /* ---------- live hero chart ---------------------------------------------
+     Draws the real install history from data/installs.json behind the name.
+     The file is appended to once a day by a GitHub Action, because RuneLite's
+     API reports a current count and keeps no history. If the fetch fails, or
+     there are too few points to be a line, nothing is drawn at all.
+     ---------------------------------------------------------------------- */
+
+  var plot = document.querySelector('[data-heroplot]');
+  if (plot && !window.matchMedia('(max-width: 1040px)').matches) {
+    fetch('data/installs.json')
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        var pts = (data && data.points) || [];
+        if (pts.length < 2) return;            // not a chart yet
+
+        var slugs = Object.keys(data.plugins || {});
+        var totals = pts.map(function (p) {
+          return slugs.reduce(function (sum, k) { return sum + (p[k] || 0); }, 0);
+        });
+
+        var W = 520, H = 200, padL = 10, padR = 58, padT = 26, padB = 30;
+        var lo = Math.min.apply(null, totals);
+        var hi = Math.max.apply(null, totals);
+        // Give a flat-ish series some room so it isn't a dead horizontal line.
+        var span = Math.max(hi - lo, Math.max(hi * 0.08, 1));
+        var base = Math.max(lo - span * 0.35, 0);
+        var top = hi + span * 0.3;
+
+        function x(i) { return padL + (i / (pts.length - 1)) * (W - padL - padR); }
+        function y(v) { return padT + (1 - (v - base) / (top - base)) * (H - padT - padB); }
+
+        var line = totals.map(function (v, i) { return (i ? 'L' : 'M') + x(i).toFixed(1) + ' ' + y(v).toFixed(1); }).join(' ');
+        var area = line + ' L' + x(pts.length - 1).toFixed(1) + ' ' + (H - padB) + ' L' + x(0).toFixed(1) + ' ' + (H - padB) + ' Z';
+
+        var parts = ['<svg viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">'];
+        for (var g = 0; g <= 3; g++) {
+          var gy = padT + (g / 3) * (H - padT - padB);
+          parts.push('<line class="hp-grid" x1="' + padL + '" y1="' + gy.toFixed(1) + '" x2="' + (W - padR) + '" y2="' + gy.toFixed(1) + '"/>');
+        }
+        parts.push('<path class="hp-area" d="' + area + '"/>');
+        parts.push('<path class="hp-line" d="' + line + '"/>');
+        parts.push('<circle class="hp-dot" cx="' + x(pts.length - 1).toFixed(1) + '" cy="' + y(totals[totals.length - 1]).toFixed(1) + '" r="4"/>');
+
+        // only the first and last date, so it stays quiet
+        function nice(iso) {
+          var d = new Date(iso + 'T00:00:00');
+          if (isNaN(d)) return iso;
+          return d.getDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
+        }
+        parts.push('<text class="hp-tick" x="' + padL + '" y="' + (H - padB + 20) + '">' + nice(pts[0].date) + '</text>');
+        parts.push('<text class="hp-tick" text-anchor="end" x="' + (W - padR) + '" y="' + (H - padB + 20) + '">' + nice(pts[pts.length - 1].date) + '</text>');
+        parts.push('<text class="hp-tick" text-anchor="end" x="' + (W - padR) + '" y="' + (y(totals[totals.length - 1]) - 12).toFixed(1) + '">' + totals[totals.length - 1].toLocaleString() + '</text>');
+        parts.push('</svg>');
+
+        plot.innerHTML = parts.join('');
+        plot.dataset.ready = 'true';
+
+        var label = document.querySelector('[data-heroplot-label]');
+        if (label) {
+          label.innerHTML = '<i></i> Active installs, recorded daily since ' + nice(pts[0].date);
+          label.hidden = false;
+        }
+      })
+      .catch(function () { /* no chart rather than a wrong one */ });
+  }
 })();
