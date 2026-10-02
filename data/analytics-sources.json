@@ -1,0 +1,10 @@
+{
+  "note": "Which properties the daily analytics job reads. IDs are not secret; the credential lives in the GitHub secret GOOGLE_SERVICE_ACCOUNT. Add or remove entries freely, the job skips anything it cannot read.",
+  "ga4": [
+    { "label": "grantdenney.com", "propertyId": "REPLACE_WITH_NUMERIC_PROPERTY_ID" }
+  ],
+  "searchConsole": [
+    { "label": "scootywraps.com", "siteUrl": "sc-domain:scootywraps.com" },
+    { "label": "pocketge.com",    "siteUrl": "sc-domain:pocketge.com" }
+  ]
+}
