@@ -1841,8 +1841,24 @@ body[data-lb-open="true"] { overflow: hidden; }
   flex: none;
 }
 
+/* On a phone the hero is one column with no empty right side, so the plot
+   becomes a full-width band under the buttons instead of being dropped. */
+/* On a phone the hero is one column with no empty side, and an absolutely
+   placed chart ends up below the fold. There it drops into the flow instead,
+   as a small band between the text and the buttons, where it is actually seen. */
 @media (max-width: 1040px) {
-  .heroplot { display: none; }   /* the hero is tight enough on a phone */
+  .heroplot {
+    position: static;
+    width: 100%;
+    height: 104px;
+    margin: 4px 0 26px;
+    mask-image: none;
+    -webkit-mask-image: none;
+  }
+  .heroplot__label {
+    position: static;
+    margin: -18px 0 24px;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .heroplot { transition: none; }

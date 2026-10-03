@@ -316,7 +316,7 @@
      ---------------------------------------------------------------------- */
 
   var plot = document.querySelector('[data-heroplot]');
-  if (plot && !window.matchMedia('(max-width: 1040px)').matches) {
+  if (plot) {
     fetch('data/installs.json')
       .then(function (r) { return r.json(); })
       .then(function (data) {
