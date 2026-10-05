@@ -6,3 +6,4 @@ Sitemap: https://grantdenney.com/sitemap.xml
 # the game build is served but kept out of search
 Disallow: /ebike/
 Disallow: /ebike2/
+Disallow: /ebike3/
