@@ -362,6 +362,13 @@
         parts.push('<text class="hp-tick" text-anchor="end" x="' + (W - padR) + '" y="' + (y(totals[totals.length - 1]) - 12).toFixed(1) + '">' + totals[totals.length - 1].toLocaleString() + '</text>');
         parts.push('</svg>');
 
+        // The chart is the recorded daily history. The hero sentence quotes a live
+        // figure below, so seed it from the file and let the API overwrite it.
+        var heroNum = document.querySelector('[data-hero-installs]');
+        if (heroNum && !heroNum.dataset.live) {
+          heroNum.textContent = totals[totals.length - 1].toLocaleString();
+        }
+
         plot.innerHTML = parts.join('');
         plot.dataset.ready = 'true';
 
@@ -372,5 +379,32 @@
         }
       })
       .catch(function () { /* no chart rather than a wrong one */ });
+  }
+
+  /* ---------- live total in the hero sentence -----------------------------
+     Same source as the per-plugin counters, so the headline number and the
+     cards can never disagree. Falls back to whatever the chart seeded.
+     ---------------------------------------------------------------------- */
+
+  var heroInstalls = document.querySelector('[data-hero-installs]');
+  if (heroInstalls) {
+    fetch('https://static.runelite.net/bootstrap.json')
+      .then(function (r) { return r.json(); })
+      .then(function (b) {
+        if (!b || !b.version) throw new Error('no version');
+        return fetch('https://api.runelite.net/runelite-' + b.version + '/pluginhub');
+      })
+      .then(function (r) { return r.json(); })
+      .then(function (counts) {
+        var total = ['personal-space', 'pocketge-flip-tracker'].reduce(function (sum, k) {
+          var n = counts && counts[k];
+          return sum + (typeof n === 'number' ? n : 0);
+        }, 0);
+        if (total > 0) {
+          heroInstalls.textContent = total.toLocaleString();
+          heroInstalls.dataset.live = 'true';
+        }
+      })
+      .catch(function () { /* keep the seeded number */ });
   }
 })();
