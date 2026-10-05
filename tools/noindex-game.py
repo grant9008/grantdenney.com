@@ -5,9 +5,12 @@ put back each time. Run from Publish-Game.bat rather than by hand.
 """
 import io
 import os
+import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-PAGE = os.path.join(ROOT, "ebike", "index.html")
+# optional argument: the folder to mark (default "ebike"; Publish-Game2.bat passes "ebike2")
+FOLDER = sys.argv[1] if len(sys.argv) > 1 else "ebike"
+PAGE = os.path.join(ROOT, FOLDER, "index.html")
 
 TAG = '<meta name="robots" content="noindex, nofollow">'
 
