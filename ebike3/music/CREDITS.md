@@ -12,6 +12,10 @@ ContentID registration was found for any of them, so players' clips should not g
 
 CC0: https://creativecommons.org/publicdomain/zero/1.0/
 
+`reel-raspberry_jam.mp3` is a 45 second cut of Raspberry Jam (same song, same CC0 licence): the music laid under auto
+clips (src/clips/mix.ts). It is made from the original download by `node scripts/cut-clip-music.mjs --port <your port>
+--only raspberry_jam.ogg`, which also prints its beat grid.
+
 The game ships 96 kbps MP3 re-encodes (scripts/encode-music.mjs). The original downloads live in music-src/, which is
 not in git. To add a song: put the file in music-src/, run the script with the dev server up, add the name to PLAYLISTS
 in src/audio/music.ts, and add a row here with its license.
