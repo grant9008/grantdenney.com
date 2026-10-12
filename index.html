@@ -66,6 +66,7 @@
     <a class="nav__mark" href="#top"><i></i> Grant Denney</a>
     <nav class="nav__links">
       <a href="#work">Work</a>
+      <a href="#sendit">SEND IT</a>
       <a href="#brand">Scooty Wraps</a>
       <a href="#sales">Sales</a>
       <a href="#search">Search</a>
@@ -351,6 +352,144 @@
         </div>
       </article>
 
+    </div>
+  </div>
+</section>
+
+<!-- ===================== SEND IT ===================== -->
+<section class="section" id="sendit">
+  <div class="wrap">
+    <div class="section__head" data-reveal>
+      <p class="eyebrow">The one I am building now</p>
+      <h2>SEND IT: Red&nbsp;Light&nbsp;Runner</h2>
+      <p>
+        An arcade speedrun on a stand-up e-scooter. One straight 805 metre run down a parody
+        Hollywood Boulevard, ten cross streets, traffic that does not care about you, and a
+        ragdoll crash with an itemised hospital bill when it goes wrong. It runs in a browser
+        and on a phone.
+      </p>
+    </div>
+
+    <div class="card" data-reveal>
+      <div class="card__body">
+        <p class="card__tag">In development &middot; TypeScript + three.js + Rapier &middot; AI-assisted</p>
+        <h3>Eleven days, 96,000 lines</h3>
+        <p>
+          Started on 1 October 2026. 210 commits since, 241 TypeScript files, 95,962 lines in
+          <code>src/</code>. The busiest day was 58 commits.
+        </p>
+        <ul class="card__points">
+          <li><strong>It ships no art and no sound effects.</strong> The whole city, the cars, the ten kinds of pedestrian, the rider, every texture, every scream and crunch and horn, is generated in code. The entire <code>public/</code> folder is seven files: a web manifest, two readmes and four MP3s of CC0 music</li>
+          <li><strong>Determinism is the design constraint.</strong> The simulation advances only in exact 1/60 second ticks with render interpolation, and every traffic, pedestrian and signal stream runs on seeded RNG whose state is a plain number, so the whole traffic sim can be snapshotted and restored in under a millisecond on every retry</li>
+          <li><strong>Repeatable crashes meant swapping the physics world.</strong> A stepped Rapier world keeps state no API reset restores: broad-phase tree shape, contact pair order, warm-start impulses. The same crash flew differently the second time until the fix, which is to take a snapshot at boot and call <code>restoreSnapshot()</code> on every restart. About 1.5&nbsp;ms</li>
+          <li><strong>CLIP THAT re-shoots the crash rather than recording the screen.</strong> The game stores only what the simulation read each tick, 25 bytes, then re-runs the attempt later with a vertical camera and films it as a finished 9:16 MP4 with captions and music. Encoded in the browser through WebCodecs, walking down four codec rungs to whatever the device supports</li>
+          <li><strong>The footage has to prove it is real.</strong> Every take carries rider-state fingerprints every 60 ticks plus a header of every setting the simulation reads. A re-run that fails to reproduce them is dropped and never shown</li>
+          <li><strong>Ten pedestrian types with no extra draw calls.</strong> Each body-part mesh carries every hat, hairdo, bag and balloon as a vertex-tagged variant group, and a per-instance bitmask folds away the ones a given person is not wearing, in the vertex shader</li>
+          <li><strong>Touch a gameplay slider and the run is stamped UNOFFICIAL</strong> for the rest of the attempt: no leaderboard, no personal best, no collectibles, no achievements. Cheating yourself is allowed, recording it is not</li>
+        </ul>
+        <div class="stack">
+          <span>TypeScript</span><span>three.js</span><span>Rapier</span><span>WebGL2 / GLSL</span><span>WebCodecs</span><span>Vite</span><span>Capacitor</span>
+        </div>
+        <div class="card__links">
+          <a href="https://grantdenney.com/ebike3/" target="_blank" rel="noopener">
+            Play it in your browser
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>
+          </a>
+        </div>
+        <p class="card__caveat">
+          In development, and not on any app store. The iOS shell, the build pipelines and the
+          listing drafts exist; nothing has been compiled on a Mac, run on a phone or submitted.
+          The art is AI-generated and the code came out of AI pair-programming. The name has not
+          been cleared against existing apps.
+        </p>
+      </div>
+      <div class="card__shot" data-shot="sendit">
+        <div class="shotstack">
+          <figure data-full="assets/img/sendit/scramble-1200.jpg" data-gallery="sendit" data-cap="Hollywood Blvd: ten cross streets, buses, a scramble crossing and a red light 20 metres out." tabindex="0" role="button" aria-label="Open larger: Hollywood Blvd">
+            <picture><source type="image/webp" srcset="assets/img/sendit/scramble-1200.webp"><img src="assets/img/sendit/scramble-1200.jpg" alt="The game on Hollywood Blvd: a packed scramble crosswalk, buses and cars, the rider in the road, hills with a SEND IT sign behind" loading="lazy" decoding="async"></picture>
+            <figcaption>Hollywood Blvd, with the next red light 20 metres out.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/street-1200.jpg" data-gallery="sendit" data-cap="34 MPH across an intersection as a stunt-jump achievement lands." tabindex="0" role="button" aria-label="Open larger: mid-run">
+            <picture><source type="image/webp" srcset="assets/img/sendit/street-1200.webp"><img src="assets/img/sendit/street-1200.jpg" alt="Mid-run at 34 MPH crossing an intersection, an achievement bursting in confetti" loading="lazy" decoding="async"></picture>
+            <figcaption>34 MPH, and an achievement lands mid-crossing.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/closecall-1200.jpg" data-gallery="sendit" data-cap="CLOSE CALL as an SUV cuts across at a red light." tabindex="0" role="button" aria-label="Open larger: close call">
+            <picture><source type="image/webp" srcset="assets/img/sendit/closecall-1200.webp"><img src="assets/img/sendit/closecall-1200.jpg" alt="A CLOSE CALL banner as an SUV cuts across the rider at a red light" loading="lazy" decoding="async"></picture>
+            <figcaption>The traffic is a microsimulation, not a timed loop.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/crash-1200.jpg" data-gallery="sendit" data-cap="The crash replay: rider over a taxi, scooter gone." tabindex="0" role="button" aria-label="Open larger: crash">
+            <picture><source type="image/webp" srcset="assets/img/sendit/crash-1200.webp"><img src="assets/img/sendit/crash-1200.jpg" alt="A crash replay with the rider sprawled across a taxi and the scooter skidding away" loading="lazy" decoding="async"></picture>
+            <figcaption>Ragdoll on Rapier, repeatable to the tick.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/crashcard-640.jpg" data-gallery="sendit" data-cap="The crash card: bones broken, a verdict, and the bill." tabindex="0" role="button" aria-label="Open larger: crash card">
+            <picture><source type="image/webp" srcset="assets/img/sendit/crashcard-640.webp"><img src="assets/img/sendit/crashcard-640.jpg" alt="The crash card showing bones broken out of 206, a dead-o-meter verdict and a six figure damage bill" loading="lazy" decoding="async"></picture>
+            <figcaption>Bones broken out of 206, and the bill.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/finish-1200.jpg" data-gallery="sendit" data-cap="Finish card: personal best, medal, damage bill, initials." tabindex="0" role="button" aria-label="Open larger: finish card">
+            <picture><source type="image/webp" srcset="assets/img/sendit/finish-1200.webp"><img src="assets/img/sendit/finish-1200.jpg" alt="The finish card with a personal best, a bronze medal, the damage bill and initials entry" loading="lazy" decoding="async"></picture>
+            <figcaption>Medals are par times, Trackmania style.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/boards-1200.jpg" data-gallery="sendit" data-cap="Leaderboards and achievements for Level 1." tabindex="0" role="button" aria-label="Open larger: boards">
+            <picture><source type="image/webp" srcset="assets/img/sendit/boards-1200.webp"><img src="assets/img/sendit/boards-1200.jpg" alt="The leaderboards and achievements panel for Level 1" loading="lazy" decoding="async"></picture>
+            <figcaption>Fastest times, biggest bills, ten achievements.</figcaption>
+          </figure>
+          <figure data-full="assets/img/sendit/marquee-1200.jpg" data-gallery="sendit" data-cap="A premiere marquee, a red carpet, and the sign in the hills." tabindex="0" role="button" aria-label="Open larger: marquee">
+            <picture><source type="image/webp" srcset="assets/img/sendit/marquee-1200.webp"><img src="assets/img/sendit/marquee-1200.jpg" alt="A movie premiere marquee and red carpet on the boulevard, with the SEND IT sign on the hills behind" loading="lazy" decoding="async"></picture>
+            <figcaption>Every sign and shopfront is invented.</figcaption>
+          </figure>
+        </div>
+      </div>
+    </div>
+
+    <div class="range" data-reveal>
+      <p class="range__head"><i></i> What is in Level 1 <b>Hollywood Blvd, 805 metres</b></p>
+      <dl class="range__grid">
+        <div class="range__cell">
+          <dt>The run</dt>
+          <dd><span>10 cross streets</span><span>13 stunt jumps</span><span>9 grind lines</span><span>3 side routes</span></dd>
+        </div>
+        <div class="range__cell">
+          <dt>To find</dt>
+          <dd><span>6 letters: S E N D I T</span><span>5 hidden helmets</span><span>10 achievements</span></dd>
+        </div>
+        <div class="range__cell">
+          <dt>Traffic</dt>
+          <dd><span>CHILL</span><span>RUSH HOUR</span><span>MAYHEM</span><span>A board each</span></dd>
+        </div>
+        <div class="range__cell">
+          <dt>Crashing</dt>
+          <dd><span>39 named landing targets</span><span>206 bones</span><span>A live bill</span></dd>
+        </div>
+      </dl>
+    </div>
+
+    <div class="template" data-reveal style="grid-template-columns: 1fr">
+      <div>
+        <h3>Where it goes next</h3>
+        <p>
+          <strong>The honest status:</strong> an iOS release is prepared and has not started. There
+          is a Capacitor shell, two cloud build pipelines, generated icons and a full listing draft.
+          None of it has been compiled on a Mac or run on a phone, because every remaining step
+          needs a developer account, a device, or both. That is the next thing.
+        </p>
+        <p>
+          <strong>Built and waiting:</strong> curved roads, so a course can bend. Three traffic
+          difficulties with separate boards. A world ranking service, written and tested against a
+          Cloudflare Worker and D1, switched off in the build because it has never been deployed.
+          Store-safe alternatives for every sign that parodies something, behind one switch.
+        </p>
+        <p>
+          <strong>Designed, not built:</strong> Level 2, Sunset Blvd. A ladder of rides from a kick
+          scooter up to electric motos, where only the e-scooter is playable today. A daily
+          challenge with the same traffic for everyone. Ghost races.
+        </p>
+        <p>
+          <strong>The bet:</strong> the clip feature is the marketing. A crash that films itself as a
+          finished vertical video, in one tap, is the reason someone posts it. That is why the
+          hardest engineering in the project went into making a replay provably identical to the run
+          it came from.
+        </p>
+      </div>
     </div>
   </div>
 </section>
