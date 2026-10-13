@@ -3,7 +3,7 @@
   "short_name": "SEND IT",
   "start_url": "./",
   "display": "fullscreen",
-  "orientation": "landscape",
+  "orientation": "any",
   "background_color": "#0d0f14",
   "theme_color": "#0d0f14"
 }
