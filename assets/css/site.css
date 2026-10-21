@@ -1820,10 +1820,18 @@ body[data-lb-open="true"] { overflow: hidden; }
 }
 
 /* the caption that says what the line is, bottom right of the hero */
-.heroplot__label {
+/* The chart's two captions stack as one block so neither can land on the
+   other: the wrapper is placed, the lines inside it just flow. */
+.heroplot__meta {
   position: absolute;
   right: var(--gutter);
   top: calc(42% + 6px);
+  display: grid;
+  gap: 9px;
+  justify-items: end;
+}
+.heroplot__label {
+  margin: 0;
   font-family: var(--font-mono);
   font-size: 10.5px;
   letter-spacing: .1em;
@@ -1841,12 +1849,12 @@ body[data-lb-open="true"] { overflow: hidden; }
   flex: none;
 }
 
-/* On a phone the hero is one column with no empty right side, so the plot
-   becomes a full-width band under the buttons instead of being dropped. */
+/* Below 1160px the hero paragraph (max 640px) and the chart captions (~330px)
+   no longer both fit beside the gutters, and the captions land on the text. */
 /* On a phone the hero is one column with no empty side, and an absolutely
    placed chart ends up below the fold. There it drops into the flow instead,
    as a small band between the text and the buttons, where it is actually seen. */
-@media (max-width: 1040px) {
+@media (max-width: 1160px) {
   .heroplot {
     position: static;
     width: 100%;
@@ -1855,11 +1863,36 @@ body[data-lb-open="true"] { overflow: hidden; }
     mask-image: none;
     -webkit-mask-image: none;
   }
-  .heroplot__label {
+  .heroplot__meta {
     position: static;
     margin: -18px 0 24px;
+    justify-items: start;
+    gap: 10px;
   }
 }
 @media (prefers-reduced-motion: reduce) {
   .heroplot { transition: none; }
+}
+
+/* how fast the install line is moving, under the chart */
+.heroplot__gains {
+  margin: 0;
+  display: flex;
+  gap: 18px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: .07em;
+  text-transform: uppercase;
+  color: var(--text-dim);
+}
+.heroplot__gains b {
+  color: var(--accent);
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+}
+@media (max-width: 1160px) {
+  .heroplot__gains {
+    gap: 16px;
+    flex-wrap: wrap;
+  }
 }

@@ -358,6 +358,8 @@
           return d.getDate() + ' ' + ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][d.getMonth()];
         }
         parts.push('<text class="hp-tick" x="' + padL + '" y="' + (H - padB + 20) + '">' + nice(pts[0].date) + '</text>');
+        // the axis is zoomed to fill the box, so say what the line starts at
+        parts.push('<text class="hp-tick" x="' + padL + '" y="' + (y(totals[0]) - 10).toFixed(1) + '">' + totals[0].toLocaleString() + '</text>');
         parts.push('<text class="hp-tick" text-anchor="end" x="' + (W - padR) + '" y="' + (H - padB + 20) + '">' + nice(pts[pts.length - 1].date) + '</text>');
         parts.push('<text class="hp-tick" text-anchor="end" x="' + (W - padR) + '" y="' + (y(totals[totals.length - 1]) - 12).toFixed(1) + '">' + totals[totals.length - 1].toLocaleString() + '</text>');
         parts.push('</svg>');
@@ -376,6 +378,35 @@
         if (label) {
           label.innerHTML = '<i></i> Active installs, recorded daily since ' + nice(pts[0].date);
           label.hidden = false;
+        }
+
+        // How fast it is moving. Each figure is the difference between two
+        // recorded days, never an estimate, and a window with no data is skipped.
+        var gains = document.querySelector('[data-heroplot-gains]');
+        if (gains) {
+          var byDate = {};
+          pts.forEach(function (p, i) { byDate[p.date] = totals[i]; });
+          var lastDate = new Date(pts[pts.length - 1].date + 'T00:00:00');
+          var now = totals[totals.length - 1];
+
+          function back(days) {
+            var d = new Date(lastDate.getTime() - days * 86400000);
+            var iso = d.toISOString().slice(0, 10);
+            var best = null;
+            pts.forEach(function (p, i) { if (p.date <= iso) best = totals[i]; });
+            return best;
+          }
+
+          var rows = [];
+          [['Today', 1], ['This week', 7]].forEach(function (pair) {
+            var was = back(pair[1]);
+            if (was !== null && now - was >= 0) {
+              rows.push('<span><b>+' + (now - was).toLocaleString() + '</b> ' + pair[0] + '</span>');
+            }
+          });
+          rows.push('<span><b>+' + (now - totals[0]).toLocaleString() + '</b> since ' + nice(pts[0].date) + '</span>');
+          gains.innerHTML = rows.join('');
+          gains.hidden = false;
         }
       })
       .catch(function () { /* no chart rather than a wrong one */ });
