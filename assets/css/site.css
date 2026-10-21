@@ -890,6 +890,12 @@ h1, h2, h3, h4 {
   color: var(--accent);
 }
 
+.seek__fine {
+  margin: 18px 0 0;
+  font-size: 14.5px;
+  color: var(--text-dim);
+  max-width: 640px;
+}
 .seek__proof { margin-top: clamp(30px, 4.5vw, 44px); max-width: 860px; }
 
 /* ---------- contact ------------------------------------------------------ */
