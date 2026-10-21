@@ -239,7 +239,7 @@
             <li><strong>Cosmetic only, on purpose.</strong> Jagex forbids moving the click zones of 3D components, so nothing real moves: not positions, not click targets, not overheads. Only what gets drawn</li>
             <li><strong>Working out why the obvious fix failed meant decompiling the client.</strong> Actors draw sorted but without depth, and the GPU plugin batches a whole frame of them into one pass with depth writes off, so whoever is drawn <em>later</em> ends up on top, however far away they are. Moving a model toward the camera does nothing. The fix was re-sorting the draw pass itself</li>
             <li><strong>Crowds that behave.</strong> Four formations, plus rules for bank counters, anvils, fires and riverbanks so people line up facing the thing they&rsquo;re using instead of standing inside each other</li>
-            <li><strong>At 1.8.55 after repeated Hub reviews.</strong> Every release needs a fresh pull request into <code>runelite/plugin-hub</code> and another maintainer pass. A merged one can&rsquo;t be reused</li>
+            <li><strong>Every version on the Hub went through its own review.</strong> Each release needs a fresh pull request into <code>runelite/plugin-hub</code> and another maintainer pass. A merged one can&rsquo;t be reused</li>
           </ul>
           <dl class="live" data-live data-live-plugin="personal-space" data-live-repo="grant9008/personal-space">
             <div>
@@ -248,7 +248,7 @@
             </div>
             <div>
               <dt>Version</dt>
-              <dd>1.8.55<small>on the Hub</small></dd>
+              <dd data-live-version>1.9.35<small>on the Hub</small></dd>
             </div>
             <div>
               <dt>Last updated</dt>
@@ -326,7 +326,7 @@
           </ul>
           <dl class="live" data-live data-live-plugin="pocketge-flip-tracker" data-live-repo="grant9008/pocketge-flip-tracker">
             <div><dt>Plugin installs</dt><dd data-live-users>88<small>right now</small></dd></div>
-            <div><dt>Version</dt><dd>0.7.0<small>on the Hub</small></dd></div>
+            <div><dt>Version</dt><dd data-live-version>0.7.1<small>on the Hub</small></dd></div>
             <div><dt>Last updated</dt><dd data-live-updated>21 Oct 2026<small>last push</small></dd></div>
             <div class="live__src"><i></i> Live from RuneLite&rsquo;s plugin-hub API <span data-live-note></span></div>
           </dl>

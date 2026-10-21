@@ -224,6 +224,28 @@
       })
       .catch(function () { /* keep the baked-in number */ });
 
+    // The Hub pins each plugin to one commit, and the version lives in that
+    // commit's properties file. Reading both is the only way to show what is
+    // actually published rather than whatever was last typed in by hand.
+    var verEl = box.querySelector('[data-live-version]');
+    if (verEl) {
+      fetch('https://raw.githubusercontent.com/runelite/plugin-hub/master/plugins/' + plugin)
+        .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+        .then(function (manifest) {
+          var src = /^repository=https:\/\/github\.com\/(.+?)(?:\.git)?\s*$/m.exec(manifest);
+          var sha = /^commit=([0-9a-f]{40})\s*$/m.exec(manifest);
+          if (!src || !sha) return Promise.reject();
+          return fetch('https://raw.githubusercontent.com/' + src[1] + '/' + sha[1] +
+                       '/runelite-plugin.properties');
+        })
+        .then(function (r) { return r.ok ? r.text() : Promise.reject(); })
+        .then(function (props) {
+          var v = /^version=(.+)$/m.exec(props);
+          if (v) setValue(verEl, v[1].trim());
+        })
+        .catch(function () { /* keep the baked-in version */ });
+    }
+
     if (repo && updEl) {
       fetch('https://api.github.com/repos/' + repo)
         .then(function (r) { return r.json(); })
