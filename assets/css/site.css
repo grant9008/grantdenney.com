@@ -932,6 +932,8 @@ h1, h2, h3, h4 {
   letter-spacing: .1em;
   color: var(--accent);
 }
+/* "in review" is a status, not part of the version, so it reads quieter */
+.loop__v em { font-style: normal; color: var(--text-dim); letter-spacing: .06em; }
 .loop__steps { display: grid; gap: 11px; min-width: 0; }
 .loop__steps p { margin: 0; color: var(--text-mid); font-size: 15.5px; }
 .loop__steps b { color: var(--text); font-weight: 500; }

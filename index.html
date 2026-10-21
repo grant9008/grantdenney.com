@@ -457,11 +457,12 @@
   <div class="wrap">
     <div class="section__head" data-reveal>
       <p class="eyebrow">How it actually goes</p>
-      <h2>Three times I got it wrong, out of the commit log</h2>
+      <h2>Six releases where my first answer was wrong</h2>
       <p>
-        Building the thing is the easy half. This is the half after it, including the release where
-        I deleted a feature I&rsquo;d spent a dozen versions refining. Every version below is a real
-        release on the Hub, and every quote is my own note in the code.
+        Building the thing is the easy half. This is the half after it: the release where I deleted
+        a feature I&rsquo;d spent a dozen versions refining, and the one where a Hub reviewer found
+        four regressions in my own privacy fix. Every quote is my own note in the code. Versions
+        marked <em>in review</em> are written and waiting on a maintainer.
       </p>
     </div>
 
@@ -469,7 +470,7 @@
       <li class="loop__item">
         <div>
           <p class="loop__k">Making the crowd move out of your way</p>
-          <p class="loop__v">1.8.17 &rarr; 1.8.50</p>
+          <p class="loop__v">Personal Space &middot; 1.8.17 &rarr; 1.8.50</p>
         </div>
         <div class="loop__steps">
           <p><b>What I shipped.</b> If someone would hide you, they step aside. Then a dozen releases
@@ -488,7 +489,7 @@
       <li class="loop__item">
         <div>
           <p class="loop__k">A filter that hid the body but not the voice</p>
-          <p class="loop__v">1.8.41 &rarr; 1.8.53</p>
+          <p class="loop__v">Personal Space &middot; 1.8.41 &rarr; 1.8.53</p>
         </div>
         <div class="loop__steps">
           <p><b>What I shipped.</b> An optional filter that hides players under a combat level, so
@@ -506,7 +507,7 @@
       <li class="loop__item">
         <div>
           <p class="loop__k">People sliding instead of walking</p>
-          <p class="loop__v">1.8.43 &rarr; 1.9.7</p>
+          <p class="loop__v">Personal Space &middot; 1.8.43 &rarr; 1.9.7</p>
         </div>
         <div class="loop__steps">
           <p><b>What I shipped.</b> Spacing a crowd out means moving people, and moving them meant
@@ -516,6 +517,61 @@
           <p><b>What I did.</b> Five passes, not one. Killed the moonwalk, then the tiny slides, then
             made arriving and leaving a real walk, then made that walk survive a crowd big enough to
             hide it. Nobody would have filed a bug for any of this. It just looked wrong.</p>
+        </div>
+      </li>
+
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">A switch that didn&rsquo;t mean what you&rsquo;d assume</p>
+          <p class="loop__v">PocketGE &middot; 0.7.1</p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> A loopback bridge so the plugin and the website share one
+            watchlist, with an advisor you can switch off.</p>
+          <p><b>Why it was wrong.</b> The Hub reviewer found four regressions in my own network
+            changes. Worse, the switch didn&rsquo;t do what its name promises: turning the advisor
+            off left the plugin still talking to the network.</p>
+          <p><b>What I did.</b> Made the advisor switch <em>be</em> the network switch, so with it
+            off nothing is requested and the card redraws from prices already held. Locked the
+            bridge to a PocketGE origin and the loopback host so a web page can&rsquo;t talk its way
+            in. Then wrote <code>ShutdownQuietTest</code>, whose only job is to prove nothing speaks
+            after shutdown, and rewrote the README and the Hub submission so the docs say only what
+            is true.</p>
+        </div>
+      </li>
+
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">Counting the same purchase twice</p>
+          <p class="loop__v">PocketGE &middot; 0.7.0 &rarr; 0.7.2 <em>in review</em></p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> A ledger that books your Grand Exchange fills, so the profit on
+            screen is the real one rather than an estimate.</p>
+          <p><b>Why it was wrong.</b> That number is the entire product, and I kept finding ways it
+            could lie. A logout, a world hop or a login could make an offer book everything it had
+            already filled a second time. Switching character did it again, in a different shape.</p>
+          <p><b>What I did.</b> Dated every fill by the Exchange&rsquo;s own event, matched which
+            events RuneLite&rsquo;s own Grand Exchange plugin ignores and why, and wrote
+            <code>GeReplayTest</code> to replay a logout and a world hop against the ledger. 112
+            lines of test for one number that has to be right.</p>
+        </div>
+      </li>
+
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">Inventing colours the game already had</p>
+          <p class="loop__v">PocketGE &middot; 0.7.2 <em>in review</em></p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> My own colour scheme for what a Grand Exchange slot is doing,
+            hand-copied into the in-game grid and again into the settings legend.</p>
+          <p><b>Why it was wrong.</b> Two hand-written copies of a colour drift apart. And a player
+            already knows what the Exchange&rsquo;s own colours mean, so a second vocabulary for the
+            same three states is work I was making them do for nothing.</p>
+          <p><b>What I did.</b> Three meanings in the game&rsquo;s own language, grey working,
+            yellow needs you, green done, defined in one place and painted from that one definition
+            everywhere it appears. A border only when there is something to say.</p>
         </div>
       </li>
     </ol>
