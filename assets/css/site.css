@@ -890,6 +890,8 @@ h1, h2, h3, h4 {
   color: var(--accent);
 }
 
+.seek__proof { margin-top: clamp(30px, 4.5vw, 44px); max-width: 860px; }
+
 /* ---------- contact ------------------------------------------------------ */
 
 .contact { text-align: center; }
