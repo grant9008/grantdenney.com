@@ -452,6 +452,77 @@
   </div>
 </section>
 
+<!-- ===================== DECISIONS ===================== -->
+<section class="section" id="decisions">
+  <div class="wrap">
+    <div class="section__head" data-reveal>
+      <p class="eyebrow">How it actually goes</p>
+      <h2>Three times I got it wrong, out of the commit log</h2>
+      <p>
+        Building the thing is the easy half. This is the half after it, including the release where
+        I deleted a feature I&rsquo;d spent a dozen versions refining. Every version below is a real
+        release on the Hub, and every quote is my own note in the code.
+      </p>
+    </div>
+
+    <ol class="loop" data-reveal>
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">Making the crowd move out of your way</p>
+          <p class="loop__v">1.8.17 &rarr; 1.8.50</p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> If someone would hide you, they step aside. Then a dozen releases
+            narrowing it: nobody steps aside twice, nobody moves for a player just passing through,
+            nobody is pushed onto your tile.</p>
+          <p><b>Why it was wrong.</b> It kept getting narrower because the idea was wrong, not the
+            edge cases. My note in the commit that removed it: people moving aside for you
+            &ldquo;parted a crowd like the sea wherever you stood&rdquo;.</p>
+          <p><b>What I did.</b> Deleted it, and 334 lines of tests with it. Natural front-to-back
+            became the default, &ldquo;Draw me in front&rdquo; became a switch you turn on, and
+            seeing yourself in a crowd became the draw order&rsquo;s job instead of the crowd&rsquo;s.
+            The world stopped rearranging itself around one player.</p>
+        </div>
+      </li>
+
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">A filter that hid the body but not the voice</p>
+          <p class="loop__v">1.8.41 &rarr; 1.8.53</p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> An optional filter that hides players under a combat level, so
+            the bots stacked around the Grand Exchange stop covering the people you came for.</p>
+          <p><b>Why it was wrong.</b> Hiding something is not the same as not noticing it. Again from
+            my own note: a hidden casino bot&rsquo;s &ldquo;spam went with its body and its overhead
+            text, but still filled the chat box&rdquo;.</p>
+          <p><b>What I did.</b> Followed it the whole way: overhead chat first, then the chat box
+            itself through <code>chatFilterCheck</code>, the same hook RuneLite&rsquo;s own Chat
+            Filter uses, so it behaves like the thing players already know. Then rewrote the tooltip
+            to say plainly what it is for, because a filter nobody understands gets left off.</p>
+        </div>
+      </li>
+
+      <li class="loop__item">
+        <div>
+          <p class="loop__k">People sliding instead of walking</p>
+          <p class="loop__v">1.8.43 &rarr; 1.9.7</p>
+        </div>
+        <div class="loop__steps">
+          <p><b>What I shipped.</b> Spacing a crowd out means moving people, and moving them meant
+            they slid to their new spot. Correct positions, wrong everything else.</p>
+          <p><b>Why it was wrong.</b> You notice it immediately and you can&rsquo;t stop noticing it.
+            People leaving a crowd moonwalked. Small corrections read as twitching.</p>
+          <p><b>What I did.</b> Five passes, not one. Killed the moonwalk, then the tiny slides, then
+            made arriving and leaving a real walk, then made that walk survive a crowd big enough to
+            hide it. Nobody would have filed a bug for any of this. It just looked wrong.</p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
+
 <!-- ===================== SEND IT ===================== -->
 <section class="section" id="sendit">
   <div class="wrap">
