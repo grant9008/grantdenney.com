@@ -596,19 +596,15 @@
     <div class="card" data-reveal>
       <div class="card__body">
         <p class="card__tag">In development &middot; TypeScript + three.js + Rapier &middot; AI-assisted</p>
-        <h3>Eleven days, 96,000 lines</h3>
+        <h3>A crash that films itself</h3>
         <p>
-          Started on 1 October 2026. 210 commits since, 241 TypeScript files, 95,962 lines in
+          Started 1 October 2026 and still being built. The idea is one tap after a wreck that turns the crash into a finished vertical video, which is also why the hardest work in it went into making a replay provably identical to the run it came from.
           <code>src/</code>. The busiest day was 58 commits.
         </p>
         <ul class="card__points">
           <li><strong>It ships no art and no sound effects.</strong> The whole city, the cars, the ten kinds of pedestrian, the rider, every texture, every scream and crunch and horn, is generated in code. The entire <code>public/</code> folder is seven files: a web manifest, two readmes and four MP3s of CC0 music</li>
           <li><strong>Determinism is the design constraint.</strong> The simulation advances only in exact 1/60 second ticks with render interpolation, and every traffic, pedestrian and signal stream runs on seeded RNG whose state is a plain number, so the whole traffic sim can be snapshotted and restored in under a millisecond on every retry</li>
-          <li><strong>Repeatable crashes meant swapping the physics world.</strong> A stepped Rapier world keeps state no API reset restores: broad-phase tree shape, contact pair order, warm-start impulses. The same crash flew differently the second time until the fix, which is to take a snapshot at boot and call <code>restoreSnapshot()</code> on every restart. About 1.5&nbsp;ms</li>
           <li><strong>CLIP THAT re-shoots the crash rather than recording the screen.</strong> The game stores only what the simulation read each tick, 25 bytes, then re-runs the attempt later with a vertical camera and films it as a finished 9:16 MP4 with captions and music. Encoded in the browser through WebCodecs, walking down four codec rungs to whatever the device supports</li>
-          <li><strong>The footage has to prove it is real.</strong> Every take carries rider-state fingerprints every 60 ticks plus a header of every setting the simulation reads. A re-run that fails to reproduce them is dropped and never shown</li>
-          <li><strong>Ten pedestrian types with no extra draw calls.</strong> Each body-part mesh carries every hat, hairdo, bag and balloon as a vertex-tagged variant group, and a per-instance bitmask folds away the ones a given person is not wearing, in the vertex shader</li>
-          <li><strong>Touch a gameplay slider and the run is stamped UNOFFICIAL</strong> for the rest of the attempt: no leaderboard, no personal best, no collectibles, no achievements. Cheating yourself is allowed, recording it is not</li>
         </ul>
         <div class="stack">
           <span>TypeScript</span><span>three.js</span><span>Rapier</span><span>WebGL2 / GLSL</span><span>WebCodecs</span><span>Vite</span><span>Capacitor</span>
@@ -620,10 +616,8 @@
           </a>
         </div>
         <p class="card__caveat">
-          In development, and not on any app store. The iOS shell, the build pipelines and the
-          listing drafts exist; nothing has been compiled on a Mac, run on a phone or submitted.
-          The art is AI-generated and the code came out of AI pair-programming. The name has not
-          been cleared against existing apps.
+          In development, and not on any app store. The art is generated and the code came out of
+          AI pair-programming.
         </p>
       </div>
       <div class="card__shot" data-shot="sendit">
@@ -688,29 +682,14 @@
 
     <div class="template" data-reveal style="grid-template-columns: 1fr">
       <div>
-        <h3>Where it goes next</h3>
+        <h3>Honest status</h3>
         <p>
-          <strong>The honest status:</strong> an iOS release is prepared and has not started. There
-          is a Capacitor shell, two cloud build pipelines, generated icons and a full listing draft.
-          None of it has been compiled on a Mac or run on a phone, because every remaining step
-          needs a developer account, a device, or both. That is the next thing.
-        </p>
-        <p>
-          <strong>Built and waiting:</strong> curved roads, so a course can bend. Three traffic
-          difficulties with separate boards. A world ranking service, written and tested against a
-          Cloudflare Worker and D1, switched off in the build because it has never been deployed.
-          Store-safe alternatives for every sign that parodies something, behind one switch.
-        </p>
-        <p>
-          <strong>Designed, not built:</strong> Level 2, Sunset Blvd. A ladder of rides from a kick
-          scooter up to electric motos, where only the e-scooter is playable today. A daily
-          challenge with the same traffic for everyone. Ghost races.
-        </p>
-        <p>
-          <strong>The bet:</strong> the clip feature is the marketing. A crash that films itself as a
-          finished vertical video, in one tap, is the reason someone posts it. That is why the
-          hardest engineering in the project went into making a replay provably identical to the run
-          it came from.
+          It is a prototype and it says so. Playable in a mobile browser from this site. The art is
+          generated and the code came out of AI pair-programming. An iOS release is prepared and not
+          started: there is a Capacitor shell, build pipelines, icons and a listing draft, none of it
+          compiled on a Mac or run on a phone, because the remaining steps need a developer account,
+          a device, or both. The name has not been cleared against existing apps. A world ranking
+          service is written and tested and switched off in the build, having never been deployed.
         </p>
       </div>
     </div>
