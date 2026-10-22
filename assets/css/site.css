@@ -898,6 +898,28 @@ h1, h2, h3, h4 {
 }
 .seek__proof { margin-top: clamp(30px, 4.5vw, 44px); max-width: 860px; }
 
+/* Deep technical detail stays on the page but out of the first read: the
+   same disclosure the search table already uses. */
+.card__more { margin: 18px 0 0; }
+.card__more summary {
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  letter-spacing: .06em;
+  color: var(--text-dim);
+  list-style: none;
+  transition: color .2s;
+}
+.card__more summary::-webkit-details-marker { display: none; }
+.card__more summary::before { content: "B8  "; }
+.card__more[open] summary::before { content: "BE  "; }
+.card__more summary:hover { color: var(--text-mid); }
+.card__more p {
+  margin: 12px 0 0;
+  color: var(--text-mid);
+  font-size: 15px;
+}
+
 /* ---------- decision log -------------------------------------------------- */
 
 .loop {

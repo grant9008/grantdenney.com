@@ -237,10 +237,18 @@
           <ul class="card__points">
             <li><strong>~171k views, 1.4k upvotes and 238 comments in its first two hours</strong> when I posted it to r/2007scape. Overwhelmingly positive, and people were installing it that day</li>
             <li><strong>Cosmetic only, on purpose.</strong> Jagex forbids moving the click zones of 3D components, so nothing real moves: not positions, not click targets, not overheads. Only what gets drawn</li>
-            <li><strong>Working out why the obvious fix failed meant decompiling the client.</strong> Actors draw sorted but without depth, and the GPU plugin batches a whole frame of them into one pass with depth writes off, so whoever is drawn <em>later</em> ends up on top, however far away they are. Moving a model toward the camera does nothing. The fix was re-sorting the draw pass itself</li>
             <li><strong>Crowds that behave.</strong> Four formations, plus rules for bank counters, anvils, fires and riverbanks so people line up facing the thing they&rsquo;re using instead of standing inside each other</li>
             <li><strong>Every version on the Hub went through its own review.</strong> Each release needs a fresh pull request into <code>runelite/plugin-hub</code> and another maintainer pass. A merged one can&rsquo;t be reused</li>
           </ul>
+          <details class="card__more">
+            <summary>Why the obvious fix failed, and what actually worked</summary>
+            <p>
+              Actors draw sorted but without depth, and the GPU plugin batches a whole frame of them
+              into one pass with depth writes off, so whoever is drawn <em>later</em> ends up on top
+              however far away they are. Moving a model toward the camera does nothing. Finding that
+              out meant decompiling the client. The fix was re-sorting the draw pass itself.
+            </p>
+          </details>
           <dl class="live" data-live data-live-plugin="personal-space" data-live-repo="grant9008/personal-space">
             <div>
               <dt>Active users</dt>
@@ -318,12 +326,19 @@
             FIFO per item, and books profit net of the same 2% tax, so the number on screen is the real one.
           </p>
           <ul class="card__points">
-            <li><strong>The two halves share a watchlist</strong> over a loopback-only bridge on your own machine. Mark an item in game and it is already there on the site. Nothing leaves the computer</li>
+            <li><strong>The two halves share a watchlist</strong> over a loopback-only bridge on your own machine. Mark an item in game and it is already there on the site. Nothing in that exchange leaves the computer</li>
             <li><strong>The tax rule is implemented identically in both codebases</strong>, so the website&rsquo;s projected profit and the plugin&rsquo;s booked profit agree</li>
             <li><strong>Merged into the official <code>runelite/plugin-hub</code></strong>, which requires maintainer code review before anything ships, and a fresh review for every release since</li>
-            <li><strong>21,278 lines of Java behind 287 JUnit tests</strong>, with CI compiling and testing against the real RuneLite client on every push</li>
-            <li><strong>The web half is plain HTML, CSS and vanilla JS</strong>, with no framework and no bundler, against the public OSRS Wiki price API. 11,018 lines of it, plus a page per item: 1,895 URLs in the sitemap</li>
+            <li><strong>Tested against the real client, not a stub.</strong> CI compiles the plugin and runs the suite against RuneLite itself on every push</li>
+            <li><strong>The web half is plain HTML, CSS and vanilla JS</strong>, with no framework and no bundler, against the public OSRS Wiki price API, which is the only thing either half calls out to</li>
           </ul>
+          <details class="card__more">
+            <summary>Size, tests and surface area</summary>
+            <p>
+              21,278 lines of Java behind 287 JUnit tests on the plugin side. 11,018 lines of
+              JavaScript on the web side, plus a page per item: 1,895 URLs in the sitemap.
+            </p>
+          </details>
           <dl class="live" data-live data-live-plugin="pocketge-flip-tracker" data-live-repo="grant9008/pocketge-flip-tracker">
             <div><dt>Plugin installs</dt><dd data-live-users>88<small>right now</small></dd></div>
             <div><dt>Version</dt><dd data-live-version>0.7.1<small>on the Hub</small></dd></div>
@@ -404,13 +419,16 @@
             a phone home screen, and builds an Android APK on every push.
           </p>
           <ul class="card__points">
-            <li><strong>41,488 lines of TypeScript across 98 files, in five days.</strong> 95 commits between 27 September and 1 October 2026</li>
+            <li><strong>Playable eight days after the first commit</strong>, 27 September to 4 October 2026</li>
             <li><strong>The renderer is hand-written.</strong> Isometric projection, A* pathfinding, depth sorting, an additive light layer with flicker, drifting fog. All on PixiJS, with no game engine and no physics library</li>
             <li><strong>A builder with 39 placeable piece types</strong>, five plot sizes, multi-storey construction, terrain height editing and autosave; plus a town of 15 buildings and 202 props with named residents</li>
             <li><strong>Procedural audio with no audio files</strong>: a generative lute songbook that re-ornaments and humanises its timing on every performance</li>
-            <li><strong>It checks its own work.</strong> A layout validator fails the build on props over cliffs, unreachable doors or sealed pockets; a balance harness re-runs the real dice resolver under exact DP and Monte Carlo against the design document&rsquo;s own target tables</li>
             <li><strong>What&rsquo;s actually mine:</strong> the design document, every call about what the game should be, and the judgement about what was worth building. The art is AI-generated and the code came out of AI pair-programming. That&rsquo;s the point. This is what the rest of this page is describing, done at speed</li>
           </ul>
+          <details class="card__more">
+            <summary>How it checks its own work</summary>
+            <p>It checks its own work. A layout validator fails the build on props over cliffs, unreachable doors or sealed pockets; a balance harness re-runs the real dice resolver under exact DP and Monte Carlo against the design document&rsquo;s own target tables</p>
+          </details>
           <div class="stack">
             <span>TypeScript</span><span>PixiJS 8</span><span>Vite</span><span>Capacitor</span><span>PWA</span><span>GitHub Actions</span>
           </div>
