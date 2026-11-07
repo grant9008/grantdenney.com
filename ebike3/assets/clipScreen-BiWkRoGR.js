@@ -1,4 +1,4 @@
-import{_ as e,l as t,s as n,v as r}from"./roll-YTx82PT5.js";import{g as i,i as ee,l as te,p as ne,t as re}from"./index-CtARQshw.js";import{n as ie,t as ae}from"./rideHold-BrMw6Bl9.js";import{a as oe,i as se,n as ce,preflight as le,r as ue,reelLines as de,reelSpec as fe,t as pe}from"./reel-DpXF67wJ.js";var me=`send-it-clip.mp4`,he=`send-it-reel.mp4`,a=`this-crash`,ge=`
+import{_ as e,l as t,s as n,v as r}from"./roll-CnhTwKYl.js";import{g as i,i as ee,l as te,p as ne,t as re}from"./index-yUTbCjDr.js";import{n as ie,t as ae}from"./rideHold-CG9APAar.js";import{a as oe,i as se,n as ce,preflight as le,r as ue,reelLines as de,reelSpec as fe,t as pe}from"./reel-Cx1xwQGn.js";var me=`send-it-clip.mp4`,he=`send-it-reel.mp4`,a=`this-crash`,ge=`
 .ebs-clips{position:fixed;inset:0;z-index:46;display:flex;gap:14px;background:#0d0f14;color:#e8ebf2;box-sizing:border-box;
   padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
   font:600 14px/1.3 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
@@ -39,7 +39,8 @@ import{_ as e,l as t,s as n,v as r}from"./roll-YTx82PT5.js";import{g as i,i as e
 .ebs-clips .news{font:600 12px/1.3 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;color:#ffb86b}
 @media (orientation:portrait){
   .ebs-clips{flex-direction:column;align-items:center}
-  .ebs-clips .pv{height:62%}
+  /* (the frame starts below DONE: it sat over the clip's top-right corner; QA pass 4, 2026-11-06) */
+  .ebs-clips .pv{--hd:calc(max(44px,clamp(16px,4.4vh,26px) * 2 + 4px) + 6px);margin-top:var(--hd);height:calc(62% - var(--hd))}
   .ebs-clips .col{width:100%;justify-content:flex-start}
 }
 @media (max-height:480px){
