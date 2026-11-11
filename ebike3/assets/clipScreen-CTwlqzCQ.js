@@ -1,4 +1,4 @@
-import{_ as e,l as t,s as n,v as r}from"./roll-3gTbdXXi.js";import{a as i,h as a,t as ee,u as te,v as ne}from"./index-CAZuhg5r.js";import{n as re,t as ie}from"./rideHold-CrU00S65.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-Da3_Oo72.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
+import{_ as e,l as t,s as n,v as r}from"./roll-et2P8swo.js";import{a as i,h as a,t as ee,u as te,v as ne}from"./index-0h1c7LtW.js";import{n as re,t as ie}from"./rideHold-CNop_OE4.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-g57P7c5v.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
 .ebs-clips{position:fixed;inset:0;z-index:46;display:flex;gap:14px;background:#0d0f14;color:#e8ebf2;box-sizing:border-box;
   padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
   font:600 14px/1.3 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
