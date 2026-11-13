@@ -1,4 +1,4 @@
-import{_ as e,l as t,s as n,v as r}from"./roll-NnwdNIFH.js";import{_ as i,h as a,i as ee,l as te,v as ne}from"./index-CeZP6sPV.js";import{n as re,t as ie}from"./rideHold-B5YT9yo0.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-Dp-S0ecE.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
+import{_ as e,l as t,s as n,v as r}from"./roll-5MDPD5jH.js";import{_ as i,h as a,i as ee,l as te,v as ne}from"./index-tjXSwo36.js";import{n as re,t as ie}from"./rideHold-CATYcRKu.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-M0XIqXsR.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
 .ebs-clips{position:fixed;inset:0;z-index:46;display:flex;gap:14px;background:#0d0f14;color:#e8ebf2;box-sizing:border-box;
   padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
   font:600 14px/1.3 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
