@@ -119,8 +119,9 @@ echo  whenever you want fresh prices.
 echo.
 echo  ============================================================
 echo   All set. Next:
-echo    1. Start WoW Forever and log in. Already in the game?
-echo       Type /reload and press Enter.
+echo    1. Start WoW Forever and log in. Is WoW already open? Close it
+echo       fully and start it again: the game only finds a NEW addon
+echo       when it starts. (Later updates only need /reload.)
 echo    2. Type /fah to check the prices loaded.
 echo    3. At the auction house, search for an item: its price chart
 echo       and a suggested price show up.
