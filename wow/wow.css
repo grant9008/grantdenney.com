@@ -1,0 +1,8 @@
+/* WoW Forever overrides on top of PocketGE's app.css. */
+.wow-house { cursor: default; opacity: .8; }
+.wow-foot { display: flex; flex-direction: column; gap: 6px; padding: 18px 16px 28px; font-size: 12px;
+  color: var(--text-muted, #8A8274); text-align: center; }
+#wowDataStatus { font-weight: 700; }
+#wowDataStatus.stale { color: var(--negative, #e05555); }
+/* WoW prices carry unit letters ("16s 82c"), so keep each one on one line. */
+.wl-item-price, .ins-val, .ins-price, .fc-pval, .live-val, .pv-num, #tickerLivePrice, .res-profit { white-space: nowrap; }

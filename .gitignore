@@ -14,3 +14,7 @@ tools/_wf.json
 
 # the game build is committed on purpose (it is what gets served);
 # its source lives in C:\Users\gdenn\ebike-speedrunner
+
+# WoW price page: local test data (simulated); real data lives on the wow-data branch
+wow/_localdata/
+

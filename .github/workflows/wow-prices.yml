@@ -1,0 +1,64 @@
+name: WoW Forever prices
+
+# Blizzard's auction API shows what is listed right now and keeps no history,
+# so this snapshots the Alliance auction house (PvP ruleset) every hour and
+# keeps the history itself. Output goes to the separate `wow-data` branch,
+# which grantdenney.com/wow reads through raw.githubusercontent.com. Keeping
+# it off `main` means the hourly update never rebuilds the site.
+on:
+  schedule:
+    - cron: "11 * * * *"   # every hour at :11
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: wow-prices
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    # Until the Battle.net key is added as repo secrets there is nothing to
+    # fetch, so the job reports "skipped" instead of failing every hour.
+    env:
+      HAS_KEY: ${{ secrets.BNET_CLIENT_ID != '' && secrets.BNET_CLIENT_SECRET != '' }}
+    steps:
+      - name: Waiting for the Battle.net key
+        if: env.HAS_KEY != 'true'
+        run: echo "Add BNET_CLIENT_ID and BNET_CLIENT_SECRET under Settings > Secrets > Actions (see Setup-WoW-Key.bat)."
+
+      - uses: actions/checkout@v4
+        if: env.HAS_KEY == 'true'
+        with:
+          sparse-checkout: tools/wow
+
+      - name: Get the existing price history
+        if: env.HAS_KEY == 'true'
+        run: |
+          if git ls-remote --exit-code --heads origin wow-data >/dev/null; then
+            git clone --depth 1 --branch wow-data \
+              "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" wowdata
+          else
+            mkdir wowdata && cd wowdata && git init -b wow-data
+          fi
+
+      - name: Snapshot the auction house
+        if: env.HAS_KEY == 'true'
+        env:
+          BNET_CLIENT_ID: ${{ secrets.BNET_CLIENT_ID }}
+          BNET_CLIENT_SECRET: ${{ secrets.BNET_CLIENT_SECRET }}
+        run: python tools/wow/fetch_ah.py wowdata
+
+      - name: Publish (one commit, history kept in the files not in git)
+        if: env.HAS_KEY == 'true'
+        run: |
+          cd wowdata
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git checkout --orphan next
+          git add -A
+          git commit -q -m "WoW Forever prices $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" next:wow-data
