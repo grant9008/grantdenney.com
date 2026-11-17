@@ -30,7 +30,8 @@ echo  This removes:
 if defined DEST echo    - the addon folder %DEST%
 if not defined DEST echo    - (the addon folder was not found, nothing to remove there)
 echo    - the hourly price update (scheduled task "%TASK%"), if it was set up
-echo    - the updater and its log in %APPDIR%
+echo    - this PC's price collector (scheduled task "ForeverAH Collector"), if set up
+echo    - the updater, the collector and their logs in %APPDIR%
 echo    - Forever AH's saved settings in the game's WTF folder
 echo  Nothing else is touched.
 echo.
@@ -38,6 +39,8 @@ choice /c YN /n /m "  Remove Forever AH? (Y/N) "
 if errorlevel 2 goto cancelled
 
 if "%FOREVERAH_NO_TASK%"=="1" goto task_done
+schtasks /Query /TN "ForeverAH Collector" >nul 2>&1
+if not errorlevel 1 schtasks /Delete /TN "ForeverAH Collector" /F >nul 2>&1
 schtasks /Query /TN "%TASK%" >nul 2>&1
 if errorlevel 1 goto task_done
 schtasks /Delete /TN "%TASK%" /F >nul 2>&1
