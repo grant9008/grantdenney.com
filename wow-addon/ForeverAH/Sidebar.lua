@@ -971,6 +971,9 @@ function SB:RefreshFlips()
   if #ideas == 0 then
     if not HasData() then
       self.flipMsg:SetText("No price data yet. Run Update-WoW-Prices.bat, then /reload.")
+    elseif #Candidates() == 0 then
+      -- Sales are measured between hourly snapshots, so a new data set has none yet.
+      self.flipMsg:SetText("Collecting sales history. Flip ideas show up after a few hourly price updates.")
     else
       self.flipMsg:SetText("No good flips right now. Prices are steady; check back after the next update.")
     end
@@ -1295,7 +1298,13 @@ function ns.HandleSlash(msg)
   elseif cmd == "flips" or cmd == "ideas" then
     local ideas = ns.FlipIdeas(MAX_FLIPS)
     if #ideas == 0 then
-      Print(HasData() and "no good flips right now." or "no price data yet. Type /fah to see how to get it.")
+      if not HasData() then
+        Print("no price data yet. Type /fah to see how to get it.")
+      elseif #Candidates() == 0 then
+        Print("still collecting sales history: flip ideas show up after a few hourly price updates.")
+      else
+        Print("no good flips right now.")
+      end
       return
     end
     Print("flip ideas (buy, sell, profit each after the 5% cut):")

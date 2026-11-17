@@ -383,11 +383,14 @@ def test_files():
                 "## Notes: Auction house prices, charts and price advice from grantdenney.com/wow\r\n"
                 "## SavedVariables: ForeverAH_Settings\r\n## Version: 1.0.0\r\n"
                 "Data.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\n")
-    for name in ("ForeverAH.toc", "ForeverAH_Forever.toc"):
+    # Git may check these out with either line ending; WoW reads both.
+    def text(name):
         with open(os.path.join(ADDON, name), "rb") as fh:
-            eq(fh.read().decode("ascii"), want_toc, name + " content")
-    with open(os.path.join(ADDON, "Data.lua"), "rb") as fh:
-        eq(fh.read().decode("ascii"),
+            return fh.read().decode("ascii").replace("\r\n", "\n")
+    for name in ("ForeverAH.toc", "ForeverAH_Forever.toc"):
+        eq(text(name), want_toc.replace("\r\n", "\n"), name + " content")
+    if True:
+        eq(text("Data.lua"),
            "-- ForeverAH price data placeholder. Run Update-WoW-Prices.bat.\n"
            "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }",
            "Data.lua placeholder")

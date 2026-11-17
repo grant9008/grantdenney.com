@@ -2666,7 +2666,8 @@ def sc_stale(sc, ref, items):
 
 def sc_placeholder(sc, ref, items):
     src = open(os.path.join(ADDON, "Data.lua"), "rb").read().decode("ascii")
-    sc.eq(src, PLACEHOLDER, "repo Data.lua is the contract placeholder")
+    # Git may check it out with either line ending; WoW reads both.
+    sc.eq(src.replace("\r\n", "\n"), PLACEHOLDER, "repo Data.lua is the contract placeholder")
     w = World(ref, items, data_src=src)
     ns = w.ns
     sc.eq(w.load_errors, [], "loads with the placeholder")
@@ -3852,6 +3853,31 @@ def sc_sidebar_wide(sc, ref, items):
     sc.clean(w)
 
 
+def sc_sidebar_first_snapshot(sc, ref, items):
+    """The very first real snapshot has no sales yet (sold is measured between
+    snapshots): the sidebar says it is collecting history, not 'no good flips'."""
+    src = open(DATA_FILE, "rb").read().decode("utf-8")
+
+    def zero_sold(m):
+        f = m.group(2).split("|")
+        f[4] = "0"
+        return m.group(1) + "|".join(f) + '"'
+    first = re.sub(r'(\[\d+\]\s*=\s*")((?:[^"\\\n]|\\.)*)"', zero_sold, src)
+    sc.check(first != src, "first snapshot: test data made")
+    w = World(ref, items, data_src=first)
+    w.open_ah_modern()
+    SB = w.ns.SidebarPanel
+    sc.check(SB.flipMsg._shown and "Collecting sales history" in (SB.flipMsg._text or ""),
+             "first snapshot: flip area says it is collecting history (%r)" % SB.flipMsg._text)
+    sc.eq(len(shown_rows(SB, "flipRows")), 0, "first snapshot: no flip rows")
+    out = w.slash("/fah flips")
+    sc.check(any("still collecting sales history" in c for c in out), "first snapshot: /fah flips says so")
+    rows = shown_rows(SB, "watchRows")
+    sc.check(len(rows) > 0 and all(strip_codes(r.right._text) != "no data" for r in rows if r.itemID in ref.items),
+             "first snapshot: watchlist still shows prices")
+    sc.clean(w)
+
+
 def build_edge_data():
     """A second data file made by the real generator (fetch_ah.write_addon_data) from
     test_datafile.py's hand-made edge cases: gaps, nothing listed now, sold-only items,
@@ -3978,6 +4004,7 @@ SCENARIOS = [
     ("sidebar-saved", sc_sidebar_saved),
     ("sidebar-no-data", sc_sidebar_nodata),
     ("sidebar-wide", sc_sidebar_wide),
+    ("sidebar-first-snapshot", sc_sidebar_first_snapshot),
 ]
 
 

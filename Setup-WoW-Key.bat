@@ -8,7 +8,8 @@ echo  ============================================================
 echo   WoW Forever prices: Battle.net API key  (step 1 of 2)
 echo  ============================================================
 echo.
-echo  Your browser is opening Blizzard's developer page.
+if "%FAH_SKIP_OPEN%"=="1" echo  Blizzard's developer page is open in the Claude app.
+if not "%FAH_SKIP_OPEN%"=="1" echo  Your browser is opening Blizzard's developer page.
 echo.
 echo  1. Log in with your normal Battle.net account.
 echo  2. Click "Create Client".
@@ -21,7 +22,7 @@ echo  3. The page shows a Client ID and a Client Secret.
 echo     Copy each one and paste it below. In this window you paste
 echo     with a right-click (or Ctrl+V), then press Enter.
 echo.
-start "" "https://develop.battle.net/access/clients"
+if not "%FAH_SKIP_OPEN%"=="1" start "" "https://develop.battle.net/access/clients"
 set "BNET_ID="
 set "BNET_SECRET="
 set /p "BNET_ID=  Paste the Client ID here and press Enter: "
@@ -46,7 +47,8 @@ echo  ============================================================
 echo   Step 2 of 2: let the website update itself every hour
 echo  ============================================================
 echo.
-echo  Your browser opens your website's GitHub settings next.
+if "%FAH_SKIP_OPEN%"=="1" echo  Claude opens your website's GitHub settings in the Claude app.
+if not "%FAH_SKIP_OPEN%"=="1" echo  Your browser opens your website's GitHub settings next.
 echo  Click "New repository secret" and add two secrets:
 echo.
 echo     Name: BNET_CLIENT_ID       Secret: your Client ID
@@ -55,7 +57,7 @@ echo.
 echo  This window can copy each one for you, so you only paste.
 echo.
 pause
-start "" "https://github.com/grant9008/grantdenney.com/settings/secrets/actions/new"
+if not "%FAH_SKIP_OPEN%"=="1" start "" "https://github.com/grant9008/grantdenney.com/settings/secrets/actions/new"
 <nul set /p "=%BNET_ID%" | clip
 echo.
 echo  The Client ID is copied. On the GitHub page:
