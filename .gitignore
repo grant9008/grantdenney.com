@@ -18,3 +18,6 @@ tools/_wf.json
 # WoW price page: local test data (simulated); real data lives on the wow-data branch
 wow/_localdata/
 
+
+# Python bytecode from the WoW tools and tests
+__pycache__/

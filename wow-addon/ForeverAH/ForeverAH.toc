@@ -1,0 +1,11 @@
+## Interface: 16001
+## Title: Forever AH
+## Notes: Auction house prices, charts and price advice from grantdenney.com/wow
+## SavedVariables: ForeverAH_Settings
+## Version: 1.0.0
+Data.lua
+Core.lua
+Recommend.lua
+Chart.lua
+AH.lua
+Sidebar.lua
