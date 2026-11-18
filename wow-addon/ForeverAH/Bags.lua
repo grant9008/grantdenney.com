@@ -11,12 +11,13 @@ local ADDON_NAME, ns = ...
 -- It shows as a Bag cleanup button on your open bags (in the header of
 -- ElvUI's bag window when there is room, else a tab beside the bags) that
 -- opens a slim panel, and in chat with /fah bags. Nothing is destroyed or
--- sold on its own: a click on a row (or Drop cheapest) only asks, naming the
--- stack and what it is worth; Drop it in that box destroys that one stack
--- (the game allows one per click). Rare and better items and quest items are
--- only picked up, so the game's own check (type DELETE, quest warning)
--- applies. Only at an open vendor does a click sell. /fah bagcheck says what
--- the cleanup sees.
+-- sold on its own. At an open vendor a click on a row sells the stack when
+-- the vendor buys it. Otherwise a click on a row (or Drop cheapest) only
+-- asks, naming the stack and what it is worth; Drop it in that box checks the
+-- stack and its worth again and destroys that one stack (the game allows one
+-- per click). Rare and better items and quest items are only picked up, so
+-- the game's own check (type DELETE, quest warning) applies. /fah bagcheck
+-- says what the cleanup sees.
 
 ns = ns or {}
 
@@ -42,9 +43,10 @@ local SLASH_DROP = 5        -- /fah bags prints this many
 local SELL_BATCH = 12       -- junk sold per click (the vendor's buyback holds 12)
 local OUTGROWN = 15         -- food, potions and the like this many levels under you are fair game
 local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes you type DELETE for Rare and up)
-local DROP_GUARD = 0.4      -- seconds: the second click of a double-click never drops
+local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
+                            -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-18d"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-18e"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -1190,7 +1192,8 @@ function BP:Build()
   dropHelp:SetAllPoints(self.dropTitle)
   dropHelp:EnableMouse(true)
   SimpleTip(dropHelp, "Worth the least",
-    "Every stack in your bags, cheapest first: the better of what a vendor pays and what it sells for at auction now (after the 5% cut). Drop or sell from the top to lose the least: click a row (or Drop cheapest) and it asks first. Rare and better items and quest items are only picked up, so the game asks. Your hearthstone, tools, reagents, ammo, keys, and food or potions near your level are never listed.")
+    "Every stack in your bags, cheapest first: the better of what a vendor pays and what it sells for at auction now (after the 5% cut). Drop or sell from the top to lose the least. At a vendor, a click sells the stack if the vendor buys it (you can buy it back). Otherwise a click on a row (or Drop cheapest) asks before it drops; Rare and better items and quest items are only picked up, so the game asks. Your hearthstone, tools, reagents, ammo, keys, and food or potions near your level are never listed.")
+  self.dropHelp = dropHelp
   self.empty = NewFS(F, "GameFontHighlightSmall")
   SetFSColor(self.empty, "muted")
   self.note = NewFS(F, "GameFontHighlightSmall")
@@ -1592,8 +1595,10 @@ function BP:CloseConfirm()
 end
 
 function BP:AskDrop(e)
-  if not self.built or not CanDrop(e) or not StillThere(e) then return end
   local c, F = self.confirmFrame, self.frame
+  -- Only over the open panel: a menu entry picked after the bags closed does
+  -- nothing, so reopening them shows the list, not a box waiting for a click.
+  if not self.built or not (F and F:IsVisible()) or not CanDrop(e) or not StillThere(e) then return end
   self.confirm = { bag = e.bag, slot = e.slot, id = e.id, count = e.count, link = e.link, name = e.name,
                    value = e.value, source = e.source, unsure = e.unsure }
   self.confirmAt = Now()
@@ -1620,7 +1625,12 @@ function BP:DoDrop()
   local t = self.confirm
   if not t then return end
   local now = Now()
-  if now and self.confirmAt and now - self.confirmAt < DROP_GUARD then return end
+  if now and self.confirmAt and now - self.confirmAt < DROP_GUARD then
+    -- Too soon: part of a double-click or a burst of clicks. Each early click
+    -- starts the wait again, so only a click on its own drops.
+    self.confirmAt = now
+    return
+  end
   local text = ItemText(t)
   self:CloseConfirm()
   if CursorHasItem() then
@@ -1635,6 +1645,14 @@ function BP:DoDrop()
       Print(text .. " moved or changed, so nothing was dropped.")
     end
     self:RefreshSoon()
+    return
+  end
+  -- Worth more now than the box said (a live auction price came in while it
+  -- asked), or valued another way: show the new worth and ask again.
+  if (e.value or 0) > (t.value or 0) or e.source ~= t.source then
+    self:AskDrop(e)
+    Print(text .. " is worth " .. ChatMoney(e.value) .. (e.source == "auction" and " at auction" or " at a vendor")
+      .. " now. Nothing was dropped: check the box again.")
     return
   end
   local pick = ContainerFn("PickupContainerItem")

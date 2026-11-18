@@ -1589,7 +1589,8 @@ function C_Container.PickupContainerItem(bag, slot)
   local here = M.bags[bag] and M.bags[bag][slot]
   local held = M.held
   if not held then
-    if here and not here.locked then M.held = { bag = bag, slot = slot } end
+    -- M.pickupRefused: the game will not pick it up (the cursor stays empty).
+    if here and not here.locked and not M.pickupRefused then M.held = { bag = bag, slot = slot } end
     return
   end
   M.held = nil
@@ -1631,10 +1632,11 @@ end
 function ClearCursor() M.held = nil; M.cursorItem = nil end
 -- DeleteCursorItem needs a hardware event and destroys one item per event:
 -- ForeverAH may call it only inside a player click on the drop box's Drop it
--- button, once. deleteMode: "ok" (destroyed: the slot locks, then empties),
--- "blocked" (the game refuses, the item stays on the cursor), "refused" (the
--- cursor is cleared but the server keeps the item).
-M.destroyed, M.deleteMode, M.dropButtonName = {}, "ok", "ForeverAHBagConfirmDrop"
+-- button, once. deleteMode: "ok" (destroyed: the slot locks, then empties
+-- after deleteDelay seconds, the server's round trip), "blocked" (the game
+-- refuses, the item stays on the cursor), "refused" (the cursor is cleared
+-- but the server keeps the item).
+M.destroyed, M.deleteMode, M.dropButtonName, M.deleteDelay = {}, "ok", "ForeverAHBagConfirmDrop", 0.2
 function DeleteCursorItem()
   local hw = M.hw
   if not hw then
@@ -1659,7 +1661,7 @@ function DeleteCursorItem()
   if not s or M.deleteMode == "refused" then return end
   s.locked = true
   M.destroyed[#M.destroyed + 1] = { bag = held.bag, slot = held.slot, itemID = s.itemID, count = s.count }
-  C_Timer.After(0.2, function()
+  C_Timer.After(M.deleteDelay or 0.2, function()
     if M.bags[held.bag][held.slot] == s then M.bags[held.bag][held.slot] = nil end
     bagChanged(held.bag)
   end)
@@ -7799,9 +7801,11 @@ def sc_bag_drop(sc, ref, items):
     """Drop with confirmation: a click on a WORTH THE LEAST row (or Drop cheapest,
     or the menu) only opens the drop box, which names the stack and its worth and
     outlines the slot; Drop it, inside that click, checks the stack again, picks
-    it up and calls DeleteCursorItem once; chat confirms. Rare and better items
-    and quest items are only picked up (the game's own check). The mock only
-    lets DeleteCursorItem through inside a player click on Drop it, once."""
+    it up and calls DeleteCursorItem once; chat confirms. Drop it ignores clicks
+    that come too soon (a double-click, a burst) and asks again when the stack
+    is now worth more than the box said. Rare and better items and quest items
+    are only picked up (the game's own check). The mock only lets
+    DeleteCursorItem through inside a player click on Drop it, once."""
     w = World(ref, items)
     M, ns, g = w.M, w.ns, w.g
     bag_add_item(w, 900401, "Linen Scrap", 1, 4, classID=7, maxStack=20)
@@ -7836,6 +7840,15 @@ def sc_bag_drop(sc, ref, items):
     lines = [plain(l) for l, _ in w.all_lines(tt)]
     sc.check(any(l.startswith("Click: pick it up") for l in lines), "drop hover: a Rare item is only picked up")
     M.leave(rb)
+    # The help on WORTH THE LEAST says what a click does, away from a vendor
+    # and at one (checked against what a click does below).
+    M.enter(BP.dropHelp)
+    help_txt = " ".join(plain(l) for l, _ in w.all_lines(tt))
+    M.leave(BP.dropHelp)
+    sc.check("At a vendor, a click sells the stack if the vendor buys it" in help_txt
+             and "Otherwise a click on a row (or Drop cheapest) asks before it drops" in help_txt
+             and "Rare and better items and quest items are only picked up" in help_txt,
+             "drop help: says what a click does, at a vendor and away (%s)" % help_txt)
 
     # A click asks; nothing moves yet.
     n_pick = len(M.pickups)
@@ -7864,9 +7877,20 @@ def sc_bag_drop(sc, ref, items):
     sc.check(not BP.glow.IsShown(BP.glow), "drop: outline goes with Cancel")
     sc.eq((len(M.destroyed), len(M.pickups)), (0, n_pick), "drop: Cancel drops and moves nothing")
 
-    # Ask again, wait, Drop it.
+    # Ask again. Drop it sits over rows 2 and 3 of the list, so the second
+    # click of a double-click on such a row lands on it: a slow double-click
+    # (the OS counts up to 0.5 s) never drops, nor does a burst of clicks
+    # (every click that comes too soon starts the wait again).
     M.click(r)
-    w.settle(0.5)
+    w.settle(0.45)
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.check(len(M.destroyed) == 0 and C.IsShown(C), "drop: a slow double-click (0.45 s apart) never drops")
+    w.settle(0.3)
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.check(len(M.destroyed) == 0 and C.IsShown(C),
+             "drop: a burst of clicks never drops (0.75 s after the box opened, 0.3 s after the last click)")
+    # Wait, Drop it.
+    w.settle(0.6)
     mark = w.chat_mark()
     M.click(g.ForeverAHBagConfirmDrop)
     sc.eq(destroyed_list(M), [(0, 1, 900401, 3)], "drop: Drop it destroys exactly that stack")
@@ -7883,7 +7907,7 @@ def sc_bag_drop(sc, ref, items):
     sc.eq(C.name._text, "Spider Leg x2", "drop cheapest: names the cheapest stack it may drop")
     M.click(g.ForeverAHBagConfirmDrop)
     sc.check(len(M.destroyed) == 1 and C.IsShown(C), "drop cheapest: a double-click does not drop")
-    w.settle(0.5)
+    w.settle(0.6)
     M.click(g.ForeverAHBagConfirmDrop)
     w.settle(1.0)
     sc.eq(destroyed_list(M)[-1], (0, 4, 900405, 2), "drop cheapest: dropped it")
@@ -7891,7 +7915,7 @@ def sc_bag_drop(sc, ref, items):
     def ask(iid):
         rr = bag_row_for(BP, iid)
         M.click(rr)
-        w.settle(0.5)
+        w.settle(0.6)
         return rr
 
     def no_drop(label, n_destroyed, must):
@@ -7955,6 +7979,14 @@ def sc_bag_drop(sc, ref, items):
     no_drop("drop blocked", nd, "It is on your cursor")
     sc.check(M.held is not None and M.held.slot == 9, "drop blocked: left on the cursor")
     w.lua.execute("ClearCursor()")
+    M.deleteMode = "ok"
+    # The game will not pick it up: nothing is deleted (the cursor holds
+    # nothing to delete), and chat says why instead of waiting for the slot.
+    M.pickupRefused = True
+    ask(900402)
+    no_drop("drop pickup refused", nd, "could not pick up [Broken Fang]. Nothing was dropped.")
+    sc.check(not w.lua.eval("CursorHasItem()") and M.bags[0][9] is not None, "drop pickup refused: cursor empty, still in the bag")
+    M.pickupRefused = None
     # The server keeps it.
     M.deleteMode = "refused"
     w.settle(0.5)
@@ -7967,10 +7999,15 @@ def sc_bag_drop(sc, ref, items):
              "drop refused: says so (%s)" % txt)
     sc.check(M.bags[0][9] is not None, "drop refused: still in the bag")
     M.deleteMode = "ok"
-    # Rare: a click only picks it up (the game asks to type DELETE).
+    # Rare: a click only picks it up (the game asks to type DELETE), and chat
+    # says how to finish (this is the first pick-up, so the hint shows).
+    mark = w.chat_mark()
     M.click(bag_row_for(BP, 900403))
     sc.check(not C.IsShown(C), "drop rare: no drop box")
     sc.eq((M.pickups[len(M.pickups)][1], M.pickups[len(M.pickups)][2]), (0, 3), "drop rare: picked up")
+    txt = [plain(x) for x in w.chat(mark)]
+    sc.check(any("Click the ground to destroy it (the game asks first)" in t for t in txt),
+             "drop rare: chat says how to destroy it (%s)" % txt)
     w.lua.execute("ClearCursor()")
     w.settle(0.5)
     # The menu: Drop it (asks first) for a stack it may drop, never for the Rare one.
@@ -7995,11 +8032,30 @@ def sc_bag_drop(sc, ref, items):
     M.OpenBags(1)
     w.settle(0.3)
     sc.check(F.IsVisible(F) and not C.IsShown(C), "drop: reopening shows the list, not the box")
-    # At a vendor: Sell junk instead of Drop cheapest.
+    # The menu still open when the bags close: picking Drop it (asks first)
+    # then does nothing, so reopening shows the list, not a box waiting with
+    # Drop it over the rows.
+    M.click(bag_row_for(BP, 900402), "RightButton")
+    M.CloseBags()
+    w.settle(0.3)
+    sc.check(menu_pick(w, "Drop it (asks first)"), "drop menu after the bags closed: the entry was there")
+    sc.check(BP.confirm is None and not C.IsShown(C), "drop menu after the bags closed: nothing asks")
+    w.settle(1.0)
+    M.OpenBags(1)
+    w.settle(0.3)
+    sc.check(F.IsVisible(F) and not C.IsShown(C) and BP.confirm is None,
+             "drop menu after the bags closed: reopening shows the list, not the box")
+    # At a vendor: Sell junk instead of Drop cheapest, and a click on a row
+    # sells it, a Rare one too (as the help says).
     M.OpenMerchant()
     w.settle(0.5)
     sc.check(not BP.dropButton.IsShown(BP.dropButton) and BP.sellButton.IsShown(BP.sellButton),
              "drop vendor: Sell junk, no Drop cheapest")
+    n_used = len(M.used)
+    M.click(bag_row_for(BP, 900403))
+    w.settle(0.5)
+    sc.check(not C.IsShown(C) and len(M.used) == n_used + 1 and 900403 in [M.sold[i] for i in range(1, len(M.sold) + 1)],
+             "drop vendor: a click on a row sells it, no drop box")
     M.CloseMerchant()
     w.settle(0.5)
     sc.eq(len(M.destroyed), nd, "drop: nothing else was destroyed")
@@ -8014,7 +8070,7 @@ def sc_bag_drop(sc, ref, items):
     w2.M.click(w2.ns.BagPanel.tab)
     w2.settle(0.1)
     w2.M.click(bag_row_for(w2.ns.BagPanel, 900401))
-    w2.settle(0.5)
+    w2.settle(0.6)
     w2.lua.execute("ForeverAHBagConfirmDrop:Click()")
     v = violations(w2)
     sc.check(any("outside a click" in x for x in v), "mock: Drop it clicked from code is blocked (%s)" % v)
@@ -8063,13 +8119,144 @@ def sc_bag_drop(sc, ref, items):
         sc.check(C3.IsShown(C3) and len(M3.used) == n_used, "drop vendor: its click opens the drop box, sells nothing")
         # The name in its link fills in later (the item part stays): still the same stack.
         M3["items"][nv].name = M3["items"][nv].name + " Fresh"
-        w3.settle(0.5)
+        w3.settle(0.6)
         M3.click(g3.ForeverAHBagConfirmDrop)
         w3.settle(1.0)
         sc.eq([d[2] for d in destroyed_list(M3)], [nv], "drop vendor: Drop it drops it")
     M3.CloseMerchant()
     w3.settle(0.5)
     sc.clean(w3, "drop quest/vendor")
+
+    # A short list: the panel grows to fit the box, stays that tall when the
+    # list is laid out again while the box asks, and shrinks back after Cancel.
+    w4 = World(ref, items)
+    M4, g4 = w4.M, w4.g
+    bag_add_item(w4, 900401, "Linen Scrap", 1, 4, classID=7, maxStack=20)
+    bag_add_item(w4, 6948, "Hearthstone", 1, 0, classID=15)
+    w4.put_bag(0, 1, 900401, 3)
+    BP4 = w4.ns.BagPanel
+    M4.OpenBags(1)
+    w4.settle(0.2)
+    M4.click(BP4.tab)
+    w4.settle(0.1)
+    F4, C4 = g4.ForeverAHBagPanel, g4.ForeverAHBagConfirm
+    short = BP4.layoutH
+    sc.check(short is not None and short < 120 and abs(F4.GetHeight(F4) - short) < 1e-6,
+             "drop short list: the list is shorter than the box (%s)" % short)
+    M4.click(bag_row_for(BP4, 900401))
+    sc.check(C4.IsShown(C4) and F4.GetHeight(F4) >= 120 - 1e-6, "drop short list: the panel grows to fit the box")
+    # Something else lands in the bags (no row of its own): the list is laid out again.
+    free_before = BP4.sub._text
+    w4.put_bag(1, 1, 6948, 1)
+    M4.fire("BAG_UPDATE", 1)
+    M4.fire("BAG_UPDATE_DELAYED")
+    w4.settle(0.5)
+    sc.check(BP4.sub._text != free_before and BP4.layoutH == short, "drop short list: laid out again (%s, %s)" % (
+        BP4.sub._text, BP4.layoutH))
+    sc.check(C4.IsShown(C4) and F4.GetHeight(F4) >= 120 - 1e-6,
+             "drop short list: still tall enough for the box after that (%s)" % F4.GetHeight(F4))
+    M4.click(g4.ForeverAHBagConfirmCancel)
+    sc.check(not C4.IsShown(C4) and abs(F4.GetHeight(F4) - short) < 1e-6,
+             "drop short list: back to the list's height after Cancel (%s)" % F4.GetHeight(F4))
+    # A slow server: the slot stays locked for 1.2 s after Drop it. Chat waits
+    # for the slot and says dropped, once (never "still in your bags").
+    M4.deleteDelay = 1.2
+    M4.click(bag_row_for(BP4, 900401))
+    w4.settle(0.6)
+    mark = w4.chat_mark()
+    M4.click(g4.ForeverAHBagConfirmDrop)
+    w4.settle(0.6)
+    sc.check(M4.bags[0][1] is not None and M4.bags[0][1].locked is True, "drop slow server: the slot is still locked after 0.6 s")
+    w4.settle(2.4)
+    txt = [plain(x) for x in w4.chat(mark)]
+    sc.eq(destroyed_list(M4), [(0, 1, 900401, 3)], "drop slow server: dropped")
+    sc.check(len([t for t in txt if t.endswith("dropped [Linen Scrap] x3 (worth 12c).")]) == 1
+             and not any("still in your bags" in t for t in txt),
+             "drop slow server: chat waits for the slot and says dropped once (%s)" % txt)
+    M4.deleteDelay = 0.2
+    sc.clean(w4, "drop short list")
+
+    # The worth goes up while the box asks: Drop it then shows the new worth
+    # and asks again instead of dropping. In game that is a live auction price
+    # coming in (at the auction house the bags are open too). First the vendor
+    # price goes up, which tests that check in Drop it however auction prices
+    # are read; then a live listing comes in for an item valued at auction.
+    def worth_text(e):
+        if e.source == "auction":
+            return "Worth %s%s at auction now." % ("about " if e.unsure else "", money_text(e.value))
+        return "Worth %s at a vendor." % money_text(e.value)
+
+    w5 = World(ref, items)
+    M5, g5, ns5 = w5.M, w5.g, w5.ns
+    hi = None
+    for iid in priced:
+        M5["items"][iid].quality = 1
+        M5["items"][iid].classID = 7
+        w5.put_bag(0, 2, iid, 1)
+        s5 = ns5.BagScan()
+        if len(s5.drop) == 1 and s5.drop[1].source == "auction":
+            hi = iid
+            break
+        M5.bags[0][2] = None
+    bag_add_item(w5, 900406, "Gold Dust", 1, 4, classID=7, maxStack=20)
+    w5.put_bag(0, 1, 900406, 3)   # 12c at a vendor
+    w5.open_ah_modern()
+    BP5 = ns5.BagPanel
+    M5.OpenBags(1)
+    w5.settle(0.2)
+    M5.click(BP5.tab)
+    w5.settle(0.1)
+    C5, yes5 = g5.ForeverAHBagConfirm, g5.ForeverAHBagConfirmDrop
+    M5.click(bag_row_for(BP5, 900406))
+    sc.eq(C5.worth._text, "Worth 12c at a vendor.", "drop worth: the box says what it is worth")
+    M5["items"][900406].vendor = 500
+    w5.settle(0.6)
+    mark = w5.chat_mark()
+    M5.click(yes5)
+    sc.eq(len(M5.destroyed), 0, "drop worth: nothing dropped while it is worth more than the box said")
+    sc.check(C5.IsShown(C5) and C5.worth._text == "Worth 15s at a vendor.", "drop worth: the box shows the new worth (%s)" % C5.worth._text)
+    txt = [plain(x) for x in w5.chat(mark)]
+    sc.check(any(t.endswith("[Gold Dust] x3 is worth 15s at a vendor now. Nothing was dropped: check the box again.") for t in txt),
+             "drop worth: chat says why (%s)" % txt)
+    # Asked again, so the wait starts again too; then Drop it drops it.
+    M5.click(yes5)
+    sc.eq(len(M5.destroyed), 0, "drop worth: a click right after it asks again does nothing")
+    w5.settle(0.6)
+    mark = w5.chat_mark()
+    M5.click(yes5)
+    w5.settle(1.0)
+    sc.eq(destroyed_list(M5), [(0, 1, 900406, 3)], "drop worth: Drop it on the new worth drops it")
+    txt = [plain(x) for x in w5.chat(mark)]
+    sc.check(any(t.endswith("dropped [Gold Dust] x3 (worth 15s).") for t in txt),
+             "drop worth: chat names the worth it was dropped at (%s)" % txt)
+    # A live listing far above the usual price comes in while the box asks.
+    # Whether that raises the stack's worth depends on how auction prices are
+    # read; either way Drop it never destroys it for more than the box said.
+    r5 = bag_row_for(BP5, hi) if hi is not None else None
+    if sc.check(r5 is not None, "drop worth live: an item valued at its auction price to test with"):
+        old = (r5.entry.value, r5.entry.source)
+        M5.click(r5)
+        sc.eq(C5.worth._text, worth_text(r5.entry), "drop worth live: the box says what it is worth")
+        w5.set_commodity_results(hi, [(ref.items[hi]["cheapest"] * 3 + 100, 5, False)])
+        M5.fire("COMMODITY_SEARCH_RESULTS_UPDATED", hi)
+        w5.settle(0.6)
+        s5 = ns5.BagScan()
+        new = next((s5.drop[i] for i in range(1, len(s5.drop) + 1) if s5.drop[i].id == hi), None)
+        n5 = len(M5.destroyed)
+        mark = w5.chat_mark()
+        M5.click(yes5)
+        w5.settle(1.0)
+        txt = [plain(x) for x in w5.chat(mark)]
+        if new is not None and (new.value > old[0] or new.source != old[1]):
+            sc.check(len(M5.destroyed) == n5 and C5.IsShown(C5) and C5.worth._text == worth_text(new)
+                     and any(" is worth %s " % money_text(new.value) in t for t in txt),
+                     "drop worth live: worth more now (%s to %s), so it asks again (%s, %s)" % (
+                         old[0], new.value, C5.worth._text, txt))
+        else:
+            sc.check(len(M5.destroyed) == n5 + 1, "drop worth live: worth no more than the box said, so it drops (%s)" % txt)
+    w5.close_ah_modern()
+    w5.settle(0.5)
+    sc.clean(w5, "drop worth")
 
 
 def sc_bag_drop_elvui(sc, ref, items):
@@ -8088,7 +8275,7 @@ def sc_bag_drop_elvui(sc, ref, items):
     r = bag_row_for(BP, 900302)
     M.click(r)
     sc.check(w.same(BP.glow._points[1][2], elv.Bags[2][5]), "elvui drop: ElvUI's slot outlined while it asks")
-    w.settle(0.5)
+    w.settle(0.6)
     M.click(g.ForeverAHBagConfirmDrop)
     w.settle(1.0)
     sc.eq(destroyed_list(M), [(2, 5, 900302, 3)], "elvui drop: dropped")
@@ -8318,7 +8505,7 @@ def bagcheck(sc, w, label, cmd="/fah bagcheck"):
     body = [t.split("Forever AH: ", 1)[-1] for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
-    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18d", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18e", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
     num = {}
     for t in body:
         m = re.match(r"^(\d+)\. (.*)$", t)
