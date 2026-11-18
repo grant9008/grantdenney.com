@@ -38,11 +38,20 @@ jobs:
       - name: Get the existing price history
         if: env.HAS_KEY == 'true'
         run: |
-          if git ls-remote --exit-code --heads origin wow-data >/dev/null; then
+          # Exit 0 = the branch exists, 2 = it really does not exist yet.
+          # Anything else is a hiccup: stop rather than start the history over.
+          set +e
+          git ls-remote --exit-code --heads origin wow-data >/dev/null
+          rc=$?
+          set -e
+          if [ "$rc" = 0 ]; then
             git clone --depth 1 --branch wow-data \
               "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" wowdata
-          else
+          elif [ "$rc" = 2 ]; then
             mkdir wowdata && cd wowdata && git init -b wow-data
+          else
+            echo "Could not read the wow-data branch (git ls-remote exit $rc). Nothing published."
+            exit 1
           fi
 
       - name: Snapshot the auction house
@@ -56,9 +65,18 @@ jobs:
         if: env.HAS_KEY == 'true'
         run: |
           cd wowdata
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "Blizzard had nothing new (or this PC already published it). Nothing to publish."
+            exit 0
+          fi
+          # Only replace the snapshot this run started from: if the user's PC
+          # published a newer one meanwhile, the push is refused instead of
+          # rolling it back. Empty BASE = the branch must not exist yet.
+          BASE=$(git rev-parse -q --verify HEAD || true)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git checkout --orphan next
           git add -A
           git commit -q -m "WoW Forever prices $(date -u +%Y-%m-%dT%H:%MZ)"
-          git push -f "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" next:wow-data
+          git push --force-with-lease=wow-data:$BASE \
+            "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" next:wow-data
