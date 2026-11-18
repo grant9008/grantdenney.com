@@ -28,6 +28,8 @@ What it simulates, for 240 hourly snapshots:
     how much was pulled; test_datafile.py checks the collector's sold
     against it. This market has its own random numbers, so every other
     item's data is the same as without it.
+The simulated collector always had the sold floor, so every simulated hour
+counts as measured (fetch_ah.SOLD_FLOOR_FROM is set to 0).
 """
 import email.utils
 import json
@@ -95,6 +97,9 @@ T = [int(time.time()) - 240 * 3600]
 f.time.time = lambda: T[0]
 f.time.sleep = lambda s: None
 f.get_token = lambda: "sim"
+# this collector always had the sold floor: every simulated hour counts as measured, whatever
+# the clock (SOLD_FLOOR_FROM is the real collectors' switch-over hour)
+f.SOLD_FLOOR_FROM = 0
 rng = random.Random(7)
 srng = random.Random(11)   # the salmon market only
 book = {}   # auction id -> {"id", "iid", "bonus", "qty", "unit", "tl", "com"}

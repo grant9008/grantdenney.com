@@ -38,7 +38,10 @@ previous snapshot is still listed: buyers take the cheapest first, so that
 one was cancelled or reposted, not bought (see estimate_sold). The estimate
 is skipped (and that time does not count as measured) when the previous
 snapshot is too old, because then vanished auctions say nothing reliable
-about sales.
+about sales. Hours measured before that cheaper-listing rule came in
+(SOLD_FLOOR_FROM) counted pulled and reposted stacks as sales, so they no
+longer count as measured: sold24, salesHours and the sold per day that sizes
+flips use only the hours from then on (the hist files keep their sold).
 
 A download that looks incomplete (a list failed, or the auction count fell
 sharply) is not published at all: the next run downloads it again. Only when
@@ -131,6 +134,12 @@ SOLD_TIME_LEFT = {"LONG", "VERY_LONG"}   # gone before it could have expired => 
 SOLD_MAX_GAP = 90 * 60     # older previous snapshot: vanished auctions may just have expired
 SOLD_MAX_DROP = 0.30       # auction count fell more than this: probably an incomplete download
 SOLD_DROP_MIN = 100        # per-endpoint drop check only for endpoints this big
+# The first hour slot measured with the sold floor (estimate_sold): 2026-11-18 23:00 UTC. Older
+# copies counted pulled and reposted stacks as sales, so measured hours before it are dropped
+# from state.json "measured" (they would size flips for 7 days). It should be the whole UTC hour
+# when both collectors (GitHub and the PC) first run this rule, never later: until it comes, no
+# hour counts as measured.
+SOLD_FLOOR_FROM = 1795042800
 THIN_UNITS = 10            # fewer units listed than this: market value is the second cheapest unit
 UNKNOWN_RETRY_SECS = 6 * 3600   # look an unnamed item up again at most this often
 UNKNOWN_RETRY_MAX = 300         # and at most this many of them per run
@@ -1594,7 +1603,9 @@ def main(out=None):
     measured = measured_secs(state)
     if not skipped:
         measured[hour] = measured.get(hour, 0) + max(0, int(data_time - prev_time))
-    measured = {t: s for t, s in measured.items() if hour - HOURLY_KEEP * 3600 < t <= hour}
+    # the last HOURLY_KEEP hours, none from before the sold floor (see SOLD_FLOOR_FROM)
+    measured = {t: s for t, s in measured.items()
+                if hour - HOURLY_KEEP * 3600 < t <= hour and t >= SOLD_FLOOR_FROM}
     sales_h = sales_hours(measured, hour)
     sales_min = int(sales_seconds(measured, hour) / 60 + 0.5)
     # Versions: the run that upgrades older state compares with a snapshot that has no
