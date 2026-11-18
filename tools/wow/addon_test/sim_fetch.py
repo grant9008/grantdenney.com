@@ -12,6 +12,10 @@ What it simulates, for 240 hourly snapshots:
     flips), a stack listed under the vendor price (vendor flips), a 1c troll
     listing and a silly high listing, a deep cheap wall, and buyers who take
     the cheapest units every hour.
+  - a blue weapon nobody buys, always listed at 4g to 4.2g with one more at
+    1.2g: a deal (a blue well under its usual price) every hour once the
+    collector has 4 hours of its history. It never sells, so it is never a
+    gap flip, and there is always a deal in the data.
 """
 import email.utils
 import math
@@ -63,6 +67,11 @@ GEAR = {
         {12752: (24000, 5, 0.2), 12751: (38000, 6, 0.25), 12732: (20000, 3, 0.1), 12723: (30000, 4, 0.12)}),
  4564: ("Spiked Club", "inv_mace_14", 610, ("Weapon", 2), ("Mace", 4), ("WEAPON", "One-Hand"), 13, 8,
         {12919: (900, 8, 0.4), 12918: (850, 6, 0.3), 12728: (1900, 4, 0.15), 99001: (1200, 3, 0.1)}),
+}
+# gear without versions, only ever listed through FIXED: id: (name, icon, vendor, class, subclass, slot,
+#   ilvl, reqlvl, quality)
+PLAIN_GEAR = {
+ 17705: ("Thrash Blade", "inv_sword_17", 9524, ("Weapon", 2), ("Sword", 7), ("WEAPON", "One-Hand"), 53, 48, "RARE"),
 }
 T = [int(time.time()) - 240 * 3600]
 f.time.time = lambda: T[0]
@@ -120,6 +129,10 @@ FIXED = [   # situations that are put back whenever they sold or expired, so the
     (3575, 5, 500, None),           # Iron Bar: 3 stacks of 5 at 5s, then the normal 13s market
     (3575, 5, 510, None),
     (3575, 5, 520, None),
+    (17705, 1, 40000, None),        # Thrash Blade (a blue): usually 4g, nobody buys it...
+    (17705, 1, 41000, None),
+    (17705, 1, 42000, None),
+    (17705, 1, 12000, None),        # ...and one at 1.2g: a deal
 ]
 
 
@@ -156,7 +169,7 @@ def fake_api(path, ns, tries=4):
         return {"auctions": [api_auction(a, T[0]) for a in book.values() if not a["com"]]}, stamp
     iid = int(path.rsplit("/", 1)[1])
     if path.startswith("/data/wow/media/item/"):
-        icon = ITEMS[iid][1] if iid in ITEMS else GEAR[iid][1]
+        icon = (ITEMS.get(iid) or GEAR.get(iid) or PLAIN_GEAR[iid])[1]
         return {"assets": [{"key": "icon", "value": I + icon + ".jpg"}]}, {}
     if path.startswith("/data/wow/item/"):
         if iid in ITEMS:
@@ -164,8 +177,9 @@ def fake_api(path, ns, tries=4):
             return {"name": n[0], "quality": {"type": n[5]}, "sell_price": n[6], "level": 0, "required_level": 0,
                     "item_class": {"name": TG[0], "id": TG[1]}, "item_subclass": {"name": n[7][0], "id": n[7][1]},
                     "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "is_stackable": True}, {}
-        g = GEAR[iid]
-        return {"name": g[0], "quality": {"type": "UNCOMMON"}, "sell_price": g[2], "level": g[6],
+        g = GEAR.get(iid) or PLAIN_GEAR[iid]
+        return {"name": g[0], "quality": {"type": g[8] if iid in PLAIN_GEAR else "UNCOMMON"}, "sell_price": g[2],
+                "level": g[6],
                 "required_level": g[7], "item_class": {"name": g[3][0], "id": g[3][1]},
                 "item_subclass": {"name": g[4][0], "id": g[4][1]},
                 "inventory_type": {"type": g[5][0], "name": g[5][1]}, "is_stackable": False}, {}

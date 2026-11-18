@@ -5,7 +5,7 @@ local ADDON_NAME, ns = ...
 -- item you search for, click on, or put in the sell slot. Adds two small
 -- buttons to the sell frame that fill in the price box:
 --   "Sell now: X"    1 copper under the cheapest listing
---   "Best price: X"  the price it usually sells for (from the price history)
+--   "Suggested: X"   the price it usually sells for (from the price history)
 --
 -- Rules this file sticks to:
 --   * hooksecurefunc, HookScript and events only. No Blizzard function is replaced.
@@ -343,19 +343,19 @@ end
 ---------------------------------------------------------------------------
 -- Prices for the sell buttons
 ---------------------------------------------------------------------------
--- Returns the Sell now and Best price prices to fill (already rounded for the
+-- Returns the Sell now and Suggested price prices to fill (already rounded for the
 -- frame, nil when that button hides) and what they are based on, or nil, nil
 -- and a reason ("market", "suffix", "stale", "history", "unreliable", "none").
 -- ver is VersionInfo for the item (nil: a plain item).
 local function SellAdvice(id, isCommodity, ver)
   if not id or type(ns.SellPrices) ~= "function" then return nil, nil, "none" end
-  -- reasons also: "nolive" (no listing of this version is up and there is no Best price)
+  -- reasons also: "nolive" (no listing of this version is up and there is no Suggested price)
   if type(ns.MarketMismatch) == "function" and ns.MarketMismatch() then return nil, nil, "market" end
   ver = type(ver) == "table" and ver or { mode = "plain" }
   local age = type(ns.DataAge) == "function" and ns.DataAge() or nil
   if ver.mode == "unknown" then
     -- The data has no prices for this version: only its own live listing,
-    -- 1 copper under it (matched when it is yours). No Best price.
+    -- 1 copper under it (matched when it is yours). No Suggested price.
     local r = LiveVersion(id, ver.liveKey)
     local p = r and Num(r.price)
     if not p or p <= 1 then return nil, nil, "suffix" end
@@ -368,7 +368,7 @@ local function SellAdvice(id, isCommodity, ver)
   if not lp and age and age > (ns.STALE_SECONDS or 21600) then return nil, nil, "stale" end
   -- The item's listings have all loaded and none of them is this version: the
   -- cheapest one the price data saw is gone, so there is nothing to undercut.
-  -- Sell now hides; Best price (from the history) still works.
+  -- Sell now hides; Suggested price (from the history) still works.
   local noLive = ver.mode == "version" and not lp and AH.open and AH.liveLoaded[id] == true
   local ok, P = pcall(ns.SellPrices, pid, TF(), lp, own)
   if not ok or type(P) ~= "table" then return nil, nil, "none" end
@@ -423,16 +423,16 @@ local function NowText(info, postWord)
     lines[#lines + 1] = "Today's market price is higher (" .. MoneyI(mkt) .. "): waiting may get you more."
   end
   if type(P) == "table" and P.bestWhy == "history" then
-    lines[#lines + 1] = "There is not enough price history yet for a Best price."
+    lines[#lines + 1] = "There is not enough price history yet for a suggested price."
   elseif type(P) == "table" and P.bestWhy == "unreliable" then
-    lines[#lines + 1] = "This item's price may not be reliable (see the chart notes), so there is no Best price."
+    lines[#lines + 1] = "This item's price may not be reliable (see the chart notes), so there is no suggested price."
   end
   if type(P) == "table" and P.nowVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
 
--- The tooltip of the Best price button.
+-- The tooltip of the Suggested (price) button.
 local function BestText(info, postWord)
   local lines = { "Fills the price box with what this item usually sells for (from the price history), never under a normal cheapest listing. It can take longer to sell than Sell now." }
   lines[#lines + 1] = BasisText(info)
@@ -487,7 +487,7 @@ local function RaiseAbove(btn, ref, fallbackParent)
 end
 
 ---------------------------------------------------------------------------
--- The pair of price buttons: "Sell now: X" and "Best price: X"
+-- The pair of price buttons: "Sell now: X" and "Suggested: X"
 ---------------------------------------------------------------------------
 local PAIR_W, PAIR_H, PAIR_GAP = 136, 20, 4
 
@@ -508,7 +508,7 @@ local function NewPair(parent, isCommodity, place, onClick)
     pair[kind] = b
   end
   AttachTooltip(pair.now, "Sell now", "Fills the price box with 1 copper under the cheapest listing. Nothing is posted: you still click Post.")
-  AttachTooltip(pair.best, "Best price", "Fills the price box with what this item usually sells for. Nothing is posted: you still click Post.")
+  AttachTooltip(pair.best, "Suggested price", "Fills the price box with what this item usually sells for. Nothing is posted: you still click Post.")
   return pair
 end
 
@@ -536,7 +536,7 @@ local function SetPairPrices(pair, now, best, info, postWord)
     pair.now:Hide()
   end
   if best then
-    pair.best:SetText("Best price: " .. MoneyI(best))
+    pair.best:SetText("Suggested: " .. MoneyI(best))
     pair.best.tipBody = BestText(info, postWord)
     pair.best:Show()
   else
@@ -815,7 +815,7 @@ local function UpdateUseButton(sf)
   SetPairPrices(pair, now, best, info, "Post")
 end
 
--- Fills the price box with the Sell now ("now") or Best price ("best") price.
+-- Fills the price box with the Sell now ("now") or Suggested price ("best") price.
 local function ApplySellPrice(sf, kind)
   local pair = useButtons[sf]
   if not sellIDs[sf] and type(sf.GetItem) == "function" then
@@ -966,7 +966,7 @@ local function UpdateAtrUseButton()
   SetPairPrices(atrPair, now, best, info, "Post")
 end
 
--- Fills Auctionator's buyout box with the Sell now ("now") or Best price ("best") price.
+-- Fills Auctionator's buyout box with the Sell now ("now") or Suggested price ("best") price.
 local function ApplyAuctionatorPrice(kind)
   local b = atrPair and atrPair[kind == "best" and "best" or "now"]
   if b and not b.price then UpdateAtrUseButton() end
@@ -1297,7 +1297,7 @@ UpdateLegacyUseButton = function()
 end
 
 -- Fills the buyout and starting bid (per unit or per stack, as the old frame
--- is set) with the Sell now ("now") or Best price ("best") price.
+-- is set) with the Sell now ("now") or Suggested price ("best") price.
 local function ApplyLegacyPrice(kind)
   local b = legacyPair and legacyPair[kind == "best" and "best" or "now"]
   if b and not b.price then UpdateLegacyUseButton() end
@@ -1368,7 +1368,7 @@ local function HookLegacy()
     RaiseAbove(legacyPair.best, nil, parent)
     AttachTooltip(legacyPair.now, "Sell now",
       "Fills the buyout and starting bid with 1 copper under the cheapest listing. Nothing is posted: you still click Create Auction.")
-    AttachTooltip(legacyPair.best, "Best price",
+    AttachTooltip(legacyPair.best, "Suggested price",
       "Fills the buyout and starting bid with what this item usually sells for. Nothing is posted: you still click Create Auction.")
   end
   if type(f.HookScript) == "function" then

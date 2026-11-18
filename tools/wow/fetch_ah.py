@@ -17,7 +17,7 @@ app on /wow/ can read them with almost no changes:
                   d: [[t, low, high, listed, sold], ...] daily, kept forever,
                   v: the variant key, only in a variant's file}
   flips.json     {updated, flips: [...]} flip ideas found in this snapshot,
-                 best first (see write_flips)
+                 best first (gap, vendor and deal flips; see write_flips)
   suffix_names.json
                  a copy of tools/wow/suffix_names.json (see below)
   houses.json    every house the API lists, with auction counts (for checking IDs)
@@ -79,8 +79,19 @@ this script installed on its own (the PC collector) uses the same table built
 into it (_SUFFIX_CODE), plus any newer copy in the data folder.
 
 Flip ideas (flips.json, and "flips" in the addon file) come from the listings
-of one snapshot, so they work from the first hour: see find_gap_flip and
-find_vendor_flip, and the FLIP_ limits below.
+of one snapshot. Three kinds: "gap" (buy the cheap listings, relist under the
+next one, see find_gap_flip) and "vendor" (listings under what a vendor pays,
+see find_vendor_flip) work from the first hour; "deal" (a green, blue or epic
+whose cheapest listings sit well under its own 7-day median, see
+find_deal_flip) needs FLIP_HIST_MIN_POINTS hours of that item's (or
+version's) history first, and is only looked for where there is no gap flip.
+See the FLIP_ and DEAL_ limits below. Every flip, whatever its kind, carries
+"usual": that item's (or version's) own 7-day median market value
+(history_prices), in whole copper, 0 with fewer than FLIP_HIST_MIN_POINTS
+hours of history (see add_flips in main). The addon file gets the best
+FLIPS_ADDON_MAX plus extra deals and cheap flips (pick_addon_flips), so a
+character with little gold and gear hunters always have ideas; flips.json
+the best FLIPS_SITE_MAX.
 
 Credentials: BNET_CLIENT_ID / BNET_CLIENT_SECRET env vars, or the file
 %USERPROFILE%\\.wow-ah\\bnet.txt (id on line 1, secret on line 2) that
@@ -164,8 +175,16 @@ FLIP_SPIKE_NEAR = 1.25         # unless at least FLIP_SPIKE_CONFIRM listings sit
 FLIP_SPIKE_CONFIRM = 3
 FLIP_VENDOR_MIN_PROFIT = 100   # 1 silver, the least a vendor flip must make
 FLIP_VENDOR_MIN_MARGIN_PERMILLE = 100   # each listing bought must make 10% at the vendor (not 1c on 5s)
-FLIPS_ADDON_MAX = 60           # flips in the addon file
+FLIP_CHEAP_COST = 50000        # 5 gold: a flip costing at most this is "cheap" (see pick_addon_flips)
+FLIPS_ADDON_MAX = 60           # flips in the addon file: the best this many by rank,
+FLIPS_ADDON_DEALS = 40         # plus up to this many deals that are not in yet,
+FLIPS_ADDON_CHEAP = 40         # plus up to this many flips costing at most FLIP_CHEAP_COST not in yet
 FLIPS_SITE_MAX = 400           # flips in flips.json
+# deals: a green, blue or epic priced well under its own usual price (see find_deal_flip)
+DEAL_QUALITIES = ("UNCOMMON", "RARE", "EPIC", "LEGENDARY")   # item qualities a deal is looked for in
+DEAL_MAX_SHARE = 0.70          # a deal buys only listings priced at most this share of the usual price
+DEAL_MIN_PROFIT = 2500         # 25 silver, the least a deal must make
+DEAL_UNSURE_LISTED = 2         # 7-day median units listed under this: flagged "unsure"
 
 
 # -- HTTP ---------------------------------------------------------------------
@@ -859,6 +878,17 @@ def history_prices(h, hour):
     return int(percentile(vals, FLIP_HIST_PCT)), percentile(vals, 0.5)
 
 
+def history_listed(h, hour):
+    """The median units listed over the same hourly points history_prices
+    reads (the last 7 days, the hours that had a market value), so a deal can
+    tell when its usual price was mostly one listing (one seller's asking
+    price). None with fewer than FLIP_HIST_MIN_POINTS points."""
+    vals = sorted(int(p[3]) for p in (h.get("h") or []) if hour - 168 * 3600 < p[0] <= hour and p[2] > 0)
+    if len(vals) < FLIP_HIST_MIN_POINTS:
+        return None
+    return percentile(vals, 0.5)
+
+
 def after_cut(price):
     """What a sale at `price` pays after the auction house cut (whole copper, rounded down)."""
     return int(price) * (100 - FLIP_AH_CUT_PCT) // 100
@@ -884,7 +914,10 @@ def find_gap_flip(units, commodity=False, sold_day=None, hist_cap=None, usual=0,
     `early`: measured for less than a day), spike (R above FLIP_SPIKE_RATIO x
     usual; or, with no 7-day history (hist_cap None), R above FLIP_SPIKE_GAP x
     buyMax with fewer than FLIP_SPIKE_CONFIRM listings within FLIP_SPIKE_NEAR
-    of the next one: a few high listings may be one player's guess)."""
+    of the next one: a few high listings may be one player's guess).
+    usual is only what the spike flag is judged against (add_flips passes the
+    7-day median, else today's market value). The flip record's own "usual"
+    field is not set here: add_flips gives every flip the 7-day median, or 0."""
     n = len(units)
     if n < 1 + FLIP_MIN_LEFT:
         return None
@@ -945,12 +978,95 @@ def find_gap_flip(units, commodity=False, sold_day=None, hist_cap=None, usual=0,
     return best
 
 
+def find_deal_flip(units, usual, sold_day=None, hist_cap=None, early=False, listed_median=None):
+    """A "deal" in one item's (or version's) listings, or None: the cheapest
+    listings sit well under the usual price, so buy them and relist near that
+    price. For greens, blues and epics (see add_flips in main: never a
+    commodity, never an item whose listings are versions), and only where
+    find_gap_flip found nothing, so the same listings never show twice.
+    units: [(unit price, qty)] one per listing, sorted by price.
+    usual: the series' own 7-day median market value (history_prices); no
+    usual (fewer than FLIP_HIST_MIN_POINTS hours of history) = no deal.
+    Buys the listings priced at most DEAL_MAX_SHARE x usual, cheapest first,
+    at most max(1, whole sold per day) units: 1 when sales are unknown
+    (sold_day None) or under 1 a day. A listing never splits, so a stack
+    bigger than that is not bought.
+    Relist R = min(int(usual), hist_cap (the 7-day FLIP_HIST_PCT market),
+    the next listing above what is bought - 1c when there is one).
+    profit = units * R after the 5% cut - cost. Needs profit >=
+    DEAL_MIN_PROFIT, ROI >= 15% and the dearest listing bought itself making
+    15% at R after the cut. Whenever buying all of them passes, all of them
+    are bought. Only when that fails (mostly the dearest one: the next
+    listing sits just above it, so R leaves it under 15%), the cheapest k of
+    them that pass every check are bought instead, k fewer than all: the k
+    with the most profit (the most listings on a tie), relisted just under
+    the next listing, which is one of the cheap ones left. No deal when no k
+    passes. This fallback is on purpose: without it a listing far under its
+    usual price would get no buy at all, just because a second cheap one
+    sits right under the next listing.
+    Risk flags: thin (fewer than FLIP_MIN_LEFT listings left above), slow
+    (sales unknown, `early`: measured for less than a day, or sold per day
+    under the units bought), unsure (listed_median, the 7-day median units
+    listed (history_listed), under DEAL_UNSURE_LISTED or unknown: the usual
+    price may be one seller's asking price). add_flips adds "suffix" for
+    versions. "usual" in the result is int(usual)."""
+    if not usual or usual <= 0 or not units:
+        return None
+    share = int(round(DEAL_MAX_SHARE * 1000))      # whole permille: 0.7 * 41000 is 28699.999... in floats
+    limit = 1 if sold_day is None else max(1, int(sold_day + 1e-9))
+    n = len(units)
+    m, got = 0, 0
+    while m < n and units[m][0] * 1000 <= share * usual and got + units[m][1] <= limit:
+        got += units[m][1]
+        m += 1
+    if not m:
+        return None
+    usual_c = int(usual)
+
+    def judge(k):
+        """Buy the cheapest k listings, or None when that is no deal."""
+        bought = sum(q for _, q in units[:k])
+        c = max(1, int(round(sum(p * q for p, q in units[:k]))))
+        dearest = units[k - 1][0]
+        nxt = units[k][0] if k < n else None
+        relist = usual_c
+        if hist_cap:
+            relist = min(relist, int(hist_cap))
+        if nxt is not None:
+            relist = min(relist, int(math.ceil(nxt)) - 1)
+        if relist <= 0:
+            return None
+        profit = bought * after_cut(relist) - c
+        if (profit < DEAL_MIN_PROFIT or profit * 1000 < FLIP_MIN_ROI_PERMILLE * c
+                or after_cut(relist) * 1000 < dearest * (1000 + FLIP_MIN_ROI_PERMILLE)):
+            return None
+        risk = []
+        if n - k < FLIP_MIN_LEFT:
+            risk.append("thin")
+        if sold_day is None or early or sold_day < bought:
+            risk.append("slow")
+        if listed_median is None or listed_median < DEAL_UNSURE_LISTED:
+            risk.append("unsure")
+        return {"kind": "deal", "buyMax": int(math.ceil(dearest)), "units": bought, "cost": c,
+                "relist": relist, "profit": profit, "roi": profit * 1000 // c, "risk": risk,
+                "next": int(math.ceil(nxt)) if nxt is not None else 0, "usual": usual_c}
+
+    best = judge(m)                    # all of them (within a day of sales), whenever that passes
+    if best is None:                   # else the cheapest few that pass: the most profit, then the most listings
+        for k in range(m - 1, 0, -1):
+            f = judge(k)
+            if f and (best is None or f["profit"] > best["profit"]):
+                best = f
+    return best
+
+
 def find_vendor_flip(units, vendor):
     """Listings priced under what a vendor pays (units sorted by price): buy
     them and sell them to a vendor. No auction house cut, no relisting. Only
     listings that each make FLIP_VENDOR_MIN_MARGIN_PERMILLE at the vendor
     count (hundreds of leggings at 1c under the vendor price are no flip).
-    None when there are none, or they make less than FLIP_VENDOR_MIN_PROFIT."""
+    None when there are none, or they make less than FLIP_VENDOR_MIN_PROFIT.
+    add_flips gives the flip its "usual" field (the 7-day median, or 0)."""
     vendor = int(vendor or 0)
     if vendor <= 0:
         return None
@@ -973,10 +1089,34 @@ def rank_flips(flips):
     return sorted(flips, key=lambda f: (-f["profit"], -f["roi"], f["id"], f["kind"]))
 
 
+def pick_addon_flips(flips, has_line):
+    """The flips the addon file carries, from ranked `flips` (best first),
+    only those whose id has an item line (`has_line`: the addon lines, or any
+    container of ids): the best FLIPS_ADDON_MAX, plus up to FLIPS_ADDON_DEALS
+    deals and then up to FLIPS_ADDON_CHEAP flips costing at most
+    FLIP_CHEAP_COST that are not in yet, so a character with little gold and
+    gear hunters always have ideas. Kept in rank order, never twice."""
+    cand = [f for f in flips if f["id"] in has_line]
+    pick = set(range(min(len(cand), FLIPS_ADDON_MAX)))
+    for wanted, room in ((lambda f: f["kind"] == "deal", FLIPS_ADDON_DEALS),
+                         (lambda f: int(f["cost"]) <= FLIP_CHEAP_COST, FLIPS_ADDON_CHEAP)):
+        for i, f in enumerate(cand):
+            if room <= 0:
+                break
+            if i not in pick and wanted(f):
+                pick.add(i)
+                room -= 1
+    return [f for i, f in enumerate(cand) if i in pick]
+
+
 def flip_line(f):
-    """One flip as the addon file carries it: id|kind|buyMax|units|cost|relist|profit|roi|risk"""
+    """One flip as the addon file carries it:
+    id|kind|buyMax|units|cost|relist|profit|roi|risk|usual
+    (usual: the 7-day median market value, 0 when not known; older addon
+    copies read only the first 9 fields and skip kinds they do not know)."""
     return "|".join(str(x) for x in (int(f["id"]), f["kind"], int(f["buyMax"]), int(f["units"]), int(f["cost"]),
-                                     int(f["relist"]), int(f["profit"]), int(f["roi"]), ",".join(f["risk"])))
+                                     int(f["relist"]), int(f["profit"]), int(f["roi"]), ",".join(f["risk"]),
+                                     int(f.get("usual") or 0)))
 
 
 # -- in-game addon data file (ForeverAH_Data.lua) -----------------------------
@@ -1173,7 +1313,8 @@ def addon_tables(variants=None, flips=None):
     """The variants and flips tables of the addon file (before items, so
     nothing that scans for item lines after "items = {" ever sees them).
     variants: {item id: [(key, vid), ...]} -> [itemId] = "key=vid,key=vid"
-    flips:    flip dicts, best first -> "id|kind|buyMax|units|cost|relist|profit|roi|risk"
+    flips:    flip dicts, best first -> "id|kind|buyMax|units|cost|relist|profit|roi|risk|usual"
+              (see flip_line; kind is gap, vendor or deal; main picks them with pick_addon_flips)
     None leaves a table out (older callers)."""
     parts = []
     if variants is not None:
@@ -1299,7 +1440,10 @@ def write_flips(out, flips, data_time, meta_of, limit=FLIPS_SITE_MAX):
     """flips.json: {updated, flips: [{id, base, variant, name, quality, cls,
     sub, clsName, subName, clsId, subId, slot, reqlvl, ilvl, kind, buyMax,
     units, cost, relist, profit, roi, risk: [...], listed, auctions, market,
-    sold24, next}, ...]} best first. meta_of(id) -> (meta, name)."""
+    sold24, next, usual}, ...]} best first. kind: gap, vendor or deal; usual:
+    the item's (or version's) 7-day median market value (whole copper, 0
+    when not known).
+    meta_of(id) -> (meta, name)."""
     rows = []
     for f in flips[:limit]:
         m, name = meta_of(f["id"])
@@ -1308,6 +1452,7 @@ def write_flips(out, flips, data_time, meta_of, limit=FLIPS_SITE_MAX):
         for k in ("kind", "buyMax", "units", "cost", "relist", "profit", "roi", "risk",
                   "listed", "auctions", "market", "sold24", "next"):
             r[k] = f[k]
+        r["usual"] = int(f.get("usual") or 0)
         rows.append(r)
     save(os.path.join(out, FLIPS_FILE), {"updated": int(data_time), "flips": rows})
     return len(rows)
@@ -1592,26 +1737,38 @@ def main(out=None):
         vols[k] = sold24
         return h, (lo, hi, listed, nauc, sold24)
 
-    def add_flips(fid, base, key, units, h, now_, vendor=0, gap=True, commodity=False):
+    def add_flips(fid, base, key, units, h, now_, vendor=0, gap=True, commodity=False, quality=""):
+        """Flips of one series. gap: look for a gap flip, and a deal when there is none (False for
+        an item whose listings right now are versions: its prices mix them, its versions are
+        checked on their own). quality: the item's (a version's: its item's) quality.
+        Every flip found, whatever its kind, gets "usual": this series' own 7-day median market
+        value in whole copper, 0 with fewer than FLIP_HIST_MIN_POINTS hours of it (never today's
+        market value, never another series' price), so the field means one thing everywhere."""
         lo, hi, listed, nauc, sold24 = now_
+        cap, usual = history_prices(h, hour)
         found = []
         if vendor:
             found.append(find_vendor_flip(units, vendor))
         if gap:
-            cap, usual = history_prices(h, hour)
-            # the usual price: this series' own 7-day median, else today's market value. Without
-            # 7 days of history find_gap_flip also checks the relist against what is bought (in a
-            # thin market today's market value is the next listing itself, so it never looks far
-            # above). A version never borrows the whole item's price: another version sets that.
+            # a gap flip's spike flag is judged against this series' own 7-day median, else today's
+            # market value. Without 7 days of history find_gap_flip also checks the relist against
+            # what is bought (in a thin market today's market value is the next listing itself, so
+            # it never looks far above). A version never borrows the whole item's price: another
+            # version sets that.
             w = sales_window(h, measured, hour, midx)
             spd = None if w is None else w[0] * 86400.0 / max(w[1], FLIP_SALES_FULL_SECS)
-            g = find_gap_flip(units, commodity, spd, cap, usual or hi,
-                              early=w is not None and w[1] < FLIP_SALES_FULL_SECS)
+            early = w is not None and w[1] < FLIP_SALES_FULL_SECS
+            g = find_gap_flip(units, commodity, spd, cap, usual or hi, early=early)
+            if g is None and usual and not commodity and quality in DEAL_QUALITIES:
+                # no gap flip: a green, blue or epic whose cheapest listings sit well under its own
+                # 7-day median is still a buy (deals need that history: no borrowed prices)
+                g = find_deal_flip(units, usual, spd, cap, early=early, listed_median=history_listed(h, hour))
             if g and key:
                 g["risk"].append("suffix")
             found.append(g)
         for f in found:
             if f:
+                f["usual"] = int(usual) if usual else 0
                 f.update({"id": int(fid), "base": int(base), "variant": key or "", "listed": listed,
                           "auctions": nauc, "market": hi, "sold24": sold24})
                 flips.append(f)
@@ -1622,13 +1779,15 @@ def main(out=None):
         r = series(iid, units, int(sold.get(iid, 0)), meta)
         if r and units:
             add_flips(iid, iid, None, units, r[0], r[1], vendor=int((meta or {}).get("sell") or 0),
-                      gap=iid not in with_versions, commodity=iid in commodity_ids)
+                      gap=iid not in with_versions, commodity=iid in commodity_ids,
+                      quality=(meta or {}).get("quality") or "")
     for vid in seen_vids:
         iid, key, _ = vinfo[vid]
         units = sorted(vper.get(vid, []))
         r = series(vid, units, int(vsold.get(vid, 0)), vmeta(vid), key)
         if r and units:
-            add_flips(vid, iid, key, units, r[0], r[1], gap=True, commodity=iid in commodity_ids)
+            add_flips(vid, iid, key, units, r[0], r[1], gap=True, commodity=iid in commodity_ids,
+                      quality=vmeta(vid).get("quality") or "")
     flips = rank_flips(flips)
 
     def meta_of(eid):
@@ -1690,7 +1849,7 @@ def main(out=None):
             iid, key, _ = vinfo[vid]
             if iid in addon:
                 vtable.setdefault(iid, []).append((key, vid))
-        addon_flips = [f for f in flips if f["id"] in addon][:FLIPS_ADDON_MAX]
+        addon_flips = pick_addon_flips(flips, addon)
 
         def rebuild(eid, days):
             hh = load(os.path.join(hist_dir, f"{eid}.json"), None)

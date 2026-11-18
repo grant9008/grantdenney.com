@@ -1578,7 +1578,7 @@ function ns.SetChartTF(tf)
       Chart:UpdateTFButtons(tf)
     end
   end
-  -- The Best price buttons follow the chart's timeframe: keep their label
+  -- The Suggested price buttons follow the chart's timeframe: keep their label
   -- (and the price they fill) in step with the chart's advice.
   if type(ns.AH_RefreshButtons) == "function" then pcall(ns.AH_RefreshButtons) end
 end

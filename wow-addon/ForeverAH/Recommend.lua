@@ -25,7 +25,7 @@ local ADDON_NAME, ns = ...
 -- and vendorBetter still warns when a vendor pays more than that.
 --
 -- ns.SellPrices (below) gives the sell screen's two buttons and the tooltip's
--- Sell now (1 copper under the cheapest listing) and Best price (the sell
+-- Sell now (1 copper under the cheapest listing) and Suggested price (the sell
 -- target, never under a normal-priced cheapest listing).
 
 ns = ns or {}
@@ -311,7 +311,7 @@ end
 --         is listed (nowWhy "none") or when a few units are listed far above
 --         what a vendor pays, so the cheapest is one player's silly price
 --         (nowWhy "unreliable").
---   best  Best price: the sell target from the price history (Recommend's
+--   best  Suggested price: the sell target from the price history (Recommend's
 --         sell), never under a normal-priced cheapest listing. nil without
 --         enough history (bestWhy "history") or when the price cannot be
 --         trusted (bestWhy "unreliable").

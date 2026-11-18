@@ -42,6 +42,19 @@
     try { if (typeof moneyExact === 'function') return moneyExact(n); } catch (e) {}
     return money(n, true);
   }
+  /* A price to type in game (Buy up to, Relist at, the listing to undercut):
+     every coin, like the game shows it ("312g 50s 49c"). money() rounds to
+     the nearest silver (whole gold from 100g) and moneyExact drops the
+     copper from 100g, so a relist 1c under the next listing could show at
+     or above that listing. Empty values show "-". */
+  function price(n) {
+    if (n == null || isNaN(n) || !(n > 0)) return '-';
+    var a = Math.round(Number(n)), g = Math.floor(a / 10000), s = Math.floor((a % 10000) / 100), c = a % 100, p = [];
+    if (g) p.push(g.toLocaleString() + 'g');
+    if (s) p.push(s + 's');
+    if (c) p.push(c + 'c');
+    return p.join(' ');
+  }
   function pct(roi) {
     if (roi == null || isNaN(roi)) return '-';
     var p = roi / 10;
@@ -153,7 +166,8 @@
     thin: ['Few listings', 'Only a few listings sit above your relist price, so another seller can undercut you quickly.'],
     slow: ['Slow seller', 'Fewer of these sell in a day than you would be buying, or sales have been measured for less than a day. Expect to wait, or to relist.'],
     spike: ['Price spike', 'The relist price is far above what this item usually sells for (or far above what you pay, with only a few listings up there), so it may not sell at that price.'],
-    suffix: ['Check version', 'This gear comes in versions (like "of the Bear") that sell for different prices. Buy the exact version shown.']
+    suffix: ['Check version', 'This gear comes in versions (like "of the Bear") that sell for different prices. Buy the exact version shown.'],
+    unsure: ['Unsure price', 'Most of the time only one of these is up for sale, so its usual price may just be one seller\'s asking price, not what it really sells for.']
   };
   function riskBadges(list) {
     return (list || []).map(function (r) {
@@ -165,6 +179,50 @@
     }).join('');
   }
 
+  /* ---------- flip kinds ---------- */
+  /* [long label, short label (phones), what it means, extra class].
+     gap: buy the cheap listings, relist them under the next one. vendor:
+     listings under what a vendor pays. deal: a green, blue or epic item
+     (gear or not) listed well under its usual price (its 7-day median). Its
+     relist price is never above the usual price, and it is lower when
+     another listing sits in between, so it can be far under it.
+     A kind this page does not know shows as a relist flip. */
+  var KINDS = {
+    gap: ['Buy and relist', 'Relist', 'Buy the cheap listings, then list them again higher', ''],
+    vendor: ['Sell to vendor', 'Vendor', 'Buy them, then sell them to any vendor', 'ahb-kind-v'],
+    deal: ['Under usual price', 'Deal', 'Listed well under its usual price: buy it, then list it again at the Relist at price (never above its usual price)', 'ahb-kind-d']
+  };
+  function kindOf(k) { return KINDS[k] || KINDS.gap; }
+  function kindBadge(x) {
+    var k = kindOf(x.kind);
+    return '<span class="ahb-kind' + (k[3] ? ' ' + k[3] : '') + '" title="' + esc(k[2]) + '"><span class="ahb-long">' + esc(k[0]) +
+      '</span><span class="ahb-short">' + esc(k[1]) + '</span></span>';
+  }
+  /* How far the dearest listing bought sits under the usual price, in whole
+     percent, rounded down so it never says more than it is (0 = unknown). */
+  function underPct(x) {
+    return x.usual > 0 && x.buyMax > 0 && x.buyMax < x.usual ? Math.floor((x.usual - x.buyMax) * 100 / x.usual) : 0;
+  }
+  /* A deal's discount, which is about the price you BUY at: "40% off its
+     usual 2g" ("usual 2g" when it is not under; '' when the usual
+     price is not known, as in flips from an older price job). The usual
+     price shows every coin, like the relist price, so a relist at the usual
+     price never shows above it. */
+  function dealNote(x) {
+    if (!(x.usual > 0)) return '';
+    var p = underPct(x);
+    return (p > 0 ? p + '% off its usual ' : 'usual ') + price(x.usual);
+  }
+  /* What to do, in words: "Under usual price: buy up to 1g 20s (40% off its
+     usual 2g), relist at 1g 95s". The discount sits next to the buy
+     price, the number it is about, not next to the relist price. */
+  function flipAction(x) {
+    var u = x.kind === 'deal' ? dealNote(x) : '';
+    var t = kindOf(x.kind)[0] + ': buy up to ' + price(x.buyMax) + (u ? ' (' + u + ')' : '');
+    if (x.kind !== 'vendor') t += ', relist at ' + price(x.relist);
+    return t;
+  }
+
   /* ---------- state ---------- */
   var saved = recall('ahb_state') || {};
   var S = {
@@ -174,7 +232,7 @@
     lvMin: saved.lvMin != null ? saved.lvMin : '',
     lvMax: saved.lvMax != null ? saved.lvMax : '',
     versions: saved.versions === 'split' ? 'split' : 'group',
-    chip: ['all', 'greens', 'mats', 'vendor'].indexOf(saved.chip) >= 0 ? saved.chip : 'all',
+    chip: ['all', 'deals', 'greens', 'mats', 'vendor'].indexOf(saved.chip) >= 0 ? saved.chip : 'all',
     sortB: saved.sortB && saved.sortB.k ? saved.sortB : { k: 'profit', d: -1 },
     sortF: saved.sortF && saved.sortF.k ? saved.sortF : { k: 'profit', d: -1 },
     q: '',
@@ -244,8 +302,9 @@
       nl: String(f.name || (m && m.name) || '').toLowerCase(),
       q: String(f.quality || (m && m.quality) || 'COMMON').toUpperCase(),
       cat: cat, type: typeText(cat, src), req: num(reqSrc),
-      kind: f.kind === 'vendor' ? 'vendor' : 'gap', risk: risk, sold: sold,
+      kind: f.kind === 'vendor' || f.kind === 'deal' ? f.kind : 'gap', risk: risk, sold: sold,
       buyMax: num(f.buyMax), units: num(f.units), cost: num(f.cost), relist: num(f.relist),
+      usual: Math.max(0, Math.round(num(f.usual))),
       profit: num(f.profit), roi: f.roi != null ? num(f.roi) : (num(f.cost) > 0 ? Math.floor(num(f.profit) * 1000 / num(f.cost)) : 0)
     };
   }
@@ -311,6 +370,7 @@
   function isGreenGear(x) { return x.q === 'UNCOMMON' && (x.cat.c === 'Armor' || x.cat.c === 'Weapon'); }
   function isMaterial(x) { return x.cat.c === 'Trade Goods' || x.cat.c === 'Reagent' || (x.cat.c === 'Miscellaneous' && x.cat.s === 'Reagent'); }
   function passChip(x) {
+    if (S.chip === 'deals') return x.kind === 'deal';
     if (S.chip === 'greens') return isGreenGear(x);
     if (S.chip === 'mats') return isMaterial(x);
     if (S.chip === 'vendor') return x.kind === 'vendor';
@@ -768,8 +828,8 @@
     }
     if (s.n === 1 || s.n === 2) tags += '<span class="ahb-tag ahb-tag-thin" title="Only ' + s.n + (s.n === 1 ? ' listing' : ' listings') +
       ' behind this price, so it can move a lot.">' + s.n + (s.n === 1 ? ' listing' : ' listings') + '</span>';
-    var flipTitle = f ? (f.kind === 'vendor' ? 'Sell to vendor: buy up to ' : 'Buy and relist: buy up to ') + moneyLong(f.buyMax) +
-      ', ' + f.units + ' units' + (r.fromVersion ? ' (a version of this item)' : '') : '';
+    var flipTitle = f ? flipAction(f) + ', ' + count(f.units) + (f.units === 1 ? ' unit' : ' units') +
+      (r.fromVersion ? ' (a version of this item)' : '') : '';
     return '<tr data-id="' + esc(e.id) + '" tabindex="0" class="ahb-row' + (child ? ' ahb-child' : '') + '">' +
       '<td class="ahb-c-item"><div class="ahb-item">' + icon(e.id) +
         '<div class="ahb-nmwrap"><span class="ahb-nm ' + qClass(e.q) + '">' + esc(e.name) + '</span>' +
@@ -799,7 +859,7 @@
   function fVal(x, k) {
     switch (k) {
       case 'name': return x.name.toLowerCase();
-      case 'kind': return x.kind;
+      case 'kind': return kindOf(x.kind)[0].toLowerCase();      // by the name shown in the Kind column
       case 'risk': return x.risk.length;
       case 'relist': return x.kind === 'vendor' ? null : x.relist;
       default: return x[k];
@@ -815,6 +875,9 @@
           '<b>Profit</b> is what you keep once they all sell, after the auction house takes its 5% cut.</li>' +
         '<li><b>Sell to vendor:</b> buy the listings at or under <b>Buy up to</b> and sell them to any vendor. ' +
           'The vendor pays more than they cost, so the profit is locked in as soon as you sell.</li>' +
+        '<li><b>Under usual price:</b> green, blue or epic items listed well under what they usually sell for. Buy them the same way, ' +
+          'then list them again at <b>Relist at</b>. That price is never above the usual price, and it is lower when another listing ' +
+          'sits between your buy price and the usual price, so yours is the cheapest one for sale.</li>' +
         '<li>Prices move all the time. If the cheap listings are already gone when you look, skip that flip. ' +
           'Click a row to see the item\'s price chart first.</li>' +
       '</ol>' +
@@ -826,6 +889,7 @@
   function renderFlipBar() {
     if (S.tab !== 'flips' || !D.flips) { els.ahbFlipBar.innerHTML = ''; return; }
     var chips = [['all', 'All flips', 'Every flip, biggest profit first'],
+      ['deals', 'Deals', 'Greens, blues and epics listed well under their usual price'],
       ['greens', 'Greens', 'Green (uncommon) armor and weapons'],
       ['mats', 'Materials', 'Crafting materials: cloth, herbs, ore, leather and more'],
       ['vendor', 'Vendor flips', 'Listings priced under what a vendor pays for them']];
@@ -862,9 +926,13 @@
       (filterText() ? ' for ' + esc(filterText()) : '') + '</span>' +
       (rows.length ? '<span class="ahb-muted">' + (clean === rows.length ? 'none has a warning'
         : clean ? count(clean) + ' with no warnings' : 'every one has a warning') + '</span>' : '');
-    emptyAndMore(rows.length, shown.length, D.flips.length
-      ? 'No flips match these filters. Try All flips, or Clear filters.'
-      : 'No flips in the latest price update. The list refreshes with every update.');
+    var noDeals = S.chip === 'deals' && !D.flips.some(function (x) { return x.kind === 'deal'; });
+    emptyAndMore(rows.length, shown.length, !D.flips.length
+      ? 'No flips in the latest price update. The list refreshes with every update.'
+      : noDeals
+        ? 'No deals in the latest price update. One shows up here when a green, blue or epic item is listed well under ' +
+          'its usual price. The list refreshes with every update.'
+        : 'No flips match these filters. Try All flips, or Clear filters.');
   }
   function flipRow(x) {
     var tags = '';
@@ -875,26 +943,32 @@
     var f = x.f, bits = [];
     if (x.sold != null) bits.push('about ' + count(x.sold) + ' sold a day');
     if (f.listed != null) bits.push(count(f.listed) + ' listed');
-    if (f.next > 0) bits.push('next listing above ' + moneyLong(f.next));
+    if (f.next > 0) bits.push('next listing above ' + price(f.next));
     if (f.market > 0) bits.push('market ' + moneyLong(f.market));
-    var kind = x.kind === 'vendor'
-      ? '<span class="ahb-kind ahb-kind-v" title="Buy them, then sell them to any vendor"><span class="ahb-long">Sell to vendor</span><span class="ahb-short">Vendor</span></span>'
-      : '<span class="ahb-kind" title="Buy the cheap listings, then list them again higher"><span class="ahb-long">Buy and relist</span><span class="ahb-short">Relist</span></span>';
+    /* Hovering the row says what to do first, then the numbers behind it. */
+    var facts = bits.join(', ');
+    var rowTitle = flipAction(x) + (facts ? '. ' + facts.charAt(0).toUpperCase() + facts.slice(1) : '');
+    /* A deal says how far under its usual price the buy is, under its kind. */
+    var note = x.kind === 'deal' ? dealNote(x) : '';
+    var kind = kindBadge(x) + (note ? '<span class="ahb-kind-note">' + esc(note) + '</span>' : '');
     /* On a phone the table keeps Item, Buy up to and Profit; what to do next
-       (relist price or vendor, how many) and the warnings go under the name. */
+       (relist price or vendor, how many) and the warnings go under the name.
+       A deal's discount comes first, so it is not read as being about the
+       relist price. */
     var mline = '<span class="ahb-fl-m">' +
-      (x.kind === 'vendor' ? '<span>Sell to vendor</span>' : '<span>Relist at <b class="ahb-sell">' + money(x.relist) + '</b></span>') +
+      (x.kind === 'deal' ? '<span class="ahb-under">' + esc(note || 'under its usual price') + '</span>' : '') +
+      (x.kind === 'vendor' ? '<span>Sell to vendor</span>' : '<span>Relist at <b class="ahb-sell">' + price(x.relist) + '</b></span>') +
       '<span class="ahb-muted">' + count(x.units) + ' for ' + money(x.cost) + '</span>' + riskBadges(x.risk) + '</span>';
-    return '<tr data-id="' + esc(x.id) + '" tabindex="0" class="ahb-row"' + (bits.length ? ' title="' + esc(bits.join(', ')) + '"' : '') + '>' +
+    return '<tr data-id="' + esc(x.id) + '" tabindex="0" class="ahb-row" title="' + esc(rowTitle) + '">' +
       '<td class="ahb-c-item"><div class="ahb-item">' + icon(x.id) +
         '<div class="ahb-nmwrap"><span class="ahb-nm ' + qClass(x.q) + '">' + esc(x.name) + '</span>' +
         (tags ? '<span class="ahb-tags">' + tags + '</span>' : '') +
         (x.type ? '<span class="ahb-sub">' + esc(x.type) + (x.req ? ', level ' + x.req : '') + '</span>' : '') + mline + '</div></div></td>' +
       '<td class="ahb-c-kind">' + kind + '</td>' +
-      '<td class="num ahb-buy" title="' + esc(moneyLong(x.buyMax)) + '">' + money(x.buyMax) + '</td>' +
+      '<td class="num ahb-buy">' + price(x.buyMax) + '</td>' +
       '<td class="num ahb-c-units">' + count(x.units) + '</td>' +
       '<td class="num ahb-c-cost" title="' + esc(moneyLong(x.cost)) + '">' + money(x.cost) + '</td>' +
-      '<td class="num ahb-sell ahb-c-relist"' + (x.kind === 'vendor' ? '><span class="ahb-muted">vendor</span>' : ' title="' + esc(moneyLong(x.relist)) + '">' + money(x.relist)) + '</td>' +
+      '<td class="num ahb-sell ahb-c-relist">' + (x.kind === 'vendor' ? '<span class="ahb-muted">vendor</span>' : price(x.relist)) + '</td>' +
       '<td class="num ahb-profit" title="' + esc(moneyLong(x.profit)) + '">' + money(x.profit, true) + '</td>' +
       '<td class="num ahb-c-roi">' + pct(x.roi) + '</td>' +
       '<td class="ahb-c-risk">' + (riskBadges(x.risk) || '<span class="ahb-muted">none</span>') + '</td>' +

@@ -17,7 +17,10 @@ What it does:
      vendor price, the auctions count, the name ("" when unknown) and which
      items are included; versions of items (vids): their names (suffix or
      "(version N)"), the variants table, that the item covers its versions,
-     the flips table (numbers, flags, order) against flips.json, and the new
+     the flips table (numbers, flags, order, the 10th "usual" field, which
+     flips are picked: the best 60 plus extra deals and cheap flips) against
+     flips.json, every flip's usual price (any kind) against its own 7-day
+     history (the median, 0 with under 4 hours of it), and the new
      mapping.json fields,
   4. builds a second, hand-made data set with awkward cases (quotes,
      backslashes, "|" and newlines in names, gaps, sold-only hours, prices at
@@ -28,8 +31,13 @@ What it does:
      unknown item names and their retries, Blizzard's data time, the
      changed=true/false signal for the workflow, the size guard (versions
      first), snapshot flips (a 1c troll, a silly high listing, a deep cheap
-     wall, 1-unit gear, the history cap, thresholds, vendor flips), variant
-     keys, indexes and names, the suffix table and the item details backfill,
+     wall, 1-unit gear, the history cap, thresholds, vendor flips), deals
+     (greens, blues and epics well under their usual price: the 70% line,
+     profit, ROI, units sized by sales, the relist caps, each risk flag, all
+     of them or else the cheapest few that pay, against the rule written out
+     on its own (model_deal) on random books),
+     which flips the addon file gets, variant keys, indexes and names, the
+     suffix table and the item details backfill,
   6. runs the real collector (fetch_ah.main) on hand-made snapshots through a
      fake Blizzard API (no network): first snapshot, no change, an older
      snapshot, a normal hour, a long gap, a collapsed auction count (held
@@ -39,11 +47,20 @@ What it does:
      upgrade from the first real snapshot's files,
   7. runs it again with suffix gear: versions vs the item lumped together,
      sold per version, idle versions, the registry rebuilt from hist files,
-     the upgrade from format 2 state, and an older copy refusing format 3.
+     the upgrade from format 2 state, and an older copy refusing format 3,
+  8. runs it over six hours of a steady market and then cheap listings:
+     deals for a blue, an epic and a green version (with their flags), and
+     for a green whose two cheap listings do not both pay (the cheaper one
+     alone), none for a common item, a commodity, an item whose listings are
+     versions, an item with no history yet, or one that has a gap flip; and a
+     vendor flip's usual price hour by hour (0, then the 7-day median).
+The generated data (step 1) may come from an older collector (9-field flip
+lines, no "usual", no deals): that is checked by the rules of its own format.
 Exit code 0 = everything passed.
 """
 import email.utils
 import json
+import math
 import os
 import random
 import re
@@ -232,34 +249,123 @@ def registry_of(state):
     return out
 
 
-RISKS = {"thin", "slow", "spike", "suffix"}
+RISKS = {"thin", "slow", "spike", "suffix", "unsure"}
+KINDS = ("gap", "vendor", "deal")
 FLIP_FIELDS = ("id", "base", "variant", "name", "quality", "cls", "sub", "clsName", "subName", "slot", "reqlvl",
                "ilvl", "kind", "buyMax", "units", "cost", "relist", "profit", "roi", "risk", "listed", "auctions",
                "market", "sold24", "next")
 INFO_FIELDS = ("quality", "cls", "sub", "lvl", "slot", "ilvl", "reqlvl", "clsName", "subName")
+# the shared contract for deals and for which flips the addon file carries
+DEAL_QUALITIES = {"UNCOMMON", "RARE", "EPIC", "LEGENDARY"}
+DEAL_MIN_PROFIT, DEAL_SHARE_PERMILLE = 2500, 700
+ADDON_TOP, ADDON_DEALS, ADDON_CHEAP, CHEAP_COST = 60, 40, 40, 50000
+SITE_MAX = 400
 
 
 def check_flip_numbers(tag, f, vendor):
-    """C2c arithmetic: profit after the 5% cut (gap) or against the vendor (vendor), roi per mille."""
-    check(f["kind"] in ("gap", "vendor"), f"{tag}: kind {f['kind']!r}")
+    """C2c arithmetic: profit after the 5% cut (gap, deal) or against the vendor (vendor), roi per
+    mille, and the flags each kind may carry. "usual" is checked when the flip has it."""
+    check(f["kind"] in KINDS, f"{tag}: kind {f['kind']!r}")
     check(all(isinstance(f[k], int) and f[k] >= 0 for k in ("buyMax", "units", "cost", "relist", "roi"))
           and f["units"] >= 1 and f["cost"] >= 1, f"{tag}: numbers {f!r}")
-    if f["kind"] == "gap":
-        check(f["profit"] == f["units"] * (f["relist"] * 95 // 100) - f["cost"], f"{tag}: gap profit {f!r}")
+    if f["kind"] in ("gap", "deal"):
+        check(f["profit"] == f["units"] * (f["relist"] * 95 // 100) - f["cost"], f"{tag}: {f['kind']} profit {f!r}")
         check(f["relist"] >= 1 and f["roi"] >= 150, f"{tag}: relist price or roi under 15% {f!r}")
+        # buyMax is the dearest listing's price rounded up: that listing itself makes 15% at the relist
+        check((f["relist"] * 95 // 100) * 1000 >= (f["buyMax"] - 1) * 1150, f"{tag}: dearest listing under 15% {f!r}")
     else:
         check(f["relist"] == 0 and f["profit"] == f["units"] * vendor - f["cost"], f"{tag}: vendor profit {f!r}")
         check("suffix" not in f["risk"], f"{tag}: vendor flips are for the whole item")
+    if f["kind"] == "deal":
+        check(f["profit"] >= DEAL_MIN_PROFIT and "spike" not in f["risk"], f"{tag}: deal under 25s or spiked {f!r}")
+    else:
+        check("unsure" not in f["risk"], f"{tag}: only deals are unsure {f!r}")
+    if "usual" in f:
+        # every kind: the 7-day median or 0 (checked against the history in run_checks)
+        check(isinstance(f["usual"], int) and f["usual"] >= 0, f"{tag}: usual {f!r}")
+        if f["kind"] == "deal":
+            check(f["usual"] >= 1 and f["relist"] <= f["usual"]
+                  and (f["buyMax"] - 1) * 1000 < DEAL_SHARE_PERMILLE * (f["usual"] + 1),
+                  f"{tag}: a deal buys under 70% of its usual price and relists at most at it {f!r}")
     check(f["profit"] > 0 and f["roi"] == f["profit"] * 1000 // f["cost"], f"{tag}: roi {f!r}")
     check(set(f["risk"]) <= RISKS and len(set(f["risk"])) == len(f["risk"]), f"{tag}: risk flags {f['risk']!r}")
 
 
 def parse_flip(s):
+    """An addon flip line: 10 fields now (id|kind|buyMax|units|cost|relist|profit|roi|risk|usual),
+    9 in files from before "usual" (then the result has no "usual")."""
     p = s.split("|")
-    check(len(p) == 9, f"flip line {s!r} has {len(p)} fields, not 9")
+    check(len(p) in (9, 10), f"flip line {s!r} has {len(p)} fields, not 9 or 10")
+    check(all(re.match(r"^\d+$", x) for x in p[:1] + p[2:8] + p[9:]), f"flip line {s!r}: numbers")
     nums = [int(x) for x in (p[0], p[2], p[3], p[4], p[5], p[6], p[7])]
-    return {"id": nums[0], "kind": p[1], "buyMax": nums[1], "units": nums[2], "cost": nums[3], "relist": nums[4],
-            "profit": nums[5], "roi": nums[6], "risk": [r for r in p[8].split(",") if r]}
+    out = {"id": nums[0], "kind": p[1], "buyMax": nums[1], "units": nums[2], "cost": nums[3], "relist": nums[4],
+           "profit": nums[5], "roi": nums[6], "risk": [r for r in p[8].split(",") if r], "nfields": len(p)}
+    if len(p) == 10:
+        out["usual"] = int(p[9])
+    return out
+
+
+def py_median(vals):
+    """The middle of sorted values (the mean of the two middle ones for an even count)."""
+    n = len(vals)
+    return vals[n // 2] if n % 2 else (vals[n // 2 - 1] + vals[n // 2]) / 2
+
+
+def week_points(h, hour):
+    """The hourly points a usual price comes from: the last 7 days, with a market value."""
+    return [p for p in h["h"] if hour - 168 * 3600 < p[0] <= hour and p[2] > 0]
+
+
+def model_deal(book, usual, sold_day=None, cap=None):
+    """The deal rule written out on its own, to hold find_deal_flip to it (book: [(unit price,
+    qty)] sorted). Take the listings at most 70% of the usual price, cheapest first, while they fit
+    in a day of sales (at least 1; 1 when sales are unknown). Buying the first k of them: relist at
+    the lowest of the usual price, the 7-day cap and 1c under listing k+1; it must make 25s and
+    15%, and listing k on its own 15% after the 5% cut. All of them whenever that passes ("all");
+    only when it does not, the k fewer than all that passes with the most profit, the most
+    listings on a tie ("fewer"). (units, buyMax, relist, profit, how) or None."""
+    if not usual or usual <= 0 or not book:
+        return None
+    room = 1 if sold_day is None else max(1, int(sold_day + 1e-9))
+    take, got = 0, 0
+    for p, q in book:
+        if p * 1000 > 700 * usual or got + q > room:
+            break
+        take += 1
+        got += q
+
+    def buy_first(k):
+        units = sum(q for _, q in book[:k])
+        cost = max(1, int(round(sum(p * q for p, q in book[:k]))))
+        relist = min([int(usual)] + ([int(cap)] if cap else []) + ([math.ceil(book[k][0]) - 1] if k < len(book) else []))
+        paid = relist * 95 // 100
+        profit = units * paid - cost
+        if relist < 1 or profit < 2500 or profit * 1000 < 150 * cost or paid * 1000 < book[k - 1][0] * 1150:
+            return None
+        return units, math.ceil(book[k - 1][0]), relist, profit
+
+    if not take:
+        return None
+    whole = buy_first(take)
+    if whole:
+        return whole + ("all",)
+    fewer = [f for f in (buy_first(k) for k in range(take - 1, 0, -1)) if f]
+    if not fewer:
+        return None
+    best = max(fewer, key=lambda f: (f[3], f[0]))
+    return best + ("fewer",)
+
+
+def expected_addon_pick(cand):
+    """Contract: the best 60 (cand is best first and only ids with a line), plus up to 40 deals
+    and then up to 40 flips costing at most 5g that are not in yet, in rank order."""
+    pick = set(range(min(len(cand), ADDON_TOP)))
+    for wanted, room in ((lambda r: r["kind"] == "deal", ADDON_DEALS), (lambda r: r["cost"] <= CHEAP_COST, ADDON_CHEAP)):
+        for i, r in enumerate(cand):
+            if room and i not in pick and wanted(r):
+                pick.add(i)
+                room -= 1
+    return [r for i, r in enumerate(cand) if i in pick]
 
 
 # -- checks -------------------------------------------------------------------
@@ -365,7 +471,10 @@ def load_json(path, default=None):
         return json.load(fh)
 
 
-def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False):
+def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False, current=True):
+    """current: the data comes from this collector (10-field flip lines, "usual", deals, the
+    addon's extra flips). None = tell from the files (the generated data may come from an older
+    collector: 9-field flip lines, no "usual", the best 60 flips only)."""
     path = os.path.join(data_dir, "ForeverAH_Data.lua")
     lua, db, raw = load_lua(path)
     items_meta = load_json(os.path.join(data_dir, "items.json"), {})
@@ -532,7 +641,7 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
         check(it["listed"] >= sum(d["listed"] for d in mine) and it["auctions"] >= sum(d["auctions"] for d in mine),
               f"{label}: item {base} lists fewer units than its versions")
 
-    # C2c: flips = { "id|kind|buyMax|units|cost|relist|profit|roi|risk", ... } best first
+    # C2c: flips = { "id|kind|buyMax|units|cost|relist|profit|roi|risk|usual", ... } best first
     ft = db["flips"]
     flips = []
     if ft is not None:
@@ -540,34 +649,80 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
         while ft[n + 1] is not None:
             n += 1
             flips.append(parse_flip(str(ft[n])))
-        check(n <= 60, f"{label}: {n} flips in the addon file (at most 60)")
+    site = load_json(os.path.join(data_dir, "flips.json"))
+    rows = site["flips"] if site is not None else []
+    nfields = {f["nfields"] for f in flips}
+    check(len(nfields) <= 1, f"{label}: flip lines with {sorted(nfields)} fields in one file")
+    if current is None:                 # an older collector wrote 9 fields and no "usual"
+        current = nfields == {10} or (not flips and any("usual" in r for r in rows))
+    if current:
+        check(nfields <= {10} and all("usual" in r for r in rows),
+              f"{label}: this collector writes 10-field flip lines and flips.json rows with a usual price")
+    else:
+        check(nfields <= {9} and not any(r["kind"] == "deal" or "usual" in r for r in rows + flips),
+              f"{label}: an older file has no deals and no usual prices")
+    most = ADDON_TOP + ADDON_DEALS + ADDON_CHEAP if current else ADDON_TOP
+    check(len(flips) <= most, f"{label}: {len(flips)} flips in the addon file (at most {most})")
     for i, fl in enumerate(flips):
         tag = f"{label} flip {i + 1}"
         check(fl["id"] in got_ids, f"{tag}: id {fl['id']} has no line")
-        check(("suffix" in fl["risk"]) == (fl["id"] in vinfo and fl["kind"] == "gap"), f"{tag}: suffix flag {fl!r}")
-        check(not (fl["kind"] == "gap" and fl["id"] in listed_v.values()),
-              f"{tag}: a gap flip on item {fl['id']} lumps its versions together")
-        check(fl["kind"] == "gap" or fl["id"] not in vinfo, f"{tag}: vendor flips are for items")
+        check(("suffix" in fl["risk"]) == (fl["id"] in vinfo and fl["kind"] in ("gap", "deal")),
+              f"{tag}: suffix flag {fl!r}")
+        check(not (fl["kind"] in ("gap", "deal") and fl["id"] in listed_v.values()),
+              f"{tag}: a {fl['kind']} flip on item {fl['id']} lumps its versions together")
+        check(fl["kind"] != "vendor" or fl["id"] not in vinfo, f"{tag}: vendor flips are for items")
         check_flip_numbers(tag, fl, py_decode(lua_items[fl["id"]])["vendor"])
         if i:
             check(flips[i - 1]["profit"] >= fl["profit"], f"{tag}: not sorted by profit")
-    site = load_json(os.path.join(data_dir, "flips.json"))
     if site is not None:
-        rows = site["flips"]
-        check(site["updated"] == updated and len(rows) <= 400, f"{label}: flips.json header")
+        check(site["updated"] == updated and len(rows) <= SITE_MAX, f"{label}: flips.json header")
         for i, r in enumerate(rows):
+            tag = f"{label} flips.json {i}"
             check(all(k in r for k in FLIP_FIELDS) and isinstance(r["risk"], list), f"{label}: flips.json row {r!r}")
             base_meta, want = meta_for(r["id"])
             check(r["name"] == want.replace("/", "|") or r["name"] == want, f"{label}: flips.json name {r['name']!r}")
             check(r["base"] == (vinfo[r["id"]][0] if r["id"] in vinfo else r["id"])
                   and r["variant"] == (vinfo[r["id"]][1] if r["id"] in vinfo else ""), f"{label}: flips.json base {r!r}")
-            check_flip_numbers(f"{label} flips.json {i}", r, int(base_meta.get("sell") or 0))
+            check_flip_numbers(tag, r, int(base_meta.get("sell") or 0))
             if i:
                 check(rows[i - 1]["profit"] >= r["profit"], f"{label}: flips.json not sorted")
-        short = [(r["id"], r["kind"], r["buyMax"], r["units"], r["cost"], r["relist"], r["profit"], r["roi"], r["risk"])
-                 for r in rows if r["id"] in got_ids][:60]
-        check(short == [(f["id"], f["kind"], f["buyMax"], f["units"], f["cost"], f["relist"], f["profit"], f["roi"],
-                         f["risk"]) for f in flips], f"{label}: the addon flips are not the top of flips.json")
+            if r["kind"] == "deal":
+                check(base_meta.get("quality") in DEAL_QUALITIES and r["quality"] == base_meta.get("quality"),
+                      f"{tag}: deals are for greens, blues and epics {r!r}")
+            if not current or r["id"] not in hists:
+                continue
+            # the usual price of every flip, whatever its kind, against the series' own 7-day
+            # history: the median market value, 0 with fewer than 4 hours of it (never today's
+            # market value, which a gap flip without history is only judged with)
+            week = week_points(hists[r["id"]], hour_end)
+            if r["kind"] == "deal":
+                check(len(week) >= fetch_ah.FLIP_HIST_MIN_POINTS, f"{tag}: a deal without 4 hours of history {r!r}")
+            if len(week) >= fetch_ah.FLIP_HIST_MIN_POINTS:
+                med = py_median(sorted(p[2] for p in week))
+                check(r["usual"] == int(med), f"{tag}: usual {r['usual']} is not the 7-day median {med}")
+                if r["kind"] == "deal":
+                    check((r["buyMax"] - 1) * 1000 < DEAL_SHARE_PERMILLE * med,
+                          f"{tag}: bought above 70% of the usual price {r!r}")
+                    lmed = py_median(sorted(p[3] for p in week))
+                    check(("unsure" in r["risk"]) == (lmed < 2),
+                          f"{tag}: unsure flag {r['risk']!r}, 7-day median listed {lmed}")
+            else:
+                check(r["usual"] == 0, f"{tag}: under 4 hours of history: no usual price, 0 ({len(week)} points) {r!r}")
+
+        def key(f):
+            return (f["id"], f["kind"], f["buyMax"], f["units"], f["cost"], f["relist"], f["profit"], f["roi"],
+                    f["risk"], f.get("usual"))
+        cand = [r for r in rows if r["id"] in got_ids]
+        got_keys = [key(f) for f in flips]
+        if not current:
+            check(got_keys == [key(r) for r in cand[:ADDON_TOP]], f"{label}: the addon flips are not the top of flips.json")
+        elif len(rows) < SITE_MAX:
+            check(got_keys == [key(r) for r in expected_addon_pick(cand)],
+                  f"{label}: the addon flips are not the best 60 plus the extra deals and cheap flips of flips.json")
+        else:   # flips.json stops at 400: extra deals and cheap flips further down are only in the addon file
+            check(got_keys[:ADDON_TOP] == [key(r) for r in cand[:ADDON_TOP]]
+                  and all(f["kind"] == "deal" or f["cost"] <= CHEAP_COST for f in flips[ADDON_TOP:]),
+                  f"{label}: the addon flips are not the best 60 of flips.json plus deals and cheap flips")
 
     if not quiet:
         print(f"  {label}: {len(got_ids)} lines ({len(vids_here)} versions), {points} points checked, "
@@ -1075,12 +1230,225 @@ def flip_tests():
           {"id": 3, "kind": "gap", "profit": 900, "roi": 160}]
     check([x["id"] for x in fetch_ah.rank_flips(fl)] == [3, 1, 2], "flips: most profit, then best ROI")
     line = fetch_ah.flip_line({"id": 9860003, "kind": "gap", "buyMax": 7000, "units": 1, "cost": 7000,
-                               "relist": 23583, "profit": 15403, "roi": 2200, "risk": ["thin", "suffix"]})
-    check(line == "9860003|gap|7000|1|7000|23583|15403|2200|thin,suffix", f"flip line {line!r}")
-    check(parse_flip(line)["risk"] == ["thin", "suffix"], "flip line parses")
+                               "relist": 23583, "profit": 15403, "roi": 2200, "risk": ["thin", "suffix"],
+                               "usual": 23900})
+    check(line == "9860003|gap|7000|1|7000|23583|15403|2200|thin,suffix|23900", f"flip line {line!r}")
+    check(parse_flip(line)["risk"] == ["thin", "suffix"] and parse_flip(line)["usual"] == 23900, "flip line parses")
+    line = fetch_ah.flip_line({"id": 5, "kind": "vendor", "buyMax": 9, "units": 40, "cost": 340, "relist": 0,
+                               "profit": 180, "roi": 529, "risk": []})
+    check(line == "5|vendor|9|40|340|0|180|529||0", f"no usual price: 0 in the 10th field, an empty risk field ({line!r})")
+    line = fetch_ah.flip_line({"id": 7, "kind": "deal", "buyMax": 12000, "units": 1, "cost": 12000, "relist": 39999,
+                               "profit": 25999, "roi": 2166, "risk": ["slow", "unsure"], "usual": 41000.5})
+    check(line == "7|deal|12000|1|12000|39999|25999|2166|slow,unsure|41000", f"deal line, usual in whole copper {line!r}")
+    old = "9860003|gap|7000|1|7000|23583|15403|2200|thin,suffix"
+    check(line.split("|")[:9] == "7|deal|12000|1|12000|39999|25999|2166|slow,unsure".split("|")
+          and "usual" not in parse_flip(old) and parse_flip(old)["nfields"] == 9,
+          "an older addon copy reads the same 9 fields first; an older file's 9-field line still parses")
     for name in dir(fetch_ah):
-        if name.startswith("FLIP_"):
+        if name.startswith(("FLIP_", "FLIPS_", "DEAL_")) and name != "DEAL_QUALITIES":
             check(isinstance(getattr(fetch_ah, name), (int, float, str)), f"{name} is a named constant")
+
+
+def deal_tests():
+    """Deals: a green, blue or epic whose cheapest listings sit well under its usual price."""
+    deal = fetch_ah.find_deal_flip
+    check((fetch_ah.DEAL_MAX_SHARE, fetch_ah.DEAL_MIN_PROFIT, fetch_ah.DEAL_UNSURE_LISTED) == (0.70, 2500, 2)
+          and set(fetch_ah.DEAL_QUALITIES) == DEAL_QUALITIES and fetch_ah.FLIP_HIST_MIN_POINTS == 4
+          and fetch_ah.FLIP_MIN_LEFT == 2 and fetch_ah.FLIP_MIN_ROI_PERMILLE == 150, "deal limits (the shared contract)")
+    # a clear deal: a blue that usually goes for 4.1g listed at 1.2g, three normal ones above it
+    book = [(12000, 1), (40000, 1), (41000, 1), (42000, 1)]
+    f = deal(book, 41000, sold_day=2.0, hist_cap=45000, listed_median=3)
+    check(f == {"kind": "deal", "buyMax": 12000, "units": 1, "cost": 12000, "relist": 39999, "profit": 25999,
+                "roi": 2166, "risk": [], "next": 40000, "usual": 41000}, f"a clear deal {f!r}")
+    check(deal(book, None, sold_day=2.0, listed_median=3) is None and deal(book, 0, sold_day=2.0) is None
+          and deal([], 41000) is None, "no usual price (under 4 hours of history) or nothing listed: no deal")
+    # the 70% line, in whole copper (0.7 x 41000 is 28699.999... in floating point)
+    f = deal([(28700, 1), (41000, 1), (42000, 1)], 41000, sold_day=1.0, listed_median=3)
+    check(f and f["buyMax"] == 28700 and f["relist"] == 40999, f"exactly 70% of the usual price is a deal ({f!r})")
+    check(deal([(28701, 1), (41000, 1), (42000, 1)], 41000, sold_day=1.0, listed_median=3) is None,
+          "1c above 70% of the usual price: no deal")
+    check(deal([(70001, 1), (100000, 1), (101000, 1)], 100000, sold_day=1.0, listed_median=3) is None
+          and deal([(70000, 1), (100000, 1), (101000, 1)], 100000, sold_day=1.0, listed_median=3) is not None,
+          "just above 70%: none, at 70%: a deal")
+    # at least 25s profit: 9,499c after the cut on a 9,999c relist
+    check(deal([(6999, 1), (10000, 1), (10100, 1)], 10000, sold_day=1.0, listed_median=3)["profit"] == 2500,
+          "25s profit is enough")
+    check(deal([(7000, 1), (10000, 1), (10100, 1)], 10000, sold_day=1.0, listed_median=3) is None,
+          "24s 99c profit: no deal")
+    check(deal([(1000, 1), (3000, 1), (3100, 1)], 3000, sold_day=1.0, listed_median=3) is None,
+          "a cheap green that makes 18s: no deal")
+    # ROI 15%, and the dearest listing bought makes 15% on its own: 4g bought, relisted at 4.8422g
+    f = deal([(40000, 1), (48423, 1), (49000, 1)], 60000, sold_day=1.0, listed_median=3)
+    check(f and (f["relist"], f["profit"], f["roi"]) == (48422, 6000, 150), f"exactly 15% is a deal ({f!r})")
+    check(deal([(40000, 1), (48422, 1), (49000, 1)], 60000, sold_day=1.0, listed_median=3) is None,
+          "14.99% (the next listing 1c lower) is no deal")
+    # units: at most a day of sales (at least 1), cheapest first
+    book = [(10000, 1), (30000, 1), (60000, 1), (100000, 1), (101000, 1)]
+    f = deal(book, 100000, sold_day=0.4, listed_median=3)
+    check(f and (f["units"], f["relist"], f["next"], f["risk"]) == (1, 29999, 30000, ["slow"]),
+          f"under 1 sold a day: 1 unit, relisted under the next listing, slow ({f!r})")
+    f = deal(book, 100000, sold_day=2.5, listed_median=3)
+    check(f and (f["units"], f["cost"], f["relist"], f["profit"], f["risk"]) == (2, 40000, 59999, 73998, []),
+          f"2.5 sold a day: the 2 cheapest ({f!r})")
+    f = deal(book, 100000, sold_day=5.0, listed_median=3)
+    check(f and (f["units"], f["cost"], f["buyMax"], f["relist"], f["next"]) == (3, 100000, 60000, 99999, 100000),
+          f"5 sold a day: every listing under 70% (3), not the ones above ({f!r})")
+    f = deal(book, 100000, sold_day=None, listed_median=3)
+    check(f and f["units"] == 1 and f["risk"] == ["slow"], f"sales unknown: 1 unit, slow ({f!r})")
+    f = deal(book, 100000, sold_day=3.0, listed_median=3, early=True)
+    check(f and f["units"] == 3 and f["risk"] == ["slow"], f"measured for under a day: slow ({f!r})")
+    f = deal(book, 100000, sold_day=2.0, listed_median=3)
+    check(f and f["units"] == 2 and "slow" not in f["risk"], f"2 a day, 2 bought: not slow ({f!r})")
+    check(deal([(10000, 3), (50000, 1), (51000, 1)], 50000, sold_day=1.0, listed_median=3) is None,
+          "a stack of 3 when 1 sells a day: a listing is never split, so no deal")
+    check(deal([(10000, 1), (10000, 1), (50000, 1)], 50000, sold_day=None, listed_median=3) is None,
+          "two equal cheap listings, 1 can be bought: relisting under the other one loses, so no deal")
+    # the relist price: under the next listing, never above the usual price or the 7-day 90th percentile
+    f = deal([(10000, 1), (200000, 1), (210000, 1)], 50000, sold_day=1.0, listed_median=3)
+    check(f and f["relist"] == 50000 and f["next"] == 200000, f"a far higher next listing: relist at the usual price ({f!r})")
+    f = deal([(10000, 1), (200000, 1), (210000, 1)], 50000.5, sold_day=1.0, listed_median=3)
+    check(f and f["relist"] == 50000 and f["usual"] == 50000, f"usual price in whole copper ({f!r})")
+    f = deal([(10000, 1), (200000, 1), (210000, 1)], 50000, sold_day=1.0, hist_cap=45000, listed_median=3)
+    check(f and f["relist"] == 45000 and f["usual"] == 50000, f"capped by the 7-day 90th percentile ({f!r})")
+    f = deal([(10000, 1), (30000, 1), (210000, 1)], 50000, sold_day=1.0, hist_cap=45000, listed_median=3)
+    check(f and f["relist"] == 29999, f"capped by the next listing ({f!r})")
+    f = deal([(10000, 1)], 50000, sold_day=1.0, listed_median=3)
+    check(f and (f["relist"], f["next"], f["risk"]) == (50000, 0, ["thin"]),
+          f"nothing listed above: relist at the usual price, thin ({f!r})")
+    # buying all of them would not pay (the next listing sits right above the dearer one): the cheaper one alone
+    f = deal([(20000, 1), (68000, 1), (72000, 1), (100000, 1), (101000, 1)], 100000, sold_day=3.0, listed_median=3)
+    check(f and (f["units"], f["buyMax"], f["relist"], f["profit"]) == (1, 20000, 67999, 44599),
+          f"the cheapest few that pay ({f!r})")
+    # on purpose (the decided rule, not only what buying all of them gives): both under 7g would be
+    # relisted at 7.1999g, which pays the 6.8g one 6.8399g after the cut, under 15%. Without the
+    # fallback the 2g listing of a 10g item would get no buy at all
+    bk = [(20000, 1), (68000, 1), (72000, 1)]
+    f = deal(bk, 100000, sold_day=3.0, hist_cap=100000, listed_median=3)
+    check(fetch_ah.after_cut(71999) * 1000 < 68000 * 1150 and model_deal(bk, 100000, 3.0, 100000)
+          == (1, 20000, 67999, 44599, "fewer") and f and (f["units"], f["buyMax"], f["relist"], f["profit"],
+                                                         f["next"], f["risk"]) == (1, 20000, 67999, 44599, 68000, []),
+          f"buying both fails the 15% rule: the 2g one alone, relisted under the 6.8g one ({f!r})")
+    # whenever buying all of them passes, all of them are bought
+    bk = [(20000, 1), (60000, 1), (90000, 1), (95000, 1)]
+    f = deal(bk, 100000, sold_day=3.0, listed_median=3)
+    check(model_deal(bk, 100000, 3.0) == (2, 60000, 89999, 2 * 85499 - 80000, "all")
+          and f and (f["units"], f["buyMax"], f["relist"]) == (2, 60000, 89999), f"all of them when that passes ({f!r})")
+    # all 3 under 7g fail (the 6g one relisted at 6.5999g), so fewer: the 2 cheapest make the most (1 alone less)
+    bk = [(10000, 1), (20000, 1), (60000, 1), (66000, 1), (90000, 1)]
+    f = deal(bk, 100000, sold_day=3.0, listed_median=3)
+    check(model_deal(bk, 100000, 3.0) == (2, 20000, 59999, 2 * 56999 - 30000, "fewer")
+          and f and (f["units"], f["buyMax"], f["relist"], f["profit"]) == (2, 20000, 59999, 83998),
+          f"the fewer with the most profit ({f!r})")
+    # risk flags
+    f = deal([(10000, 1), (60000, 1)], 50000, sold_day=1.0, listed_median=3)
+    check(f and f["risk"] == ["thin"], f"one listing left above: thin ({f!r})")
+    f = deal([(10000, 1), (60000, 1), (61000, 1)], 50000, sold_day=1.0, listed_median=3)
+    check(f and f["risk"] == [], f"two listings left above: not thin ({f!r})")
+    f = deal([(10000, 1), (60000, 1), (61000, 1)], 50000, sold_day=1.0, listed_median=1.5)
+    check(f and f["risk"] == ["unsure"], f"usually 1 listed: the usual price may be one seller's ask ({f!r})")
+    f = deal([(10000, 1), (60000, 1), (61000, 1)], 50000, sold_day=1.0, listed_median=2)
+    check(f and f["risk"] == [], f"usually 2 listed: sure ({f!r})")
+    f = deal([(10000, 1), (60000, 1)], 50000, sold_day=None, listed_median=None)
+    check(f and f["risk"] == ["thin", "slow", "unsure"], f"every flag at once ({f!r})")
+    rnd = random.Random(11)
+    for _ in range(3000):
+        usual = rnd.randint(3000, 400000)
+        bk = sorted((rnd.choice((rnd.randint(1, usual), rnd.randint(usual // 2, usual * 2))), rnd.choice((1, 1, 1, 2)))
+                    for _ in range(rnd.randint(1, 8)))
+        spd = rnd.choice((None, 0.0, 0.5, 1.0, 2.0, 4.5))
+        cap = rnd.choice((None, rnd.randint(usual // 2, usual * 2)))
+        f = deal(bk, usual, sold_day=spd, hist_cap=cap, listed_median=rnd.choice((None, 1, 3)))
+        if not f:
+            continue
+        lim = 1 if spd is None else max(1, int(spd))
+        k = next(i for i in range(len(bk) + 1) if sum(q for _, q in bk[:i]) == f["units"])
+        ok = (all(p * 1000 <= 700 * usual for p, _ in bk[:k]) and f["units"] <= lim and f["relist"] <= usual
+              and (cap is None or f["relist"] <= cap) and (k == len(bk) or f["relist"] < bk[k][0])
+              and f["profit"] >= 2500 and f["profit"] * 1000 >= 150 * f["cost"]
+              and fetch_ah.after_cut(f["relist"]) * 1000 >= bk[k - 1][0] * 1150)
+        check(ok, f"random books: a deal breaks the rules {bk!r} usual {usual} spd {spd} cap {cap}: {f!r}")
+    # the whole rule, against model_deal on random books: fractions of a copper (stacks), x.5 usual
+    # prices, listings on and just above the 70% line, every kind of sales (unknown, none, under 1 a
+    # day, fractions) and 7-day caps. Both ways must come up: all of them, and fewer
+    rnd = random.Random(29)
+    ways = Counter()
+    for _ in range(20000):
+        base = rnd.randint(3000, 400000)
+        usual = base + rnd.choice((0, 0, 0.5))
+        line = base * 7 // 10
+        bk = []
+        for _ in range(rnd.randint(1, 8)):
+            q = rnd.choice((1, 1, 1, 2, 3))
+            p = rnd.choice((rnd.randint(1, base), rnd.randint(base // 2, base), rnd.randint(line - 2, line + 2),
+                            rnd.randint(line, line * 6 // 5), rnd.randint(base, base * 2)))
+            if q > 1 and rnd.random() < 0.3:
+                p += rnd.choice((1, 2)) / q              # a stack whose unit price is a fraction of a copper
+            bk.append((p, q))
+        bk.sort()
+        spd = rnd.choice((None, 0.0, 0.5, 1.0, 1.999999, 2.0, 2.5, 3.0, 4.5, 8.0))
+        cap = rnd.choice((None, None, 0, rnd.randint(base // 2, base * 2)))
+        f = deal(bk, usual, sold_day=spd, hist_cap=cap, listed_median=3)
+        want = model_deal(bk, usual, spd, cap)
+        got = f and (f["units"], f["buyMax"], f["relist"], f["profit"])
+        check(got == (want[:4] if want else None),
+              f"the deal rule: {bk!r} usual {usual} spd {spd} cap {cap}: got {f!r}, the rule says {want!r}")
+        ways[want[4] if want else "none"] += 1
+    check(ways["all"] >= 1000 and ways["fewer"] >= 300, f"random books: both ways tested {dict(ways)}")
+    # the usual price, and how many were listed, over the 7-day hourly points with a market value
+    hour = 1794934800
+    H = 3600
+    h = {"h": [[hour - 200 * H, 1, 99999, 9, 0]] + [[hour - k * H, 10, 41000 + k, 1 + k % 2, 0] for k in range(5, 0, -1)]
+         + [[hour - 3 * H + 1800, 0, 0, 0, 0], [hour - 2 * H + 1800, 0, 0, 0, 0], [hour, 12000, 40000, 4, 0]]}
+    check(fetch_ah.history_listed(h, hour) == 2 and fetch_ah.history_prices(h, hour)[1] == 41002.5,
+          "listed and usual: the same 7-day points with a market value (older and empty points left out: "
+          "with the 2 empty hours the median listed would be 1.5)")
+    check(fetch_ah.history_listed({"h": h["h"][-4:]}, hour) is None, "under 4 points with a price: unknown")
+
+
+def pick_tests():
+    """Which flips the addon file carries: the best 60, plus deals and cheap flips not in yet."""
+    check((fetch_ah.FLIPS_ADDON_MAX, fetch_ah.FLIPS_ADDON_DEALS, fetch_ah.FLIPS_ADDON_CHEAP, fetch_ah.FLIP_CHEAP_COST)
+          == (ADDON_TOP, ADDON_DEALS, ADDON_CHEAP, CHEAP_COST), "addon flip limits (the shared contract)")
+    fl = []
+
+    def add(n, kind, cost, line=True):
+        for _ in range(n):
+            fl.append({"id": (len(fl) + 1) if line else 99999, "kind": kind, "cost": cost,
+                       "profit": 10 ** 7 - len(fl), "roi": 100})
+    add(1, "gap", 1000, line=False)     # no item line: never carried, takes no place
+    add(50, "gap", 200000)              # ids 2..51 \
+    add(5, "deal", 300000)              # 52..56     > the best 60 (their deals and cheap flips use no extra room)
+    add(5, "gap", 10000)                # 57..61    /
+    add(30, "gap", 300000)              # 62..91: dear, not deals: left out
+    add(3, "deal", 20000)               # 92..94: deals (cheap too): the first 3 extra deals
+    add(42, "deal", 100000)             # 95..136: 37 more extra deals (95..131), then no room: left out
+    add(45, "gap", 50000)               # 137..181: exactly 5g is cheap: the 40 cheap flips (137..176)
+    add(5, "gap", 50001)                # 182..186: 1c over 5g: left out
+    random.Random(3).shuffle(fl)
+    fl = fetch_ah.rank_flips(fl)
+    lines = set(range(1, 200))
+    got = fetch_ah.pick_addon_flips(fl, lines)
+    want = list(range(2, 62)) + list(range(92, 132)) + list(range(137, 177))
+    check([f["id"] for f in got] == want, f"picked {[f['id'] for f in got]}")
+    check(len(got) == 140 and len({id(f) for f in got}) == 140, "60 + 40 + 40, none twice")
+    check(got == [f for f in fl if f in got], "kept in rank order")
+    check(got == expected_addon_pick([f for f in fl if f["id"] in lines]), "the same as the test's own copy of the rule")
+    few = fl[:20]
+    check(fetch_ah.pick_addon_flips(few, lines) == [f for f in few if f["id"] in lines], "fewer than 60: all of them")
+    check(fetch_ah.pick_addon_flips(fl, {}) == [], "no item lines: none")
+    # flips.json: every row has its usual price, 0 when the flip has none
+    tmp = tempfile.mkdtemp(prefix="fah_flipsjson_")
+    try:
+        base = {"base": 7, "variant": "", "listed": 4, "auctions": 4, "market": 40000, "sold24": 0, "next": 40000,
+                "buyMax": 12000, "units": 1, "cost": 12000, "relist": 39999, "profit": 25999, "roi": 2166}
+        rows = [dict(base, id=7, kind="deal", risk=["slow"], usual=41000),
+                dict(base, id=8, kind="gap", risk=[], usual=40000.5), dict(base, id=9, kind="vendor", risk=[])]
+        n = fetch_ah.write_flips(tmp, rows, 1794934800, lambda i: ({"name": "N%d" % i, "quality": "RARE"}, "N%d" % i))
+        out = load_json(os.path.join(tmp, "flips.json"))
+        check(n == 3 and [(r["kind"], r.get("usual")) for r in out["flips"]] == [("deal", 41000), ("gap", 40000), ("vendor", 0)]
+              and all(isinstance(r["usual"], int) for r in out["flips"]), f"flips.json usual {out['flips']!r}")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def variant_tests():
@@ -1238,7 +1606,7 @@ def size_vid_tests():
         lua, db, raw = load_lua(os.path.join(tmp, "ForeverAH_Data.lua"))
         text = raw.decode("utf-8")
         check(text.index("variants = {") < text.index("flips = {") < text.index("items = {"), "tables before items")
-        check(db.variants[1] == "12722=1001,12718=1002" and db.flips[1] == "1001|gap|5|1|5|99|89|17800|suffix"
+        check(db.variants[1] == "12722=1001,12718=1002" and db.flips[1] == "1001|gap|5|1|5|99|89|17800|suffix|0"
               and db.flips[2] is None and db["items"][1001] is not None, "tables read back in Lua")
     finally:
         shutil.rmtree(tmp, ignore_errors=True)
@@ -1250,6 +1618,8 @@ def unit_tests():
     name_and_time_tests()
     size_tests()
     flip_tests()
+    deal_tests()
+    pick_tests()
     variant_tests()
     meta_tests()
     size_vid_tests()
@@ -1656,7 +2026,12 @@ def variant_pipeline_tests():
             check(fl[0]["name"] == "Ridge Cleaver of the Bear" and fl[0]["base"] == CLEAVER and fl[0]["variant"] == str(BEAR)
                   and fl[0]["slot"] == "Two-Hand" and fl[0]["next"] == 50000 and fl[0]["listed"] == 6
                   and fl[0]["market"] == 50000 and fl[0]["sold24"] == 0, f"flip row {fl[0]!r}")
-            check(db().flips[1] == f"{V1}|gap|15000|1|15000|49999|32499|2166|slow,suffix", f"addon flip {db().flips[1]!r}")
+            # no history yet: no usual price (0) on any flip. The Bear's gap flip was judged with
+            # today's market value (5g), but that is not its usual price
+            check(db().flips[1] == f"{V1}|gap|15000|1|15000|49999|32499|2166|slow,suffix|0",
+                  f"addon flip {db().flips[1]!r}")
+            check([r["usual"] for r in fl] == [0, 0, 0] and fl[0]["market"] == 50000 and fl[1]["market"] == 180,
+                  f"usual prices {[r['usual'] for r in fl]}")
             st = js("status.json")
             check(st["versions"] == 3 and st["itemsWithVersions"] == 1 and st["flips"] == 3 and st["items"] == 3
                   and st["suffixNames"] > 300, f"status {st!r}")
@@ -1771,18 +2146,173 @@ def variant_pipeline_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+BLUE, GREEN, PLAIN, MATS, ARMOR, LONE, NEWBIE, FEW, JUNK = 5000, 5100, 5200, 5300, 5400, 5500, 5600, 5700, 5800
+
+
+def deal_pipeline_tests():
+    """Six hours of a steady market, then cheap listings: which series get a deal. Also every
+    flip's usual price: 0 until 4 hours of history, then the 7-day median (a vendor flip too)."""
+    tmp = tempfile.mkdtemp(prefix="fah_deal_")
+    out = os.path.join(tmp, "data")
+    fb = FakeBlizzard()
+    saved = {k: getattr(fetch_ah, k) for k in ("api", "get_token", "time")}
+    old_env = os.environ.pop("GITHUB_OUTPUT", None)
+    T0 = 1794934800 + 25 * 60
+    M = 60
+    import io
+    import contextlib
+    log = io.StringIO()
+    nid = [9000]
+
+    def add(iid, price, book=None, bonus=None, unit=False):
+        nid[0] += 1
+        a = {"id": nid[0], "item": {"id": iid}, "quantity": 1, "time_left": "VERY_LONG"}
+        if bonus:
+            a["item"]["bonus_lists"] = [bonus]
+        if unit:
+            a["unit_price"] = price
+        else:
+            a["buyout"] = price
+        (fb.commodities if unit else fb.auctions)[nid[0]] = a
+        return nid[0]
+
+    def run(data_t):
+        fb.now = data_t + 5 * M
+        fb.modified = email.utils.formatdate(data_t, usegmt=True)
+        fetch_ah.main(out)
+
+    def js(name):
+        return load_json(os.path.join(out, name))
+
+    AV = ARMOR * 1000 + 1                 # Iron Armor of the Bear, the item's first version
+    try:
+        fetch_ah.api, fetch_ah.get_token, fetch_ah.time = fb.api, (lambda: "fake"), fb
+        fb.names.update({BLUE: "Blue Ring", GREEN: "Green Boots", PLAIN: "Plain Shirt", MATS: "Green Dust",
+                         ARMOR: "Iron Armor", LONE: "Lone Epic", NEWBIE: "New Blue", FEW: "Green Gloves",
+                         JUNK: "Heavy Junk"})
+        for iid, q in ((BLUE, "RARE"), (GREEN, "UNCOMMON"), (PLAIN, "COMMON"), (MATS, "UNCOMMON"),
+                       (ARMOR, "UNCOMMON"), (LONE, "EPIC"), (NEWBIE, "RARE"), (FEW, "UNCOMMON"), (JUNK, "COMMON")):
+            fb.details[iid] = {"quality": {"type": q}}
+        fb.sell[JUNK] = 1000
+        for p in (40000, 41000, 42000):
+            add(BLUE, p)                      # a blue nobody buys: its usual price is 4.1g
+            add(PLAIN, p)                     # the same, but a common item
+            add(MATS, p, unit=True)           # the same, but on the commodities list
+            add(ARMOR, p, bonus=BEAR)         # the same, but a version of the item
+        green = {p: add(GREEN, p) for p in (30000, 31000, 32000, 33000, 34000)}
+        add(LONE, 50000)                      # an epic, only ever one listed
+        gloves = {p: add(FEW, p) for p in (10000, 10500, 11000)}   # 3 listed: the market value is 1.05g
+        for p in (500, 1500, 1600, 1700):
+            add(JUNK, p)                      # a vendor pays 10s, one is listed at 5s: a vendor flip every hour
+        with contextlib.redirect_stdout(log):
+            for k in range(6):
+                if k:                         # one pair of Green Boots sells every hour (and is listed again)
+                    del fb.auctions[green[30000]]
+                    green[30000] = add(GREEN, 30000)
+                if k in (1, 2):               # two pairs of Green Gloves sell in these hours: 2 a day
+                    del fb.auctions[gloves[10000]]
+                    gloves[10000] = add(FEW, 10000)
+                if k == 5:                    # then the cheap listings show up
+                    # (a new blue: 30s next to three at 65s to 67s. Today's market value is 65s and 30s
+                    # makes 31s at 64.99s, too little for a gap flip; with no history it is no deal either)
+                    for iid, p in ((BLUE, 12000), (PLAIN, 12000), (GREEN, 9000), (LONE, 15000), (NEWBIE, 3000),
+                                   (NEWBIE, 6500), (NEWBIE, 6600), (NEWBIE, 6700), (FEW, 3000), (FEW, 6500),
+                                   (FEW, 7600)):
+                        add(iid, p)
+                    add(MATS, 12000, unit=True)
+                    add(ARMOR, 12000, bonus=BEAR)
+                run(T0 + k * 60 * M)
+                if k < 5:
+                    check(not any(r["kind"] == "deal" for r in js("flips.json")["flips"]), f"hour {k}: no deal yet")
+                # the usual price is the 7-day median, whatever the kind: 0 until 4 hours of it
+                junk = [(r["kind"], r["usual"], r["market"]) for r in js("flips.json")["flips"] if r["id"] == JUNK]
+                check(junk == [("vendor", 1500 if k >= 3 else 0, 1500)],
+                      f"hour {k}: a vendor flip's usual price, 0 until 4 hours of history, then the median ({junk})")
+            fl = js("flips.json")["flips"]
+            got = [(r["id"], r["kind"], r["buyMax"], r["units"], r["cost"], r["relist"], r["profit"], r["risk"],
+                    r["usual"]) for r in fl]
+            check(got == [(LONE, "deal", 15000, 1, 15000, 49999, 32499, ["thin", "slow", "unsure"], 50000),
+                          (BLUE, "deal", 12000, 1, 12000, 39999, 25999, ["slow"], 41000),
+                          (AV, "deal", 12000, 1, 12000, 39999, 25999, ["slow", "suffix"], 41000),
+                          (GREEN, "gap", 9000, 1, 9000, 29999, 19499, ["slow"], 31000),
+                          (FEW, "deal", 3000, 1, 3000, 6499, 3174, ["slow"], 10500),
+                          (JUNK, "vendor", 500, 1, 500, 0, 500, [], 1500)],
+                  f"deals: the blue, the epic (one listing, so unsure) and the version; the green boots sell, "
+                  f"so theirs is a gap flip (no deal on top); the green gloves at 30s (usually 1.05g); none for "
+                  f"the common shirt, the dust (a commodity), the armor itself (its listings are versions) or the "
+                  f"new blue (no history yet); the junk's vendor flip with its usual price: {got}")
+            # the gloves: 2 sell a day, so both cheap ones under 70% (30s and 65s) would be bought, but
+            # relisted at 75.99s (under the 76s one) the 65s one makes under 15%, and no gap flip makes 50s.
+            # The 30s one alone (relisted at 64.99s, 31s 74c profit) is still a buy: the rule on purpose
+            book = [(3000, 1), (6500, 1), (7600, 1), (10000, 1), (10500, 1), (11000, 1)]
+            check(model_deal(book, 10500, 2.0, 10500) == (1, 3000, 6499, 3174, "fewer")
+                  and fetch_ah.find_gap_flip(book, False, 2.0, 10500, 10500) is None,
+                  "the gloves' deal is the cheaper one alone, and there is no gap flip")
+            row = fl[1]
+            check(row["name"] == "Blue Ring" and row["quality"] == "RARE" and row["next"] == 40000
+                  and row["market"] == 40000 and row["listed"] == 4 and row["auctions"] == 4 and row["sold24"] == 0,
+                  f"deal row {row!r}")
+            check(fl[2]["name"] == "Iron Armor of the Bear" and fl[2]["base"] == ARMOR and fl[2]["variant"] == str(BEAR),
+                  f"version deal row {fl[2]!r}")
+            _, db, _ = load_lua(os.path.join(out, "ForeverAH_Data.lua"))
+            lines = [db.flips[i + 1] for i in range(6)]
+            check(lines == [f"{LONE}|deal|15000|1|15000|49999|32499|2166|thin,slow,unsure|50000",
+                            f"{BLUE}|deal|12000|1|12000|39999|25999|2166|slow|41000",
+                            f"{AV}|deal|12000|1|12000|39999|25999|2166|slow,suffix|41000",
+                            f"{GREEN}|gap|9000|1|9000|29999|19499|2166|slow|31000",
+                            f"{FEW}|deal|3000|1|3000|6499|3174|1058|slow|10500",
+                            f"{JUNK}|vendor|500|1|500|0|500|1000||1500"] and db.flips[7] is None,
+                  f"addon flip lines {lines}")
+            run_checks(out, "deals", quiet=True)
+            # which flips the addon file gets, with tiny limits: the best 1, 1 more deal, 1 more flip
+            # costing at most 90s (the armor deal costs 1.2g: left out; the boots come before the
+            # cheaper gloves and junk, which find no room)
+            limits = {k: getattr(fetch_ah, k) for k in ("FLIPS_ADDON_MAX", "FLIPS_ADDON_DEALS", "FLIPS_ADDON_CHEAP",
+                                                        "FLIP_CHEAP_COST")}
+            try:
+                fetch_ah.FLIPS_ADDON_MAX, fetch_ah.FLIPS_ADDON_DEALS, fetch_ah.FLIPS_ADDON_CHEAP = 1, 1, 1
+                fetch_ah.FLIP_CHEAP_COST = 9000
+                run(T0 + 5 * 60 * M + 20 * M)  # another snapshot in the same hour, nothing changed
+            finally:
+                for k, v in limits.items():
+                    setattr(fetch_ah, k, v)
+            _, db, _ = load_lua(os.path.join(out, "ForeverAH_Data.lua"))
+            picked = [int(str(db.flips[i + 1]).split("|")[0]) if db.flips[i + 1] else None for i in range(3)]
+            check(picked == [LONE, BLUE, GREEN] and db.flips[4] is None
+                  and [r["id"] for r in js("flips.json")["flips"]] == [LONE, BLUE, AV, GREEN, FEW, JUNK],
+                  f"addon file: the best one, then a deal, then a cheap flip ({picked}); flips.json keeps all 6")
+            # the cheap ring sells: no deal left for it
+            del fb.auctions[next(a for a, x in fb.auctions.items() if x["item"]["id"] == BLUE and x["buyout"] == 12000)]
+            run(T0 + 6 * 60 * M)
+            check(not any(r["id"] == BLUE for r in js("flips.json")["flips"]), "the cheap ring sold: no deal")
+            run_checks(out, "deals after a sale", quiet=True)
+        print("  deals: 8 collector runs, deals for a blue, an epic and a green version, and a green whose two "
+              "cheap listings do not both pay (the cheaper one alone); none for a common item, a commodity, an "
+              "item made of versions, an item with no history or one with a gap flip; the addon file's best "
+              "flips plus extra deals and cheap flips; usual prices (0, then the 7-day median, a vendor flip's too)")
+    except Exception:
+        sys.stdout.write(log.getvalue()[-3000:])
+        raise
+    finally:
+        for k, v in saved.items():
+            setattr(fetch_ah, k, v)
+        if old_env is not None:
+            os.environ["GITHUB_OUTPUT"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "wow", "_localdata")
     print("ForeverAH_Data.lua check")
     ok = True
-    for name, fn in (("generated data", lambda: run_checks(data_dir, os.path.relpath(data_dir, REPO))),
+    for name, fn in (("generated data", lambda: run_checks(data_dir, os.path.relpath(data_dir, REPO), current=None)),
                      ("edge cases", edge_cases), ("unit tests", unit_tests), ("pipeline", pipeline_tests),
-                     ("versions", variant_pipeline_tests)):
+                     ("versions", variant_pipeline_tests), ("deals", deal_pipeline_tests)):
         try:
             fn()
             if name == "unit tests":
                 print("  unit tests: market value, sold estimate safety, salesHours, names, data time, size guard, "
-                      "flips, versions, suffix names, item details")
+                      "flips, deals, addon flip picks, versions, suffix names, item details")
         except Fail as e:
             ok = False
             print(f"  FAIL ({name}): {e}")

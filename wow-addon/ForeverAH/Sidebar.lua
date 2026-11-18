@@ -5,9 +5,14 @@ local ADDON_NAME, ns = ...
 -- (it is a child of that window), so there is no extra window to manage.
 --   Flip ideas : first the flips the price collector found in the latest
 --                snapshot (Data.lua's flips: cheap listings to buy and relist,
---                or listings under what a vendor pays), then the ideas from
---                the price history (buy under Target Buy, sell at the sell
---                target), each item once
+--                green, blue or epic items listed well under their usual
+--                price, or listings under what a vendor pays), then the ideas
+--                from the price history (buy under Target Buy, sell at the
+--                sell target), each item once. They are sized to the gold on
+--                this character: what it cannot afford is left out, and an
+--                idea it can afford only part of says how many it can buy.
+--                One row is kept for the best of those green, blue or epic
+--                deals it can afford, so one shows whenever there is one.
 --   Watchlist  : a starter list of staple trade goods that you add to and trim
 -- Clicking a row searches that item in the game's auction house, so the
 -- listings and the price chart come up as if you had typed it yourself.
@@ -41,6 +46,7 @@ local MIN_SALES_HOURS = 3    -- sales measured over fewer hours than this are to
 local MIN_AUCTIONS = 3       -- prices behind fewer separate listings are not trusted
 local VENDOR_FAR = 200       -- nor a market price over 200x what a vendor pays
 local VENDOR_FAR_UNITS = 10  -- ... with fewer units than this listed (dust sells far above vendor)
+local DEAL_EVERY = 5         -- one place in every 5 flip ideas is kept for a deal (see ns.FlipIdeas)
 local HIDE_SECONDS = 24 * 3600
 
 -- Starter watchlist: the same staples as grantdenney.com/wow's default favorites.
@@ -405,6 +411,69 @@ function ns.HideIdea(id)
   if Refresh then Refresh() end
 end
 
+-- The gold on this character (copper), or nil when the game does not say.
+function ns.PlayerGold()
+  local f = _G.GetMoney
+  if type(f) ~= "function" then return nil end
+  local ok, v = pcall(f)
+  v = ok and Num(v) or nil
+  if not v or v < 0 then return nil end
+  return floor(v)
+end
+
+-- What the gold on this character buys of an idea. Each fit: units, cost,
+-- profit, limited (true when the gold covers less than the whole idea), gold
+-- (what it was sized to) and whole (the units in the whole idea).
+-- A collector flip: all of it when the gold covers its cost, else as many as
+-- the gold buys at the flip's average price per unit (the cheapest listings
+-- go first in game, so at least that many are affordable). nil when not
+-- even one is affordable. Worked out in whole numbers: can = floor(gold /
+-- (cost / units)), costing ceil(can * cost / units), making
+-- floor(profit * can / units).
+local function FitFlip(f, gold)
+  local units, cost, profit = f.units, f.cost, f.profit
+  if gold >= cost then
+    return { units = units, cost = cost, profit = profit, limited = false, gold = gold, whole = units }
+  end
+  local can = floor(gold * units / cost)
+  if can >= units then can = units - 1 end
+  if can < 1 then return nil end
+  local spend = can * cost
+  local c = floor(spend / units)
+  if c * units < spend then c = c + 1 end
+  return { units = can, cost = c, profit = floor(profit * can / units), limited = true, gold = gold, whole = units }
+end
+
+-- A price-history idea: a day's flip (a day's sales, at most VOL_CAP units,
+-- at least 1), or as many as the gold buys at the buy price. nil when not
+-- even one is affordable.
+local function FitHistory(x, gold)
+  local whole = max(1, floor(min(Num(x.sold) or 0, VOL_CAP)))
+  local can = floor(gold / x.buy)
+  if can < 1 then return nil end
+  local n = min(can, whole)
+  return { units = n, cost = n * x.buy, profit = n * x.profit, limited = can < whole, gold = gold, whole = whole }
+end
+
+local function HasWord(list, word)
+  for _, w in ipairs(list) do
+    if w == word then return true end
+  end
+  return false
+end
+
+-- How far a deal's buy-up-to price is under its usual price, in whole
+-- percent (rounded down, so every listing bought is at least that far
+-- under), or nil when the usual price is not known.
+local function DealUnder(idea)
+  local usual, buy = Num(idea.usual) or 0, Num(idea.buy) or 0
+  if usual <= 0 or buy <= 0 or buy >= usual then return nil end
+  local pct = floor(100 * (usual - buy) / usual)
+  if pct < 1 then return nil end
+  return pct
+end
+ns.DealUnder = DealUnder
+
 -- The quick pass: the items where the most money changes hands (price times
 -- a day's sales), since a flip needs buyers and sellers first. The spread is
 -- judged in the full pass from the price history, because the gap between
@@ -441,19 +510,28 @@ local function Candidates()
 end
 
 -- The full pass: price advice for each candidate. Returns up to `limit` ideas,
--- best first: { id, buy, sell, profit, perDay, sold, early, verdict, rec },
--- and, when there are none, why: "nodata", "history" (prices or sales are
--- still being collected), "nosales" (nothing sells enough yet) or "none".
-local function HistoryIdeas(limit)
+-- best first: { id, buy, sell, profit (each), perDay, sold, early, verdict,
+-- rec, fit }, and, when there are none, why: "nodata", "history" (prices or
+-- sales are still being collected), "nosales" (nothing sells enough yet),
+-- "gold" (not enough gold on this character for any of them) or "none".
+-- gold: the copper to size the ideas to (nil: the gold on this character,
+-- false: no sizing). Sized ideas get a fit (see FitHistory), the ones the
+-- gold cannot buy are left out before the list is cut to `limit`, and they
+-- all rank by the profit on what the gold buys (a slower seller's day of
+-- sales is already a smaller flip). Without sizing, the items that sell
+-- plenty a day (MIN_SOLD) come before the slower ones, best day's profit
+-- first. Slower sellers are marked thin either way.
+local function HistoryIdeas(limit, gold)
   limit = limit or MAX_FLIPS
+  if gold == nil then gold = ns.PlayerGold() end
   if not HasData() then return {}, "nodata" end
   -- Sales from the first hour or two, scaled up to a day, are too rough to rank by.
   if SalesHours() < MIN_SALES_HOURS then return {}, "history" end
   local cands = Candidates()
   if #cands == 0 then return {}, "nosales" end
   local hidden = HiddenIdeas()
-  local strict, loose = {}, {}
-  local tried, noHistory = 0, 0
+  local first, later = {}, {}
+  local tried, noHistory, poor = 0, 0, 0
   for _, id in ipairs(cands) do
     if not hidden[id] then
       tried = tried + 1
@@ -468,27 +546,39 @@ local function HistoryIdeas(limit)
           perDay = r.margin * min(sold, VOL_CAP), sold = sold, early = r.soldEarly == true,
           verdict = r.verdict, rec = r,
         }
-        if sold >= MIN_SOLD then strict[#strict + 1] = idea else loose[#loose + 1] = idea end
+        if gold then idea.fit = FitHistory(idea, gold) end
+        if gold and not idea.fit then
+          poor = poor + 1
+        else
+          -- A slower seller: it may take a while to sell.
+          idea.thin = sold < MIN_SOLD or nil
+          if idea.thin and not gold then later[#later + 1] = idea else first[#first + 1] = idea end
+        end
       end
     end
   end
   local function better(a, b)
-    if a.perDay ~= b.perDay then return a.perDay > b.perDay end
+    if gold then
+      if a.fit.profit ~= b.fit.profit then return a.fit.profit > b.fit.profit end
+    elseif a.perDay ~= b.perDay then
+      return a.perDay > b.perDay
+    end
     return a.id < b.id
   end
-  sort(strict, better)
-  sort(loose, better)
+  sort(first, better)
+  sort(later, better)
   local out = {}
-  for _, x in ipairs(strict) do
+  for _, x in ipairs(first) do
     if #out >= limit then break end
     out[#out + 1] = x
   end
-  for _, x in ipairs(loose) do
+  for _, x in ipairs(later) do
     if #out >= limit then break end
-    x.thin = true
     out[#out + 1] = x
   end
   if #out > 0 then return out end
+  -- There were ideas, but this character cannot afford any of them.
+  if poor > 0 then return out, "gold" end
   -- Every item that trades enough is still waiting for price history.
   if tried > 0 and noHistory == tried then return out, "history" end
   return out, "none"
@@ -498,34 +588,75 @@ ns.HistoryFlipIdeas = HistoryIdeas
 -- The flip ideas the sidebar shows, best first, up to `limit`: the
 -- collector's flips from the latest snapshot first (they need no history:
 -- { id, data = true, kind, buy = buyMax, units, cost, relist, profit, roi,
--- risk }), then the ideas from the price history, each item once. Ideas
--- hidden with "Not interested" are left out. When there are none, the
--- second value says why (see HistoryIdeas).
-function ns.FlipIdeas(limit)
+-- risk, usual, doubt, fit }; doubt is true when the addon added "unsure"
+-- itself, from today's listings), then the ideas from the price history,
+-- each item once. Ideas hidden with "Not interested" are left out. When
+-- there are none, the second value says why (see HistoryIdeas).
+-- gold: the copper to size the ideas to (nil: the gold on this character,
+-- false: no sizing, as when the game does not say). With gold, each idea
+-- gets a fit (see FitFlip), the ones it cannot buy are left out, and the
+-- collector's flips rank by the profit on what the gold buys (ties keep the
+-- collector's order), still before the price-history ideas.
+-- One place in every DEAL_EVERY (1 of the sidebar's 5 rows, 2 of the 10
+-- /fah flips lines) is kept for the deals (green, blue or epic items listed
+-- well under their usual price), so they show on every scan: when bigger
+-- flips fill the list, the best deals (that the gold buys) take the places
+-- of the last other flips. The list stays in that ranking's order.
+function ns.FlipIdeas(limit, gold)
   limit = limit or MAX_FLIPS
   if not HasData() then return {}, "nodata" end
+  if gold == nil then gold = ns.PlayerGold() end
   local hidden = HiddenIdeas()
-  local out, seen = {}, {}
+  local ranked, seen, order, poor, deals = {}, {}, {}, false, 0
   local flips = type(ns.DataFlips) == "function" and ns.DataFlips() or {}
   for _, f in ipairs(flips) do
-    if #out >= limit then break end
     if not hidden[f.id] and not seen[f.id] then
-      seen[f.id] = true
-      local risk = {}
-      for _, w in ipairs(f.risk or {}) do risk[#risk + 1] = w end
-      -- The addon's own rule (no Sell now or Best price for a price that may be
-      -- one player's guess) applies to the relist price too.
-      if f.kind == "gap" and type(ns.PriceDoubt) == "function" and ns.PriceDoubt(f.id) then
-        risk[#risk + 1] = "unsure"
+      local fit = gold and FitFlip(f, gold) or nil
+      if gold and not fit then
+        poor = true
+      else
+        seen[f.id] = true
+        local risk, doubt = {}, nil
+        for _, w in ipairs(f.risk or {}) do risk[#risk + 1] = w end
+        -- The addon's own rule (no Sell now or Suggested price for a price that may be
+        -- one player's guess) applies to the relist price too.
+        if (f.kind == "gap" or f.kind == "deal") and not HasWord(risk, "unsure")
+          and type(ns.PriceDoubt) == "function" and ns.PriceDoubt(f.id) then
+          risk[#risk + 1] = "unsure"
+          doubt = true
+        end
+        local idea = {
+          id = f.id, data = true, kind = f.kind, buy = f.buyMax, units = f.units, cost = f.cost,
+          relist = f.relist, profit = f.profit, roi = f.roi, risk = risk, usual = Num(f.usual) or 0,
+          doubt = doubt, fit = fit,
+        }
+        ranked[#ranked + 1] = idea
+        order[idea] = #ranked
+        if f.kind == "deal" then deals = deals + 1 end
       end
-      out[#out + 1] = {
-        id = f.id, data = true, kind = f.kind, buy = f.buyMax, units = f.units, cost = f.cost,
-        relist = f.relist, profit = f.profit, roi = f.roi, risk = risk,
-      }
+    end
+  end
+  if gold then
+    sort(ranked, function(a, b)
+      if a.fit.profit ~= b.fit.profit then return a.fit.profit > b.fit.profit end
+      return order[a] < order[b]
+    end)
+  end
+  -- The best `limit` of them, keeping the deals' places: another flip is
+  -- taken only while the places left still hold the deals that need one.
+  local keep = min(deals, floor(limit / DEAL_EVERY))
+  local out, got = {}, 0
+  for _, x in ipairs(ranked) do
+    if #out >= limit then break end
+    if x.kind == "deal" then
+      out[#out + 1] = x
+      got = got + 1
+    elseif keep - got < limit - #out then
+      out[#out + 1] = x
     end
   end
   if #out >= limit then return out end
-  local hist, why = HistoryIdeas(limit + #out)
+  local hist, why = HistoryIdeas(limit + #out, gold or false)
   for _, x in ipairs(hist) do
     if #out >= limit then break end
     if not seen[x.id] then
@@ -534,18 +665,34 @@ function ns.FlipIdeas(limit)
     end
   end
   if #out > 0 then return out end
+  if poor then return out, "gold" end
   return out, why
 end
 
 -- Plain-English words for the collector's risk flags.
 local RISK_TEXT = {
   thin = "Thin: only a few listings are left above your relist price, so one new seller can undercut you.",
-  slow = "Slow: fewer sell in a day than you would buy, or sales have been measured for less than a day. It may take days to sell them all.",
+  slow = "Slow: fewer sell in a day than you would buy, or sales have not been measured for a full day yet. It may take days to sell them all.",
   spike = "Spike: the relist price is far above this item's usual price (or far above what you pay, with only a few listings up there). It may not sell there.",
   unsure = "Unsure: only a few are listed, far above what a vendor pays (or only 1 or 2 listings), so the price may be one player's guess.",
   suffix = "Versions: this gear comes in versions (like \"of the Bear\") that sell for different prices. Check the version before you buy.",
 }
 ns.RISK_TEXT = RISK_TEXT
+-- The collector's own words for a deal (an item listed well under its usual
+-- price): its "unsure" is about the usual price. An "unsure" the addon adds
+-- itself (today's listings, see ns.FlipIdeas) is said with RISK_TEXT.
+local DEAL_RISK_TEXT = {
+  unsure = "Unsure: most of the time only one of these is listed, so its usual price may be one seller's asking price.",
+}
+ns.DEAL_RISK_TEXT = DEAL_RISK_TEXT
+
+-- The words for one risk flag of a collector flip.
+local function RiskText(idea, flag)
+  if idea.kind == "deal" and DEAL_RISK_TEXT[flag] and not (flag == "unsure" and idea.doubt) then
+    return DEAL_RISK_TEXT[flag]
+  end
+  return RISK_TEXT[flag] or ("Risk: " .. tostring(flag))
+end
 
 -- What the small risk note on a flip row says: "", the one flag, or "N risks".
 local function RiskShort(risk)
@@ -563,6 +710,7 @@ local FLIP_MESSAGES = {
   -- Sales are measured between hourly snapshots, so a new data set has none yet.
   nosales = "Collecting sales history. Flip ideas show up after a few hourly price updates.",
   none = "No good flips right now. Prices are steady; check back after the next update.",
+  gold = "Not enough gold on this character for the current flip ideas.",
 }
 ns.FLIP_MESSAGES = FLIP_MESSAGES
 
@@ -754,10 +902,34 @@ local function SetItemTooltip(tt, id)
   return false
 end
 
+-- What the gold on this character buys of an idea (only when the ideas are
+-- sized to it): how many of the whole idea, or that it covers all of it.
+local function GoldLine(tt, idea)
+  local fit = idea.fit
+  if type(fit) ~= "table" then return end
+  if fit.limited then
+    tt:AddLine("With your gold (" .. Money(fit.gold) .. "): buy " .. Count(fit.units) .. " of " .. Count(fit.whole)
+      .. ", costing " .. Money(fit.cost) .. ", making " .. Paint("+" .. Money(fit.profit), "pos"), 1, 0.82, 0, true)
+  else
+    tt:AddLine("Your gold covers all of it.", 0.8, 0.8, 0.8, true)
+  end
+end
+
 local function DataFlipTooltip(tt, idea)
   tt:AddLine(Paint("Flip idea from the latest prices", "buy"))
+  local usual = Num(idea.usual) or 0
   if idea.kind == "vendor" then
     tt:AddLine("These listings cost less than a vendor pays for them: buy them and sell them to a vendor.", 0.8, 0.8, 0.8, true)
+  elseif idea.kind == "deal" then
+    -- The relist price is never above the usual price, and it is just under
+    -- the next listing when one sits below the usual price: say which.
+    local how = "relist it at the price below."
+    if usual > 0 then
+      how = ((Num(idea.relist) or 0) * 10 >= usual * 9) and "relist it near the usual price."
+        or "relist it just under the next listing, below the usual price."
+    end
+    tt:AddLine("Listed well under its usual price" .. (usual > 0 and (" (usual " .. Money(usual) .. ")") or "")
+      .. ": buy it and " .. how, 0.8, 0.8, 0.8, true)
   else
     tt:AddLine("Buy the cheap listings, then relist them just under the next listing.", 0.8, 0.8, 0.8, true)
   end
@@ -770,16 +942,22 @@ local function DataFlipTooltip(tt, idea)
     tt:AddDoubleLine("Relist at (each)", Money(idea.relist), 0.8, 0.8, 0.8, 1, 1, 1)
     tt:AddDoubleLine("Profit, after the 5% cut", Paint("+" .. Money(idea.profit), "pos"), 0.8, 0.8, 0.8)
   end
+  if idea.kind == "deal" and usual > 0 then
+    tt:AddDoubleLine("Usual price (last 7 days)", Money(usual), 0.8, 0.8, 0.8, 1, 1, 1)
+    local under = DealUnder(idea)
+    if under then tt:AddDoubleLine("Under the usual price by", under .. "% or more", 0.8, 0.8, 0.8, 1, 1, 1) end
+  end
   local roi = Num(idea.roi)
   if roi and roi > 0 then
     tt:AddDoubleLine("Return on what you spend", sformat("%.1f%%", roi / 10), 0.8, 0.8, 0.8, 1, 1, 1)
   end
+  GoldLine(tt, idea)
   local risk = type(idea.risk) == "table" and idea.risk or {}
   if #risk > 0 then
     tt:AddLine(" ")
     tt:AddLine(Paint("Watch out", "neg"))
     for _, flag in ipairs(risk) do
-      tt:AddLine(RISK_TEXT[flag] or ("Risk: " .. tostring(flag)), 0.6, 0.6, 0.6, true)
+      tt:AddLine(RiskText(idea, flag), 0.6, 0.6, 0.6, true)
     end
   end
 end
@@ -804,6 +982,13 @@ local function RowTooltip(row)
     tt:AddDoubleLine("Sell at", Money(idea.sell), 0.8, 0.8, 0.8, 1, 1, 1)
     tt:AddDoubleLine("Profit each, after the 5% cut", Paint("+" .. Money(idea.profit), "pos"), 0.8, 0.8, 0.8)
     tt:AddDoubleLine("Sells per day (estimate)", "~" .. Count(idea.sold), 0.8, 0.8, 0.8, 1, 1, 1)
+    local fit = idea.fit
+    if type(fit) == "table" then
+      -- The whole idea: a day's sales (at most VOL_CAP), then what your gold buys of it.
+      tt:AddDoubleLine("For a day: buy " .. Count(fit.whole) .. ", costing", Money(fit.whole * idea.buy), 0.8, 0.8, 0.8, 1, 1, 1)
+      tt:AddDoubleLine("Profit on those, after the cut", Paint("+" .. Money(fit.whole * idea.profit), "pos"), 0.8, 0.8, 0.8)
+      GoldLine(tt, idea)
+    end
     if idea.early then
       tt:AddLine("Early estimate: sales measured for less than a day so far, scaled up to a full day.", 0.6, 0.6, 0.6, true)
     end
@@ -1004,14 +1189,27 @@ function SB:Build(parent)
   -- Flip ideas
   self.flipTitle = SectionTitle(F, "FLIP IDEAS")
   self.flipTitle:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, -HEADER_H)
+  -- "for your 123g": the gold the ideas are sized to (empty when the game does not say).
+  self.flipGold = NewFS(F, "GameFontHighlightSmall")
+  self.flipGold:SetPoint("LEFT", self.flipTitle, "RIGHT", 6, 0)
+  SetFSColor(self.flipGold, "muted")
   local flipHelp = CreateFrame("Frame", nil, F)
   flipHelp:SetAllPoints(self.flipTitle)
   flipHelp:EnableMouse(true)
-  SimpleTip(flipHelp, "Flip ideas",
-    "First, flips found in the latest prices: cheap listings to buy and relist just under the next one, or listings "
-    .. "that cost less than a vendor pays. Then items to buy under the Target Buy price and sell at the sell price, "
-    .. "from the price history. Profits are after the 5% auction cut. Prices move and sales are estimates, so treat "
-    .. "these as ideas, not promises. Hover a row for the details and the risks.")
+  local helpText = "First, flips found in the latest prices: cheap listings to buy and relist just under the next one, "
+    .. "green, blue or epic items listed well under their usual price, or listings that cost less than a vendor pays. "
+    .. "The best of those green, blue or epic deals that you can afford always gets a row. "
+    .. "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
+    .. "They are sized to the gold on this character: what it cannot afford is left out, and a row says how many "
+    .. "you can buy. Profits are after the 5% auction cut. Prices move and sales are estimates, so treat "
+    .. "these as ideas, not promises. Hover a row for the details and the risks."
+  SimpleTip(flipHelp, "Flip ideas", helpText)
+  local goldHelp = CreateFrame("Frame", nil, F)
+  goldHelp:SetAllPoints(self.flipGold)
+  goldHelp:EnableMouse(true)
+  SimpleTip(goldHelp, "Sized to your gold",
+    "Flip ideas only show what the gold on this character can buy, and how many of each it buys. "
+    .. "They are worked out again when your gold changes.")
   self.flipBox = CreateFrame("Frame", nil, F)
   self.flipBox:SetPoint("TOPLEFT", F, "TOPLEFT", 4, -(HEADER_H + TITLE_H))
   self.flipBox:SetPoint("RIGHT", F, "RIGHT", -4, 0)
@@ -1191,36 +1389,54 @@ local function SetRowItem(r, id)
 end
 
 -- The ideas are worked out again only when something they depend on changes
--- (the AH opened, a live price arrived, an idea was hidden). Redrawing the
--- rows (a star clicked, item names arriving) reuses them.
+-- (the AH opened, a live price arrived, an idea was hidden, your gold
+-- changed). Redrawing the rows (a star clicked, item names arriving) reuses them.
 function SB:RefreshFlips()
   if self.flipsDirty or not self.ideas then
-    self.ideas, self.flipWhy = ns.FlipIdeas(MAX_FLIPS)
+    self.gold = ns.PlayerGold()
+    self.ideas, self.flipWhy = ns.FlipIdeas(MAX_FLIPS, self.gold or false)
     self.flipsDirty = false
   end
+  if self.flipGold then self.flipGold:SetText(self.gold and ("for your " .. ShortMoney(self.gold)) or "") end
   local ideas = self.ideas
   for i, r in ipairs(self.flipRows) do
     local idea = ideas[i]
     if idea then
       SetRowItem(r, idea.id)
       r.idea = idea
+      local fit = idea.fit
       if idea.data then
-        -- A flip from the latest snapshot: how much to pay and for how many,
-        -- then relist (or sell to a vendor). Risks show as a small grey note.
-        r.sub:SetText(Paint("Buy up to " .. ShortMoney(idea.buy) .. " (" .. Count(idea.units) .. ")", "buy"))
+        -- A flip from the latest snapshot: how much to pay and for how many
+        -- (of how many, when your gold covers only some), then relist (or
+        -- sell to a vendor). Risks show as a small grey note; a deal with
+        -- none says how far under its usual price it is.
+        local n = Count(idea.units)
+        if fit and fit.limited then n = Count(fit.units) .. " of " .. Count(idea.units) end
+        r.sub:SetText(Paint("Buy up to " .. ShortMoney(idea.buy) .. " (" .. n .. ")", "buy"))
         if idea.kind == "vendor" then
           r.sub2:SetText(Paint("Sell to vendor", "muted"))
         else
           r.sub2:SetText(Paint("Relist " .. ShortMoney(idea.relist), "sell"))
         end
-        r.right2:SetText(RiskShort(idea.risk))
+        local note = RiskShort(idea.risk)
+        if note == "" and idea.kind == "deal" then
+          local under = DealUnder(idea)
+          if under then note = "-" .. under .. "%" end
+        end
+        r.right2:SetText(note)
       else
-        -- An idea from the price history: buy under Target Buy, sell at the sell target.
-        r.sub:SetText(Paint("Buy at " .. ShortMoney(idea.buy), "buy"))
+        -- An idea from the price history: buy under Target Buy (as many as a
+        -- day's flip, or your gold, allows), sell at the sell target.
+        if fit then
+          r.sub:SetText(Paint("Buy " .. Count(fit.units) .. " at " .. ShortMoney(idea.buy), "buy"))
+        else
+          r.sub:SetText(Paint("Buy at " .. ShortMoney(idea.buy), "buy"))
+        end
         r.sub2:SetText(Paint("Sell at " .. ShortMoney(idea.sell), "sell"))
         r.right2:SetText("~" .. Count(idea.sold) .. "/day")
       end
-      r.right:SetText(Paint("+" .. ShortMoney(idea.profit), "pos"))
+      -- The profit on what you can buy (the profit each for an unsized history idea).
+      r.right:SetText(Paint("+" .. ShortMoney(fit and fit.profit or idea.profit), "pos"))
       SetStar(r.star.tex, ns.IsWatched(idea.id))
       r:Show()
     else
@@ -1460,6 +1676,8 @@ local handlers = {
   -- A live price came in: the ideas may change.
   COMMODITY_SEARCH_RESULTS_UPDATED = function() SB.flipsDirty = true RefreshSoon() end,
   ITEM_SEARCH_RESULTS_UPDATED = function() SB.flipsDirty = true RefreshSoon() end,
+  -- Your gold changed: the ideas are sized to it.
+  PLAYER_MONEY = function() SB.flipsDirty = true RefreshSoon() end,
   -- Only names and icons arrive: redraw, no new ideas.
   GET_ITEM_INFO_RECEIVED = RefreshSoon,
 }
@@ -1484,13 +1702,27 @@ end
 local baseSlash = ns.HandleSlash
 local SLASH_FLIPS = 10   -- /fah flips prints this many
 
--- One chat line for a flip idea.
+-- One chat line for a flip idea, with what your gold buys of it when the
+-- ideas are sized to your gold.
 local function FlipLine(x)
+  local fit = type(x.fit) == "table" and x.fit or nil
   if x.data then
     local risk = (type(x.risk) == "table" and #x.risk > 0) and (" (risk: " .. table.concat(x.risk, ", ") .. ")") or ""
-    local what = (x.kind == "vendor") and "sell to vendor" or ("relist " .. Money(x.relist))
-    return ItemName(x.id) .. ": buy up to " .. Money(x.buy) .. " (" .. Count(x.units) .. "), " .. what
-      .. ", +" .. Money(x.profit) .. risk
+    local what
+    if x.kind == "vendor" then
+      what = "sell to vendor"
+    else
+      what = "relist " .. Money(x.relist)
+      if x.kind == "deal" and (Num(x.usual) or 0) > 0 then what = what .. " (usual " .. Money(x.usual) .. ")" end
+    end
+    local n = Count(x.units)
+    if fit and fit.limited then n = Count(fit.units) .. " of " .. Count(x.units) end
+    return ItemName(x.id) .. ": buy up to " .. Money(x.buy) .. " (" .. n .. "), " .. what
+      .. ", +" .. Money(fit and fit.profit or x.profit) .. risk
+  end
+  if fit then
+    return ItemName(x.id) .. ": buy " .. Count(fit.units) .. " at " .. Money(x.buy) .. ", sell " .. Money(x.sell)
+      .. ", +" .. Money(fit.profit) .. " (+" .. Money(x.profit) .. " each), ~" .. Count(x.sold) .. "/day"
   end
   return ItemName(x.id) .. ": buy " .. Money(x.buy) .. ", sell " .. Money(x.sell)
     .. ", +" .. Money(x.profit) .. " each, ~" .. Count(x.sold) .. "/day"
@@ -1565,7 +1797,8 @@ function ns.HandleSlash(msg)
     ns.SetSidebar(not SidebarWanted())
     Print("the auction house sidebar is now " .. (SidebarWanted() and "on" or "off") .. ".")
   elseif cmd == "flips" or cmd == "ideas" then
-    local ideas, why = ns.FlipIdeas(SLASH_FLIPS)
+    local gold = ns.PlayerGold()
+    local ideas, why = ns.FlipIdeas(SLASH_FLIPS, gold or false)
     if #ideas == 0 then
       if why == "nodata" then
         Print("no price data yet. Type /fah to see how to get it.")
@@ -1573,12 +1806,18 @@ function ns.HandleSlash(msg)
         Print(FLIP_MESSAGES.history)
       elseif why == "nosales" then
         Print("still collecting sales history: flip ideas show up after a few hourly price updates.")
+      elseif why == "gold" then
+        Print("not enough gold on this character for the current flip ideas (you have " .. Money(gold or 0) .. ").")
       else
         Print("no good flips right now.")
       end
       return
     end
-    Print("flip ideas (profits are after the 5% auction cut):")
+    if gold then
+      Print("flip ideas sized to your gold (" .. Money(gold) .. "), profits after the 5% auction cut:")
+    else
+      Print("flip ideas (profits are after the 5% auction cut):")
+    end
     for i, x in ipairs(ideas) do
       Print("  " .. i .. ". " .. FlipLine(x))
     end
@@ -1588,7 +1827,7 @@ function ns.HandleSlash(msg)
       Print("/fah watch Runecloth : add an item to the auction house watchlist (no name = the item you are looking at)")
       Print("/fah unwatch Runecloth : take it off")
       Print("/fah watchlist : list it (/fah watchlist reset brings back the starter list)")
-      Print("/fah flips : print the current flip ideas")
+      Print("/fah flips : print the current flip ideas, sized to the gold on this character")
       Print("/fah sidebar : show or tuck away the auction house sidebar")
       return
     end

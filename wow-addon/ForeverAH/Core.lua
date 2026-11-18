@@ -747,12 +747,18 @@ function ns.WeekRange(itemID)
 end
 
 -- Flip ideas the price collector worked out from one snapshot (Data.lua's
--- flips list, best first). Each: id (an item or a version), kind ("gap": buy
--- the cheap listings and relist under the next one; "vendor": listings under
--- what a vendor pays), buyMax (highest unit price to pay), units, cost,
+-- flips list, best first). Each line is "id|kind|buyMax|units|cost|relist|
+-- profit|roi|risk|usual" (older data files stop after risk). Each flip: id
+-- (an item or a version), kind ("gap": buy the cheap listings and relist
+-- under the next one; "deal": a green, blue or epic item listed well under
+-- its usual price, bought and relisted at most at that price, just under the
+-- next listing when one sits below it; "vendor": listings under what a
+-- vendor pays), buyMax (highest unit price to pay), units, cost,
 -- relist (unit price, 0 for vendor flips), profit (after the 5% cut, or vs
--- the vendor), roi (profit per 1000 copper spent) and risk (a list of words:
--- thin, slow, spike, suffix). Older data files have none: an empty list.
+-- the vendor), roi (profit per 1000 copper spent), risk (a list of words:
+-- thin, slow, spike, unsure, suffix) and usual (its usual price: the middle
+-- of the last 7 days of hourly prices, 0 when not known). Kinds this addon
+-- does not know are skipped. Older data files have none: an empty list.
 local flipList
 function ns.DataFlips()
   if flipList then return flipList end
@@ -766,15 +772,19 @@ function ns.DataFlips()
       local id, kind = wholeNumber(f[1]), f[2]
       local buyMax, units = wholeNumber(f[3]), wholeNumber(f[4])
       local cost, relist, profit = wholeNumber(f[5]), wholeNumber(f[6]) or 0, wholeNumber(f[7])
-      if id and id > 0 and (kind == "vendor" or (kind == "gap" and relist > 0)) and buyMax and buyMax > 0
+      -- gap and deal flips are relisted, so they need a relist price
+      local relists = kind == "gap" or kind == "deal"
+      if id and id > 0 and (kind == "vendor" or (relists and relist > 0)) and buyMax and buyMax > 0
         and units and units > 0 and profit and profit > 0 then
         local risk = {}
         for w in string.gmatch(f[9] or "", "[^,%s]+") do risk[#risk + 1] = slower(w) end
+        local usual = wholeNumber(f[10]) or 0
+        if usual < 0 then usual = 0 end
         flipList[#flipList + 1] = {
           id = id, kind = kind, buyMax = buyMax, units = units,
           cost = (cost and cost > 0) and cost or buyMax * units,
-          relist = (kind == "gap") and relist or 0,
-          profit = profit, roi = wholeNumber(f[8]) or 0, risk = risk,
+          relist = relists and relist or 0,
+          profit = profit, roi = wholeNumber(f[8]) or 0, risk = risk, usual = usual,
         }
       end
     end
@@ -1096,46 +1106,64 @@ local function liveFor(id)
   return nil
 end
 
--- "This stack (20)" lines: what the stack brings at auction (Sell now, after
--- the 5% cut) and from a vendor, then a plain verdict in green or red.
+-- The stack lines, only when there is a Sell now price: for a stack, what it
+-- brings at auction after the 5% cut, in green when that beats what a vendor
+-- pays and in red when it does not. Then, for a stack or one item, a red
+-- "Vendor it" when a vendor pays as much or more. (The game's own Sell Price
+-- line already says what a vendor pays.)
 local function addStackLines(tt, item, count, unitNow)
+  if not unitNow then return end
   local C = ns.COLORS
-  local mu, tx = C.muted, C.text
+  local tx, pos, neg = C.text, C.pos, C.neg
   local vendor = tonumber(item.vendor) or 0
-  if not unitNow and vendor <= 0 then return end
-  local label = count > 1 and ("This stack (" .. count .. ")") or "This item"
-  local auction = unitNow and floor(unitNow * count * ns.AH_CUT) or nil
+  local auction = floor(unitNow * count * ns.AH_CUT)
   local vend = vendor * count
-  if auction then
-    tt:AddDoubleLine(label .. " at auction, after 5% cut", ns.MoneyIcons(auction), tx[1], tx[2], tx[3], 1, 1, 1)
+  local better = vendor <= 0 or auction > vend
+  if count > 1 then
+    local c = better and pos or neg
+    tt:AddDoubleLine("This stack (" .. count .. "), after AH cut", ns.MoneyIcons(auction),
+      tx[1], tx[2], tx[3], c[1], c[2], c[3])
   end
-  if vendor > 0 then
-    tt:AddDoubleLine(label .. " at a vendor", ns.MoneyIcons(vend), tx[1], tx[2], tx[3], 1, 1, 1)
-  else
-    tt:AddDoubleLine(label .. " at a vendor", "will not buy it", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
-  end
-  if not auction then return end
-  local pos, neg = C.pos, C.neg
-  if vendor <= 0 then
-    tt:AddLine("Auction it: a vendor will not buy it", pos[1], pos[2], pos[3])
-  elseif auction > vend then
-    tt:AddLine("Auction it: " .. ns.MoneyIcons(auction - vend) .. " more than a vendor pays", pos[1], pos[2], pos[3])
-  elseif auction == vend then
-    tt:AddLine("Vendor it: a vendor pays the same", neg[1], neg[2], neg[3])
-  else
-    tt:AddLine("Vendor it: a vendor pays " .. ns.MoneyIcons(vend - auction) .. " more", neg[1], neg[2], neg[3])
+  if not better then
+    tt:AddLine(auction == vend and "Vendor it: a vendor pays the same" or "Vendor it: a vendor pays more",
+      neg[1], neg[2], neg[3])
   end
 end
 ns.AddStackLines = addStackLines
 
--- Adds our lines. Returns true when anything was added.
+-- How far today's AH value sits from the average price: "+3%" in green, "-5%"
+-- in red (whole percent, rounded toward 0 so it never says more than it is),
+-- a grey "0%" under 1%, or nil with no average to compare with.
+local function vsAverage(value, avg)
+  value, avg = tonumber(value) or 0, tonumber(avg) or 0
+  if value <= 0 or avg <= 0 then return nil end
+  local C = ns.COLORS
+  local p = floor(abs(value - avg) * 100 / avg)
+  if p < 1 then return "|c" .. ns.Hex(C.muted) .. "0%|r" end
+  if value > avg then return "|c" .. ns.Hex(C.pos) .. "+" .. p .. "%|r" end
+  return "|c" .. ns.Hex(C.neg) .. "-" .. p .. "%|r"
+end
+ns.VsAverage = vsAverage
+
+-- "7-day average", or "3-day average" while the item has prices for fewer
+-- than 7 days (the data's average is of the days it has, at most the last 7).
+local function averageLabel(id)
+  local days = type(ns.DailyPoints) == "function" and ns.DailyPoints(id) or 0
+  if days < 1 or days > 7 then days = 7 end
+  return days .. "-day average"
+end
+ns.AverageLabel = averageLabel
+
+-- Adds our lines. Returns true when anything was added. Kept short:
+--   AH value (today's market value) and how far it is from the average,
+--   the 7-day average, Sell now, Suggested price (the sell target from the
+--   price history), then for a stack what it brings after the AH cut.
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
 -- the "no recent listings" line; version = "version" says the prices are for
 -- this version only, version = "all" (or suffix = true) that they cover every
--- version of the item. Then Market and Cheapest still show (they are what
--- the data saw), but Sell now and Best price say "depends on the version"
--- and only the vendor's price is offered for the stack: a price for selling
--- would come from other versions' listings.
+-- version of the item. Then the AH value and the average still show (they
+-- are what the data saw), but there is no Sell now, Suggested price or stack
+-- line: a price for selling would come from other versions' listings.
 function ns.AddTooltipLines(tt, itemID, count, opts)
   local S = ns.settings
   if not S.tooltip then return false end
@@ -1161,62 +1189,46 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     return ns.MoneyIcons(v * mult)
   end
   local age = ns.DataAge() or 0
+  -- How far today's AH value is from the average, in green or red.
+  local vs = vsAverage(item.market, item.avg7)
   if S.compact then
-    local m, c = money(item.market), money(item.cheapest)
+    local m = money(item.market)
     local line
-    if m and c then
-      line = "AH" .. tag .. ": " .. m .. " (cheapest " .. c .. ")"
-    elseif m then
-      line = "AH" .. tag .. ": " .. m .. " (none listed now)"
-    elseif c then
-      line = "AH" .. tag .. ": cheapest " .. c
+    if m then
+      line = "AH value" .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
     else
-      line = "AH: none listed now"
+      line = "AH value: none listed now"
     end
     tt:AddLine(line, tx[1], tx[2], tx[3])
   else
     tt:AddDoubleLine("Forever AH", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
     local m = money(item.market)
     if m then
-      tt:AddDoubleLine("Market" .. tag, m, tx[1], tx[2], tx[3], 1, 1, 1)
+      tt:AddDoubleLine("AH value" .. tag, vs and (m .. "  " .. vs) or m, tx[1], tx[2], tx[3], 1, 1, 1)
     else
-      tt:AddDoubleLine("Market", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+      tt:AddDoubleLine("AH value", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
-    local c = money(item.cheapest)
-    if c then
-      tt:AddDoubleLine("Cheapest" .. tag, c, tx[1], tx[2], tx[3], 1, 1, 1)
-    else
-      tt:AddDoubleLine("Cheapest", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
-    end
-    -- The week's range of cheapest prices, once there are 6 hourly prices.
-    local lo, hi = ns.WeekRange(item.id)
-    if lo then
-      tt:AddDoubleLine("7-day low" .. tag, money(lo), tx[1], tx[2], tx[3], 1, 1, 1)
-      tt:AddDoubleLine("7-day high" .. tag, money(hi), tx[1], tx[2], tx[3], 1, 1, 1)
+    local a = money(item.avg7)
+    if a then
+      tt:AddDoubleLine(averageLabel(item.id) .. tag, a, tx[1], tx[2], tx[3], 1, 1, 1)
     end
     -- Sell now: 1 copper under the cheapest listing (the live one when the
-    -- auction house showed it). Best price: the sell target from the history.
+    -- auction house showed it). Suggested price: the sell target from the
+    -- price history. Each only when there is one; one grey line says when a
+    -- price is left out because it may be one player's guess.
     local mixed = opts.version == "all" or opts.suffix == true
     local live, own = liveFor(item.id)
     local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
     local nowP = P and P.now
-    if mixed then
-      tt:AddDoubleLine("Sell now", "depends on the version", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
-    elseif nowP then
+    if nowP then
       tt:AddDoubleLine((P.live and "Sell now (live)" or "Sell now") .. tag, money(nowP), tx[1], tx[2], tx[3], 1, 1, 1)
-    else
-      local why = (P and P.nowWhy == "unreliable") and "price not reliable" or "none listed"
-      tt:AddDoubleLine("Sell now", why, tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
-    if mixed then
-      tt:AddDoubleLine("Best price", "depends on the version", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
-    elseif P and P.best then
-      tt:AddDoubleLine("Best price" .. tag, money(P.best), tx[1], tx[2], tx[3], 1, 1, 1)
-    else
-      local why = (P and P.bestWhy == "unreliable") and "price not reliable" or "needs more history"
-      tt:AddDoubleLine("Best price", why, tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+    if P and P.best then
+      tt:AddDoubleLine("Suggested price" .. tag, money(P.best), tx[1], tx[2], tx[3], 1, 1, 1)
     end
-    tt:AddLine("Listed " .. ns.Num(item.listed) .. ", " .. ns.SoldText(item), mu[1], mu[2], mu[3])
+    if P and (P.nowWhy == "unreliable" or P.bestWhy == "unreliable") then
+      tt:AddLine("Few listed: the price may not be reliable", mu[1], mu[2], mu[3])
+    end
     addStackLines(tt, item, count, nowP)
   end
   if opts.version == "version" then

@@ -144,6 +144,10 @@ html.ahb-lock, html.ahb-lock body { overflow: hidden; }
   background: rgba(var(--sell-rgb, 41, 182, 246), .12); color: var(--sell-color, #29B6F6); }
 .ahb-short { display: none; }
 .ahb-kind-v { background: rgba(var(--buy-rgb, 255, 193, 7), .12); color: var(--buy-color, #FFC107); }
+/* Deals: greens, blues and epics listed well under their usual price */
+.ahb-kind-d { background: rgba(16, 185, 129, .14); color: var(--positive, #10B981); }
+.ahb-kind-note { display: block; margin-top: 2px; font-size: 11px; color: var(--ahb-muted); }
+.ahb-under { color: var(--positive, #10B981); font-weight: 600; }
 .ahb-c-risk { white-space: normal !important; min-width: 120px; }
 .ahb-risk { display: inline-block; margin: 1px 4px 1px 0; padding: 0 6px; border-radius: 4px; font-size: 10.5px; font-weight: 700;
   line-height: 17px; white-space: nowrap; cursor: help; border: 1px solid currentColor; }
@@ -151,6 +155,7 @@ html.ahb-lock, html.ahb-lock body { overflow: hidden; }
 .ahb-risk-slow { color: #9FB3C8; }
 .ahb-risk-spike { color: #F07070; }
 .ahb-risk-suffix { color: #7FD48A; }
+.ahb-risk-unsure { color: #C9A0F0; }
 .ahb-empty { padding: 36px 16px; text-align: center; font-size: 13.5px; line-height: 1.5; color: var(--ahb-muted); }
 .ahb-empty[hidden], .ahb-more[hidden], .ahb-tip[hidden] { display: none; }
 .ahb-more { display: block; margin: 12px auto 14px; }
