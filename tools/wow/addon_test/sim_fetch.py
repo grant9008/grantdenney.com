@@ -16,8 +16,23 @@ What it simulates, for 240 hourly snapshots:
     1.2g: a deal (a blue well under its usual price) every hour once the
     collector has 4 hours of its history. It never sells, so it is never a
     gap flip, and there is always a deal in the data.
+  - a seller who pulls and reposts (Poached Sunscale Salmon, a commodity):
+    whenever a cheaper listing from the last snapshot is still up, they
+    cancel their stack and list it again 1c under the cheapest, as a new
+    auction with a new stack size. Now and then another seller lists a big
+    stack a little under the cheapest, and buyers take the cheapest units
+    first, so the cheaper stack stays up while the pulled one vanishes. That
+    was not a sale. sim_sales.json in the output says, hour by hour, what
+    the buyers really bought, how much of it the collector can see (a stack
+    that got smaller, or a whole stack that had LONG or VERY_LONG left) and
+    how much was pulled; test_datafile.py checks the collector's sold
+    against it. This market has its own random numbers, so every other
+    item's data is the same as without it.
+The simulated collector always had the sold floor, so every simulated hour
+counts as measured (fetch_ah.SOLD_FLOOR_FROM is set to 0).
 """
 import email.utils
+import json
 import math
 import os
 import random
@@ -73,18 +88,31 @@ GEAR = {
 PLAIN_GEAR = {
  17705: ("Thrash Blade", "inv_sword_17", 9524, ("Weapon", 2), ("Sword", 7), ("WEAPON", "One-Hand"), 53, 48, "RARE"),
 }
+# the seller who pulls and reposts: a commodity with its own random numbers (srng)
+SALMON = 13932
+SALMON_NAME, SALMON_ICON, SALMON_VENDOR = "Poached Sunscale Salmon", "inv_misc_fish_20", 100
+SALMON_BASE, SALMON_LISTED, SALMON_RATE = 700, 600, 30   # copper, units the others keep listed, sold per hour
+LONG_LEFT = ("LONG", "VERY_LONG")
 T = [int(time.time()) - 240 * 3600]
 f.time.time = lambda: T[0]
 f.time.sleep = lambda s: None
 f.get_token = lambda: "sim"
+# this collector always had the sold floor: every simulated hour counts as measured, whatever
+# the clock (SOLD_FLOOR_FROM is the real collectors' switch-over hour)
+f.SOLD_FLOOR_FROM = 0
 rng = random.Random(7)
+srng = random.Random(11)   # the salmon market only
 book = {}   # auction id -> {"id", "iid", "bonus", "qty", "unit", "tl", "com"}
 nid = [1]
+under = [None]   # the salmon undercutter's listing (auction id)
+seen = {}        # salmon auction id -> (qty, time left) in the last snapshot
+truth = []       # salmon, per compared hour: [hour, bought, the collector can see, pulled, pulled LONG/VERY_LONG]
 
 
 def add(iid, qty, unit, bonus=None, tl=None):
     book[nid[0]] = {"id": nid[0], "iid": iid, "bonus": bonus, "qty": qty, "unit": max(1, int(unit)),
-                    "tl": tl or rng.choice(["VERY_LONG", "VERY_LONG", "LONG", "MEDIUM"]), "com": iid in ITEMS}
+                    "tl": tl or rng.choice(["VERY_LONG", "VERY_LONG", "LONG", "MEDIUM"]),
+                    "com": iid in ITEMS or iid == SALMON}
     nid[0] += 1
 
 
@@ -169,9 +197,14 @@ def fake_api(path, ns, tries=4):
         return {"auctions": [api_auction(a, T[0]) for a in book.values() if not a["com"]]}, stamp
     iid = int(path.rsplit("/", 1)[1])
     if path.startswith("/data/wow/media/item/"):
-        icon = (ITEMS.get(iid) or GEAR.get(iid) or PLAIN_GEAR[iid])[1]
+        icon = SALMON_ICON if iid == SALMON else (ITEMS.get(iid) or GEAR.get(iid) or PLAIN_GEAR[iid])[1]
         return {"assets": [{"key": "icon", "value": I + icon + ".jpg"}]}, {}
     if path.startswith("/data/wow/item/"):
+        if iid == SALMON:
+            return {"name": SALMON_NAME, "quality": {"type": "COMMON"}, "sell_price": SALMON_VENDOR, "level": 45,
+                    "required_level": 35, "item_class": {"name": "Consumable", "id": 0},
+                    "item_subclass": {"name": "Food & Drink", "id": 5},
+                    "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "is_stackable": True}, {}
         if iid in ITEMS:
             n = ITEMS[iid]
             return {"name": n[0], "quality": {"type": n[5]}, "sell_price": n[6], "level": 0, "required_level": 0,
@@ -202,6 +235,69 @@ def sells(rate):
     return (1 if rng.random() < rate else 0) if rate < 1 else int(rng.gauss(rate, rate * 0.3))
 
 
+def salmon_buy():
+    """Buyers take the cheapest salmon first. Returns {auction id: units bought}."""
+    took = {}
+    for _ in range(max(0, int(srng.gauss(SALMON_RATE, SALMON_RATE * 0.3)))):
+        cands = sorted((a for a in book.values() if a["iid"] == SALMON), key=lambda a: a["unit"])
+        if not cands:
+            break
+        a = cands[0]
+        a["qty"] -= 1
+        took[a["id"]] = took.get(a["id"], 0) + 1
+        if a["qty"] <= 0:
+            del book[a["id"]]
+    return took
+
+
+def salmon_count(took, row):
+    """After the hour's expiries: row gets the units bought and the part the collector can
+    see, what a stack still listed got smaller by and whole stacks that had LONG or VERY_LONG
+    left in the last snapshot (a MEDIUM or SHORT one may just have expired, and a SHORT one
+    bought from and then expired is gone too)."""
+    for aid, k in took.items():
+        q, tl = seen[aid]
+        row[1] += k
+        if aid in book:
+            row[2] += k
+        elif tl in LONG_LEFT:
+            row[2] += q
+
+
+def salmon_undercut(row):
+    """The undercutter: when a cheaper listing from the last snapshot is still up (buyers
+    left it, so they never reached theirs), they pull their stack and list it again 1c under
+    the cheapest, as a new auction with a new stack size. Gone (bought or expired): a new one."""
+    mine = book.get(under[0])
+    rest = [a for a in book.values() if a["iid"] == SALMON and a["id"] != under[0]]
+    if mine is not None:
+        if not any(a["id"] in seen and a["unit"] < mine["unit"] for a in rest):
+            return
+        del book[mine["id"]]
+        row[3] += mine["qty"]
+        if seen[mine["id"]][1] in LONG_LEFT:
+            row[4] += mine["qty"]
+    low = min((a["unit"] for a in rest), default=SALMON_BASE + 1)
+    add(SALMON, srng.randint(30, 80), low - 1, tl="VERY_LONG")
+    under[0] = nid[0] - 1
+
+
+def salmon_topup(t):
+    """The other sellers keep about SALMON_LISTED units listed; now and then one of them lists
+    a big stack a little under the cheapest (never on top of an earlier one, so the gaps stay
+    too small for a flip), and buyers do not finish it within the hour."""
+    level = SALMON_BASE * drift(SALMON, t)
+    have = sum(a["qty"] for a in book.values() if a["iid"] == SALMON and a["id"] != under[0])
+    while have < SALMON_LISTED:
+        q = srng.choice([20, 40, 60, 100])
+        add(SALMON, q, level * (1 + abs(srng.gauss(0, 0.08))),
+            tl=srng.choice(["VERY_LONG", "VERY_LONG", "LONG", "MEDIUM"]))
+        have += q
+    low = min(a["unit"] for a in book.values() if a["iid"] == SALMON)
+    if srng.random() < 0.2 and low >= 0.97 * level:
+        add(SALMON, srng.randint(100, 200), low * srng.uniform(0.95, 0.99), tl="VERY_LONG")
+
+
 f.api = fake_api
 sys.argv = ["x", OUT]
 for h in range(240):
@@ -210,11 +306,22 @@ for h in range(240):
     for iid, g in GEAR.items():
         for bonus, (price, listed, rate) in g[8].items():
             buy(iid, sells(rate), bonus)
+    took = salmon_buy()
     for a in list(book.values()):
         a["tl"] = {"VERY_LONG": "LONG", "LONG": "MEDIUM", "MEDIUM": "SHORT"}.get(a["tl"], "GONE")
         if a["tl"] == "GONE":
             del book[a["id"]]
+    row = [T[0] - T[0] % 3600, 0, 0, 0, 0]
+    salmon_count(took, row)
+    salmon_undercut(row)
     relist(T[0])
+    salmon_topup(T[0])
     special(T[0])
     f.main()
+    seen = {a["id"]: (a["qty"], a["tl"]) for a in book.values() if a["iid"] == SALMON}
+    if h:
+        truth.append(row)
     T[0] += 3600
+with open(os.path.join(OUT, "sim_sales.json"), "w", encoding="utf-8", newline="\n") as fh:
+    json.dump({"item": SALMON, "name": SALMON_NAME, "simulated": True,
+               "fields": ["hour", "bought", "seen", "pulled", "pulledLong"], "hours": truth}, fh)

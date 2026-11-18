@@ -30,12 +30,18 @@ app on /wow/ can read them with almost no changes:
 
 "Sold" is an estimate. The API only shows what is listed, never sales. An
 auction that was listed with hours left and is gone at the next snapshot was
-most likely bought (it could also have been cancelled), and a stack whose
-quantity went down sold the difference. Auctions that were about to expire
-anyway are not counted. That is the same idea TSM and Saddlebag use. The
-estimate is skipped (and that time does not count as measured) when the
-previous snapshot is too old, because then vanished auctions say nothing
-reliable about sales.
+most likely bought, and a stack whose quantity went down sold the difference.
+Auctions that were about to expire anyway are not counted. That is the same
+idea TSM and Saddlebag use. A gone auction is not counted either when a
+cheaper auction of the same item (the same version, for a version) from the
+previous snapshot is still listed: buyers take the cheapest first, so that
+one was cancelled or reposted, not bought (see estimate_sold). The estimate
+is skipped (and that time does not count as measured) when the previous
+snapshot is too old, because then vanished auctions say nothing reliable
+about sales. Hours measured before that cheaper-listing rule came in
+(SOLD_FLOOR_FROM) counted pulled and reposted stacks as sales, so they no
+longer count as measured: sold24, salesHours and the sold per day that sizes
+flips use only the hours from then on (the hist files keep their sold).
 
 A download that looks incomplete (a list failed, or the auction count fell
 sharply) is not published at all: the next run downloads it again. Only when
@@ -124,10 +130,16 @@ API = f"https://{REGION}.api.blizzard.com"
 DYN = f"dynamic-forever-{REGION}"
 STATIC_NS = [f"static-forever-{REGION}", f"static-classic1x-{REGION}", f"static-classic-{REGION}"]
 HOURLY_KEEP = 35 * 24
-SOLD_TIME_LEFT = {"LONG", "VERY_LONG"}   # gone before it could have expired => count as sold
+SOLD_TIME_LEFT = {"LONG", "VERY_LONG"}   # gone before it could have expired => sold (see estimate_sold)
 SOLD_MAX_GAP = 90 * 60     # older previous snapshot: vanished auctions may just have expired
 SOLD_MAX_DROP = 0.30       # auction count fell more than this: probably an incomplete download
 SOLD_DROP_MIN = 100        # per-endpoint drop check only for endpoints this big
+# The first hour slot measured with the sold floor (estimate_sold): 2026-11-18 23:00 UTC. Older
+# copies counted pulled and reposted stacks as sales, so measured hours before it are dropped
+# from state.json "measured" (they would size flips for 7 days). It should be the whole UTC hour
+# when both collectors (GitHub and the PC) first run this rule, never later: until it comes, no
+# hour counts as measured.
+SOLD_FLOOR_FROM = 1795042800
 THIN_UNITS = 10            # fewer units listed than this: market value is the second cheapest unit
 UNKNOWN_RETRY_SECS = 6 * 3600   # look an unnamed item up again at most this often
 UNKNOWN_RETRY_MAX = 300         # and at most this many of them per run
@@ -458,26 +470,59 @@ def aggregate(auctions, registry=None):
 
 
 # -- estimated sales ----------------------------------------------------------
+def _floor_key(e, cur=None):
+    """Which listings share a sold floor: (item id, vid) for a version, (item id, 0)
+    otherwise, so two versions (or a version and the plain item) never share one. An
+    auction from an older snapshot without vids takes its vid from the new snapshot
+    (cur) when it is still listed."""
+    vid = e[4] if len(e) > 4 else None
+    if not vid and cur is not None and len(cur) > 4:
+        vid = cur[4]
+    return e[0], vid or 0
+
+
 def estimate_sold(prev, snap, by_variant=False):
     """Units that most likely sold between two snapshots, per item id (or per
     vid when by_variant: auctions that are not a version are left out). The
-    previous snapshot may come from an older state file without vids."""
+    previous snapshot may come from an older state file without vids.
+
+    A stack that got smaller sold the difference. An auction that is gone and
+    had LONG or VERY_LONG left (so it cannot have expired) sold all of it, but
+    only when no cheaper auction of the same item (of the same version, for a
+    version) from the previous snapshot is still listed. Buyers always take the
+    cheapest first, so a listing that is gone while a cheaper one stayed up was
+    pulled or reposted, not bought. The floor is the cheapest unit price among
+    the previous snapshot's auctions still listed now (whole or partly bought);
+    a gone auction priced at the floor or under counts (ties count)."""
+    floor = {}
+    for aid, e in prev.items():
+        cur = snap.get(aid)
+        if cur is None:
+            continue
+        try:
+            unit = float(e[2])
+        except (TypeError, ValueError, IndexError):
+            continue
+        key = _floor_key(e, cur)
+        if unit < floor.get(key, math.inf):
+            floor[key] = unit
     sold = {}
     for aid, e in prev.items():
         try:
-            iid, q, tl = e[0], int(e[1]), e[3]
+            iid, q, unit, tl = e[0], int(e[1]), float(e[2]), e[3]
         except (TypeError, ValueError, IndexError):
             continue
+        sid = iid
         if by_variant:
-            iid = e[4] if len(e) > 4 else None
-            if not iid:
+            sid = e[4] if len(e) > 4 else None
+            if not sid:
                 continue
         cur = snap.get(aid)
         if cur is None:
-            if tl in SOLD_TIME_LEFT:
-                sold[iid] = sold.get(iid, 0) + q
+            if tl in SOLD_TIME_LEFT and unit <= floor.get(_floor_key(e), math.inf):
+                sold[sid] = sold.get(sid, 0) + q
         elif cur[1] < q:
-            sold[iid] = sold.get(iid, 0) + (q - cur[1])
+            sold[sid] = sold.get(sid, 0) + (q - cur[1])
     return sold
 
 
@@ -1558,7 +1603,9 @@ def main(out=None):
     measured = measured_secs(state)
     if not skipped:
         measured[hour] = measured.get(hour, 0) + max(0, int(data_time - prev_time))
-    measured = {t: s for t, s in measured.items() if hour - HOURLY_KEEP * 3600 < t <= hour}
+    # the last HOURLY_KEEP hours, none from before the sold floor (see SOLD_FLOOR_FROM)
+    measured = {t: s for t, s in measured.items()
+                if hour - HOURLY_KEEP * 3600 < t <= hour and t >= SOLD_FLOOR_FROM}
     sales_h = sales_hours(measured, hour)
     sales_min = int(sales_seconds(measured, hour) / 60 + 0.5)
     # Versions: the run that upgrades older state compares with a snapshot that has no
