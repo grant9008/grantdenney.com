@@ -558,13 +558,14 @@ function ns.BagScan()
           else
             local vendor = (gi and gi.vendor) or DataVendor(id)
             if info.hasNoValue == true then vendor = 0 end
-            local aEach, unsure
+            local aEach, aTotal, unsure = nil, 0, nil
             if not bound and bind ~= BIND_PICKUP then
               local unit
               unit, unsure = AuctionUnit(PriceID(id, link), cache)
-              if unit then aEach = floor(unit * cut) end
+              -- the stack after the 5% cut, as the tooltip's stack line works it out
+              if unit then aEach, aTotal = floor(unit * cut), floor(unit * count * 95 / 100) end
             end
-            local vTotal, aTotal = vendor * count, (aEach or 0) * count
+            local vTotal = vendor * count
             e.vendor, e.auction, e.unsure = vendor, aEach, unsure and aTotal > vTotal or false
             e.value = max(vTotal, aTotal)
             e.source = (aTotal > vTotal) and "auction" or "vendor"

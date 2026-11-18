@@ -8054,8 +8054,7 @@ def bag_auction_unit(ref, iid):
 def bag_value(w, ref, iid, count, bound=False):
     vendor = int(w.M["items"][iid].vendor or 0)
     unit, unsure = (None, False) if bound else bag_auction_unit(ref, iid)
-    a_each = math.floor(unit * 0.95) if unit else 0
-    v_total, a_total = vendor * count, a_each * count
+    v_total, a_total = vendor * count, (rec_model.stack_after_cut(unit, count) if unit else 0)
     return max(v_total, a_total), (unsure and a_total > v_total), ("auction" if a_total > v_total else "vendor")
 
 
