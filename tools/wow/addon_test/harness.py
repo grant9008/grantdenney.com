@@ -855,15 +855,16 @@ function Line:SetHitRectThickness(t) end
 function Line:ClearAllPoints() self._start, self._end = nil, nil end
 
 -- Font objects -------------------------------------------------------------------
--- A Font (the game's named fonts and CreateFont's) has a face, size, flags and
--- a colour. The tooltip fonts are ElvUI's (PT Sans Narrow 12, header 13), as
--- the player has them.
+-- A Font (the game's named fonts and CreateFont's) has a face, size, flags, a
+-- colour and a shadow (CopyFontObject copies them all). The tooltip fonts are
+-- ElvUI's (PT Sans Narrow 12, header 13, with its shadow), as the player has them.
 local FONTS = {}
 local Font = {}
 local FontMT = { __index = Font, __tostring = function(o) return "Font<" .. tostring(o._name) .. ">" end }
 local function newFont(name, file, size, flags, r, g, b)
   local f = setmetatable({ _isFont = true, _name = name, _file = file, _size = size, _flags = flags or "",
-                           _color = { r or 1, g or 1, b or 1 } }, FontMT)
+                           _color = { r or 1, g or 1, b or 1 }, _shadowOffset = { 0, 0 }, _shadowColor = { 0, 0, 0, 0 } },
+                         FontMT)
   if name then _G[name] = f end
   return f
 end
@@ -881,14 +882,24 @@ function Font:CopyFontObject(src)
   if type(src) ~= "table" or not src._isFont then apiError("Font:CopyFontObject: not a font") end
   self._file, self._size, self._flags = src._file, src._size, src._flags
   self._color = { src._color[1], src._color[2], src._color[3] }
+  self._shadowOffset = { src._shadowOffset[1], src._shadowOffset[2] }
+  self._shadowColor = { src._shadowColor[1], src._shadowColor[2], src._shadowColor[3], src._shadowColor[4] }
 end
 function Font:SetTextColor(r, g, b)
   if not finite(r) or not finite(g) or not finite(b) then apiError("Font:SetTextColor: bad colour") end
   self._color = { r, g, b }
 end
 function Font:GetTextColor() return self._color[1], self._color[2], self._color[3], 1 end
-function Font:SetShadowColor() end
-function Font:SetShadowOffset() end
+function Font:SetShadowColor(r, g, b, a)
+  if not finite(r) or not finite(g) or not finite(b) then apiError("Font:SetShadowColor: bad colour") end
+  self._shadowColor = { r, g, b, a or 1 }
+end
+function Font:GetShadowColor() local c = self._shadowColor; return c[1], c[2], c[3], c[4] end
+function Font:SetShadowOffset(x, y)
+  if not finite(x) or not finite(y) then apiError("Font:SetShadowOffset: bad offset") end
+  self._shadowOffset = { x, y }
+end
+function Font:GetShadowOffset() return self._shadowOffset[1], self._shadowOffset[2] end
 function Font:SetJustifyH() end
 function Font:SetJustifyV() end
 for _, n in ipairs({ "GameFontNormal", "GameFontNormalSmall", "GameFontNormalLarge", "GameFontHighlight",
@@ -898,6 +909,10 @@ for _, n in ipairs({ "GameFontNormal", "GameFontNormalSmall", "GameFontNormalLar
 end
 FONTS.GameTooltipText = newFont("GameTooltipText", "Fonts\\PTSansNarrow.ttf", 12, "")
 FONTS.GameTooltipHeaderText = newFont("GameTooltipHeaderText", "Fonts\\PTSansNarrow.ttf", 13, "")
+for _, n in ipairs({ "GameTooltipText", "GameTooltipHeaderText" }) do   -- ElvUI's SHADOW style
+  FONTS[n]:SetShadowOffset(1, -1)
+  FONTS[n]:SetShadowColor(0, 0, 0, 1)
+end
 M.fontsCreated = 0
 function CreateFont(name)
   if name ~= nil and type(name) ~= "string" then apiError("CreateFont: bad name") end
@@ -1143,13 +1158,14 @@ end
 M.ttLine = ttLine
 function Tooltip:GetLeftLine(i) return self._L and self._L[i] end
 function Tooltip:GetRightLine(i) return self._R and self._R[i] end
--- Font name, size and colour of each side of line i (for the checks).
+-- Font name, size and colour of each side of line i (for the checks). The
+-- FontString methods themselves, not a test's override on one line.
 function M.lineStyle(tt, i)
   local L, R = tt._L and tt._L[i], tt._R and tt._R[i]
   if not L then return nil end
   local function one(fs)
-    local f = fs:GetFontObject()
-    local _, size = fs:GetFont()
+    local f = FontString.GetFontObject(fs)
+    local _, size = FontString.GetFont(fs)
     local c = fs._textColor
     return { font = type(f) == "table" and f._name or tostring(f), size = size, r = c[1], g = c[2], b = c[3] }
   end
@@ -3576,6 +3592,29 @@ def sc_tooltip(sc, ref, items):
         sc.eq(lines, want, "tooltip %d" % iid)
         verdict_line_ok(sc, ref, iid, lines, "tooltip %d" % iid)
         tooltip_style_ok(sc, w, tt, want_st, "tooltip %d" % iid)
+    # The chart's timeframe (S.chartTF) picks the price window: the verdict, its stack
+    # line and the Suggested price follow it
+    differ = 0
+    for tf in ("1M", "5D"):
+        w.ns.SetChartTF(tf)
+        for iid in ids:
+            tt.SetItemByID(tt, iid)
+            want, want_st = expected_tooltip(ref, iid, age, tf=tf, styles=True)
+            differ += want != expected_tooltip(ref, iid, age)
+            lines = w.lines(tt)
+            sc.eq(lines, want, "tooltip %d %s" % (iid, tf))
+            verdict_line_ok(sc, ref, iid, lines, "tooltip %d %s" % (iid, tf), tf=tf)
+            tooltip_style_ok(sc, w, tt, want_st, "tooltip %d %s" % (iid, tf))
+        tt.SetBagItem(tt, 0, 1)
+        want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, tf=tf, styles=True)
+        lines = w.lines(tt)
+        sc.eq(lines, want, "2589 bag x20 %s" % tf)
+        tooltip_values_ok(sc, ref, R.LINEN, lines, 1, "2589 bag x20 %s" % tf, tf=tf)
+        verdict_line_ok(sc, ref, R.LINEN, lines, "2589 bag x20 %s (the stack line)" % tf, tf=tf)
+        tooltip_style_ok(sc, w, tt, want_st, "2589 bag x20 %s" % tf)
+    w.ns.SetChartTF("1D")
+    if R.SIM:
+        sc.check(differ > 0, "the test data has tooltips that change with the timeframe (%d)" % differ)
     out = w.slash("/fah compact")
     sc.check(any("one line" in l for l in out), "/fah compact message")
     for iid in ids:
@@ -7455,6 +7494,15 @@ VERDICT_FIXTURES = [
     ("tiny", "4|4|500|100|4|3|%s|30" % series24(4, 4, 5), ("Close call", "tiny gain"), (20, 76)),
     ("thinvendor", "50|50|1|10|50|60|%s|1" % series24(50, 50), ("Vendor it", "+28% vs AH"), None),
     ("thinnovendor", "30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000), ("Maybe auction", "few listed"), None),
+    # the rule edges: nothing listed and a Suggested price 300x the vendor price (over OLD_FAR, 200x), then 150x
+    ("oldfar", "0|0|0|20|0|1|%s|0" % series24(300, 300), None, None),
+    ("oldnear", "0|0|0|20|0|2|%s|0" % series24(300, 300), ("Maybe auction", "none listed now"), None),
+    # the AH nets the same as a vendor (9,500 each), then exactly 1% more (9,595): VENDOR_PCT 101
+    ("tie", "100|100|500|100|100|95|%s|30" % series24(100, 100, 5), ("Vendor it", "same as AH"), (20, None)),
+    ("tieplus", "101|101|500|100|101|95|%s|30" % series24(101, 101, 5), ("Close call", "AH +1%"), (20, 1919)),
+    # 1,900 against 1,700: exactly 2 copper more (MIN_GAIN)
+    ("twocopper", "20|20|500|100|20|17|%s|30" % series24(20, 20, 5), ("Auction it", "+11% vs vendor"), (20, 380)),
+    ("nothingvendor", "0|0|0|20|0|50|%s|0" % series24(30, 32), ("Vendor it", "+64% vs AH"), (20, None)),
 ]
 
 
@@ -7589,9 +7637,11 @@ def sc_tooltip_verdicts(sc, ref, items):
 
 
 def sc_tooltip_fonts(sc, ref, items):
-    """The bigger verdict line: on our own Font (one per face, size and flags),
-    its colour set again, restored on clear and hide, only GameTooltip and
-    ItemRefTooltip, lines made after it at the normal size, and the fallbacks."""
+    """The bigger verdict line: on our own Font (one per face, size and flags,
+    a copy of the line's Font with its shadow), its colour set again, restored
+    on clear and hide (the very Font object it had, its colour kept), only
+    GameTooltip and ItemRefTooltip, lines made after it at the normal size,
+    and the fallbacks."""
     text, items2, ids = verdict_data(ref, items)
     r2 = RefData(text=text)
     silk, junk = ids["silk"], ids["vendorjunk"]
@@ -7599,6 +7649,8 @@ def sc_tooltip_fonts(sc, ref, items):
     M, g = w.M, w.g
     tt = g.GameTooltip
     age = w.now - r2.updated
+    gtt = g.GameTooltipText
+    gtt.SetShadowOffset(gtt, 2, -2)    # a shadow our bigger copy must keep
     w.put_bag(0, 1, silk, 20)
     tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 0, 1)
@@ -7611,6 +7663,8 @@ def sc_tooltip_fonts(sc, ref, items):
     sc.eq(M.fontsCreated, 1, "fonts: one Font made")
     f = g.ForeverAHBigFont1
     sc.eq(f.GetFont(f), ("Fonts\\PTSansNarrow.ttf", 15, ""), "fonts: the line's own face and flags, 3 points bigger")
+    sc.eq((f.GetShadowOffset(f), f.GetShadowColor(f)), ((2, -2), (0, 0, 0, 1)),
+          "fonts: our Font is a copy of GameTooltipText (ElvUI's shadow kept)")
     tt.ClearLines(tt)
     sc.eq(big_fontstrings(w, tt), [], "fonts: ClearLines puts the Font back")
     s = M.lineStyle(tt, n)
@@ -7621,8 +7675,11 @@ def sc_tooltip_fonts(sc, ref, items):
     sc.eq(big_fontstrings(w, tt), [], "fonts: Hide puts it back")
     tt.SetBagItem(tt, 0, 1)
     sc.eq(len(big_fontstrings(w, tt)), 2, "fonts: bigger again")
-    M.fireScript(tt, "OnHide")     # a hide that does not clear the lines
+    M.fireScript(tt, "OnHide")     # a hide that does not clear the lines (a parent hid, as with Alt+Z)
     sc.eq(big_fontstrings(w, tt), [], "fonts: OnHide alone puts it back")
+    sc.eq(w.lines(tt), want_lines, "fonts: OnHide alone keeps the lines")
+    tooltip_style_ok(sc, w, tt, [(lc, rc, False) for lc, rc, _ in want_st],
+                     "fonts: OnHide alone (the verdict still green, at the normal size)")
     tt.ClearLines(tt)
     tt.SetBagItem(tt, 0, 1)
     tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
@@ -7681,16 +7738,59 @@ def sc_tooltip_fonts(sc, ref, items):
     sc.eq([x for x in others if x[2:] != ("GameTooltipText", 12)], [], "fonts: lines 11 to 16, made on demand, stay at 12")
     M.extraGameLines = None
     sc.clean(w, "fonts")
-    # Fallbacks: the same lines and colours at the normal size, no error and no chat line
-    for label in ("hook refused", "no CreateFont", "CreateFont gives nothing"):
+    # The verdict's line on another addon's Font (a bold outline, not GameTooltipText):
+    # our Font is a copy of it, and clear and hide put back that very Font object
+    w4 = World(r2, items2, data_src=text)
+    t4 = w4.g.GameTooltip
+    w4.lua.execute("""
+      local o = CreateFont("OtherAddonBold")
+      o:SetFont("Fonts\\\\PTSansNarrow.ttf", 12, "THICKOUTLINE")
+      o:SetShadowOffset(3, -3)
+      MOCK.otherFont = o
+      GameTooltipTextLeft4:SetFontObject(o)
+      GameTooltipTextRight4:SetFontObject(o)""")
+    other = w4.M.otherFont
+
+    def on_other(label):
+        got = [w4.same(fs.GetFontObject(fs), other) for fs in (w4.g.GameTooltipTextLeft4, w4.g.GameTooltipTextRight4)]
+        sc.eq(got, [True, True], "fonts: %s puts back the very Font object the line had (another addon's)" % label)
+    t4.SetItemByID(t4, silk)
+    sc.eq(w4.lines(t4), expected_tooltip(r2, silk, age), "fonts on another addon's Font: the lines")
+    sc.eq(big_fontstrings(w4, t4), [(4, "left", "ForeverAHBigFont1", 15), (4, "right", "ForeverAHBigFont1", 15)],
+          "fonts on another addon's Font: the verdict is bigger")
+    f4 = w4.g.ForeverAHBigFont1
+    sc.eq((f4.GetFont(f4), f4.GetShadowOffset(f4)), (("Fonts\\PTSansNarrow.ttf", 15, "THICKOUTLINE"), (3, -3)),
+          "fonts on another addon's Font: ours keeps its face, flags and shadow")
+    t4.ClearLines(t4)
+    on_other("a clear")
+    for label, hide in (("OnHide", lambda: w4.M.fireScript(t4, "OnHide")), ("Hide", lambda: t4.Hide(t4))):
+        t4.SetItemByID(t4, silk)
+        sc.eq(len(big_fontstrings(w4, t4)), 2, "fonts on another addon's Font: bigger again before %s" % label)
+        hide()
+        on_other(label)
+    sc.clean(w4, "fonts on another addon's Font")
+    # Fallbacks: the same lines and colours at the normal size, no error and no chat line. In the
+    # last two the left side is already bigger when the right side fails: both go back, still green
+    for label in ("hook refused", "no CreateFont", "CreateFont gives nothing", "right side's GetFont gives nothing",
+                  "right side refuses our Font"):
         w3 = World(r2, items2, data_src=text)
         t3 = w3.g.GameTooltip
         if label == "hook refused":
             w3.lua.execute("GameTooltip.HookScript = function() error('HookScript refused') end")
         elif label == "no CreateFont":
             w3.g.CreateFont = None
-        else:
+        elif label == "CreateFont gives nothing":
             w3.lua.execute("CreateFont = function() return nil end")
+        elif label == "right side's GetFont gives nothing":
+            w3.lua.execute("GameTooltipTextRight4.GetFont = function() return nil end")
+        else:
+            w3.lua.execute("""
+              local fs = GameTooltipTextRight4
+              local set = fs.SetFontObject
+              fs.SetFontObject = function(self, o)
+                if type(o) == "table" and tostring(o._name):find("ForeverAH", 1, true) then error("refused") end
+                return set(self, o)
+              end""")
         t3.SetItemByID(t3, silk)
         want_lines, want_st = expected_tooltip(r2, silk, age, styles=True)
         sc.eq(w3.lines(t3), want_lines, "fonts %s: the lines" % label)

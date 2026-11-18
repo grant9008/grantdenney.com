@@ -411,8 +411,10 @@ local function AuctionUnit(pid, cache)
     local live, own = LiveFor(pid)
     local ok, sp = pcall(ns.SellPrices, pid, "1D", live, own)
     if ok and type(sp) == "table" then
-      -- Listed now: the price the tooltip's verdict uses (List At, never over
-      -- the AH value), so this panel and the tooltip agree.
+      -- Listed now: the same price per item the tooltip's verdict judges
+      -- (List At, never over the AH value). Totals can still differ by a few
+      -- copper: the panel takes the 5% cut per item, the tooltip's stack line
+      -- on the whole stack.
       local it = type(ns.GetItem) == "function" and ns.GetItem(pid) or nil
       local u = it and (Num(it.market) or 0) > 0 and type(ns.SellVerdictPrice) == "function" and ns.SellVerdictPrice(it, sp) or nil
       if u or (Num(sp.now) and sp.now > 0) then

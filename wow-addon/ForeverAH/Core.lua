@@ -952,7 +952,10 @@ local ourFonts = setmetatable({}, { __mode = "k" })   -- Font -> true for the Fo
 local bigSaved = setmetatable({}, { __mode = "k" })   -- FontString -> { obj, file, size, flags }
 local bigLines = setmetatable({}, { __mode = "k" })   -- tooltip -> { FontString, ... }
 
--- Puts the saved Font back on every enlarged FontString of a tooltip.
+-- Puts the saved Font back on every enlarged FontString of a tooltip. Each
+-- keeps its colour (SetFontObject takes the Font's colour), so a line still
+-- on screen (a swap that failed half way, or OnHide from a parent hiding)
+-- stays green or red at the normal size.
 local function restoreBig(tt)
   local l = bigLines[tt]
   if not l then return end
@@ -961,7 +964,16 @@ local function restoreBig(tt)
     local s = bigSaved[fs]
     if s then
       bigSaved[fs] = nil
+      local okC, r, g, b, a = pcall(fs.GetTextColor, fs)
       if s.obj then pcall(fs.SetFontObject, fs, s.obj) else pcall(fs.SetFont, fs, s.file, s.size, s.flags) end
+      if okC and type(r) == "number" and type(g) == "number" and type(b) == "number"
+         and not isSecret(r) and not isSecret(g) and not isSecret(b) then
+        if type(a) == "number" and not isSecret(a) then
+          pcall(fs.SetTextColor, fs, r, g, b, a)
+        else
+          pcall(fs.SetTextColor, fs, r, g, b)
+        end
+      end
     end
   end
 end

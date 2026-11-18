@@ -1528,6 +1528,14 @@ VERDICT_ITEMS.update({
     9703: "Tiny Gain|4|4|500|100|4|3|%s|30" % series24(4, 4, 5),
     9705: "Thin Vendor|50|50|1|10|50|60|%s|1" % series24(50, 50),
     9706: "Thin No Vendor|30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000),
+    # the rule edges: nothing listed, a Suggested price 300x / 150x the vendor price (over / under 200x);
+    # the AH nets exactly as much as a vendor, then 1% more; exactly 2 copper more; nothing listed, vendor ahead
+    9801: "Old Far|0|0|0|20|0|1|%s|0" % series24(300, 300),
+    9802: "Old Near|0|0|0|20|0|2|%s|0" % series24(300, 300),
+    9803: "Tie|100|100|500|100|100|95|%s|30" % series24(100, 100, 5),
+    9804: "Tie Plus|101|101|500|100|101|95|%s|30" % series24(101, 101, 5),
+    9805: "Two Copper|20|20|500|100|20|17|%s|30" % series24(20, 20, 5),
+    9806: "Nothing Vendor|0|0|0|20|0|50|%s|0" % series24(30, 32),
 })
 
 # A tooltip with the engine's font facts: Font objects (CreateFont counted),
@@ -1635,7 +1643,7 @@ end
 function MOCK.Font(tt, i, side)
   local fs = _G[tt.name .. side .. i]
   if not fs then return nil end
-  local _, size = fs:GetFont()
+  local _, size = fs._font:GetFont()   -- the Font object's (a test may break fs:GetFont)
   return fs._font._name, size
 end
 function MOCK.Color(tt, i, side)
@@ -1834,6 +1842,26 @@ def test_verdict_tooltips():
        True, "TC17 Thin Vendor")
     tc(G, tt, 9706, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("3g", "0%"), ROW("5-day average", "3g"),
                      ROW("Sell now", "2g 99s 99c")], False, "TC17 Thin No Vendor")
+    # TC13 the rule edges, one fixture each: OLD_FAR (200x), VENDOR_PCT (101%), MIN_GAIN (2 copper)
+    tc(G, tt, 9801, [H(), ROW("AH value", "none listed", "muted"), ROW("Suggested price", "3s")], False,
+       "TC13 Old Far: nothing listed, a Suggested price 300x the vendor price, no verdict", count=20)
+    tc(G, tt, 9802, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
+                     ROW("Suggested price", "3s")], False, "TC13 Old Near: 150x the vendor price is used", count=20)
+    # 100 x 95 = 9,500 against 95 x 100 = 9,500: the same, so the vendor (instant, no deposit)
+    tc(G, tt, 9803, [H(), (("Vendor it", "same as AH"), "neg", "neg"), AHV("1s", "0%"), ROW("5-day average", "1s"),
+                     ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")], True,
+       "TC13 Tie: the AH nets the same as a vendor (no stack line)", count=20)
+    # 101 x 95 = 9,595: exactly 101% of 9,500
+    tc(G, tt, 9804, [H(), (("Close call", "AH +1%"), "muted", "muted"), AHV("1s 1c", "0%"), ROW("5-day average", "1s 1c"),
+                     ROW("Sell now", "1s", "neg"), ROW("Suggested price", "1s 1c", "neg"),
+                     stack((20, "19s 19c"))], False, "TC13 Tie Plus: 1% more is a close call", count=20)
+    # 20 x 95 = 1,900 against 17 x 100 = 1,700: 11% more and exactly 2 copper (200) more
+    tc(G, tt, 9805, [H(), (("Auction it", "+11% vs vendor"), "pos", "pos"), AHV("20c", "0%"), ROW("5-day average", "20c"),
+                     ROW("Sell now", "19c"), ROW("Suggested price", "20c"), stack((20, "3s 80c"))], True,
+       "TC13 Two Copper: exactly 2 copper more each is enough", count=20)
+    tc(G, tt, 9806, [H(), (("Vendor it", "+64% vs AH"), "neg", "neg"), ROW("AH value", "none listed", "muted"),
+                     ROW("Suggested price", "32c", "neg")], True, "TC13 Nothing Vendor: none listed, a vendor ahead",
+       count=20)
     # TC28 unchanged lines and no verdict
     tc(G, tt, 9505, [H(), AHV("1c", "0%"), ROW("5-day average", "1c"), ROW("Suggested price", "1c")], False,
        "TC28 Junk: 1 copper, no verdict")
@@ -1889,6 +1917,9 @@ def test_verdict_cases():
     L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
     tc(G2, G2.GameTooltip, 4306, [H("7h ago")] + SILK_LINES[1:] +
        [(("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
+    # exactly 6h old (ns.STALE_SECONDS) is still fresh: bigger, no stale line
+    L2, G2, ns2 = font_env(now_offset=6 * 3600)
+    tc(G2, G2.GameTooltip, 4306, [H("6h ago")] + SILK_LINES[1:], True, "TC22 Silk exactly 6h old")
     # TC23 compact: one line, never bigger
     ns.settings.compact = True
     for iid, count, shift, want in (
@@ -1925,8 +1956,10 @@ def test_verdict_fonts():
     tt.Hide(tt)
     eq(big_lines(G, tt), [], "TC24: Hide puts it back too")
     show(G, tt, 4306, 20)
-    tt.Fire(tt, "OnHide")         # a hide that does not clear the lines
+    tt.Fire(tt, "OnHide")         # a hide that does not clear the lines (a parent hid, as with Alt+Z)
     eq(big_lines(G, tt), [], "TC24: OnHide alone puts it back")
+    eq(rows_of(G, tt), SILK_LINES + [ROW("This stack (20), after AH cut", "38s")],
+       "TC24: after OnHide alone the lines stay, the verdict still green (SetFontObject took its colour)")
     show(G, tt, 9104)
     eq(big_lines(G, tt), [], "TC24: the next item (no verdict) has nothing bigger")
     for _ in range(50):
@@ -1943,6 +1976,31 @@ def test_verdict_fonts():
     eq(big_lines(G, ir), [(4, "TextLeft", "ForeverAHBigFont1", 15), (4, "TextRight", "ForeverAHBigFont1", 15)],
        "TC24: ItemRefTooltip's line 4 is bigger too")
     eq(M.fontsCreated, 2, "TC24: the 12-point Font is reused for ItemRefTooltip")
+    # TC24 line 4 on another addon's Font (a bold outline, not GameTooltipText): our Font is a
+    # copy of it (face, flags, shadow), and the restore puts back that very Font object
+    L5, G5, ns5 = font_env()
+    t5 = G5.GameTooltip
+    G5.loadstring("""
+      OTHER = MOCK.newFont("OtherAddonBold", "Fonts\\\\PTSansNarrow.ttf", 12, "THICKOUTLINE", 1, 1, 1)
+      OTHER._shadow = { 3, -3 }
+      GameTooltipTextLeft4:SetFontObject(OTHER); GameTooltipTextRight4:SetFontObject(OTHER)""")()
+    on_other = G5.loadstring("""return function()
+      return GameTooltipTextLeft4:GetFontObject() == OTHER and GameTooltipTextRight4:GetFontObject() == OTHER end""")()
+    show(G5, t5, 4306, 20)
+    f = G5.ForeverAHBigFont1
+    eq((big_lines(G5, t5), f._flags, f._shadow[1], f._shadow[2]), (BIG4, "THICKOUTLINE", 3, -3),
+       "TC24 another addon's Font: ours keeps its flags and shadow, 3 points bigger")
+    t5.Clear(t5)
+    check(on_other(), "TC24 another addon's Font: a clear puts back that very Font object")
+    show(G5, t5, 4306, 20)
+    t5.Fire(t5, "OnHide")
+    check(on_other(), "TC24 another addon's Font: OnHide puts back that very Font object")
+    # ElvUI's shadow on GameTooltipText is kept on our bigger copy
+    L6, G6, ns6 = font_env()
+    G6.GameTooltipText._shadow = G6.loadstring("return { 2, -2 }")()
+    show(G6, G6.GameTooltip, 4306, 20)
+    f = G6.ForeverAHBigFont1
+    eq((f._shadow[1], f._shadow[2]), (2, -2), "TC24: our Font keeps GameTooltipText's shadow (ElvUI's)")
     # TC25 lines made after ours copy a normal line: 8 game lines, Silk, then ElvUI's own post call
     L2, G2, ns2 = font_env()
     tt2 = G2.GameTooltip
@@ -1955,9 +2013,11 @@ def test_verdict_fonts():
     eq(big_lines(G2, tt2), [(10, "TextLeft", "ForeverAHBigFont1", 15), (10, "TextRight", "ForeverAHBigFont1", 15)],
        "TC25: only line 10 is bigger")
     eq(normal_fonts(G2, tt2, skip=(10,)), [], "TC25: lines 11 to 16, made on demand, are GameTooltipText 12")
-    # TC26 fallbacks: the same text and colours at the normal size, no error
+    # TC26 fallbacks: the same text and colours at the normal size, no error. In the last two the
+    # left side is already bigger when the right side fails: both go back, still green
     for label, setup in (("ShoppingTooltip1", None), ("HookScript errors", "hook"), ("CreateFont missing", "nofont"),
-                         ("CreateFont gives nothing", "nilfont")):
+                         ("CreateFont gives nothing", "nilfont"), ("left side's GetFont gives a secret size", "secret"),
+                         ("right side's GetFont gives nothing", "nogetfont"), ("right side refuses our Font", "refuse")):
         L3, G3, ns3 = font_env()
         t3 = G3.ShoppingTooltip1 if setup is None else G3.GameTooltip
         if setup == "hook":
@@ -1966,6 +2026,21 @@ def test_verdict_fonts():
             G3.CreateFont = None
         elif setup == "nilfont":
             G3.MOCK.noCreateFont = True
+        elif setup == "secret":
+            # a secret keeps its type (a number here) but must not be used
+            G3.loadstring("""
+              issecretvalue = function(v) return v == 12.5 end
+              GameTooltipTextLeft4.GetFont = function() return "Fonts\\\\PTSansNarrow.ttf", 12.5, "" end""")()
+        elif setup == "nogetfont":
+            G3.loadstring("GameTooltipTextRight4.GetFont = function() return nil end")()
+        elif setup == "refuse":
+            G3.loadstring("""
+              local fs = GameTooltipTextRight4
+              local set = fs.SetFontObject
+              fs.SetFontObject = function(self, o)
+                if type(o) == "table" and tostring(o._name):find("ForeverAH", 1, true) then error("refused") end
+                return set(self, o)
+              end""")()
         n0 = len(G3.MOCK.prints)
         tc(G3, t3, 4306, SILK_LINES, False, "TC26 " + label)
         eq((ns3.lastError, len(G3.MOCK.prints) - n0, G3.MOCK.lineSetFont), (None, 0, None),
