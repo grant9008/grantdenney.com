@@ -733,7 +733,8 @@ ns.ExpectedSold = ExpectedSold
 -- value says why (see HistoryIdeas).
 -- gold: the copper to size the ideas to (nil: the gold on this character,
 -- false: no sizing, as when the game does not say). With gold, each idea
--- gets a fit (see FitFlip) and the ones it cannot buy are left out.
+-- gets a fit (see FitFlip) and the ones it cannot buy are left out (the
+-- reason for none is "gold" only when one of them would show with more gold).
 -- A collector flip stays only when DayValue says it can make at least
 -- DAY_MIN_PROFIT within about a day (on what the gold buys); they rank by
 -- that (most first, then the one that sells soonest, then the collector's
@@ -749,17 +750,22 @@ function ns.FlipIdeas(limit, gold)
   if not HasData() then return {}, "nodata" end
   if gold == nil then gold = ns.PlayerGold() end
   local hidden = HiddenIdeas()
-  local ranked, seen, dropped, order, poor, deals = {}, {}, {}, {}, false, 0
+  local ranked, seen, dropped, order, poor, deals, ndropped = {}, {}, {}, {}, false, 0, 0
   local flips = type(ns.DataFlips) == "function" and ns.DataFlips() or {}
   for _, f in ipairs(flips) do
     if not hidden[f.id] and not seen[f.id] then
+      local whole = { units = f.units, cost = f.cost, profit = f.profit }
       local fit = gold and FitFlip(f, gold) or nil
-      local dv = (not gold or fit) and DayValue(f, fit or { units = f.units, cost = f.cost, profit = f.profit }) or nil
+      local dv = (not gold or fit) and DayValue(f, fit or whole) or nil
       if gold and not fit then
-        poor = true
+        -- Not even one is affordable. The reason for no ideas is "gold" only when
+        -- more gold would show it: when it pays bought whole (a flip that pays
+        -- bought in part also pays bought whole). One with no sales yet would not.
+        if DayValue(f, whole) then poor = true end
       elseif not dv then
         -- found, but it would not sell within a day at a price that pays: left out, and no
         -- price-history idea for it either (another collector flip of the item still counts)
+        if not dropped[f.id] then ndropped = ndropped + 1 end
         dropped[f.id] = true
       else
         seen[f.id] = true
@@ -800,7 +806,9 @@ function ns.FlipIdeas(limit, gold)
     end
   end
   if #out >= limit then return out end
-  local hist, why = HistoryIdeas(limit + #out, gold or false)
+  -- Enough price-history ideas to fill the places left after skipping the items
+  -- already shown and the ones whose collector flip was dropped.
+  local hist, why = HistoryIdeas(limit + #out + ndropped, gold or false)
   for _, x in ipairs(hist) do
     if #out >= limit then break end
     if not seen[x.id] and not dropped[x.id] then
@@ -1079,7 +1087,9 @@ local function DataFlipTooltip(tt, idea)
     if n == 1 then
       tt:AddDoubleLine("Chance yours sells in a day", floor(100 * idea.day + 0.5) .. "%", 0.8, 0.8, 0.8, 1, 1, 1)
     else
-      tt:AddDoubleLine("Of your " .. Count(n) .. ", likely to sell", "~" .. Count(idea.day), 0.8, 0.8, 0.8, 1, 1, 1)
+      -- under half of one would show as "~0" next to a profit
+      tt:AddDoubleLine("Of your " .. Count(n) .. ", likely to sell", idea.day >= 0.5 and ("~" .. Count(idea.day)) or "under 1",
+        0.8, 0.8, 0.8, 1, 1, 1)
     end
     tt:AddDoubleLine("Profit in a day, after the 5% cut", Paint("+" .. Money(idea.dayProfit), "pos"), 0.8, 0.8, 0.8)
     if n - idea.day >= 1 and (n - idea.day) * (Num(idea.deposit) or 0) >= DAY_DEPOSIT_NOTE then

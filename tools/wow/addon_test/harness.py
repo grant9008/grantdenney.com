@@ -4521,7 +4521,8 @@ def keep_deal_places(ranked, limit):
 def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     """The collector's part of ns.FlipIdeas: (ideas, seen, gone, poor). With gold
     (copper; None = the game does not say: no sizing) each flip gets a fit and
-    what the gold cannot buy is left out (poor). A flip stays only when
+    what the gold cannot buy is left out; poor when one of those would show with
+    enough gold (day_value keeps it bought whole). A flip stays only when
     day_value keeps it (on what the gold buys); a dropped one (its id in gone)
     is not shown and its item gets no history idea, but another flip of the
     same item is still judged (dropped, when given a dict, gets id -> why).
@@ -4535,7 +4536,7 @@ def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
             continue
         fit = fit_flip(f, gold) if gold is not None else None
         if gold is not None and fit is None:
-            poor = True
+            poor = poor or day_value(ref, f, whole_fit(f))[0] is not None
             continue
         r, why = day_value(ref, f, fit or whole_fit(f))
         if r is None:
@@ -4561,7 +4562,8 @@ def ref_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     out, seen, gone, poor = ref_collector_flips(ref, limit, hidden, gold, dropped)
     if len(out) >= limit:
         return out, None
-    hist, why = ref_history_flips_why(ref, limit + len(out), hidden, gold)
+    # every history idea: the places left take the best ones not shown or dropped
+    hist, why = ref_history_flips_why(ref, None, hidden, gold)
     for x in hist:
         if len(out) >= limit:
             break
@@ -4584,7 +4586,7 @@ def ref_history_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD):
     the gold cannot buy are left out before the cut to `limit`, and they rank
     by the profit on what the gold buys, best first (the contract's item 4),
     however fast they sell. Without gold, items selling 60+ a day come first,
-    each group by a day's profit. "thin": sells under 60 a day."""
+    each group by a day's profit. "thin": sells under 60 a day. limit None: all."""
     if rec_model.sales_hours_of(ref.salesHours) < 3:
         return [], "history"
     cand = []
@@ -5541,7 +5543,8 @@ def sc_one_snapshot(sc, ref, items):
     sc.check(all(x.get("data") and x["kind"] == "vendor" for x in want_f),
              "one snapshot: only the collector's vendor flips (%s)" % [x["id"] for x in want_f])
     sc.eq(len(want_f) > 0, len(vend) > 0, "one snapshot: a vendor flip the gold buys shows from the first snapshot")
-    if not r2.flips:
+    if not any(f["kind"] == "vendor" for f in r2.flips):
+        # nothing can show yet, and more gold would not change that
         sc.eq(ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], "one snapshot: sidebar says it is collecting price history")
     w.close_ah_modern()
     sc.clean(w)
@@ -6388,7 +6391,7 @@ def data_flip_tip(x, ref):
         if n == 1:
             out.append("Chance yours sells in a day | %d%%" % math.floor(100 * day + 0.5))
         else:
-            out.append("Of your %s, likely to sell | ~%s" % (count_text(n), count_text(day)))
+            out.append("Of your %s, likely to sell | %s" % (count_text(n), ("~" + count_text(day)) if day >= 0.5 else "under 1"))
         out.append("Profit in a day, after the 5% cut | +" + money_text(x["dayProfit"]))
         if n - day >= 1 and (n - day) * x["deposit"] >= DAY_DEPOSIT_NOTE:
             out.append("The rest may take longer. Each one that expires unsold loses its deposit (about %s). | "
@@ -7260,7 +7263,9 @@ def sc_flip_day_stats(sc, ref, items):
     the 5 capped at 2.25 (3 x a typical hour), so 10.5 count; sold at 1g 20s (the
     price half of them sold at or under, each hour's at the cheapest listing of
     the hour before); its last 6 market prices' median is 1g 25s. Never more than
-    sold24; nothing while sales are not measured (salesHours 0)."""
+    sold24; nothing while sales are not measured (salesHours 0). Two sale hours
+    of the same weight: the lower price (1g, not 1g 20s). A sale hour with no
+    price at all counts as sold but not in that median."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day stats: enough items to test with"):
         return
@@ -7269,7 +7274,10 @@ def sc_flip_day_stats(sc, ref, items):
     for label, series, hours, want in (
             ("sold24 15", DAY_A, 10, (10.5, 6, 12000, 12500)),
             ("sold24 8", DAY_A[:2] + (8, 0), 10, (8, 6, 12000, 12500)),
-            ("salesHours 0", DAY_A, 0, None)):
+            ("salesHours 0", DAY_A, 0, None),
+            ("two equal hours", ([10000] * 5 + [12000] * 6, [0] * 5 + [1] + [0] * 4 + [1], 2, 0), 10, (2, 2, 10000, 12000)),
+            ("a sale hour with no price", ([10000] * 5 + [None, None] + [12000] * 4, [0] * 5 + [1, 1, 0, 0, 0, 1], 3, 0), 10,
+             (3, 3, 10000, 12000))):
         lab = "day stats, " + label
         text, r2 = day_data(ref, [DAY_FA % A], {A: series}, hours)
         st = day_stats(r2, A)
@@ -7326,11 +7334,13 @@ def sc_flip_day_drops(sc, ref, items):
     counted at, when its sales show in only one hour or none, or when it makes
     under 20s in a day. Another collector flip of the same item (a vendor flip)
     is still judged and shows. The control, counted at 1.5 x its usual price of
-    90s (1g 35s), shows with +1g 56s."""
+    90s (1g 35s), shows with +1g 56s; a flip making exactly 20s in a day shows.
+    Dropped items among the best price-history ideas cost no places: the next
+    price-history ideas fill them."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day drops: enough items to test with"):
         return
-    A, B, D1, D2, D3, P, E = p[0], p[1], p[4], p[5], p[6], p[7], p[8]
+    A, B, M, D1, D2, D3, P, E = p[0], p[1], p[2], p[4], p[5], p[6], p[7], p[8]
     one_hour = (DAY_A[0], [0] * 10 + [15], 15, 0)
     no_sales = (DAY_A[0], [0] * 11, 0, 0)
     flips = [
@@ -7342,8 +7352,9 @@ def sc_flip_day_drops(sc, ref, items):
         "%d|gap|9000|1|9000|10000|500|55|thin,slow|12500" % D3,         # 4s 97c in a day
         "%d|gap|9000|4|34000|20000|42000|1235|thin,slow|9000" % P,      # the control
         "%d|gap|14250|4|34000|20000|42000|1235|thin,slow|12500" % E,   # makes nothing on the dearest unit
+        "%d|gap|1000|1|1000|3158|2000|2000||0" % M,                     # 1 that sells at once: 30s - 10s = 20s
     ]
-    series = {A: DAY_A, B: DAY_A, D1: one_hour, D2: no_sales, D3: DAY_A, P: DAY_A, E: DAY_A}
+    series = {A: DAY_A, B: DAY_A, D1: one_hour, D2: no_sales, D3: DAY_A, P: DAY_A, E: DAY_A, M: steady_series(3158, vendor=0)}
     text, r2 = day_data(ref, flips, series)
     want_why = {A: "loses", B: "loses", D1: "onehour", D2: "nosales", D3: "small", E: "loses"}
     # an item shown as a price-history idea, then given a collector flip that cannot pay
@@ -7360,8 +7371,8 @@ def sc_flip_day_drops(sc, ref, items):
         sc.check(dropped.get(H) in ("nosales", "onehour", "loses"), "day drops: the model drops %d (%s)" % (H, dropped.get(H)))
         want_why[H] = dropped.get(H)
     sc.eq(dropped, want_why, "day drops: the model drops each, for its reason")
-    sc.eq([(x["id"], x["kind"]) for x in want if x.get("data")], [(P, "gap"), (A, "vendor")],
-          "day drops: only the control and the vendor flip of a dropped item are shown")
+    sc.eq([(x["id"], x["kind"]) for x in want if x.get("data")], [(P, "gap"), (M, "gap"), (A, "vendor")],
+          "day drops: only the control, the 20s flip and the vendor flip of a dropped item are shown")
     w = World(r2, items, data_src=text, gold=None)
     for f in lua_list(w.ns.DataFlips()):
         if f.id in want_why and f.kind != "vendor":
@@ -7379,6 +7390,9 @@ def sc_flip_day_drops(sc, ref, items):
     vend = next((r for r in rows if r.itemID == A), None)
     if sc.check(vend is not None, "day drops: the dropped gap flip's item still shows its vendor flip"):
         sc.eq(row_texts(vend)[2:], ("Sell to vendor", "+3s", ""), "day drops: the vendor flip's row")
+    edge = next((r for r in rows if r.itemID == M), None)
+    if sc.check(edge is not None, "day drops: a flip making exactly 20s in a day shows"):
+        sc.eq((edge.idea.dayValue, row_texts(edge)[3]), (2000, "+20s"), "day drops: the 20s flip's profit in a day")
     out = [strip_codes(o) for o in w.slash("/fah flips")]
     ideas = ref_flips(r2, limit=10, gold=None)
     slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, None, "day drops")
@@ -7386,16 +7400,39 @@ def sc_flip_day_drops(sc, ref, items):
     sc.check(not any(n and (". " + n + ":") in o for n in names for o in out), "day drops: /fah flips names none of them")
     w.close_ah_modern()
     sc.clean(w, "day drops")
+    # flips that cannot pay on the best price-history items (and no other collector
+    # flip): every place still fills, with the next price-history ideas
+    best = [x["id"] for x in ref_history_flips_why(ref, None, (), None)[0]]
+    d = 2 if len(best) >= 4 else 1
+    if not sc.check(len(best) > d, "day drops: price-history ideas to drop some of (%d)" % len(best)):
+        return
+    lines = []
+    for i in best[:d]:
+        hb = max(1, ref.items[i]["cheapest"], ref.items[i]["market"])
+        lines.append("%d|gap|%d|1|%d|%d|1|1||0" % (i, hb, hb, hb))       # relist at the buy price: it cannot pay
+    text = set_table(ref.text, "flips", [lua_quote(s) for s in lines])
+    r2, rest = RefData(text=text), best[d:]
+    lab = "day drops, %d of the best price-history items" % d
+    w = World(r2, items, data_src=text, gold=None)
+    for limit in sorted(set(min(k, len(rest)) for k in (2, 5, 10))):
+        sc.eq([int(x.id) for x in lua_ideas(w, limit, None)], rest[:limit], "%s: FlipIdeas(%d) fills every place" % (lab, limit))
+        sc.eq([x["id"] for x in ref_flips(r2, limit, gold=None)], rest[:limit], "%s: the model's %d" % (lab, limit))
+    w.open_ah_modern()
+    check_sidebar_flips(sc, w, r2, lab)
+    w.close_ah_modern()
+    sc.clean(w, lab)
 
 
 def sc_flip_day_expected(sc, ref, items):
     """ExpectedSold (ns.ExpectedSold): the expected number of your n units sold in a
     day when buyers take a Poisson(rate) number from the cheapest up and `ahead`
     cheaper units go first; over 60 units (or a rate over 60) the plain rate less
-    the units ahead, between 0 and n. The last pair pins that switch."""
+    the units ahead, between 0 and n (0 when more are ahead than sell). The last
+    pair pins that switch."""
     w = World(ref, items)
     for args, want in (((1, 1, 0), 0.632121), ((0.5, 1, 0), 0.393469), ((1, 1, 1), 0.264241), ((5.25, 4, 0), 3.625171),
-                       ((5.25, 2, 2), 1.663216), ((70, 40, 60), 10), ((30, 30, 30), 2.179035), ((30, 31, 30), 0)):
+                       ((5.25, 2, 2), 1.663216), ((70, 40, 60), 10), ((70, 5, 100), 0), ((30, 30, 30), 2.179035),
+                       ((30, 31, 30), 0)):
         got = w.ns.ExpectedSold(*args)
         sc.check(abs(got - want) < 5e-7, "ExpectedSold%s = %.6f, want %s" % (args, got, want))
         sc.check(abs(expected_sold(*args) - want) < 5e-7, "the model's expected_sold%s = %.6f" % (args, expected_sold(*args)))
@@ -7479,17 +7516,23 @@ def sc_flip_day_place(sc, ref, items):
     w.close_ah_modern()
     sc.clean(w, "deal place, no solid deal")
     # ties: 25s buys 2 of Y's 61 behind 59 cheaper ones, 1.5 likely to sell, +30s in a day (no
-    # vendor price, so no deposit); X and Z make +30s on 1 that sells at once. The same profit:
-    # the one that sells more of what you buy first, then the collector's order.
-    X, Y, Z = p[0], p[1], p[2]
-    text, r2 = day_data(ref, ["%d|gap|1000|61|61000|3158|122000|2000||0" % Y, "%d|gap|1000|1|1000|4211|3000|3000||0" % X,
-                              "%d|gap|1000|1|1000|4211|3000|3000||0" % Z],
-                        {X: steady_series(4211, vendor=0), Y: steady_series(3158, vendor=0), Z: steady_series(4211, vendor=0)})
+    # vendor price, so no deposit); X and Z make +30s on 1 that sells at once; Q +30s on 60 of
+    # its 100 (all bought). The same profit: the one that sells more of what you buy first (Y's
+    # 1.5 of 2 before Q's 60 of 100, though Q sells more of its whole flip), then the collector's
+    # order. Y2 is Y at 1999 for its 2: 3/4 of a copper more in a day, so it comes first.
+    X, Y, Z, Q, Y2 = p[0], p[1], p[2], p[3], p[4]
+    text, r2 = day_data(ref, ["%d|gap|25|100|2500|79|5000|2000||0" % Q, "%d|gap|1000|61|61000|3158|122000|2000||0" % Y,
+                              "%d|gap|1000|1|1000|4211|3000|3000||0" % X, "%d|gap|1000|1|1000|4211|3000|3000||0" % Z,
+                              "%d|gap|1000|61|60940|3158|122060|2002||0" % Y2],
+                        {X: steady_series(4211, vendor=0), Y: steady_series(3158, vendor=0), Z: steady_series(4211, vendor=0),
+                         Q: steady_series(79, per_hour=12, hours=10, vendor=0), Y2: steady_series(3158, vendor=0)})
     w = World(r2, items, data_src=text, gold=2500)
     w.open_ah_modern()
     want, _ = check_sidebar_flips(sc, w, r2, "ties")
-    sc.eq([(x["id"], x["dayValue"], x["day"]) for x in want if x.get("data")], [(X, 3000, 1), (Z, 3000, 1), (Y, 3000, 1.5)],
-          "ties: +30s each; the two that sell all they buy first, in the collector's order, then 1.5 of 2")
+    sc.eq([(x["id"], x["dayValue"], x["day"]) for x in want if x.get("data")],
+          [(Y2, 3000.75, 1.5), (X, 3000, 1), (Z, 3000, 1), (Y, 3000, 1.5), (Q, 3000, 60)],
+          "ties: Y2 first by 3/4 of a copper; then +30s each: the two that sell all they buy, in the collector's order, "
+          "then 1.5 of 2, then 60 of 100")
     w.close_ah_modern()
     sc.clean(w, "ties")
 
@@ -7560,9 +7603,9 @@ def sc_flip_day_hover(sc, ref, items):
     """A collector flip's hover, by hand: what to do, the price it is counted at and
     what it has been selling for (and what you could ask), what your gold buys, then
     "Within a day": how many sell a day, how many of yours (or the chance yours
-    does), the profit in a day, the deposit at risk when the unsold ones could cost
-    10s or more, and that the numbers are early while under 24 hours are measured.
-    A risk is said only for gear versions."""
+    does; "under 1" for a slow seller), the profit in a day, the deposit at risk
+    when the unsold ones could cost 10s or more, and that the numbers are early
+    while under 24 hours are measured. A risk is said only for gear versions."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day hover: enough items to test with"):
         return
@@ -7626,6 +7669,24 @@ def sc_flip_day_hover(sc, ref, items):
             data_flip_hover_ok(sc, w, rows[0], want[0], r2, lab)
         w.close_ah_modern()
         sc.clean(w, lab)
+    # a slow seller (C selling 1 a day, one seller 0.5): under 1 a day, and of your 2 under 1
+    # (0.48) likely to sell, not "~0" next to the profit
+    text, r2 = day_data(ref, [DAY_FC % C], {C: DAY_C[:2] + (1, DAY_C[3])})
+    w = World(r2, items, data_src=text, gold=None)
+    w.open_ah_modern()
+    want, _ = check_sidebar_flips(sc, w, r2, "day hover, slow seller")
+    rows = shown_rows(w.ns.SidebarPanel, "flipRows")
+    if sc.check(rows and rows[0].itemID == C, "day hover, slow seller: C's row"):
+        sc.eq(flip_lines(hover_flat(w, rows[0]))[-6:], [
+            "Within a day | ",
+            "You can expect to sell | under 1 a day",
+            "Of your 2, likely to sell | under 1",
+            "Profit in a day, after the 5% cut | +2g 27s 95c",
+            "The rest may take longer. Each one that expires unsold loses its deposit (about 37s 86c). | ",
+            "Sales measured for 10 hours so far, so these are early numbers. | "], "day hover, slow seller: its lines, by hand")
+        data_flip_hover_ok(sc, w, rows[0], want[0], r2, "day hover, slow seller")
+    w.close_ah_modern()
+    sc.clean(w, "day hover, slow seller")
     # the deposit line needs 10s or more at risk: 1.103638 unsold x 9s 90c says so, x 8s 40c does not
     text, r2 = day_data(ref, [DAY_FC % B, DAY_FC % C], {B: DAY_C[:3] + (3300,), C: DAY_C[:3] + (2800,)})
     w = World(r2, items, data_src=text, gold=None)
@@ -7686,21 +7747,24 @@ def sc_flip_day_hover(sc, ref, items):
 def sc_flip_day_slash(sc, ref, items):
     """/fah flips: "most profit within a day first" in the header; a gap or deal line
     says where to relist (the price counted at), the profit in a day and the sales a
-    day ("sells under 1 a day" under one); a vendor line its profit. No risks and no
-    usual price in any line; price-history lines as before."""
+    day ("sells under 1 a day" under one); a vendor line its profit on what the gold
+    buys. No risks and no usual price in any line; price-history lines as before."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day slash: enough items to test with"):
         return
-    A, C, V = p[0], p[2], p[5]
-    text, r2 = day_data(ref, [DAY_FA % A, DAY_FC % C, DAY_FV % V], {A: DAY_A, C: DAY_C[:2] + (1, DAY_C[3])})
-    na, nc, nv = item_name(r2, items, A), item_name(r2, items, C), item_name(r2, items, V)
+    A, C, V, V2 = p[0], p[2], p[5], p[6]
+    text, r2 = day_data(ref, [DAY_FA % A, DAY_FC % C, DAY_FV % V, "%d|vendor|5000|10|50000|0|3000|600||0" % V2],
+                        {A: DAY_A, C: DAY_C[:2] + (1, DAY_C[3])})
+    na, nc, nv, nv2 = (item_name(r2, items, i) for i in (A, C, V, V2))
     for gold, head, lines in (
             (20000, "flip ideas sized to your gold (2g), most profit within a day first, after the 5% auction cut:",
              ["%s: buy up to 90s (2 of 4), relist 1g 50s, +95s 63c in a day (sells ~5/day)" % na,
+              "%s: buy up to 50s (4 of 10), sell to vendor, +12s" % nv2,
               "%s: buy up to 50c (10), sell to vendor, +3s" % nv]),
             (None, "flip ideas, most profit within a day first (after the 5% auction cut):",
              ["%s: buy up to 15g (2), relist 22g, +2g 27s 95c in a day (sells under 1 a day)" % nc,
               "%s: buy up to 90s (4), relist 1g 50s, +2g 8s 44c in a day (sells ~5/day)" % na,
+              "%s: buy up to 50s (10), sell to vendor, +30s" % nv2,
               "%s: buy up to 50c (10), sell to vendor, +3s" % nv])):
         lab = "day slash, %s" % (("gold " + money_text(gold)) if gold is not None else "no gold API")
         w = World(r2, items, data_src=text, gold=gold)
@@ -7738,11 +7802,12 @@ def sc_flip_day_first_snapshot(sc, ref, items):
     """No sales measured yet (salesHours 0, a first snapshot or one after a break):
     the collector's gap and deal flips are left out, its vendor flips still show.
     With no idea at all the sidebar and /fah flips say price history is still being
-    collected. The words for no ideas and the help tip say "within a day"."""
+    collected, whatever the gold (not enough gold only for a flip that would show
+    with more of it). The words for no ideas and the help tip say "within a day"."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "first snapshot: enough items to test with"):
         return
-    A, C, V = p[0], p[2], p[5]
+    A, C, V, V2 = p[0], p[2], p[5], p[6]
     series = {A: DAY_A, C: DAY_C}
     text, r2 = day_data(ref, [DAY_FA % A, DAY_FC % C, DAY_FV % V], series, 0)
     w = World(r2, items, data_src=text, gold=None)
@@ -7756,16 +7821,29 @@ def sc_flip_day_first_snapshot(sc, ref, items):
     sc.check(FLIP_HELP.find("ranked by the profit you can expect within a day") > 0, "the help tip says how they rank")
     w.close_ah_modern()
     sc.clean(w, "salesHours 0")
+    # 2g buys 2 of A's 4 and none of C's deal: neither could show with any gold yet,
+    # so it is still the history being collected, not a lack of gold
     text, r2 = day_data(ref, [DAY_FA % A, DAY_FC % C], series, 0)
-    w = World(r2, items, data_src=text, gold=None)
+    for gold in (None, 20000):
+        lab = "salesHours 0, no vendor flip, %s" % (("gold " + money_text(gold)) if gold is not None else "no gold API")
+        w = World(r2, items, data_src=text, gold=gold)
+        w.open_ah_modern()
+        want, why = check_sidebar_flips(sc, w, r2, lab)
+        sc.eq((len(want), why), (0, "history"), lab + ": no ideas, history is being collected")
+        sc.eq(w.ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], lab + ": the sidebar says so")
+        out = w.slash("/fah flips")
+        sc.check(any(FLIP_SLASH["history"] in o for o in out), lab + ": /fah flips says so (%s)" % out)
+        w.close_ah_modern()
+        sc.clean(w, lab)
+    # a vendor flip more gold would buy (10 at 50s, with 40s on hand) is a lack of gold
+    text, r2 = day_data(ref, [DAY_FA % A, DAY_FC % C, "%d|vendor|5000|10|50000|0|3000|600||0" % V2], series, 0)
+    w = World(r2, items, data_src=text, gold=4000)
     w.open_ah_modern()
-    want, why = check_sidebar_flips(sc, w, r2, "salesHours 0, no vendor flip")
-    sc.eq((len(want), why), (0, "history"), "salesHours 0, no vendor flip: no ideas, history is being collected")
-    sc.eq(w.ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], "salesHours 0, no vendor flip: the sidebar says so")
-    out = w.slash("/fah flips")
-    sc.check(any(FLIP_SLASH["history"] in o for o in out), "salesHours 0, no vendor flip: /fah flips says so (%s)" % out)
+    want, why = check_sidebar_flips(sc, w, r2, "salesHours 0, 40s")
+    sc.eq((len(want), why, w.ns.SidebarPanel.flipMsg._text), (0, "gold", FLIP_MESSAGES["gold"]),
+          "salesHours 0, 40s: not enough gold for the vendor flip")
     w.close_ah_modern()
-    sc.clean(w, "salesHours 0, no vendor flip")
+    sc.clean(w, "salesHours 0, 40s")
 
 
 def sc_flip_day_model(sc, ref, items):
