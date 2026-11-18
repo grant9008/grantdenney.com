@@ -889,7 +889,7 @@ function FontString:SetFont(path, size, flags) self._fontPath = path; return tru
 function FontString:SetShadowColor() end
 function FontString:SetShadowOffset() end
 function FontString:SetSpacing() end
-function FontString:GetStringWidth() return #(self._text or "") * 6 end
+function FontString:GetStringWidth() local s = (self._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""); return #s * 6 end
 function FontString:GetStringHeight() return 12 end
 function FontString:SetDrawLayer(layer, sub) if not LAYERS[layer] then apiError("bad layer") end end
 
@@ -1713,6 +1713,114 @@ function M.InstallElvUIBags(scale)
       bag[slot] = b
     end
   end
+  M.elvBags = true
+  return f
+end
+
+-- ElvUI v16.01's real bag window (Game/Shared/Modules/Bags/Bags.lua:
+-- ConstructContainerFrame 2448-2757, PositionButtons 3024-3047, Layout
+-- 1284-1447, Initialize 3850-3893), laid out with the player's profile
+-- (bagWidth 474, bagSize 42, spacing 1, bags 1-4 split with 7 more spacing,
+-- keyring on, bag bar off so the backpack button shows). E.UIParent has the
+-- same scale as UIParent; ElvUI scales UIParent itself (UIScale).
+function M.InstallElvUIBagsReal(o)
+  o = o or {}
+  -- size: E:Scale(42) at the player's UIScale 0.62 on 1080 lines (E.mult 1.147) is 42.44, so 10 columns
+  local width, size, spacing = o.width or 474, o.size or 42.44, o.spacing or 1
+  local parent = CreateFrame("Frame", "ElvUIParent", UIParent)
+  parent:SetAllPoints(UIParent)
+  local chat = CreateFrame("Frame", "RightChatPanel", parent)
+  chat:SetSize(472, 236)
+  chat:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -4, 4)
+  local mover = CreateFrame("Frame", "ElvUIBagMover", parent)
+  mover:SetSize(200, 22)
+  mover:SetPoint("BOTTOMRIGHT", chat, "BOTTOMRIGHT", 0, 26)
+  mover.POINT = "BOTTOMRIGHT"
+  if o.details ~= false then
+    -- Details! window behind the bags (the player's saved position, strata LOW).
+    local d = CreateFrame("Frame", "DetailsBaseFrame1", UIParent)
+    d:SetFrameStrata("LOW")
+    d:SetSize(480, 231.8)
+    d:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -11.47, 32.14)
+  end
+  local f = CreateFrame("Button", "ElvUI_ContainerFrame", parent)
+  f:SetFrameStrata("HIGH")
+  f:SetMovable(true)
+  f:RegisterForDrag("LeftButton", "RightButton")
+  f:SetScript("OnDragStart", function(self) if IsShiftKeyDown and IsShiftKeyDown() then self:StartMoving() end end)
+  f:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
+  f:Hide()
+  f.topOffset, f.bottomOffset = 50, 8
+  f.mover = mover
+  f:SetPoint(mover.POINT, mover)
+  f.closeButton = CreateFrame("Button", "ElvUI_ContainerFrameCloseButton", f)
+  f.closeButton:SetSize(24, 24)
+  f.closeButton:SetPoint("TOPRIGHT", 5, 5)
+  f.helpButton = CreateFrame("Button", "ElvUI_ContainerFrameHelpButton", f)
+  f.helpButton:SetSize(16, 16)
+  f.helpButton:SetPoint("RIGHT", f.closeButton, "LEFT", 0, 0)
+  f.holderFrame = CreateFrame("Frame", nil, f)
+  f.holderFrame:SetPoint("TOP", f, "TOP", 0, -f.topOffset)
+  f.holderFrame:SetPoint("BOTTOM", f, "BOTTOM", 0, 8)
+  f.ContainerHolder = CreateFrame("Button", "ElvUI_ContainerFrameContainerHolder", f)
+  f.ContainerHolder:SetPoint("BOTTOMLEFT", f, "TOPLEFT", 0, 1)
+  f.ContainerHolder:SetSize(5 * 34 + 24, 42)
+  f.ContainerHolder:Hide()
+  f.stackButton = CreateFrame("Button", "ElvUI_ContainerFrameStackButton", f.holderFrame)
+  f.stackButton:SetSize(20, 20)
+  f.stackButton:SetPoint("BOTTOMRIGHT", f.holderFrame, "TOPRIGHT", 0, 3)
+  f.sortButton = CreateFrame("Button", "ElvUI_ContainerFrameSortButton", f)
+  f.sortButton:SetSize(20, 20)
+  f.sortButton:SetPoint("RIGHT", f.stackButton, "LEFT", -5, 0)
+  f.bagsButton = CreateFrame("Button", "ElvUI_ContainerFrameBagsButton", f)
+  f.bagsButton:SetSize(20, 20)
+  f.bagsButton:SetPoint("RIGHT", f.sortButton, "LEFT", -5, 0)
+  f.bagsButton:SetScript("OnClick", function()
+    if f.ContainerHolder:IsShown() then f.ContainerHolder:Hide() else f.ContainerHolder:Show() end
+  end)
+  f.keyButton = CreateFrame("Button", "ElvUI_ContainerFrameKeyButton", f)
+  f.keyButton:SetSize(20, 20)
+  f.keyButton:SetPoint("RIGHT", f.bagsButton, "LEFT", -5, 0)
+  f.vendorGraysButton = CreateFrame("Button", nil, f.holderFrame)
+  f.vendorGraysButton:SetSize(20, 20)
+  f.vendorGraysButton:SetPoint("RIGHT", f.keyButton, "LEFT", -5, 0)
+  f.editBox = CreateFrame("EditBox", "ElvUI_ContainerFrameEditBox", f)
+  f.editBox:SetHeight(19)
+  f.editBox:SetFrameLevel(10)
+  f.editBox:SetPoint("BOTTOMLEFT", f.holderFrame, "TOPLEFT", 1, 4)
+  f.editBox:SetPoint("RIGHT", f.vendorGraysButton, "LEFT", -5, 0)
+  f.goldText = f:CreateFontString(nil, "OVERLAY")
+  f.goldText:SetPoint("RIGHT", f.helpButton, "LEFT", -10, -2)
+  -- 13 characters at the mock's 6 per character: about the width of
+  -- "5 [gold] 24 [silver] 33 [copper]" with ElvUI's coin icons.
+  f.goldText:SetText(o.gold or "5g 24s 33c   ")
+  f.pickupGold = CreateFrame("Button", nil, f)
+  f.pickupGold:SetAllPoints(f.goldText)
+  local cols = math.floor(width / (size + spacing))
+  f.holderFrame:SetWidth(cols * (size + spacing) - spacing)
+  f.Bags = {}
+  local col, row, gap = 0, 0, 0
+  for bagID = 0, 4 do
+    local bag = CreateFrame("Frame", "ElvUI_ContainerFrameBag" .. bagID, f.holderFrame)
+    bag:SetID(bagID)
+    f.Bags[bagID] = bag
+    if bagID > 0 and o.split ~= false then
+      if col > 0 then row = row + 1; col = 0 end
+      gap = gap + 7
+    end
+    for slot = 1, 16 do
+      local b = CreateFrame("Button", "ElvUI_ContainerFrameBag" .. bagID .. "Slot" .. slot, bag)
+      b:SetSize(size, size)
+      b:SetID(slot)
+      b:SetPoint("TOPLEFT", f.holderFrame, "TOPLEFT", col * (size + spacing), -(row * (size + spacing) + gap))
+      bag[slot] = b
+      col = col + 1
+      if col >= cols then col = 0; row = row + 1 end
+    end
+  end
+  if col > 0 then row = row + 1 end
+  f:SetSize(width, row * (size + spacing) - spacing + f.topOffset + f.bottomOffset + gap)
+  table.insert(UISpecialFrames, "ElvUI_ContainerFrame")
   M.elvBags = true
   return f
 end
@@ -7143,7 +7251,7 @@ def sc_bag_cleanup(sc, ref, items):
     sc.check(BP.built and BP.tab.IsVisible(BP.tab), "bags: tab shows when the bags open")
     F = g.ForeverAHBagPanel
     sc.check(F is not None and not F.IsShown(F), "bags: the panel starts tucked away")
-    sc.eq(strip_codes(BP.tab.text._text), "Bags: %d free, 5 to clear" % (80 - len(layout)), "bags: tab text")
+    sc.eq(strip_codes(BP.tab.text._text), "Bag cleanup  %d free" % (80 - len(layout)), "bags: tab text")
     lefts = [g["ContainerFrame%d" % i].GetLeft(g["ContainerFrame%d" % i]) for i in range(1, 6)]
     bottoms = [g["ContainerFrame%d" % i].GetBottom(g["ContainerFrame%d" % i]) for i in range(1, 6)]
     sc.check(abs(BP.tab.GetRight(BP.tab) - (min(lefts) - 4)) < 0.01 and abs(BP.tab.GetBottom(BP.tab) - min(bottoms)) < 0.01,
@@ -7354,6 +7462,119 @@ def sc_bag_cleanup_parked(sc, ref, items):
     sc.clean(w, "parked")
 
 
+def _overlap(a, b):
+    return a[0] < b[2] - 1e-6 and b[0] < a[2] - 1e-6 and a[1] < b[3] - 1e-6 and b[1] < a[3] - 1e-6
+
+
+ELV_PARTS = ["closeButton", "helpButton", "goldText", "pickupGold", "editBox", "vendorGraysButton", "keyButton",
+             "bagsButton", "sortButton", "stackButton"]
+
+
+def sc_bag_tab_header(sc, ref, items):
+    """ElvUI's real bag window (v16.01 layout, the player's profile: UIScale 0.62,
+    474 wide, 42 slots, bags split, Details behind it): the Bag cleanup button
+    sits in the empty left of the window's top row, clear of every ElvUI part,
+    above the window, and follows it; the panel opens beside the window's top."""
+    w = World(ref, items, screen=(768 * 16 / 9, 768, 0.62))
+    M, ns, g = w.M, w.ns, w.g
+    elv = M.InstallElvUIBagsReal()
+    bag_add_item(w, 900301, "Chipped Claw", 0, 9, classID=15)
+    bag_add_item(w, 900302, "Coyote Meat", 1, 4, classID=7)
+    w.put_bag(0, 3, 900301, 2)
+    w.put_bag(2, 5, 900302, 3)
+    BP = ns.BagPanel
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(BP.lastError is None, "header: no error placing the button (%s)" % BP.lastError)
+    tab = BP.tab
+    sc.check(BP.built and tab.IsVisible(tab), "header: button shows with ElvUI's bags")
+    tr, fr, er = w.rect(tab), w.rect(elv), w.rect(elv.editBox)
+    es = elv.GetEffectiveScale(elv)
+    print("      [geometry] screen units (x 1/0.62 = UIParent units): window %s, button %s, search %s" % (
+        tuple(round(v / es, 1) for v in fr), tuple(round(v / es, 1) for v in tr), tuple(round(v / es, 1) for v in er)))
+    sc.check(tr[0] >= fr[0] and tr[2] <= fr[2] and tr[1] >= fr[1] and tr[3] <= fr[3], "header: inside ElvUI's window")
+    sc.check(tr[1] >= er[3] + 2 * es - 1e-6, "header: above the search row (button bottom %s, search top %s)" % (tr[1], er[3]))
+    sc.check(abs(tr[0] - er[0]) < 1e-6, "header: lined up with the search box's left edge")
+    sc.check(abs((fr[3] - tr[3]) / es - 4) < 1e-6 and abs((tr[3] - tr[1]) / es - 20) < 1e-6, "header: 4 below the window top, 20 tall")
+    sc.check(abs((tr[2] - tr[0]) / es - 150) < 1e-6, "header: 150 wide (%s)" % ((tr[2] - tr[0]) / es))
+    for name in ELV_PARTS:
+        r = w.rect(elv[name])
+        sc.check(r is not None and not _overlap(tr, r), "header: clear of ElvUI's %s" % name)
+    hit = [(b, s) for b in range(0, 5) for s in range(1, 17) if _overlap(tr, w.rect(elv.Bags[b][s]))]
+    sc.check(not hit, "header: clear of every bag slot (%s)" % hit[:3])
+    sc.eq(tab.GetFrameStrata(tab), elv.GetFrameStrata(elv), "header: same strata as ElvUI's window")
+    sc.check(tab.GetFrameLevel(tab) > elv.GetFrameLevel(elv), "header: drawn above the window it sits on")
+    txt = strip_codes(tab.text._text)
+    sc.check(txt.startswith("Bag cleanup"), "header: says Bag cleanup (%s)" % txt)
+    sc.check(tab.text.GetStringWidth(tab.text) <= (tr[2] - tr[0]) / es - 10, "header: the label fits")
+    # ElvUI's bag bar (its backpack button) opens above the window: no overlap.
+    M.click(elv.bagsButton)
+    sc.check(elv.ContainerHolder.IsVisible(elv.ContainerHolder) and not _overlap(tr, w.rect(elv.ContainerHolder)),
+             "header: clear of ElvUI's bag bar when it opens")
+    M.click(elv.bagsButton)
+    # Details sits behind the bags: the button is not over it.
+    d = w.rect(g.DetailsBaseFrame1)
+    sc.check(not _overlap(tr, d) or tr[1] > d[3], "header: not over the Details window")
+    # The window grows (a new bag): the button stays at its top left.
+    dx, dy = tr[0] - fr[0], fr[3] - tr[3]
+    elv.SetHeight(elv, elv.GetHeight(elv) + 86)
+    tr2, fr2 = w.rect(tab), w.rect(elv)
+    sc.check(abs(tr2[0] - fr2[0] - dx) < 1e-6 and abs(fr2[3] - tr2[3] - dy) < 1e-6, "header: follows when the window grows")
+    # Shift-drag the window: the button follows.
+    elv.ClearAllPoints(elv)
+    elv.SetPoint(elv, "TOPLEFT", g.UIParent, "TOPLEFT", 600, -120)
+    tr3, fr3 = w.rect(tab), w.rect(elv)
+    sc.check(abs(tr3[0] - fr3[0] - dx) < 1e-6 and abs(fr3[3] - tr3[3] - dy) < 1e-6, "header: follows when the window moves")
+    elv.ClearAllPoints(elv)
+    elv.SetPoint(elv, "BOTTOMRIGHT", g.ElvUIBagMover, "BOTTOMRIGHT", 0, 0)
+    # Click: the panel opens beside the window's top, the button stays (a toggle).
+    M.click(tab)
+    w.settle(0.1)
+    F = g.ForeverAHBagPanel
+    sc.check(F.IsVisible(F) and tab.IsVisible(tab), "header: panel opens and the button stays")
+    pr, fr4 = w.rect(F), w.rect(elv)
+    pe = F.GetEffectiveScale(F)
+    sc.check(abs(pr[2] - (fr4[0] - 4 * pe)) < 1e-6 and abs(pr[3] - fr4[3]) < 1e-6,
+             "header: panel's top right is 4 left of the window's top left (%s vs %s)" % (pr, fr4))
+    sc.check(not _overlap(pr, fr4), "header: panel does not cover the bags")
+    sc.check(pr[0] >= 0 and pr[1] >= 0 and pr[3] <= w.M.screenH + 1e-6, "header: panel on screen (%s)" % (pr,))
+    print("      [geometry] panel (UIParent units) %s" % (tuple(round(v / pe, 1) for v in pr),))
+    # Bags at the left edge of the screen: the panel opens on the right.
+    elv.ClearAllPoints(elv)
+    elv.SetPoint(elv, "TOPLEFT", g.UIParent, "TOPLEFT", 4, -100)
+    BP.Place(BP)
+    pr, fr5 = w.rect(F), w.rect(elv)
+    sc.check(abs(pr[0] - (fr5[2] + 4 * pe)) < 1e-6 and abs(pr[3] - fr5[3]) < 1e-6,
+             "header: panel on the right when the bags sit at the left edge (%s vs %s)" % (pr, fr5))
+    elv.ClearAllPoints(elv)
+    elv.SetPoint(elv, "BOTTOMRIGHT", g.ElvUIBagMover, "BOTTOMRIGHT", 0, 0)
+    BP.Place(BP)
+    # Click again: the panel closes, the button stays.
+    M.click(tab)
+    w.settle(0.1)
+    sc.check(not F.IsShown(F) and tab.IsVisible(tab), "header: a second click closes the panel")
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(not tab.IsShown(tab) and not F.IsShown(F), "header: closing the bags hides it all")
+    sc.check(BP.lastError is None, "header: no error (%s)" % BP.lastError)
+    sc.clean(w, "header")
+
+    # A narrow window and a lot of gold: no room in the header, so the tab
+    # goes beside the window, still clear of everything ElvUI shows.
+    w2 = World(ref, items, screen=(768 * 16 / 9, 768, 0.62))
+    elv2 = w2.M.InstallElvUIBagsReal(w2.lua.eval('{ width = 220, gold = "1234567g 89s 10c  " }'))
+    w2.lua.execute("ToggleAllBags()")
+    w2.settle(0.2)
+    BP2 = w2.ns.BagPanel
+    t2, f2 = w2.rect(BP2.tab), w2.rect(elv2)
+    sc.check(BP2.tab.IsVisible(BP2.tab) and not _overlap(t2, f2), "narrow: no room in the header, the tab goes beside the window")
+    for name in ELV_PARTS:
+        r = w2.rect(elv2[name])
+        sc.check(r is None or not _overlap(t2, r), "narrow: clear of ElvUI's %s" % name)
+    sc.check(BP2.lastError is None, "narrow: no error (%s)" % BP2.lastError)
+    sc.clean(w2, "narrow")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -7408,6 +7629,7 @@ SCENARIOS = [
     ("bag-cleanup-no-data", sc_bag_cleanup_nodata),
     ("bag-cleanup-elvui", sc_bag_cleanup_elvui),
     ("bag-cleanup-parked", sc_bag_cleanup_parked),
+    ("bag-tab-header", sc_bag_tab_header),
 ]
 
 

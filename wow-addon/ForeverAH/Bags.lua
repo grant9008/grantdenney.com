@@ -28,6 +28,7 @@ local TITLE_H = 16
 local ROW_H = 20
 local GAP = 6
 local TAB_W, TAB_H = 170, 20
+local HEADER_W, HEADER_MIN = 150, 100   -- the button in ElvUI's bag header: width, narrowest it may get
 local FOOTER_H = 26
 local MAX_MERGE = 3
 local MAX_QUEST = 6
@@ -820,8 +821,8 @@ local function SimpleTip(owner, title, body)
   owner:SetScript("OnLeave", HideTip)
 end
 
-local function TextButton(parent, label, w, h)
-  local b = CreateFrame("Button", nil, parent)
+local function TextButton(parent, label, w, h, name)
+  local b = CreateFrame("Button", name, parent)
   b:SetSize(w, h)
   b.bg = NewTex(b, "BACKGROUND", 1)
   b.bg:SetAllPoints(b)
@@ -1053,7 +1054,10 @@ function BP:Build()
   if self.built then return true end
   local UI = _G.UIParent
   if type(_G.CreateFrame) ~= "function" or type(UI) ~= "table" then return false end
-  self.built = true
+  -- built is set only once everything exists, so one failure is retried
+  -- (a few times) instead of leaving a half-made panel for good.
+  self.buildTries = (self.buildTries or 0) + 1
+  if self.buildTries > 3 then return false end
   local template = (_G.BackdropTemplateMixin and "BackdropTemplate") or nil
 
   local F = CreateFrame("Frame", "ForeverAHBagPanel", UI, template)
@@ -1076,7 +1080,7 @@ function BP:Build()
   close:SetPoint("TOPRIGHT", F, "TOPRIGHT", -6, -6)
   SetFSColor(close.text, "muted")
   close:SetScript("OnClick", function() ns.SetBagPanel(false) end)
-  SimpleTip(close, "Tuck the cleanup panel away", "The small tab beside your bags brings it back.")
+  SimpleTip(close, "Tuck the cleanup panel away", "Bag cleanup on your bags brings it back.")
   self.closeButton = close
 
   self.mergeTitle = SectionTitle(F, "MERGE STACKS")
@@ -1099,12 +1103,39 @@ function BP:Build()
   sell:Hide()
   self.sellButton = sell
 
-  -- Tab shown while the panel is tucked away.
-  local tab = TextButton(UI, "Bag cleanup", TAB_W, TAB_H)
+  -- The way in: a button in the header of ElvUI's bag window, or a tab beside
+  -- the game's bags. A thin gold edge makes it stand out from the dark buttons
+  -- of the bag window.
+  local tab = TextButton(UI, "Bag cleanup", TAB_W, TAB_H, "ForeverAHBagTab")
   if tab.SetClampedToScreen then tab:SetClampedToScreen(true) end
-  tab:SetScript("OnClick", function() ns.SetBagPanel(true) end)
+  local edge = Col("buy")
+  for _, side in ipairs({ "TOP", "BOTTOM", "LEFT", "RIGHT" }) do
+    local t = NewTex(tab, "BORDER", 0)
+    t:SetColorTexture(edge[1], edge[2], edge[3], 0.9)
+    if side == "TOP" or side == "BOTTOM" then
+      t:SetPoint(side .. "LEFT", tab, side .. "LEFT", 0, 0)
+      t:SetPoint(side .. "RIGHT", tab, side .. "RIGHT", 0, 0)
+      t:SetHeight(1)
+    else
+      t:SetPoint("TOP" .. side, tab, "TOP" .. side, 0, 0)
+      t:SetPoint("BOTTOM" .. side, tab, "BOTTOM" .. side, 0, 0)
+      t:SetWidth(1)
+    end
+  end
+  tab:SetScript("OnClick", function()
+    local st = S()
+    ns.SetBagPanel(not (st ~= nil and st.bagPanel == true))
+  end)
   SimpleTip(tab, "Bag cleanup", function()
-    return "What to drop or sell first, old quest items and stacks to merge. Click to open it. /fah bags prints it in chat."
+    local st = S()
+    local open = st ~= nil and st.bagPanel == true
+    local t = "What to drop or sell first: your cheapest stacks, old quest items and stacks to merge. Click to "
+      .. (open and "close" or "open") .. " the list. /fah bags prints it in chat."
+    local first = BP.scan and BP.scan.drop and BP.scan.drop[1]
+    if first then
+      t = t .. "\nDrop first: " .. (first.name or ("Item " .. tostring(first.id))) .. " (" .. Money(first.value) .. ")"
+    end
+    return t
   end)
   tab:Hide()
   self.tab = tab
@@ -1127,16 +1158,71 @@ function BP:Build()
     end
   end
   self.glow = g
+  self.built = true
   return true
 end
 
--- To the left of the leftmost open bag, level with the lowest one.
+-- A frame's or font string's rectangle on screen in UIParent units (k is
+-- UIParent's effective scale), or nil.
+local function RectOf(r, k)
+  if type(r) ~= "table" or type(r.GetRect) ~= "function" then return nil end
+  local ok, l, b, w, h = pcall(r.GetRect, r)
+  if not ok or not Num(l) or not Num(b) or not Num(w) or not Num(h) then return nil end
+  local es
+  if type(r.GetEffectiveScale) == "function" then
+    local okS, v = pcall(r.GetEffectiveScale, r)
+    es = okS and Num(v) or nil
+  end
+  if not es and type(r.GetParent) == "function" then
+    local p = r:GetParent()
+    if type(p) == "table" and type(p.GetEffectiveScale) == "function" then es = Num(p:GetEffectiveScale()) end
+  end
+  local sc = (es or k) / k
+  return l * sc, b * sc, (l + w) * sc, (b + h) * sc
+end
+
+-- ElvUI's bag window leaves the left of its top row empty: its gold, help and
+-- close buttons sit at the right, the search box and its buttons on the row
+-- below. Where our button fits there: offsets from the window's top left and a
+-- width (UIParent units), or nil when this is not that layout or there is no room.
+local function HeaderSpot(f, k)
+  local box = rawget(f, "editBox")
+  if type(rawget(f, "holderFrame")) ~= "table" or type(box) ~= "table" then return nil end
+  local l, _, r, t = RectOf(f, k)
+  local bl, _, _, bt = RectOf(box, k)
+  if not l or not bl then return nil end
+  local room = t - bt
+  if room < TAB_H + 4 then return nil end
+  local top = t - floor((room - TAB_H) / 2 + 0.5)
+  local low, left, right, blocked = top - TAB_H, bl, r - 4, false
+  -- Whatever ElvUI shows on that row (gold, help, close, or anything a later
+  -- version adds) ends the room for the button.
+  local function limit(o)
+    if type(o) ~= "table" or type(o.IsShown) ~= "function" or not o:IsShown() then return end
+    local ol, ob, orr, ot = RectOf(o, k)
+    if not ol or ob >= top or ot <= low or orr <= left then return end
+    if ol <= l + 1 and orr >= r - 1 then return end   -- a backdrop over the whole window
+    if ol <= left then blocked = true return end
+    if ol < right then right = ol end
+  end
+  limit(rawget(f, "goldText"))
+  if type(f.GetChildren) == "function" then
+    for _, c in ipairs({ f:GetChildren() }) do limit(c) end
+  end
+  local w = min(HEADER_W, right - 8 - left)
+  if blocked or w < HEADER_MIN then return nil end
+  return left - l, top - t, w
+end
+
+-- ElvUI's bag window: in its header, with the panel beside the window's top.
+-- The game's bags: to the left of the leftmost open bag, level with the lowest.
 function BP:Place()
   if not self.built then return false end
   local UI = _G.UIParent
   local uiScale = (UI.GetEffectiveScale and UI:GetEffectiveScale()) or 1
+  local frames = OpenBagFrames()
   local left, bottom, strata, leftFrame, leftBottom
-  for _, f in ipairs(OpenBagFrames()) do
+  for _, f in ipairs(frames) do
     local l, b = f:GetLeft(), f:GetBottom()
     if Num(l) and Num(b) then
       local s = ((f.GetEffectiveScale and f:GetEffectiveScale()) or 1) / uiScale
@@ -1149,16 +1235,48 @@ function BP:Place()
     end
   end
   if not left then return false end
-  for _, o in ipairs({ self.frame, self.tab }) do
-    o:ClearAllPoints()
-    if leftBottom <= bottom + 0.5 then
-      -- One bag window (ElvUI, the combined bags) or the leftmost is also the
-      -- lowest: hang off it, so the panel follows when it moves or resizes.
-      o:SetPoint("BOTTOMRIGHT", leftFrame, "BOTTOMLEFT", -4, 0)
+  local tab, F = self.tab, self.frame
+  local hx, hy, hw
+  if #frames == 1 then
+    local ok, x, y, wd = pcall(HeaderSpot, leftFrame, uiScale)
+    if ok then hx, hy, hw = x, y, wd end
+  end
+  self.inHeader = hx ~= nil
+  tab:ClearAllPoints()
+  F:ClearAllPoints()
+  if hx then
+    tab:SetSize(hw, TAB_H)
+    tab:SetPoint("TOPLEFT", leftFrame, "TOPLEFT", hx, hy)
+    -- Inside the window: never pushed off it onto the search row.
+    if tab.SetClampedToScreen then tab:SetClampedToScreen(false) end
+    -- The panel beside the window's top, on the left; on the right when the
+    -- window sits at the left edge of the screen.
+    local l, _, r = RectOf(leftFrame, uiScale)
+    local screenW = (UI.GetWidth and Num(UI:GetWidth())) or 0
+    if l and r and l - 4 - W < 0 and screenW - r - 4 >= W then
+      F:SetPoint("TOPLEFT", leftFrame, "TOPRIGHT", 4, 0)
     else
-      o:SetPoint("BOTTOMRIGHT", UI, "BOTTOMLEFT", left - 4, bottom)
+      F:SetPoint("TOPRIGHT", leftFrame, "TOPLEFT", -4, 0)
     end
+  else
+    tab:SetSize(TAB_W, TAB_H)
+    if tab.SetClampedToScreen then tab:SetClampedToScreen(true) end
+    for _, o in ipairs({ F, tab }) do
+      if leftBottom <= bottom + 0.5 then
+        -- One bag window (the combined bags) or the leftmost is also the
+        -- lowest: hang off it, so the panel follows when it moves or resizes.
+        o:SetPoint("BOTTOMRIGHT", leftFrame, "BOTTOMLEFT", -4, 0)
+      else
+        o:SetPoint("BOTTOMRIGHT", UI, "BOTTOMLEFT", left - 4, bottom)
+      end
+    end
+  end
+  for _, o in ipairs({ F, tab }) do
     if strata and o.SetFrameStrata then pcall(o.SetFrameStrata, o, strata) end
+  end
+  if hx and tab.SetFrameLevel and leftFrame.GetFrameLevel then
+    -- Drawn above the window it sits on.
+    pcall(tab.SetFrameLevel, tab, min(10000, (leftFrame:GetFrameLevel() or 0) + 10))
   end
   return true
 end
@@ -1242,10 +1360,13 @@ function BP:Refresh()
   local scan = ns.BagScan()
   self.scan = scan
   local clear = #scan.merge + #scan.quest + #scan.junk
-  local tabText = sformat("Bags: %d free", scan.free)
-  if clear > 0 then tabText = tabText .. sformat(", %d to clear", clear) end
-  self.tab.text:SetText(tabText)
-  SetFSColor(self.tab.text, scan.free <= 2 and "neg" or (clear > 0 and "buy" or "muted"))
+  local name = Paint("Bag", "buy") .. Paint(" cleanup", "sell")
+  self.tab.text:SetText(name .. "  " .. Paint(sformat("%d free", scan.free), scan.free <= 2 and "neg" or "muted"))
+  local tw = (self.tab.GetWidth and Num(self.tab:GetWidth())) or TAB_W
+  if self.tab.text.GetStringWidth and (Num(self.tab.text:GetStringWidth()) or 0) > tw - 10 then
+    self.tab.text:SetText(name)
+  end
+  self.clear = clear
   self.sub:SetText(sformat("%d of %d slots free", scan.free, scan.slots))
   if scan.free <= 2 then SetFSColor(self.sub, "neg") else SetFSColor(self.sub, "muted") end
   if self.frame:IsShown() then self:Layout(scan) end
@@ -1267,19 +1388,31 @@ function BP:Update()
     return
   end
   if not self:Build() then return end
-  if PanelWanted() then
-    self.tab:Hide()
-    self.frame:Show()
-  else
-    self.frame:Hide()
-    self.tab:Show()
-  end
   self:Place()
+  local open = PanelWanted()
+  if open then self.frame:Show() else self.frame:Hide() end
+  -- In ElvUI's header the button stays, as the way to close the list too.
+  if open and not self.inHeader then self.tab:Hide() else self.tab:Show() end
+  local c = Col(open and "buy" or "panel")
+  if open then
+    self.tab.bg:SetColorTexture(c[1] * 0.35, c[2] * 0.35, c[3] * 0.35, 1)
+  else
+    self.tab.bg:SetColorTexture(c[1] + 0.05, c[2] + 0.05, c[3] + 0.06, 1)
+  end
   self:Refresh()
 end
 
 function BP:Visible()
   return self.built and (self.frame:IsShown() or self.tab:IsShown()) or false
+end
+
+-- A problem in the bag cleanup is kept, and said once in chat, instead of
+-- vanishing (the game hides Lua errors unless they are switched on).
+function BP:Fail(err)
+  self.lastError = err
+  if self.failSaid then return end
+  self.failSaid = true
+  Print("the bag cleanup hit a problem (" .. tostring(err) .. "). /fah bags still lists what to clear.")
 end
 
 local updateToken, refreshToken = 0, 0
@@ -1289,7 +1422,7 @@ function BP:UpdateSoon()
   After(0, function()
     if tok == updateToken then
       local ok, err = pcall(BP.Update, BP)
-      if not ok then BP.lastError = err end
+      if not ok then BP:Fail(err) end
     end
   end)
 end
@@ -1301,7 +1434,7 @@ function BP:RefreshSoon()
   After(0.3, function()
     if tok == refreshToken and BP:Visible() then
       local ok, err = pcall(BP.Refresh, BP)
-      if not ok then BP.lastError = err end
+      if not ok then BP:Fail(err) end
     end
   end)
 end
@@ -1318,6 +1451,7 @@ local function HookBagFrames()
     if not hooked[f] and type(f.HookScript) == "function" then
       local ok = pcall(f.HookScript, f, "OnShow", function() BP:UpdateSoon() end)
       local ok2 = pcall(f.HookScript, f, "OnHide", function() BP:UpdateSoon() end)
+      pcall(f.HookScript, f, "OnDragStop", function() if BP:Visible() then BP:UpdateSoon() end end)
       hooked[f] = ok and ok2
     end
   end
@@ -1362,6 +1496,7 @@ local handlers = {
   BAG_UPDATE = Changed,
   QUEST_LOG_UPDATE = Changed,
   PLAYER_LEVEL_UP = Changed,
+  PLAYER_MONEY = function() if BP:Visible() then BP:UpdateSoon() end end,
   GET_ITEM_INFO_RECEIVED = function() if BP.scan and BP.scan.pending then Changed() end end,
   MERCHANT_SHOW = function() BP.merchant = true Changed() end,
   MERCHANT_CLOSED = function() BP.merchant = false Changed() end,
@@ -1378,7 +1513,7 @@ if type(_G.CreateFrame) == "function" then
       local h = handlers[event]
       if not h then return end
       local okH, err = pcall(h, ...)
-      if not okH then BP.lastError = err end
+      if not okH then BP:Fail(err) end
     end)
   end
 end
@@ -1425,7 +1560,7 @@ local function Report()
       Print(sformat("  %d. %s - %s%s%s", i, ItemText(e), e.unsure and "about " or "", ChatMoney(e.value), tag))
     end
   end
-  if #OpenBagFrames() == 0 then Print("Open your bags to clean up from the panel beside them.") end
+  if #OpenBagFrames() == 0 then Print("Open your bags and click Bag cleanup to clean up from a list.") end
   return s
 end
 ns.BagReport = Report
