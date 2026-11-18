@@ -3,9 +3,15 @@ local ADDON_NAME, ns = ...
 -- Forever AH: the price chart panel.
 -- A PocketGE-style panel built from plain frames, textures and font strings:
 --   header   : icon, name, market price, change over the timeframe, 1D 5D 1W 1M 1Y
---   boxes    : Target Buy (gold) and List At (blue)
+--   boxes    : Target Buy (gold) and List At (blue). Each is a toggle: click
+--              one to light it up and show its dashed line on the chart,
+--              click the other to switch, click the lit one to hide the line.
+--              No line by default (ns.settings.chartLine = "buy", "sell" or nil).
+--              A short panel shows them as one-line chips that work the same.
+--              Gear whose versions differ, shown as the whole item, gets no
+--              targets ("Depends on the version"): its prices mix them.
 --   chart    : cheapest dots (gold), market dots (blue), white trend line,
---              dashed target lines, period high/low rings, est. sold bars
+--              the chosen dashed target line, period high/low rings, est. sold bars
 --   footer   : analyst verdict and meter, margin, volume, notes, data age
 -- Every texture is pooled. The chart is redrawn only when the item, the
 -- timeframe or the panel size changes. Hovering only moves a crosshair.
@@ -21,7 +27,7 @@ local TF_VALID = { ["1D"] = true, ["5D"] = true, ["1W"] = true, ["1M"] = true, [
 local TF_LABEL_STEP = { ["1D"] = 4, ["5D"] = 24, ["1W"] = 24, ["1M"] = 5, ["1Y"] = 61 }
 
 local PANEL_H = 260
-local COMPACT_H = 230   -- below this height the Target Buy / List At boxes are left out
+local COMPACT_H = 230   -- below this height the Target Buy / List At boxes become one-line chips
 local MIN_H = 150       -- shortest panel that still fits under the AH
 local NARROW_W = 650    -- below this width the change and volume texts are left out
 local DEFAULT_W = 800
@@ -32,7 +38,9 @@ local HEADER_Y = -7
 local BOX_Y = -38
 local BOX_H = 40
 local PLOT_TOP = 86     -- distance from the panel top to the plot top
-local PLOT_TOP_COMPACT = 38
+local BOX_H_COMPACT = 18
+local BOX_Y_COMPACT = -34
+local PLOT_TOP_COMPACT = 58
 local PLOT_BOTTOM = 52  -- room under the plot for the x labels and the footer
 local DOCK_GAP = 32     -- the AH tabs hang below the AH frame: leave room for them
 local DASH, DASH_GAP = 6, 4
@@ -174,11 +182,22 @@ local function KnownName(n)
   return type(n) == "string" and n ~= "" and not IsSecret(n) and n:match("^Item %d+$") == nil
 end
 
+-- The game's item id behind a version id (a vid from the data); the id itself
+-- for a plain item. Icons and colours come from the game's item.
+local function BaseID(id)
+  if type(ns.BaseItemID) == "function" then
+    local ok, b = pcall(ns.BaseItemID, id)
+    if ok and Num(b) then return b end
+  end
+  return id
+end
+
 local function GameItemName(id)
   if type(ns.GameItemName) == "function" then
     local ok, n = pcall(ns.GameItemName, id)
     if ok and KnownName(n) then return n end
   end
+  if BaseID(id) ~= id then return nil end   -- a version: only Core.lua can name it
   local CI = _G.C_Item
   if type(CI) == "table" then
     if type(CI.GetItemNameByID) == "function" then
@@ -203,6 +222,7 @@ end
 -- Why there are no buy and sell targets, or nil when there are.
 local function NoAdviceText(rec)
   if type(rec) ~= "table" then return nil end
+  if rec.mixed then return "Depends on the version" end
   if rec.history == false then return "Needs more history" end
   if rec.advice == false then return "Price not reliable" end
   return nil
@@ -222,6 +242,7 @@ local function SoldText(item)
 end
 
 local function ItemIcon(id)
+  id = BaseID(id)
   local CI = _G.C_Item
   if type(CI) == "table" and type(CI.GetItemIconByID) == "function" then
     local ok, ic = pcall(CI.GetItemIconByID, id)
@@ -235,6 +256,7 @@ local function ItemIcon(id)
 end
 
 local function ItemQualityRGB(id)
+  id = BaseID(id)
   local CI = _G.C_Item
   local q
   if type(CI) == "table" then
@@ -340,14 +362,67 @@ local function SimpleTooltip(owner, title, body)
   end)
 end
 
-function Chart:MakeBox(title, color)
+-- Which dashed target line the chart shows: "buy" (gold Target Buy), "sell"
+-- (blue List At) or nil (none, the default).
+local function ChartLine()
+  local v = type(ns.settings) == "table" and ns.settings.chartLine or nil
+  if v == "buy" or v == "sell" then return v end
+  return nil
+end
+
+local BOX_HELP = {
+  buy = { "Target Buy", "A good price to buy at: most of the cheapest prices in this timeframe were above it.",
+          "gold Target Buy line" },
+  sell = { "List At", "What to post at right now: 1 copper under the cheapest listing when that still pays after the 5% cut, otherwise the price it usually sells for.",
+           "blue List At line" },
+}
+
+-- The Target Buy and List At boxes are buttons: a click shows that price as a
+-- dashed line on the chart (and lights the box up), a click on the other box
+-- switches lines, a click on the lit box hides the line again.
+function Chart:MakeBox(title, color, which)
   local F = self.frame
-  local box = CreateFrame("Frame", nil, F)
+  local box = CreateFrame("Button", nil, F)
   box:SetHeight(BOX_H)
+  box.which, box.color = which, color
+  if box.RegisterForClicks then pcall(box.RegisterForClicks, box, "LeftButtonUp") end
   local p = Col("panel")
   box.bg = NewTex(box, "BACKGROUND", 1)
   box.bg:SetAllPoints(box)
   box.bg:SetColorTexture(p[1], p[2], p[3], 1)
+  -- A border in the box colour, shown while its line is on.
+  box.edges = {}
+  local function edge(p1, p2, w, h)
+    local t = NewTex(box, "BORDER", 1)
+    t:SetPoint(p1, box, p1, 0, 0)
+    t:SetPoint(p2, box, p2, 0, 0)
+    if w then t:SetWidth(w) end
+    if h then t:SetHeight(h) end
+    t:SetColorTexture(color[1], color[2], color[3], 1)
+    t:Hide()
+    box.edges[#box.edges + 1] = t
+  end
+  edge("TOPLEFT", "TOPRIGHT", nil, 1)
+  edge("BOTTOMLEFT", "BOTTOMRIGHT", nil, 1)
+  edge("TOPRIGHT", "BOTTOMRIGHT", 1, nil)
+  -- Mouse over: the game shows HIGHLIGHT textures by itself.
+  local hl = box:CreateTexture(nil, "HIGHLIGHT")
+  hl:SetAllPoints(box)
+  hl:SetColorTexture(color[1], color[2], color[3], 0.10)
+  box.highlight = hl
+  box:SetScript("OnClick", function() Chart:OnBoxClicked(which) end)
+  box:SetScript("OnEnter", function(b) Chart:BoxEnter(b) end)
+  box:SetScript("OnLeave", function(b) Chart:BoxLeave(b) end)
+  -- Dragging a box still moves the panel.
+  box:RegisterForDrag("LeftButton")
+  box:SetScript("OnDragStart", function()
+    local s = F:GetScript("OnDragStart")
+    if s then s(F) end
+  end)
+  box:SetScript("OnDragStop", function()
+    local s = F:GetScript("OnDragStop")
+    if s then s(F) end
+  end)
   box.accent = NewTex(box, "BORDER", 0)
   box.accent:SetPoint("TOPLEFT", box, "TOPLEFT", 0, 0)
   box.accent:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT", 0, 0)
@@ -364,6 +439,62 @@ function Chart:MakeBox(title, color)
   box.sub:SetPoint("RIGHT", box, "RIGHT", -10, 0)
   SetFSColor(box.sub, Col("muted"))
   return box
+end
+
+-- Lights up the box whose line is on: a tinted background and a full border.
+function Chart:UpdateBoxes()
+  local line = ChartLine()
+  local p = Col("panel")
+  for _, box in ipairs({ self.buyBox, self.listBox }) do
+    if box then
+      local on = box.which == line
+      local c = box.color
+      if on then
+        box.bg:SetColorTexture(p[1] + (c[1] - p[1]) * 0.22, p[2] + (c[2] - p[2]) * 0.22, p[3] + (c[3] - p[3]) * 0.22, 1)
+        for _, e in ipairs(box.edges) do e:Show() end
+      else
+        box.bg:SetColorTexture(p[1], p[2], p[3], 1)
+        for _, e in ipairs(box.edges) do e:Hide() end
+      end
+      box.lit = on
+    end
+  end
+end
+
+function Chart:BoxEnter(box)
+  self.hoverBox = box
+  -- A hand cursor says the box can be clicked.
+  if type(_G.SetCursor) == "function" then pcall(_G.SetCursor, "INTERACT_CURSOR") end
+  local tt = _G.GameTooltip
+  if not tt then return end
+  local help = BOX_HELP[box.which] or BOX_HELP.buy
+  tt:SetOwner(box, "ANCHOR_TOP")
+  -- Shown again after every click: start from an empty tooltip.
+  if tt.ClearLines then tt:ClearLines() end
+  tt:AddLine(help[1], 1, 1, 1)
+  tt:AddLine(help[2], nil, nil, nil, true)
+  if box.lit then
+    tt:AddLine("Click to hide the " .. help[3] .. ".", 0.55, 0.55, 0.55, true)
+  else
+    tt:AddLine("Click to show the " .. help[3] .. " on the chart.", 0.55, 0.55, 0.55, true)
+  end
+  tt:Show()
+end
+
+function Chart:BoxLeave(box)
+  if self.hoverBox == box then self.hoverBox = nil end
+  if type(_G.ResetCursor) == "function" then pcall(_G.ResetCursor) end
+  local tt = _G.GameTooltip
+  if tt and tt.GetOwner and tt:GetOwner() == box then tt:Hide() end
+end
+
+function Chart:OnBoxClicked(which)
+  local new = (ChartLine() ~= which) and which or nil
+  if type(ns.settings) == "table" then ns.settings.chartLine = new end
+  self:Redraw()
+  -- The mouse is still on the box: its tooltip says what the next click does.
+  local hb = self.hoverBox
+  if hb and hb.which == which then self:BoxEnter(hb) end
 end
 
 function Chart:Build()
@@ -402,7 +533,10 @@ function Chart:Build()
       Chart:Redraw()
     end
   end)
-  F:SetScript("OnHide", function() Chart:EndHover() end)
+  F:SetScript("OnHide", function()
+    Chart:EndHover()
+    if Chart.hoverBox then Chart:BoxLeave(Chart.hoverBox) end
+  end)
   F:Hide()
 
   local bg, p = Col("bg"), Col("panel")
@@ -470,8 +604,8 @@ function Chart:Build()
   end
 
   -- Target Buy / List At boxes
-  self.buyBox = self:MakeBox("Target Buy", Col("buy"))
-  self.listBox = self:MakeBox("List At", Col("sell"))
+  self.buyBox = self:MakeBox("Target Buy", Col("buy"), "buy")
+  self.listBox = self:MakeBox("List At", Col("sell"), "sell")
 
   -- Plot
   local plot = CreateFrame("Frame", nil, F)
@@ -731,21 +865,47 @@ function Chart:Place()
   F:SetWidth(DEFAULT_W)
 end
 
+-- A box as a full box (title, price, cheapest or market) or, on a short
+-- panel, as a one-line chip (title and price; the cheapest or market too
+-- when the panel is wide enough).
+local function ShapeBox(box, compact, narrow)
+  local shape = compact and (narrow and "chip" or "chipwide") or "box"
+  if box.shape == shape then return end
+  box.shape = shape
+  box:SetHeight(compact and BOX_H_COMPACT or BOX_H)
+  box.title:ClearAllPoints()
+  box.value:ClearAllPoints()
+  if compact then
+    box.title:SetPoint("LEFT", box, "LEFT", 10, 0)
+    if box.value.SetFontObject then pcall(box.value.SetFontObject, box.value, "GameFontHighlightSmall") end
+    box.value:SetPoint("LEFT", box.title, "RIGHT", 8, 0)
+  else
+    box.title:SetPoint("TOPLEFT", box, "TOPLEFT", 10, -5)
+    if box.value.SetFontObject then pcall(box.value.SetFontObject, box.value, "GameFontHighlightLarge") end
+    box.value:SetPoint("BOTTOMLEFT", box, "BOTTOMLEFT", 10, 5)
+  end
+  if shape == "chip" then box.sub:Hide() else box.sub:Show() end
+end
+
 function Chart:Layout(W, H)
   local F = self.frame
   H = H or PANEL_H
   self.compact = H < COMPACT_H
   self.narrow = W < NARROW_W
   local boxW = floor((W - 2 * PAD - 8) / 2)
+  local boxY = self.compact and BOX_Y_COMPACT or BOX_Y
   self.buyBox:ClearAllPoints()
-  self.buyBox:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, BOX_Y)
+  self.buyBox:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, boxY)
   self.buyBox:SetWidth(boxW)
   self.listBox:ClearAllPoints()
-  self.listBox:SetPoint("TOPLEFT", F, "TOPLEFT", PAD + boxW + 8, BOX_Y)
+  self.listBox:SetPoint("TOPLEFT", F, "TOPLEFT", PAD + boxW + 8, boxY)
   self.listBox:SetWidth(boxW)
-  -- A short panel (little room under the AH) leaves the boxes out: the
-  -- dashed lines on the plot still carry both prices.
-  if self.compact then self.buyBox:Hide(); self.listBox:Hide() else self.buyBox:Show(); self.listBox:Show() end
+  -- A short panel (little room under the AH) turns the boxes into one-line
+  -- chips. They still switch the dashed line, so it is never forced on.
+  ShapeBox(self.buyBox, self.compact, self.narrow)
+  ShapeBox(self.listBox, self.compact, self.narrow)
+  self.buyBox:Show()
+  self.listBox:Show()
   local top = self.compact and PLOT_TOP_COMPACT or PLOT_TOP
   self.plot:ClearAllPoints()
   self.plot:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, -top)
@@ -849,7 +1009,8 @@ function Chart:SetFooter(item, rec, extraNote)
     SetFSColor(self.verdict, Col("muted"))
     self.meter:Hide()
     self.margin:SetText("")
-    if type(rec.notes) == "table" then
+    -- Mixed versions: the advice notes ("buy it") would be about the mix too.
+    if type(rec.notes) == "table" and not rec.mixed then
       for _, n in ipairs(rec.notes) do notes[#notes + 1] = tostring(n) end
     end
   elseif rec then
@@ -1014,8 +1175,11 @@ function Chart:DrawPlot(s, rec, tf)
     self:ShowMessage("Nothing was listed in this timeframe. Try a longer one.")
     return
   end
-  local buyT = rec and Num(rec.buy)
-  local listT = rec and Num(rec.listAt)
+  -- Only the line the player picked with the boxes (none by default), on a
+  -- short panel too: its chips switch it the same way.
+  local line = ChartLine()
+  local buyT = (line == "buy") and rec and Num(rec.buy) or nil
+  local listT = (line == "sell") and rec and Num(rec.listAt) or nil
   if buyT and buyT <= 0 then buyT = nil end
   if listT and listT <= 0 then listT = nil end
   for _, v in ipairs({ buyT or vmin, listT or vmin }) do
@@ -1205,6 +1369,14 @@ function Chart:Draw(tf)
   -- The live cheapest listing (when the open AH has loaded it) beats the hourly data.
   local live = type(ns.LiveCheapest) == "function" and ns.LiveCheapest(id) or nil
   local rec = type(ns.Recommend) == "function" and ns.Recommend(id, tf, live) or nil
+  -- Gear whose versions sell for different prices, shown as the whole item:
+  -- its targets would mix them, so the boxes say it depends on the version.
+  if type(rec) == "table" and type(ns.PricesMixVersions) == "function" and ns.PricesMixVersions(id) then
+    local r = {}
+    for k, v in pairs(rec) do r[k] = v end
+    r.mixed, r.buy, r.listAt, r.sell, r.margin = true, 0, 0, 0, 0
+    rec = r
+  end
   self:SetHeader(id, DisplayName(id, item), item, s, tf)
   self:SetBoxes(item, rec)
   self:SetFooter(item, rec)
@@ -1238,6 +1410,7 @@ function Chart:Redraw()
   self.view = nil
   local tf = CurrentTF()
   self:UpdateTFButtons(tf)
+  self:UpdateBoxes()
   local ok, err = pcall(self.Draw, self, tf)
   if not ok then
     self.lastError = err
@@ -1405,9 +1578,25 @@ function ns.SetChartTF(tf)
       Chart:UpdateTFButtons(tf)
     end
   end
-  -- The Use List At buttons follow the chart's timeframe: keep their label
-  -- (and the price they fill) the same as the chart's List At box.
+  -- The Best price buttons follow the chart's timeframe: keep their label
+  -- (and the price they fill) in step with the chart's advice.
   if type(ns.AH_RefreshButtons) == "function" then pcall(ns.AH_RefreshButtons) end
+end
+
+-- Which target line the chart shows ("buy", "sell" or nil), and setting it
+-- (what clicking the Target Buy and List At boxes does).
+function ns.ChartLine()
+  return ChartLine()
+end
+
+function ns.SetChartLine(which)
+  if which ~= "buy" and which ~= "sell" then which = nil end
+  if type(ns.settings) == "table" then ns.settings.chartLine = which end
+  if Chart.built and Chart.frame:IsShown() then
+    Chart:Redraw()
+  elseif Chart.built then
+    Chart:UpdateBoxes()
+  end
 end
 
 -- Redraws the chart in place (new live prices for the item it shows).

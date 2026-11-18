@@ -220,6 +220,8 @@ time = os.time
 GetServerTime = function() return M.now end
 GetTime = function() return 1000 end
 GetCursorPosition = function() return M.cursorX, M.cursorY end
+SetCursor = function(c) M.cursor = c; return true end
+ResetCursor = function() M.cursor = nil end
 issecretvalue = function(v) return false end
 UnitFactionGroup = function() return M.faction or "Alliance", M.faction or "Alliance" end
 IsShiftKeyDown = function() return false end
@@ -393,6 +395,28 @@ function M.MakeStubNS(opts)
              cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24, history = true, advice = true,
              notes = flat and { "Spread does not beat the 5% AH cut" } or {} }
   end
+  -- Recommend.lua's ns.SellPrices rules on the stub's advice: Sell now 1 copper
+  -- under the cheapest (live) listing, matched when it is yours; Best price the
+  -- sell target, never under a normal cheapest listing, only with advice.
+  function ns.SellPrices(id, tf, live, own)
+    local rec = ns.Recommend(id, tf)
+    if not rec then return nil end
+    local isLive = type(live) == "number" and live > 0
+    local cheap = isLive and live or rec.cheapestNow
+    local out = { rec = rec, live = isLive, own = isLive and own == true }
+    if cheap > 1 then out.now = out.own and cheap or (cheap - 1) else out.nowWhy = "none" end
+    if rec.history == false then
+      out.bestWhy = "history"
+    elseif rec.advice == false then
+      out.bestWhy = "unreliable"
+    else
+      local b = rec.sell
+      if cheap > 1 and b < cheap - 1 then b = cheap - 1 end
+      if out.own and b == cheap - 1 then b = cheap end
+      out.best = b
+    end
+    return out
+  end
   -- name -> ids, lowest first (Core.lua's index: a name can belong to several items)
   local names = {}
   for id, it in pairs(items) do
@@ -564,10 +588,40 @@ for i = 1, s.n do if s.cheap[i] then nn = nn + 1 end if s.market[i] then nn = nn
 check(C.pools.dot.used == nn, "one dot per price: " .. C.pools.dot.used .. " vs " .. nn)
 check(C.pools.trend.used == s.n - 1 and C.pools.casing.used == s.n - 1, "trend line segments " .. C.pools.trend.used)
 check(C.pools.ring.used == 2, "period high and low rings")
-check(C.pools.tag.used == 2, "two target line labels")
+check(C.pools.tag.used == 0 and C.pools.dash.used == 0, "no dashed target line until a box is clicked")
+check(C.buyBox._ftype == "Button" and C.listBox._ftype == "Button", "the boxes are buttons")
+check(not C.buyBox.lit and not C.listBox.lit, "no box lit at first")
+M.fireScript(C.buyBox, "OnEnter")
+check(M.cursor == "INTERACT_CURSOR", "a hand cursor over a box: " .. tostring(M.cursor))
+local function ttHas(text)
+  for _, l in ipairs(GameTooltip._lines) do if l:find(text, 1, true) then return true end end
+  return false
+end
+check(GameTooltip._owner == C.buyBox and GameTooltip._lines[1] == "Target Buy", "box tooltip title")
+check(ttHas("Click to show the gold Target Buy line on the chart."), "box tooltip says what a click does")
+M.fireScript(C.buyBox, "OnClick")
+check(ns.settings.chartLine == "buy" and C.buyBox.lit and not C.listBox.lit, "Target Buy click: its line on, its box lit")
 local tags = M.Texts(C.pools.tag)
-check(tags[1]:find("^List At ") and tags[2]:find("^Target Buy "), "target labels: " .. table.concat(tags, ", "))
-check(C.pools.dash.used > 20, "dashed target lines")
+check(#tags == 1 and tags[1]:find("^Target Buy ") ~= nil, "only the Target Buy line: " .. table.concat(tags, ", "))
+check(C.pools.dash.used > 20 and C.pools.dash.items[1]._color[1] == ns.COLORS.buy[1], "gold dashes")
+check(C.buyBox.edges[1]:IsShown() and not C.listBox.edges[1]:IsShown(), "the lit box has a border")
+check(C.buyBox.bg._color[1] > C.listBox.bg._color[1] + 0.05, "and a brighter background")
+check(ttHas("Click to hide the gold Target Buy line."), "the tooltip now says a click hides it")
+M.fireScript(C.buyBox, "OnLeave")
+check(M.cursor == nil and not GameTooltip._shown, "cursor and tooltip back to normal on leave")
+M.fireScript(C.listBox, "OnClick")
+check(ns.settings.chartLine == "sell" and C.listBox.lit and not C.buyBox.lit, "List At click switches lines")
+tags = M.Texts(C.pools.tag)
+check(#tags == 1 and tags[1]:find("^List At ") ~= nil, "only the List At line: " .. table.concat(tags, ", "))
+check(C.pools.dash.items[1]._color[1] == ns.COLORS.sell[1], "blue dashes")
+check(not C.buyBox.edges[1]:IsShown() and C.listBox.edges[1]:IsShown(), "the border moved")
+M.fireScript(C.listBox, "OnClick")
+check(ns.settings.chartLine == nil and C.pools.tag.used == 0 and C.pools.dash.used == 0 and not C.listBox.lit,
+  "clicking the lit box hides the line")
+ns.SetChartLine("sell")
+check(ns.ChartLine() == "sell" and C.pools.tag.used == 1, "SetChartLine")
+ns.SetChartLine("both")
+check(ns.ChartLine() == nil and C.pools.tag.used == 0, "SetChartLine with a bad value: no line")
 check(C.pools.vol.used > 0, "est. sold bars")
 check(C.pools.xlab.used >= 3, "x labels")
 check(C.pools.ylab.used >= 2, "y labels")
@@ -873,12 +927,17 @@ check(AHS.hookedModern == true, "hooked on ADDON_LOADED")
 local toggle = M.FindChild(ahf, function(c) return c._text == "Chart" end)
 check(toggle ~= nil, "Chart button on the AH frame")
 local csf, isf = ahf.CommoditiesSellFrame, ahf.ItemSellFrame
-local cUse = M.FindChild(csf, function(c) return c._ftype == "Button" and c ~= csf.PostButton end)
-local iUse = M.FindChild(isf, function(c) return c._ftype == "Button" and c ~= isf.PostButton end)
-check(cUse and iUse and not cUse:IsShown() and not iUse:IsShown(), "use buttons created hidden")
+local cUse = M.FindChild(csf, function(c) return c._ftype == "Button" and c.kind == "now" end)
+local iUse = M.FindChild(isf, function(c) return c._ftype == "Button" and c.kind == "now" end)
+local cBest = M.FindChild(csf, function(c) return c._ftype == "Button" and c.kind == "best" end)
+local iBest = M.FindChild(isf, function(c) return c._ftype == "Button" and c.kind == "best" end)
+check(cUse and iUse and cBest and iBest and not cUse:IsShown() and not iUse:IsShown() and not cBest:IsShown(),
+  "Sell now and Best price buttons created hidden")
 local p0, r0, rp0 = cUse:GetPoint(1)
-check(p0 == "TOP" and r0 == csf.PostButton and rp0 == "BOTTOM", "use button sits under Post")
-check(cUse:GetFrameLevel() > 350, "use button above the sell frame overlay")
+check(p0 == "TOPRIGHT" and r0 == csf.PostButton and rp0 == "BOTTOM", "Sell now sits under Post, left of the middle")
+local p1, r1, rp1 = cBest:GetPoint(1)
+check(p1 == "TOPLEFT" and r1 == csf.PostButton and rp1 == "BOTTOM", "Best price sits under Post, right of the middle")
+check(cUse:GetFrameLevel() > 350 and cBest:GetFrameLevel() > 350, "buttons above the sell frame overlay")
 M.Fire("ADDON_LOADED", "Blizzard_AuctionHouseUI")
 local nButtons = 0
 for _, c in ipairs(ahf._children) do if c._text == "Chart" then nButtons = nButtons + 1 end end
@@ -966,54 +1025,64 @@ section("modern AH: sell frames and the List At button")
 ahf:SetPostItem({ itemID = 14047, commodity = true })
 check(ns.ChartItem() == 14047, "sell item shown")
 local rec = ns.Recommend(14047, ns.settings.chartTF)
-check(cUse:IsShown() and cUse:GetText() == "Use List At: " .. ns.MoneyText(rec.listAt), "button label " .. tostring(cUse:GetText()))
+local sp = ns.SellPrices(14047, ns.settings.chartTF)
+check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(sp.now), "Sell now label " .. tostring(cUse:GetText()))
+check(cBest:IsShown() and cBest:GetText() == "Best price: " .. ns.MoneyText(sp.best), "Best price label " .. tostring(cBest:GetText()))
+check(sp.now == 1199 and sp.best == rec.sell, "Sell now 1c under the cheapest, Best price the sell target")
 local posts = csf.posts or 0
 M.fireScript(cUse, "OnClick")
-check(csf.PriceInput.amount == rec.listAt, "commodity price is exact copper: " .. tostring(csf.PriceInput.amount) .. " vs " .. rec.listAt)
+check(csf.PriceInput.amount == sp.now, "commodity price is exact copper: " .. tostring(csf.PriceInput.amount) .. " vs " .. sp.now)
 check((csf.posts or 0) == posts + 1, "post state refreshed")
+M.fireScript(cBest, "OnClick")
+check(csf.PriceInput.amount == sp.best, "Best price fills its price: " .. tostring(csf.PriceInput.amount))
 ahf:SetPostItem({ itemID = 6, commodity = false })
 check(ns.ChartItem() == 6, "gear sell item shown")
-check(not cUse:IsShown() and iUse:IsShown(), "only the active sell frame shows the button")
-local rec6 = ns.Recommend(6, ns.settings.chartTF)
+check(not cUse:IsShown() and not cBest:IsShown() and iUse:IsShown() and iBest:IsShown(), "only the active sell frame shows the buttons")
+local sp6 = ns.SellPrices(6, ns.settings.chartTF)
 M.fireScript(iUse, "OnClick")
-check(isf.PriceInput.amount == math.floor(rec6.listAt / 100) * 100, "gear price rounded down to whole silver: " .. tostring(isf.PriceInput.amount))
-check(iUse:GetText() == "Use List At: " .. ns.MoneyText(math.floor(rec6.listAt / 100) * 100), "gear label shows the rounded price")
+check(isf.PriceInput.amount == math.floor(sp6.now / 100) * 100, "gear price rounded down to whole silver: " .. tostring(isf.PriceInput.amount))
+check(iUse:GetText() == "Sell now: " .. ns.MoneyText(math.floor(sp6.now / 100) * 100), "gear label shows the rounded price")
+M.fireScript(iBest, "OnClick")
+check(isf.PriceInput.amount == math.floor(sp6.best / 100) * 100, "gear Best price rounded down too")
 M.copper = false
 ahf:SetPostItem({ itemID = 14047, commodity = true })
 M.fireScript(cUse, "OnClick")
-check(csf.PriceInput.amount == math.max(100, math.floor(rec.listAt / 100) * 100), "silver when the client has no copper box")
+check(csf.PriceInput.amount == math.max(100, math.floor(sp.now / 100) * 100), "silver when the client has no copper box")
 M.copper = nil
 ns.SetChartTF("1W")
 ahf:SetPostItem({ itemID = 14047, commodity = true })
-M.fireScript(cUse, "OnClick")
-check(csf.PriceInput.amount == ns.Recommend(14047, "1W").listAt, "uses the chart's timeframe")
+M.fireScript(cBest, "OnClick")
+check(csf.PriceInput.amount == ns.SellPrices(14047, "1W").best, "Best price uses the chart's timeframe")
 ns.SetChartTF("1D")
 ahf:SetPostItem({ itemID = 999, commodity = true })
-check(not cUse:IsShown(), "no button without price advice")
+check(not cUse:IsShown() and not cBest:IsShown(), "no buttons without price data")
 check(ns.ChartItem() == 999 and (C.msg:GetText() or ""):find("No recent listings", 1, true), "chart says no listings")
 M.fireScript(cUse, "OnClick")
 check(csf.PriceInput.amount == 100, "clicking without advice leaves Blizzard's price alone")
 
-section("modern AH: no advice yet, Use List At only follows a live listing")
+section("modern AH: no advice yet: Sell now only, no Best price")
 ahf:SetPostItem({ itemID = 9, commodity = true })
 M.RunTimers()
-check(not cUse:IsShown(), "too little history and no live listing: no button")
+check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(699) and not cBest:IsShown(),
+  "too little history: Sell now from the price data, no Best price: " .. tostring(cUse:GetText()))
+check((cUse.tipBody or ""):find("not enough price history yet for a Best price", 1, true) ~= nil, "tooltip says why: " .. tostring(cUse.tipBody))
 AHS.StoreLive(9, 650, false)
 M.RunTimers()
-check(cUse:IsShown() and cUse:GetText() == "Use List At: " .. ns.MoneyText(649), "1 copper under the live listing: " .. tostring(cUse:GetText()))
-check((cUse.tipBody or ""):find("not enough price history", 1, true) ~= nil, "tooltip says why: " .. tostring(cUse.tipBody))
+check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(649), "1 copper under the live listing: " .. tostring(cUse:GetText()))
+check((cUse.tipBody or ""):find("cheapest listing right now", 1, true) ~= nil, "tooltip says the live listing was used")
 M.fireScript(cUse, "OnClick")
 check(csf.PriceInput.amount == 649, "fills that price")
 AHS.StoreLive(9, 650, true)
 M.RunTimers()
-check(cUse:GetText() == "Use List At: " .. ns.MoneyText(650), "your own listing is matched, not undercut")
+check(cUse:GetText() == "Sell now: " .. ns.MoneyText(650), "your own listing is matched, not undercut")
 AHS.StoreLive(9, nil)
 M.RunTimers()
-check(not cUse:IsShown(), "live listing gone: no button again")
+check(cUse:GetText() == "Sell now: " .. ns.MoneyText(699), "live listing gone: back to the price data")
 ahf:SetPostItem({ itemID = 11, commodity = true })
 AHS.StoreLive(11, 800, false)
 M.RunTimers()
-check(cUse:IsShown() and (cUse.tipBody or ""):find("may not be reliable", 1, true) ~= nil, "thin listings: follows the live listing, says why")
+check(cUse:IsShown() and not cBest:IsShown() and (cUse.tipBody or ""):find("may not be reliable", 1, true) ~= nil,
+  "thin listings: Sell now only, says why")
 AHS.StoreLive(11, nil)
 M.RunTimers()
 
@@ -1066,8 +1135,13 @@ local aUse = M.FindChild(AuctionatorSellingFrame.SaleItemFrame, function(c) retu
 check(aUse and aUse:IsShown(), "Auctionator use button shown")
 M.fireScript(aUse, "OnClick")
 local fired = M.atrFired[#M.atrFired]
-check(fired and fired.event == "price_selected" and fired.args[1].buyout == rec.listAt and fired.args[2] == false,
-  "fires PriceSelected with the List At copper")
+check(fired and fired.event == "price_selected" and fired.args[1].buyout == sp.now and fired.args[2] == false,
+  "fires PriceSelected with the Sell now copper")
+local aBest = M.FindChild(AuctionatorSellingFrame.SaleItemFrame, function(c) return c.kind == "best" end)
+check(aUse.kind == "now" and aBest and aBest:IsShown(), "Auctionator Best price button shown too")
+M.fireScript(aBest, "OnClick")
+fired = M.atrFired[#M.atrFired]
+check(fired and fired.args[1].buyout == sp.best, "Best price through PriceSelected")
 AuctionatorSellingFrame:Hide()
 C_AuctionHouse.SendSellSearchQuery({ itemID = 2589, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }, {}, false)
 M.RunTimers()
@@ -1078,12 +1152,13 @@ M.RunTimers()
 check(ns.ChartItem() == 2589 and AHS.atrSellLocation == nil, "sell search followed while the Selling tab is visible")
 Auctionator.EventBus.Fire = function() error("boom") end
 M.fireScript(aUse, "OnClick")
-check(AuctionatorSellingFrame.SaleItemFrame.Price.amount == ns.Recommend(2589, "1D").listAt, "falls back to Auctionator's price box")
+check(AuctionatorSellingFrame.SaleItemFrame.Price.amount == ns.SellPrices(2589, "1D").now, "falls back to Auctionator's price box")
 
 section("modern AH: close")
 M.Fire("PLAYER_INTERACTION_MANAGER_FRAME_HIDE", 21)
 check(not ns.AH_IsOpen() and not F:IsShown(), "chart hidden on close")
-check(not cUse:IsShown() and not iUse:IsShown() and not aUse:IsShown(), "use buttons hidden on close")
+check(not cUse:IsShown() and not iUse:IsShown() and not aUse:IsShown() and not cBest:IsShown() and not aBest:IsShown(),
+  "sell buttons hidden on close")
 M.Fire("AUCTION_HOUSE_CLOSED")
 ahf:SendBrowseQuery("Runecloth"); M.RunTimers()
 check(not F:IsShown() and ns.ChartItem() == 2589, "searches while closed do nothing")
@@ -1163,20 +1238,24 @@ check(ns.ChartItem() == 2589, "clicked row")
 M.legacySell = { "Runecloth", "tex", 20, 1, true, 0, 0, 20, 20, 14047 }
 M.Fire("NEW_AUCTION_UPDATE")
 check(ns.ChartItem() == 14047, "sell slot item")
-local lUse = M.FindChild(AuctionFrameAuctions, function(c) return type(c._text) == "string" and c._text:find("^Use List At") end)
-check(lUse and lUse:IsShown(), "legacy use button shown")
-local rec = ns.Recommend(14047, "1D")
+local lUse = M.FindChild(AuctionFrameAuctions, function(c) return c.kind == "now" end)
+local lBest = M.FindChild(AuctionFrameAuctions, function(c) return c.kind == "best" end)
+check(lUse and lUse:IsShown() and lBest and lBest:IsShown(), "legacy Sell now and Best price buttons shown")
+local sp = ns.SellPrices(14047, "1D")
+check(lUse:GetText() == "Sell now: " .. ns.MoneyText(sp.now) and lBest:GetText() == "Best price: " .. ns.MoneyText(sp.best), "legacy labels")
 M.fireScript(lUse, "OnClick")
-check(BuyoutPrice.copper == rec.listAt * 5 and StartPrice.copper == rec.listAt * 5, "per-stack price = List At x stack size: " .. tostring(BuyoutPrice.copper))
+check(BuyoutPrice.copper == sp.now * 5 and StartPrice.copper == sp.now * 5, "per-stack price = Sell now x stack size: " .. tostring(BuyoutPrice.copper))
 AuctionFrameAuctions.priceType = 1
 M.fireScript(lUse, "OnClick")
-check(BuyoutPrice.copper == rec.listAt, "per-unit price")
+check(BuyoutPrice.copper == sp.now, "per-unit price")
+M.fireScript(lBest, "OnClick")
+check(BuyoutPrice.copper == sp.best, "per-unit Best price")
 M.legacySell = { "Linen Cloth", "tex", 10, 1, true, 0, 0, 10, 10 }
 M.Fire("NEW_AUCTION_UPDATE")
 check(ns.ChartItem() == 2589, "sell item found by name when no itemID is returned")
 M.legacySell = nil
 M.Fire("NEW_AUCTION_UPDATE")
-check(not lUse:IsShown(), "button hides when the slot is emptied")
+check(not lUse:IsShown() and not lBest:IsShown(), "buttons hide when the slot is emptied")
 M.Fire("AUCTION_HOUSE_CLOSED")
 check(not F:IsShown() and not ns.AH_IsOpen(), "closed")
 check(AHS.lastError == nil, "no hook errors: " .. tostring(AHS.lastError))
@@ -1223,9 +1302,21 @@ ahf:SendBrowseQuery("runecloth")
 M.RunTimers()
 check(ns.ChartItem() == 14047, "search finds Runecloth through ns.FindItemID")
 ahf:SetPostItem({ itemID = 14047, commodity = true })
-local cUse = M.FindChild(ahf.CommoditiesSellFrame, function(c) return c._ftype == "Button" and c ~= ahf.CommoditiesSellFrame.PostButton end)
+local cUse = M.FindChild(ahf.CommoditiesSellFrame, function(c) return c.kind == "now" end)
+local cBest = M.FindChild(ahf.CommoditiesSellFrame, function(c) return c.kind == "best" end)
+local sp = ns.SellPrices(14047, "1D")
 M.fireScript(cUse, "OnClick")
-check(ahf.CommoditiesSellFrame.PriceInput.amount == ns.Recommend(14047, "1D").listAt, "Use List At writes the real recommendation")
+check(ahf.CommoditiesSellFrame.PriceInput.amount == sp.now, "Sell now writes the real Sell now price")
+if sp.best then
+  M.fireScript(cBest, "OnClick")
+  check(ahf.CommoditiesSellFrame.PriceInput.amount == sp.best, "Best price writes the real Best price")
+end
+ns.ShowChart(14047, "slash")
+local C = ns.ChartPanel
+M.fireScript(C.buyBox, "OnClick")
+check(ns.settings.chartLine == "buy" and C.lastError == nil, "the real chart: Target Buy toggle")
+M.fireScript(C.buyBox, "OnClick")
+check(ns.settings.chartLine == nil, "the real chart: toggled off")
 M.Fire("AUCTION_HOUSE_CLOSED")
 check(ns.AHState.lastError == nil, "no hook errors: " .. tostring(ns.AHState.lastError))
 '''

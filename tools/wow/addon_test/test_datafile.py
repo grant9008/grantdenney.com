@@ -15,7 +15,10 @@ What it does:
      value for the same timestamp, plus the header fields (updated, fetched,
      salesHours), the "now" numbers, sold24 (measured hours only), avg7,
      vendor price, the auctions count, the name ("" when unknown) and which
-     items are included,
+     items are included; versions of items (vids): their names (suffix or
+     "(version N)"), the variants table, that the item covers its versions,
+     the flips table (numbers, flags, order) against flips.json, and the new
+     mapping.json fields,
   4. builds a second, hand-made data set with awkward cases (quotes,
      backslashes, "|" and newlines in names, gaps, sold-only hours, prices at
      the gold cap, items just inside and just outside the 7-day window) and
@@ -23,19 +26,26 @@ What it does:
   5. unit tests for the collector: market value (deep and thin markets,
      fractions of a copper), the sold estimate safety rules, salesHours,
      unknown item names and their retries, Blizzard's data time, the
-     changed=true/false signal for the workflow and the size guard,
+     changed=true/false signal for the workflow, the size guard (versions
+     first), snapshot flips (a 1c troll, a silly high listing, a deep cheap
+     wall, 1-unit gear, the history cap, thresholds, vendor flips), variant
+     keys, indexes and names, the suffix table and the item details backfill,
   6. runs the real collector (fetch_ah.main) on hand-made snapshots through a
      fake Blizzard API (no network): first snapshot, no change, an older
      snapshot, a normal hour, a long gap, a collapsed auction count (held
      back, then downloaded again), a commodities download that fails twice
      (held, then used without sales), three snapshots in one hour (only the
      measured minutes count), unknown names that get a name later, and the
-     upgrade from the first real snapshot's files.
+     upgrade from the first real snapshot's files,
+  7. runs it again with suffix gear: versions vs the item lumped together,
+     sold per version, idle versions, the registry rebuilt from hist files,
+     the upgrade from format 2 state, and an older copy refusing format 3.
 Exit code 0 = everything passed.
 """
 import email.utils
 import json
 import os
+import random
 import re
 import shutil
 import sys
@@ -194,6 +204,64 @@ def expected_name(meta):
     return name.replace("|", "/")
 
 
+def load_suffixes(data_dir=None):
+    """bonus id (str) -> suffix name, read independently of the collector."""
+    for path in ([os.path.join(data_dir, "suffix_names.json")] if data_dir else []) + \
+            [os.path.join(TOOLS, "suffix_names.json")]:
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as fh:
+                return {str(k): v for k, v in json.load(fh).items()}
+    return {}
+
+
+def expected_vid_name(base_meta, key, idx, suffixes):
+    """Contract C2a: the item's name plus the suffix when known, else plus " (version N)"; "" when unnamed."""
+    base = expected_name(base_meta)
+    if not base:
+        return ""
+    names = [suffixes[b] for b in key.split(":") if b in suffixes]
+    return base + " " + " ".join(names) if names else f"{base} (version {idx})"
+
+
+def registry_of(state):
+    """state.json "variants" -> {vid: (item id, key, index)}"""
+    out = {}
+    for sid, keys in ((state or {}).get("variants") or {}).items():
+        for key, idx in keys.items():
+            out[int(sid) * 1000 + int(idx)] = (int(sid), key, int(idx))
+    return out
+
+
+RISKS = {"thin", "slow", "spike", "suffix"}
+FLIP_FIELDS = ("id", "base", "variant", "name", "quality", "cls", "sub", "clsName", "subName", "slot", "reqlvl",
+               "ilvl", "kind", "buyMax", "units", "cost", "relist", "profit", "roi", "risk", "listed", "auctions",
+               "market", "sold24", "next")
+INFO_FIELDS = ("quality", "cls", "sub", "lvl", "slot", "ilvl", "reqlvl", "clsName", "subName")
+
+
+def check_flip_numbers(tag, f, vendor):
+    """C2c arithmetic: profit after the 5% cut (gap) or against the vendor (vendor), roi per mille."""
+    check(f["kind"] in ("gap", "vendor"), f"{tag}: kind {f['kind']!r}")
+    check(all(isinstance(f[k], int) and f[k] >= 0 for k in ("buyMax", "units", "cost", "relist", "roi"))
+          and f["units"] >= 1 and f["cost"] >= 1, f"{tag}: numbers {f!r}")
+    if f["kind"] == "gap":
+        check(f["profit"] == f["units"] * (f["relist"] * 95 // 100) - f["cost"], f"{tag}: gap profit {f!r}")
+        check(f["relist"] >= 1 and f["roi"] >= 150, f"{tag}: relist price or roi under 15% {f!r}")
+    else:
+        check(f["relist"] == 0 and f["profit"] == f["units"] * vendor - f["cost"], f"{tag}: vendor profit {f!r}")
+        check("suffix" not in f["risk"], f"{tag}: vendor flips are for the whole item")
+    check(f["profit"] > 0 and f["roi"] == f["profit"] * 1000 // f["cost"], f"{tag}: roi {f!r}")
+    check(set(f["risk"]) <= RISKS and len(set(f["risk"])) == len(f["risk"]), f"{tag}: risk flags {f['risk']!r}")
+
+
+def parse_flip(s):
+    p = s.split("|")
+    check(len(p) == 9, f"flip line {s!r} has {len(p)} fields, not 9")
+    nums = [int(x) for x in (p[0], p[2], p[3], p[4], p[5], p[6], p[7])]
+    return {"id": nums[0], "kind": p[1], "buyMax": nums[1], "units": nums[2], "cost": nums[3], "relist": nums[4],
+            "profit": nums[5], "roi": nums[6], "risk": [r for r in p[8].split(",") if r]}
+
+
 # -- checks -------------------------------------------------------------------
 class Fail(Exception):
     pass
@@ -305,6 +373,17 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
     state = load_json(os.path.join(data_dir, "state.json"))
     latest = (load_json(os.path.join(data_dir, "latest.json")) or {}).get("data")
     mapping = load_json(os.path.join(data_dir, "mapping.json"))
+    vinfo = registry_of(state)            # vid -> (item id, key, index)
+    suffixes = load_suffixes(data_dir)
+
+    def meta_for(eid):
+        """(metadata the line's vendor price comes from, expected name)"""
+        if eid in vinfo:
+            base, key, idx = vinfo[eid]
+            bm = items_meta.get(str(base)) or {}
+            return bm, expected_vid_name(bm, key, idx, suffixes)
+        m = items_meta.get(str(eid)) or {}
+        return m, expected_name(m)
 
     updated, hour_end, day_end = int(db.updated), int(db.hourEnd), int(db.dayEnd)
     check(db.v == 1, "v is not 1")
@@ -386,8 +465,10 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
             check(lua_dec == py[key], f"{tag} {key}: Lua and Python decoders disagree")
 
         h = hists[iid]
-        meta = items_meta.get(str(iid)) or {}
-        check(py["name"] == expected_name(meta), f"{tag}: name {py['name']!r}")
+        meta, want_name = meta_for(iid)
+        check(py["name"] == want_name, f"{tag}: name {py['name']!r}, want {want_name!r}")
+        check((h.get("v") or None) == (vinfo[iid][1] if iid in vinfo else None),
+              f"{tag}: hist 'v' {h.get('v')!r} does not match the version registry")
         check(not re.match(r"^Item \d+$", py["name"]), f"{tag}: placeholder name {py['name']!r}")
         check(py["vendor"] == int(meta.get("sell") or 0), f"{tag}: vendor price")
         now_pt = next((p for p in h["h"] if p[0] == hour_end), None)
@@ -417,11 +498,80 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
                       f"{label}: latest.json {sid} time is not Blizzard's data time")
     if mapping is not None:
         for m in mapping:
-            check(m["name"] == expected_name(items_meta.get(str(m["id"]))), f"{label}: mapping name {m!r}")
+            check(m["name"] == meta_for(m["id"])[1], f"{label}: mapping name {m!r}")
+            check(all(k in m for k in INFO_FIELDS) and isinstance(m["ilvl"], int) and isinstance(m["reqlvl"], int)
+                  and m["clsName"] == m["cls"] and m["subName"] == m["sub"], f"{label}: mapping fields {m!r}")
+            if m["id"] in vinfo:
+                base, key, idx = vinfo[m["id"]]
+                check((m.get("base"), m.get("variant"), m.get("vindex")) == (base, key, idx),
+                      f"{label}: mapping version fields {m!r}")
+            else:
+                check("base" not in m and "variant" not in m, f"{label}: item {m['id']} has version fields")
+
+    # C2b: variants = { [itemId] = "key=vid,..." } lists exactly the versions that have a line
+    vids_here = {i for i in got_ids if i in vinfo}
+    listed_v = {}
+    vt = db["variants"]
+    if vt is not None:
+        for k in vt.keys():
+            base = int(k)
+            check(base in got_ids, f"{label}: variants entry for {base}, which has no line")
+            for part in str(vt[k]).split(","):
+                key, vid = part.rsplit("=", 1)
+                vid = int(vid)
+                check(vinfo.get(vid, (None, None))[:2] == (base, key), f"{label}: variants {base}: {part!r}")
+                check(re.match(r"^\d+(:\d+)*$", key) and key.split(":") == [str(b) for b in sorted(int(x) for x in key.split(":"))],
+                      f"{label}: variant key {key!r} is not sorted bonus ids")
+                listed_v[vid] = base
+    check(set(listed_v) == vids_here, f"{label}: variants table and version lines differ: "
+                                      f"{sorted(vids_here ^ set(listed_v))[:5]}")
+    # the item itself covers all its versions
+    for base in set(listed_v.values()):
+        mine = [py_decode(lua_items[v]) for v in listed_v if listed_v[v] == base]
+        it = py_decode(lua_items[base])
+        check(it["listed"] >= sum(d["listed"] for d in mine) and it["auctions"] >= sum(d["auctions"] for d in mine),
+              f"{label}: item {base} lists fewer units than its versions")
+
+    # C2c: flips = { "id|kind|buyMax|units|cost|relist|profit|roi|risk", ... } best first
+    ft = db["flips"]
+    flips = []
+    if ft is not None:
+        n = 0
+        while ft[n + 1] is not None:
+            n += 1
+            flips.append(parse_flip(str(ft[n])))
+        check(n <= 60, f"{label}: {n} flips in the addon file (at most 60)")
+    for i, fl in enumerate(flips):
+        tag = f"{label} flip {i + 1}"
+        check(fl["id"] in got_ids, f"{tag}: id {fl['id']} has no line")
+        check(("suffix" in fl["risk"]) == (fl["id"] in vinfo and fl["kind"] == "gap"), f"{tag}: suffix flag {fl!r}")
+        check(not (fl["kind"] == "gap" and fl["id"] in listed_v.values()),
+              f"{tag}: a gap flip on item {fl['id']} lumps its versions together")
+        check(fl["kind"] == "gap" or fl["id"] not in vinfo, f"{tag}: vendor flips are for items")
+        check_flip_numbers(tag, fl, py_decode(lua_items[fl["id"]])["vendor"])
+        if i:
+            check(flips[i - 1]["profit"] >= fl["profit"], f"{tag}: not sorted by profit")
+    site = load_json(os.path.join(data_dir, "flips.json"))
+    if site is not None:
+        rows = site["flips"]
+        check(site["updated"] == updated and len(rows) <= 400, f"{label}: flips.json header")
+        for i, r in enumerate(rows):
+            check(all(k in r for k in FLIP_FIELDS) and isinstance(r["risk"], list), f"{label}: flips.json row {r!r}")
+            base_meta, want = meta_for(r["id"])
+            check(r["name"] == want.replace("/", "|") or r["name"] == want, f"{label}: flips.json name {r['name']!r}")
+            check(r["base"] == (vinfo[r["id"]][0] if r["id"] in vinfo else r["id"])
+                  and r["variant"] == (vinfo[r["id"]][1] if r["id"] in vinfo else ""), f"{label}: flips.json base {r!r}")
+            check_flip_numbers(f"{label} flips.json {i}", r, int(base_meta.get("sell") or 0))
+            if i:
+                check(rows[i - 1]["profit"] >= r["profit"], f"{label}: flips.json not sorted")
+        short = [(r["id"], r["kind"], r["buyMax"], r["units"], r["cost"], r["relist"], r["profit"], r["roi"], r["risk"])
+                 for r in rows if r["id"] in got_ids][:60]
+        check(short == [(f["id"], f["kind"], f["buyMax"], f["units"], f["cost"], f["relist"], f["profit"], f["roi"],
+                         f["risk"]) for f in flips], f"{label}: the addon flips are not the top of flips.json")
 
     if not quiet:
-        print(f"  {label}: {len(got_ids)} items, {points} points checked, "
-              f"file {len(raw)} bytes, Lua and Python decoders agree")
+        print(f"  {label}: {len(got_ids)} lines ({len(vids_here)} versions), {points} points checked, "
+              f"{len(flips)} flips, file {len(raw)} bytes, Lua and Python decoders agree")
     return got_ids, lua_items, decode
 
 
@@ -602,7 +752,7 @@ def market_tests():
     check(fetch_ah.copper(0.4) == 1 and fetch_ah.copper(2.5) == 3 and fetch_ah.copper(2.49) == 2, "copper rounding")
 
     # aggregation keeps every auction with a buyout
-    per, snap = fetch_ah.aggregate([
+    per, snap, vper = fetch_ah.aggregate([
         {"id": 1, "item": {"id": 5}, "quantity": 200, "buyout": 80, "time_left": "LONG"},    # 0.4c each
         {"id": 2, "item": {"id": 5}, "quantity": 1, "bid": 50, "time_left": "LONG"},         # bid only
         {"id": 3, "item": {"id": 6}, "quantity": 20, "unit_price": 180, "time_left": "SHORT"},
@@ -795,11 +945,314 @@ def size_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def flip_tests():
+    gap, ven = fetch_ah.find_gap_flip, fetch_ah.find_vendor_flip
+    check(fetch_ah.after_cut(100) == 95 and fetch_ah.after_cut(19999) == 18999 and fetch_ah.after_cut(1) == 0,
+          "5% cut in whole copper (100 * 0.95 is 94.999... in floating point)")
+
+    # a 1c troll in front of a normal market is a real flip: buy it, relist under the next one
+    f = gap([(1, 1), (50000, 1), (50500, 1), (51000, 1), (52000, 1)], sold_day=None, usual=50000)
+    check(f and (f["buyMax"], f["units"], f["cost"], f["relist"], f["profit"]) == (1, 1, 1, 49999, 47498),
+          f"1c troll in front: {f!r}")
+    check(f["risk"] == ["thin", "slow"] and f["next"] == 50000 and f["roi"] == 47498000, f"troll flags {f!r}")
+    f = gap([(1, 1), (50000, 1), (50500, 1), (51000, 1), (52000, 1)], sold_day=3.0, usual=50000, early=True)
+    check(f and f["risk"] == ["thin", "slow"], f"sales measured for under a day: slow even within the day's sales ({f!r})")
+    f = gap([(1, 1), (50000, 1), (50500, 1), (51000, 1), (52000, 1)], sold_day=3.0, usual=50000)
+    check(f and f["risk"] == ["thin"], f"a full day measured, 3 a day: not slow ({f!r})")
+    # a silly high listing far above never sets the relist price (it sorts to the end)
+    check(gap([(1000, 1), (1010, 1), (1020, 1), (99999999, 1)], sold_day=5) is None,
+          "a 9,999g listing above a tight market is no flip")
+    check(gap([(1000, 1), (99999999, 1), (99999999, 1)], sold_day=5, hist_cap=1500) is None,
+          "history caps the relist price: buying at 10s to relist at 15s is under 50s profit")
+    f = gap([(1000, 1), (99999999, 1), (99999999, 1)], sold_day=5)
+    check(f and f["relist"] == 99999998 and f["risk"] == ["thin", "spike"],
+          f"no history: the next listing sets it, flagged thin and spike (2 listings far above) ({f!r})")
+    f = gap([(1000, 1), (99999999, 1), (99999999, 1)], sold_day=5, usual=1000)
+    check(f and "spike" in f["risk"], f"far above the usual price: spike ({f!r})")
+    # troll listings above one cheap one: a new item (no history) priced 5g, 500g, 500g. Its market
+    # value is the 500g listing itself, so only the check against what is bought can see it
+    f = gap([(50000, 1), (5000000, 1), (5000000, 1)], sold_day=1.0, usual=5000000)
+    check(f and f["relist"] == 4999999 and "spike" in f["risk"], f"troll pair above a new item: spike ({f!r})")
+    f = gap([(50000, 1)] * 6 + [(5000000, 1)] * 2, sold_day=12.0, usual=50000)
+    check(f and "spike" in f["risk"], f"real 5g market, two 500g trolls: spike ({f!r})")
+    f = gap([(50000, 1), (5000000, 1), (5000000, 1)], sold_day=1.0, hist_cap=6000000, usual=4800000)
+    check(f and "spike" not in f["risk"], f"with 7 days of history at 480g the same relist is normal ({f!r})")
+    f = gap([(5000, 1), (50000, 1), (51000, 1), (52000, 1), (53000, 1)], sold_day=1.0, usual=50000)
+    check(f and "spike" not in f["risk"], f"no history, but 3 listings near the next one back it up ({f!r})")
+
+    # every listing bought pays on its own: never "buy up to X, relist at X"
+    f = gap([(80, 1000), (100, 100), (150, 50), (151, 50)], commodity=True, sold_day=5000, hist_cap=100, usual=100)
+    check(f and (f["buyMax"], f["units"], f["relist"]) == (80, 1000, 99),
+          f"the 1s level is not bought when the cap makes its relist 1s: it would lose the cut ({f!r})")
+    f = gap([(80, 1000), (100, 100), (150, 50), (151, 50)], commodity=True, sold_day=5000, usual=100)
+    check(f and f["buyMax"] == 100 and fetch_ah.after_cut(f["relist"]) * 1000 >= 100 * 1150,
+          f"without the cap the 1s level pays 15% at 1s49c: bought ({f!r})")
+    rnd = random.Random(7)
+    worst = None
+    for _ in range(4000):
+        book = sorted((rnd.choice((rnd.randint(1, 60), rnd.randint(50, 70), rnd.randint(1, 500)))
+                       + rnd.random() * (rnd.random() < 0.2), rnd.randint(1, 300))
+                      for _ in range(rnd.randint(3, 14)))
+        f = gap(book, commodity=True, sold_day=rnd.choice((None, 10, 500, 5000)),
+                hist_cap=rnd.choice((None, None, rnd.randint(30, 400))), usual=rnd.randint(0, 200))
+        if f and fetch_ah.after_cut(f["relist"]) * 1000 < (f["buyMax"] - 1) * 1150:
+            worst = (book, f)
+            break
+    check(worst is None, f"random books: the dearest listing bought always makes 15% at the relist ({worst!r})")
+
+    # a deep cheap wall: more than a day of sales is never bought; within a day of sales it is
+    wall = [(100, 20)] * 50 + [(300, 20)] * 5
+    check(gap(wall, commodity=True, sold_day=200) is None, "a 1000-unit wall when 200 sell a day: no flip")
+    f = gap(wall, commodity=True, sold_day=5000)
+    check(f and (f["units"], f["cost"], f["relist"], f["profit"]) == (1000, 100000, 299, 1000 * 284 - 100000)
+          and f["risk"] == ["thin"], f"wall within a day of sales: {f!r}")
+    check(gap(wall, commodity=True, sold_day=None) is None, "sales unknown: at most 20% of the units listed")
+
+    # 1-unit gear: buy the cheap one, relist under the next
+    gear = [(5000, 1), (20000, 1), (21000, 1), (22000, 1)]
+    f = gap(gear, sold_day=1.0, usual=20000)
+    check(f and (f["units"], f["relist"], f["profit"], f["risk"]) == (1, 19999, 13999, ["thin"]), f"1-unit gear {f!r}")
+    check(gap(gear, sold_day=0.5) is None, "half a sale a day: not even one unit")
+    check(gap(gear, sold_day=1.0, hist_cap=8000) is None, "history cap 80s: profit 26s is under 50s")
+    f = gap(gear, sold_day=1.0, hist_cap=12000)
+    check(f and f["relist"] == 12000 and f["profit"] == 11400 - 5000, f"history cap 1.2g: {f!r}")
+    check(gap([(5000, 1), (20000, 1)], sold_day=3) is None, "only 1 listing left above: no flip")
+    check(gap([(5000, 1), (20000, 1), (20000, 1)], sold_day=3) is not None, "2 listings left above: flip")
+
+    # thresholds: 20s for commodities, 50s for gear, 15% ROI
+    two = [(1000, 1), (4000, 1), (4000, 1), (4000, 1)]
+    check(gap(two, commodity=True, sold_day=5) is not None and gap(two, commodity=False, sold_day=5) is None,
+          "27s profit: enough for a commodity, not for gear")
+    check(gap([(10000, 10), (11000, 5), (11100, 5)], commodity=True, sold_day=100) is None,
+          "45s profit on 10g is under 15% ROI")
+    # the best level wins: buying the first two price levels beats buying only the first
+    f = gap([(100, 5), (120, 5), (900, 5), (905, 5), (1000, 5)], commodity=True, sold_day=50)
+    check(f and f["units"] == 10 and f["buyMax"] == 120 and f["relist"] == 899, f"best level {f!r}")
+    check(f["profit"] == 10 * (899 * 95 // 100) - 1100, f"best level profit {f!r}")
+    # fractions of a copper (a stack of 3 for 10c) keep their exact cost
+    f = gap([(10 / 3, 3), (5000, 1), (5000, 1), (5000, 1)], commodity=True, sold_day=10)
+    check(f and f["cost"] == 10 and f["buyMax"] == 4 and f["relist"] == 4999, f"fractional prices {f!r}")
+
+    # vendor flips: listings under what a vendor pays
+    f = ven([(8, 20), (9, 20), (14, 100)], 13)
+    check(f and (f["kind"], f["units"], f["cost"], f["profit"], f["buyMax"], f["relist"], f["next"]) ==
+          ("vendor", 40, 340, 180, 9, 0, 14) and f["risk"] == [], f"vendor flip {f!r}")
+    check(ven([(12, 1)], 13) is None and ven([(8, 20)], 0) is None and ven([(20, 5)], 13) is None,
+          "vendor flips: under 1s profit, no vendor price, or nothing under it")
+    check(ven([(570, 285)], 577) is None, "285 leggings 7c under the vendor price each: no flip (under 10% each)")
+    f = ven([(500, 2), (590, 50)], 600)
+    check(f and (f["units"], f["cost"], f["profit"], f["buyMax"], f["next"]) == (2, 1000, 200, 500, 590),
+          f"only listings that make 10% at the vendor count: {f!r}")
+
+    # sold per day: measured hours after the series' first point, last 7 days
+    hour = 1794934800
+    H = 3600
+    h = {"h": [[hour - 3 * H, 10, 10, 5, 4], [hour - 2 * H, 10, 10, 5, 2], [hour - H, 10, 10, 5, 0], [hour, 10, 10, 5, 6]]}
+    meas = {hour - 3 * H: 3600, hour - 2 * H: 3600, hour - H: 1800, hour: 1800}
+    spd = fetch_ah.sold_per_day(h, meas, hour)
+    check(fetch_ah.sales_window(h, meas, hour) == (8, 7200), "sold and measured seconds after the first point")
+    check(abs(spd - 8) < 1e-9, f"under a day measured: what was seen selling, never scaled up to a day ({spd})")
+    h1 = {"h": [[hour - H, 10, 10, 5, 0], [hour, 10, 10, 5, 1]]}
+    check(fetch_ah.sold_per_day(h1, {hour: 3600}, hour) == 1.0,
+          "one vanished auction in one measured hour is 1 a day, not 24")
+    h2 = {"h": [[hour - k * H, 10, 10, 5, 1 if k % 5 == 0 else 0] for k in range(60, -1, -1)]}
+    m2 = {hour - k * H: 3600 for k in range(48)}
+    w2 = fetch_ah.sales_window(h2, m2, hour)
+    check(w2 == (10, 48 * 3600) and abs(fetch_ah.sold_per_day(h2, m2, hour) - 5.0) < 1e-9,
+          f"two days measured: 10 sold is 5 a day ({w2})")
+    check(fetch_ah.sold_per_day({"h": [[hour, 1, 1, 1, 0]]}, meas, hour) is None, "a series' first point: unknown")
+    check(fetch_ah.sold_per_day(h, {}, hour) is None, "nothing measured: unknown")
+    check(fetch_ah.sold_per_day(h, {hour: 1800}, hour) is None, "less than an hour measured: unknown")
+    pts = {"h": [[hour - k * H, 100, 1000 + k, 5, 0] for k in range(170, -1, -1)]}
+    cap, usual = fetch_ah.history_prices(pts, hour)
+    vals = sorted(1000 + k for k in range(168))
+    check(cap == int(fetch_ah.percentile(vals, 0.9)) and usual == fetch_ah.percentile(vals, 0.5),
+          f"7-day cap and usual ({cap}, {usual})")
+    check(fetch_ah.history_prices({"h": pts["h"][-3:]}, hour) == (None, None), "fewer than 4 points: no cap")
+    check(fetch_ah.percentile([1, 2, 3, 4], 0.5) == 2.5 and fetch_ah.percentile([7], 0.9) == 7, "percentile")
+    # ranking and the addon's line format
+    fl = [{"id": 2, "kind": "gap", "profit": 500, "roi": 200}, {"id": 1, "kind": "vendor", "profit": 500, "roi": 300},
+          {"id": 3, "kind": "gap", "profit": 900, "roi": 160}]
+    check([x["id"] for x in fetch_ah.rank_flips(fl)] == [3, 1, 2], "flips: most profit, then best ROI")
+    line = fetch_ah.flip_line({"id": 9860003, "kind": "gap", "buyMax": 7000, "units": 1, "cost": 7000,
+                               "relist": 23583, "profit": 15403, "roi": 2200, "risk": ["thin", "suffix"]})
+    check(line == "9860003|gap|7000|1|7000|23583|15403|2200|thin,suffix", f"flip line {line!r}")
+    check(parse_flip(line)["risk"] == ["thin", "suffix"], "flip line parses")
+    for name in dir(fetch_ah):
+        if name.startswith("FLIP_"):
+            check(isinstance(getattr(fetch_ah, name), (int, float, str)), f"{name} is a named constant")
+
+
+def variant_tests():
+    vk = fetch_ah.variant_key
+    check(vk({"id": 1, "bonus_lists": [12722]}) == "12722" and vk({"id": 1}) == "" and vk(None) == "", "keys")
+    check(vk({"bonus_lists": [12722, 1500, 99]}) == "99:1500:12722", "bonus ids sorted as numbers, not as text")
+    check(vk({"bonus_lists": [12722], "modifiers": [{"type": 28, "value": 5240}], "context": 1}) == "12722",
+          "modifiers and context are not part of the key")
+    reg = {}
+    vid = fetch_ah.variant_id
+    check(vid(reg, 9860, "12722") == 9860001 and vid(reg, 9860, "12718") == 9860002 and vid(reg, 9860, "12722") == 9860001
+          and vid(reg, 9860, "") is None and vid(reg, 4564, "12722") == 4564001, f"indexes in order of appearance {reg}")
+    check(vid(reg, 9860, "1", add=False) is None and reg == {"9860": {"12722": 1, "12718": 2}, "4564": {"12722": 1}},
+          "add=False never registers")
+    reg["5"] = {"k%d" % i: i for i in range(1, 1000)}
+    check(vid(reg, 5, "new") is None and "new" not in reg["5"] and vid(reg, 5, "k7") == 5007, "at most 999 per item")
+    reg = {"9860": {"12722": 1, "12718": 3}}           # index 2 was handed out before: never reused
+    check(vid(reg, 9860, "12726") == 9860004, "a new version gets the next index after the highest")
+    check(fetch_ah.registry_vids({"9860": {"12722": 1}}) == {9860001: (9860, "12722", 1)}, "registry_vids")
+    # aggregate: versions next to the item, snapshot entries carry the vid
+    reg = {}
+    per, snap, vper = fetch_ah.aggregate([
+        {"id": 1, "item": {"id": 800, "bonus_lists": [12722], "modifiers": [{"type": 28, "value": 1}]}, "quantity": 1,
+         "buyout": 50000, "time_left": "LONG"},
+        {"id": 2, "item": {"id": 800, "bonus_lists": [12722], "modifiers": [{"type": 28, "value": 2}]}, "quantity": 1,
+         "buyout": 51000, "time_left": "LONG"},
+        {"id": 3, "item": {"id": 800, "bonus_lists": [12718]}, "quantity": 1, "buyout": 9000, "time_left": "LONG"},
+        {"id": 4, "item": {"id": 5}, "quantity": 20, "unit_price": 7, "time_left": "LONG"},
+    ], reg)
+    check(sorted(per[800]) == [(9000.0, 1), (50000.0, 1), (51000.0, 1)] and per[5] == [(7.0, 20)], "per item lumps all")
+    check(vper == {800001: [(50000.0, 1), (51000.0, 1)], 800002: [(9000.0, 1)]}, f"per version {vper!r}")
+    check(snap["1"] == [800, 1, 50000, "LONG", 800001] and snap["4"] == [5, 20, 7, "LONG"], f"snap entries {snap!r}")
+    # sold per version; an older snapshot without vids still counts for the item
+    prev = {"1": [800, 1, 50000, "LONG", 800001], "3": [800, 1, 9000, "LONG", 800002], "9": [800, 1, 1, "LONG"],
+            "4": [5, 20, 7, "LONG"]}
+    now = {"4": [5, 15, 7, "LONG"]}
+    check(fetch_ah.estimate_sold(prev, now) == {800: 3, 5: 5}, "sold per item")
+    check(fetch_ah.estimate_sold(prev, now, by_variant=True) == {800001: 1, 800002: 1}, "sold per version")
+    # names
+    sfx = {12722: "of the Bear", 12718: "of the Eagle"}
+    vn = fetch_ah.variant_name
+    check(vn({"name": "Ridge Cleaver"}, "12722", 1, sfx) == "Ridge Cleaver of the Bear", "suffix name")
+    check(vn({"name": "Ridge Cleaver"}, "99001", 3, sfx) == "Ridge Cleaver (version 3)", "unknown bonus id")
+    check(vn({"name": "Ridge Cleaver"}, "99001:12718", 4, sfx) == "Ridge Cleaver of the Eagle", "one of two known")
+    check(vn({"name": "", "unknown": True}, "12722", 1, sfx) == "" and vn(None, "12722", 1, sfx) == "",
+          "an unnamed item's versions are unnamed too")
+    real = load_suffixes()
+    check(real.get("12722") == "of the Bear" and real.get("12718") == "of the Eagle" and real.get("12751") == "of the Bandit"
+          and all(v.startswith("of ") for v in real.values()), "suffix_names.json")
+    raw = open(os.path.join(TOOLS, "suffix_names.json"), "rb").read()
+    check(all(b < 128 for b in raw) and b"\r" not in raw, "suffix_names.json is ASCII with LF line ends")
+    tmp = tempfile.mkdtemp(prefix="fah_sfx_")
+    try:
+        names = fetch_ah.load_suffix_names(tmp)
+        check(names.get(12722) == "of the Bear" and os.path.exists(os.path.join(tmp, "suffix_names.json")),
+              "the table is found next to the script and copied to the data folder")
+        old_file = fetch_ah.__file__
+        built = fetch_ah.builtin_suffix_names()
+        check(built == {int(k): v for k, v in real.items()},
+              "the table built into fetch_ah.py (_SUFFIX_CODE) is the same as suffix_names.json: "
+              "rebuild it when the file changes")
+        try:   # a copy of the script installed on its own (the PC collector) uses the built-in table
+            fetch_ah.__file__ = os.path.join(tmp, "elsewhere", "fetch_ah.py")
+            check(fetch_ah.load_suffix_names(os.path.join(tmp, "empty")) == built and
+                  not os.path.exists(os.path.join(tmp, "empty", "suffix_names.json")),
+                  "no table next to the script: the built-in one")
+            with open(os.path.join(tmp, "suffix_names.json"), "w", encoding="utf-8") as fh:
+                json.dump({"12722": "of the Bear", "99999": "of Testing"}, fh)
+            got = fetch_ah.load_suffix_names(tmp)
+            check(got.get(99999) == "of Testing" and got.get(12751) == "of the Bandit",
+                  "a newer data folder copy adds to the built-in table")
+        finally:
+            fetch_ah.__file__ = old_file
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def meta_tests():
+    item = {"name": "Wild Leather Helmet", "quality": {"type": "UNCOMMON"}, "sell_price": 6230, "level": 45,
+            "required_level": 40, "item_class": {"name": "Armor", "id": 4}, "item_subclass": {"name": "Leather", "id": 2},
+            "inventory_type": {"type": "HEAD", "name": "Head"}}
+    m = fetch_ah._meta(8214, item, "i")
+    check((m["slot"], m["slotType"], m["ilvl"], m["lvl"], m["clsId"], m["subId"], m["mv"]) ==
+          ("Head", "HEAD", 45, 40, 4, 2, fetch_ah.META_VERSION), f"item details {m!r}")
+    m = fetch_ah._meta(2589, {"name": "Linen Cloth", "item_class": {"name": "Consumable", "id": 0},
+                              "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}}, "")
+    check(m["slot"] == "" and m["clsId"] == 0 and m["subId"] is None, f"non-equippable, class id 0 kept {m!r}")
+    now = 1794936300
+    items = {"1": {"name": "A", "sell": 1}, "2": {"name": "B", "sell": 1}, "3": {"name": "C", "sell": 1},
+             "4": {"name": "D", "sell": 1, "mv": fetch_ah.META_VERSION, "slot": "Head"},
+             "5": dict(fetch_ah.unknown_entry(now)), "6": {"name": "F", "sell": 1, "cls": "Armor"}}
+    calls = []
+    lock = threading.Lock()
+
+    def fake(iid):
+        with lock:
+            calls.append(iid)
+        if iid == 2:
+            return iid, None                                   # a failed request: tried again next run
+        if iid == 6:
+            return iid, {}                                     # no namespace knows it: marked done
+        return iid, {"cls": "Armor", "sub": "Cloth", "lvl": 20, "ilvl": 25, "slot": "Chest", "slotType": "CHEST",
+                     "clsId": 4, "subId": 1, "mv": fetch_ah.META_VERSION}
+    done, left = fetch_ah.backfill_meta(items, {3: 50, 1: 7, 2: 9}, fetch=fake, limit=3, threads=2)
+    check(sorted(calls) == [1, 2, 3] and (done, left) == (2, 2), f"most listed first, at most 3 ({calls}, {done}, {left})")
+    check(items["3"]["slot"] == "Chest" and items["3"]["ilvl"] == 25 and items["3"]["name"] == "C"
+          and items["3"]["mv"] == fetch_ah.META_VERSION, f"filled in {items['3']!r}")
+    check("mv" not in items["2"], "a failed request is not marked done")
+    calls.clear()
+    done, left = fetch_ah.backfill_meta(items, {}, fetch=fake, limit=10, threads=2)
+    check(sorted(calls) == [2, 6] and items["6"]["mv"] == fetch_ah.META_VERSION and items["6"]["slot"] == ""
+          and items["6"]["cls"] == "Armor" and left == 1, f"unknown to Blizzard: defaults, class kept ({items['6']!r})")
+    check(5 not in calls and "mv" not in items["5"], "unnamed items are left to the name retries")
+    check(fetch_ah.META_BACKFILL_MAX == 1500, "backfill limit")
+
+
+def size_vid_tests():
+    """the size guard shortens versions before items, and never drops a line"""
+    hour = 1794934800
+    day = hour - hour % 86400
+    hist, lines = {}, {}
+    for iid in (1, 2, 1001, 1002):
+        h = {"h": [[hour - k * 3600, 1000 + k * 7 + iid, 1100 + k * 5, 10, iid % 7] for k in range(167, -1, -1)],
+             "d": [[day - k * 86400, 900 + k * 3 + iid, 950 + k * 2, 10, 3] for k in range(399, -1, -1)]}
+        hist[iid] = h
+        lines[iid] = fetch_ah.addon_item_line(iid, {"name": "T%d" % iid, "sell": 1}, h, 1000, 1100, 10, hour, auctions=1)
+
+    def rebuild(iid, days):
+        return fetch_ah.addon_item_line(iid, {"name": "T%d" % iid, "sell": 1}, hist[iid], 1000, 1100, 10, hour, days,
+                                        auctions=1)
+    full = sum(len(v) for v in lines.values())
+    work = dict(lines)
+    total, short = fetch_ah.fit_addon_lines(work, rebuild, limit=full - 100, vids={1001, 1002})
+    dl = {k: len(py_decode(line_body(v))["D"][0]) for k, v in work.items()}
+    check(dl[1] == 400 and dl[2] == 400 and min(dl[1001], dl[1002]) < 400, f"versions shortened first {dl}")
+    work = dict(lines)
+    total, short = fetch_ah.fit_addon_lines(work, rebuild, limit=1, vids={1001, 1002})
+    dl = {k: len(py_decode(line_body(v))["D"][0]) for k, v in work.items()}
+    check(dl == {1: 30, 2: 30, 1001: 1, 1002: 1} and set(work) == set(lines), f"last resort: versions 1 day, items 30 {dl}")
+    work = dict(lines)
+    total, short = fetch_ah.fit_addon_lines(work, rebuild, limit=full + 150, extra=100)
+    check(total == full + 100 and short == 0 and work == lines, "fits with the extra bytes: left alone")
+    total, short = fetch_ah.fit_addon_lines(work, rebuild, limit=full + 50, extra=100)
+    check(short >= 1 and total <= full + 50, "extra bytes count towards the limit")
+    # the tables go before items; leaving them out (older callers) writes no tables
+    tmp = tempfile.mkdtemp(prefix="fah_tbl_")
+    try:
+        fetch_ah.write_addon_data(tmp, dict(lines), hour + 60, hour, "Alliance Auction House")
+        text = open(os.path.join(tmp, "ForeverAH_Data.lua"), encoding="utf-8").read()
+        check("variants" not in text and "flips" not in text, "no tables unless given")
+        fl = [{"id": 1001, "kind": "gap", "buyMax": 5, "units": 1, "cost": 5, "relist": 99, "profit": 89, "roi": 17800,
+               "risk": ["suffix"]}]
+        fetch_ah.write_addon_data(tmp, dict(lines), hour + 60, hour, "Alliance Auction House",
+                                  variants={1: [("12722", 1001), ("12718", 1002)]}, flips=fl)
+        lua, db, raw = load_lua(os.path.join(tmp, "ForeverAH_Data.lua"))
+        text = raw.decode("utf-8")
+        check(text.index("variants = {") < text.index("flips = {") < text.index("items = {"), "tables before items")
+        check(db.variants[1] == "12722=1001,12718=1002" and db.flips[1] == "1001|gap|5|1|5|99|89|17800|suffix"
+              and db.flips[2] is None and db["items"][1001] is not None, "tables read back in Lua")
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def unit_tests():
     market_tests()
     sold_tests()
     name_and_time_tests()
     size_tests()
+    flip_tests()
+    variant_tests()
+    meta_tests()
+    size_vid_tests()
 
 
 # -- the real collector on hand-made snapshots --------------------------------
@@ -819,6 +1272,8 @@ class FakeBlizzard:
                       ORE: "Copper Ore"}
         self.lookups = Counter()
         self.lock = threading.Lock()
+        self.sell = {}            # item id -> vendor price (default: 1400 for the axe, else 5)
+        self.details = {}         # item id -> extra item API fields (level, inventory_type, ...)
 
     def time(self):
         return self.now
@@ -845,7 +1300,10 @@ class FakeBlizzard:
             name = self.names.get(iid)
             if name is None:
                 return None, {}            # 404 in this namespace
-            return {"name": name, "sell_price": 1400 if iid == AXE else 5, "quality": {"type": "COMMON"}}, {}
+            out = {"name": name, "sell_price": self.sell.get(iid, 1400 if iid == AXE else 5),
+                   "quality": {"type": "COMMON"}}
+            out.update(self.details.get(iid, {}))
+            return out, {}
         return None, {}
 
 
@@ -1098,16 +1556,233 @@ def pipeline_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+CLEAVER, SHIELD = 800, 900
+BEAR, EAGLE, ODD, WOLF = 12722, 12718, 99001, 12726      # 99001 has no known suffix name
+
+
+def start_gear_book(fb):
+    """Green gear with random suffixes, a cheap commodity dump and a listing under the vendor price."""
+    fb.names.update({CLEAVER: "Ridge Cleaver", SHIELD: "Old Shield"})
+    fb.sell.update({CLEAVER: 2000, SHIELD: 3000, ORE: 5})
+    fb.details[CLEAVER] = {"quality": {"type": "UNCOMMON"}, "level": 30, "required_level": 25,
+                           "item_class": {"name": "Weapon", "id": 2}, "item_subclass": {"name": "Axe", "id": 1},
+                           "inventory_type": {"type": "TWOHWEAPON", "name": "Two-Hand"}}
+
+    def gear(aid, bonus, price, tl="VERY_LONG", mod=5240):
+        fb.auctions[aid] = {"id": aid, "item": {"id": CLEAVER, "context": 1, "bonus_lists": [bonus],
+                                                "modifiers": [{"type": 28, "value": mod}]},
+                            "quantity": 1, "buyout": price, "time_left": tl}
+    for n, p in enumerate((50000, 51000, 52000, 53000, 54000)):
+        gear(2000 + n, BEAR, p, mod=(5240, 6874)[n % 2])     # modifiers differ: still one version
+    gear(2010, BEAR, 15000, tl="LONG")                        # a cheap Bear: the real flip
+    gear(2020, EAGLE, 9000)                                   # the Eagle is cheaper, and that is normal
+    for n, p in enumerate((30000, 31000, 32000)):
+        gear(2030 + n, ODD, p)
+    for aid, p in ((2100, 1000), (2101, 5000), (2102, 5000)):
+        fb.auctions[aid] = {"id": aid, "item": {"id": SHIELD}, "quantity": 1, "buyout": p, "time_left": "VERY_LONG"}
+    for i in range(3000, 3200):
+        fb.commodities[i] = {"id": i, "item": {"id": ORE}, "quantity": 10, "unit_price": 180, "time_left": "VERY_LONG"}
+    for i in range(3200, 3203):                               # 30 ore dumped at 60c
+        fb.commodities[i] = {"id": i, "item": {"id": ORE}, "quantity": 10, "unit_price": 60, "time_left": "VERY_LONG"}
+
+
+def variant_pipeline_tests():
+    tmp = tempfile.mkdtemp(prefix="fah_var_")
+    out = os.path.join(tmp, "data")
+    fb = FakeBlizzard()
+    saved = {k: getattr(fetch_ah, k) for k in ("api", "get_token", "time", "DATA_FORMAT")}
+    old_env = os.environ.pop("GITHUB_OUTPUT", None)
+    T0 = 1794934800 + 25 * 60
+    M = 60
+    import io
+    import contextlib
+    log = io.StringIO()
+
+    def run(data_t, run_delay=5 * M):
+        fb.now = data_t + run_delay
+        fb.modified = email.utils.formatdate(data_t, usegmt=True)
+        fetch_ah.main(out)
+
+    def js(name):
+        return load_json(os.path.join(out, name))
+
+    def line(iid):
+        _, db, _ = load_lua(os.path.join(out, "ForeverAH_Data.lua"))
+        s = db["items"][iid]
+        return py_decode(s) if s is not None else None
+
+    def db():
+        return load_lua(os.path.join(out, "ForeverAH_Data.lua"))[1]
+    V1, V2, V3, V4 = (CLEAVER * 1000 + k for k in (1, 2, 3, 4))
+    try:
+        fetch_ah.api, fetch_ah.get_token, fetch_ah.time = fb.api, (lambda: "fake"), fb
+        start_gear_book(fb)
+        with contextlib.redirect_stdout(log):
+            # 1. first snapshot: three versions of the cleaver, in order of first appearance
+            run(T0)
+            sj = js("state.json")
+            check(sj["format"] == 3 and sj["variants"] == {str(CLEAVER): {str(BEAR): 1, str(EAGLE): 2, str(ODD): 3}},
+                  f"version registry {sj.get('variants')!r}")
+            check(sj["snap"]["2000"][4] == V1 and sj["snap"]["2020"][4] == V2 and len(sj["snap"]["2100"]) == 4,
+                  "snapshot entries carry the vid of versions only")
+            hv = load_json(os.path.join(out, "hist", f"{V1}.json"))
+            check(hv["v"] == str(BEAR) and hv["h"][-1][1:4] == [15000, 50000, 6], f"Bear history {hv!r}")
+            check(open(os.path.join(out, "hist", f"{V1}.json"), encoding="utf-8").read().startswith('{"v":'),
+                  "the version key is at the start of its hist file")
+            check(line(V1)["name"] == "Ridge Cleaver of the Bear" and line(V2)["name"] == "Ridge Cleaver of the Eagle"
+                  and line(V3)["name"] == "Ridge Cleaver (version 3)", "version names")
+            check(line(V1)["vendor"] == 2000 and line(V1)["listed"] == 6 and line(CLEAVER)["listed"] == 10
+                  and line(CLEAVER)["auctions"] == 10, "version lines; the item line covers every version")
+            check(db().variants[CLEAVER] == f"{BEAR}={V1},{EAGLE}={V2},{ODD}={V3}", f"variants table {db().variants[CLEAVER]!r}")
+            mp = {m["id"]: m for m in js("mapping.json")}
+            check(mp[V1]["base"] == CLEAVER and mp[V1]["variant"] == str(BEAR) and mp[V1]["vindex"] == 1
+                  and mp[V1]["slot"] == "Two-Hand" and mp[V1]["ilvl"] == 30 and mp[V1]["reqlvl"] == 25
+                  and mp[V1]["quality"] == "UNCOMMON" and mp[V1]["clsName"] == "Weapon", f"mapping version {mp[V1]!r}")
+            check(mp[CLEAVER]["slot"] == "Two-Hand" and "base" not in mp[CLEAVER] and mp[ORE]["slot"] == "", "mapping items")
+            lat = js("latest.json")["data"]
+            check(lat[str(V1)]["low"] == 15000 and lat[str(V2)]["n"] == 1 and lat[str(CLEAVER)]["n"] == 10, "latest")
+            # flips: the cheap Bear (a version), the ore dump, the shield under the vendor price;
+            # never the cleaver lumped together (buy two cheap Eagles and Bears, relist at 2.99g)
+            lumped = sorted(u for a in fb.auctions.values() if a["item"]["id"] == CLEAVER for u in [(a["buyout"], 1)])
+            check(fetch_ah.find_gap_flip([(float(p), q) for p, q in lumped]) is not None,
+                  "lumped together, the cleaver looks like a flip")
+            fl = js("flips.json")["flips"]
+            got = [(r["id"], r["kind"], r["units"], r["cost"], r["relist"], r["profit"], r["risk"]) for r in fl]
+            # the Bear has no history of its own yet; five Bears at 5g to 5.4g back up the relist at 4.99g
+            # (a version never borrows the whole cleaver's price: the cheap Eagle sets that)
+            check(got == [(V1, "gap", 1, 15000, 49999, 32499, ["slow", "suffix"]),
+                          (ORE, "gap", 30, 1800, 179, 3300, ["slow"]),
+                          (SHIELD, "vendor", 1, 1000, 0, 2000, [])], f"flips {got}")
+            check(fl[0]["name"] == "Ridge Cleaver of the Bear" and fl[0]["base"] == CLEAVER and fl[0]["variant"] == str(BEAR)
+                  and fl[0]["slot"] == "Two-Hand" and fl[0]["next"] == 50000 and fl[0]["listed"] == 6
+                  and fl[0]["market"] == 50000 and fl[0]["sold24"] == 0, f"flip row {fl[0]!r}")
+            check(db().flips[1] == f"{V1}|gap|15000|1|15000|49999|32499|2166|slow,suffix", f"addon flip {db().flips[1]!r}")
+            st = js("status.json")
+            check(st["versions"] == 3 and st["itemsWithVersions"] == 1 and st["flips"] == 3 and st["items"] == 3
+                  and st["suffixNames"] > 300, f"status {st!r}")
+            check(js("suffix_names.json").get(str(BEAR)) == "of the Bear", "suffix table copied to the data folder")
+            run_checks(out, "versions run 1", quiet=True)
+
+            # 2. an hour later the cheap Bear and the Eagle sold
+            del fb.auctions[2010]
+            del fb.auctions[2020]
+            run(T0 + 60 * M)
+            check(load_json(os.path.join(out, "hist", f"{V1}.json"))["h"][-1][4] == 1
+                  and load_json(os.path.join(out, "hist", f"{V2}.json"))["h"][-1][3:5] == [0, 1]
+                  and load_json(os.path.join(out, "hist", f"{CLEAVER}.json"))["h"][-1][4] == 2, "sold per version and item")
+            check(line(V1)["sold24"] == 1 and line(V2)["sold24"] == 1 and line(CLEAVER)["sold24"] == 2, "sold24")
+            check(not any(r["id"] in (V1, CLEAVER) for r in js("flips.json")["flips"]), "no cleaver flips left")
+            run_checks(out, "versions run 2", quiet=True)
+
+            # 3. three and a half days later nobody listed or bought an Eagle: its file is left alone,
+            #    its line stays for the rest of the week, it leaves latest.json
+            before = open(os.path.join(out, "hist", f"{V2}.json"), "rb").read()
+            run(T0 + 84 * 60 * M)
+            check(open(os.path.join(out, "hist", f"{V2}.json"), "rb").read() == before, "idle version file not rewritten")
+            check(line(V2) is not None and line(V2)["listed"] == 0 and str(V2) not in js("latest.json")["data"],
+                  "idle version: line kept, not in latest")
+            check(len(load_json(os.path.join(out, "hist", f"{CLEAVER}.json"))["h"]) == 3, "items still get every point")
+            run_checks(out, "versions idle", quiet=True)
+
+            # 4. state.json lost its registry: rebuilt from the hist files, indexes never handed out twice
+            sp = os.path.join(out, "state.json")
+            sj = js("state.json")
+            sj.pop("variants")
+            with open(sp, "w", encoding="utf-8") as fh:
+                json.dump(sj, fh)
+            fb.auctions[2200] = {"id": 2200, "item": {"id": CLEAVER, "bonus_lists": [WOLF]}, "quantity": 1,
+                                 "buyout": 40000, "time_left": "VERY_LONG"}
+            run(T0 + 85 * 60 * M)
+            check(js("state.json")["variants"][str(CLEAVER)] == {str(BEAR): 1, str(EAGLE): 2, str(ODD): 3, str(WOLF): 4},
+                  f"registry rebuilt {js('state.json')['variants']!r}")
+            check(line(V4)["name"] == "Ridge Cleaver of the Wolf", "new version after the rebuild")
+            run_checks(out, "versions rebuilt", quiet=True)
+
+            # 5. an older copy of the collector (state format 2) refuses format 3 data
+            fetch_ah.DATA_FORMAT = 2
+            try:
+                run(T0 + 86 * 60 * M)
+                check(False, "an older collector ran on newer data")
+            except SystemExit as e:
+                check("newer fetch_ah.py" in str(e), f"older collector message {e}")
+            fetch_ah.DATA_FORMAT = saved["DATA_FORMAT"]
+
+        # 6. upgrade from format 2 (what the collector wrote before versions existed)
+        shutil.rmtree(out, ignore_errors=True)
+        fb = FakeBlizzard()
+        fetch_ah.api, fetch_ah.time = fb.api, fb
+        start_gear_book(fb)
+        with contextlib.redirect_stdout(log):
+            run(T0)
+            sp = os.path.join(out, "state.json")
+            sj = js("state.json")
+            sj["format"] = 2
+            sj.pop("variants")
+            sj["snap"] = {k: v[:4] for k, v in sj["snap"].items()}
+            with open(sp, "w", encoding="utf-8") as fh:
+                json.dump(sj, fh)
+            for fn in os.listdir(os.path.join(out, "hist")):
+                if int(fn[:-5]) >= CLEAVER * 1000:
+                    os.remove(os.path.join(out, "hist", fn))
+            os.remove(os.path.join(out, "flips.json"))
+            del fb.auctions[2010]                 # the cheap Bear sold
+            run(T0 + 60 * M)
+            sj = js("state.json")
+            check(sj["format"] == 3 and sj["variants"][str(CLEAVER)] == {str(BEAR): 1, str(EAGLE): 2, str(ODD): 3},
+                  f"format 2 upgraded {sj.get('variants')!r}")
+            check(load_json(os.path.join(out, "hist", f"{CLEAVER}.json"))["h"][-1][4] == 1
+                  and load_json(os.path.join(out, "hist", f"{V1}.json"))["h"] == [[T0 - 25 * M + 3600, 50000, 51000, 5, 0]],
+                  "the item counts the sale; the new version starts now without one")
+            check(js("status.json")["salesHours"] == 1 and js("status.json")["versions"] == 3, "upgrade status")
+            hv = load_json(os.path.join(out, "hist", f"{V1}.json"))
+            idx = fetch_ah.measured_index(fetch_ah.measured_secs(sj))
+            check(fetch_ah.sold_per_day(hv, fetch_ah.measured_secs(sj), sj["hour"], idx) is None,
+                  "a version tracked from this hour on has unknown sales")
+            U = sj["hour"]
+            check(sj["versionsFrom"] == {"hour": U, "secs": 3600}, f"the upgrade hour is remembered {sj.get('versionsFrom')!r}")
+            check(line(V1)["sold24"] == 0 and js("volumes.json")["data"][str(V1)] == 0, "upgrade run: no version sales yet")
+            run_checks(out, "versions upgrade from format 2", quiet=True)
+            # an hour later a Bear sells: 1 hour of version sales next to 2 measured hours for
+            # everything else, so its sold24 is scaled to those 2 hours (the site and the addon
+            # divide by salesHours): 2, not 1 (which would read as half the real rate)
+            del fb.auctions[2000]
+            run(T0 + 120 * M)
+            sj = js("state.json")
+            check(js("status.json")["salesHours"] == 2 and sj["versionsFrom"]["hour"] == U, "second run after the upgrade")
+            d24 = js("24h.json")["data"][str(V1)]
+            check(line(V1)["sold24"] == 2 and js("volumes.json")["data"][str(V1)] == 2
+                  and d24["highPriceVolume"] + d24["lowPriceVolume"] == 2,
+                  f"version sold24 scaled to the measured hours ({line(V1)['sold24']})")
+            check(line(CLEAVER)["sold24"] == 2, "the item counts its two sales as they are")
+            # a day later the upgrade is forgotten and versions count like everything else
+            run(T0 + (25 * 60 + 120) * M)
+            check("versionsFrom" not in js("state.json"), "the upgrade hour is forgotten after a day")
+            run_checks(out, "versions a day after the upgrade", quiet=True)
+        print("  versions: 7 collector runs with suffix gear (names, registry, sold per version, idle versions, "
+              "rebuild, format 2 upgrade, older copy refused) and snapshot flips")
+    except Exception:
+        sys.stdout.write(log.getvalue()[-3000:])
+        raise
+    finally:
+        for k, v in saved.items():
+            setattr(fetch_ah, k, v)
+        if old_env is not None:
+            os.environ["GITHUB_OUTPUT"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def main():
     data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "wow", "_localdata")
     print("ForeverAH_Data.lua check")
     ok = True
     for name, fn in (("generated data", lambda: run_checks(data_dir, os.path.relpath(data_dir, REPO))),
-                     ("edge cases", edge_cases), ("unit tests", unit_tests), ("pipeline", pipeline_tests)):
+                     ("edge cases", edge_cases), ("unit tests", unit_tests), ("pipeline", pipeline_tests),
+                     ("versions", variant_pipeline_tests)):
         try:
             fn()
             if name == "unit tests":
-                print("  unit tests: market value, sold estimate safety, salesHours, names, data time, size guard")
+                print("  unit tests: market value, sold estimate safety, salesHours, names, data time, size guard, "
+                      "flips, versions, suffix names, item details")
         except Fail as e:
             ok = False
             print(f"  FAIL ({name}): {e}")

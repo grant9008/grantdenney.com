@@ -20,9 +20,13 @@ local ADDON_NAME, ns = ...
 --   * a market price over 200x what a vendor pays, with fewer than 10 units
 --     listed (one player's silly listing). With 10 or more units listed it is
 --     a real price: enchanting dust vendors for 1 copper and sells for silver.
--- Even then postAt says what the Use List At button would fill (1 copper
--- under the cheapest listing, or today's List At rule when only the history
--- is short) and vendorBetter still warns when a vendor pays more than that.
+-- Even then postAt says what a player would post at (1 copper under the
+-- cheapest listing, or today's List At rule when only the history is short)
+-- and vendorBetter still warns when a vendor pays more than that.
+--
+-- ns.SellPrices (below) gives the sell screen's two buttons and the tooltip's
+-- Sell now (1 copper under the cheapest listing) and Best price (the sell
+-- target, never under a normal-priced cheapest listing).
 
 ns = ns or {}
 
@@ -88,6 +92,26 @@ local function moneyText(c)
   return tostring(c) .. "c"
 end
 
+-- Whether an item's price may be one player's guess: thin (only 1 or 2
+-- separate listings), vendorFar (a few units far above what a vendor pays).
+-- Recommend gives no advice for those; flip ideas warn about them.
+local function priceDoubt(item)
+  if type(item) ~= "table" then return false, false end
+  local auctions = tonumber(item.auctions)
+  local vendor = tonumber(item.vendor) or 0
+  local mktNow = tonumber(item.market) or 0
+  local thin = auctions ~= nil and auctions >= 1 and auctions < MIN_AUCTIONS
+  local far = vendor > 0 and mktNow > VENDOR_FAR * vendor and (tonumber(item.listed) or 0) < VENDOR_FAR_UNITS
+  return thin, far
+end
+
+-- true when the price of an item (or version) may be one player's guess.
+function ns.PriceDoubt(itemID)
+  if type(ns.GetItem) ~= "function" then return false end
+  local thin, far = priceDoubt(ns.GetItem(itemID))
+  return thin or far
+end
+
 -- ns.Recommend(itemID, tf [, liveCheapest])
 -- liveCheapest: the cheapest listing the auction house is showing right now
 -- (copper), when the addon has seen it. It replaces the snapshot's cheapest.
@@ -134,9 +158,7 @@ function ns.Recommend(itemID, tf, liveCheapest)
   -- Prices behind only 1 or 2 listings, or a few units far above what a
   -- vendor pays, may be one player's guess: no advice for those.
   local auctions = tonumber(item.auctions)
-  local thinListings = auctions ~= nil and auctions >= 1 and auctions < MIN_AUCTIONS
-  local listed = tonumber(item.listed) or 0
-  local vendorFar = vendor > 0 and mktNow > VENDOR_FAR * vendor and listed < VENDOR_FAR_UNITS
+  local thinListings, vendorFar = priceDoubt(item)
   local advice = history and not thinListings and not vendorFar
 
   -- Window low and high of the cheapest prices.
@@ -182,14 +204,14 @@ function ns.Recommend(itemID, tf, liveCheapest)
 
   -- The same rule from today's prices alone, kept even when there is no
   -- advice: with only the history short, today's market price is still
-  -- fine, so the Use List At button never posts far under it (AH.lua).
+  -- fine, so a post at today's List At rule is never far under it.
   local followFloor = listAt
 
   -- Prices that cannot be trusted yet give no targets at all.
   if not advice then buy, sell, listAt = 0, 0, 0 end
 
   -- What a player would post at: the List At price. With no advice it is
-  -- what the Use List At button fills: 1 copper under the cheapest listing,
+  -- 1 copper under the cheapest listing,
   -- or today's List At rule when only the history is short.
   local postAt = listAt
   if not advice then
@@ -279,4 +301,49 @@ function ns.Recommend(itemID, tf, liveCheapest)
     live = live ~= nil,
     vendorBetter = vendorBetter,
   }
+end
+
+-- ns.SellPrices(itemID, tf [, liveCheapest, own])
+-- The two prices the sell screen offers (and the tooltip shows), in copper:
+--   now   Sell now: 1 copper under the cheapest listing (the live one when the
+--         auction house showed it, else the snapshot's). When that live
+--         listing is your own it is matched, not undercut. nil when nothing
+--         is listed (nowWhy "none") or when a few units are listed far above
+--         what a vendor pays, so the cheapest is one player's silly price
+--         (nowWhy "unreliable").
+--   best  Best price: the sell target from the price history (Recommend's
+--         sell), never under a normal-priced cheapest listing. nil without
+--         enough history (bestWhy "history") or when the price cannot be
+--         trusted (bestWhy "unreliable").
+-- Also: rec (the advice), live (a live listing was used), own, cheapest, and
+-- nowVendor / bestVendor (true when a vendor pays more than that price after
+-- the 5% cut).
+function ns.SellPrices(itemID, tf, liveCheapest, own)
+  local rec = ns.Recommend(itemID, tf, liveCheapest)
+  if not rec then return nil end
+  local item = ns.GetItem(itemID)
+  local vendor = tonumber(item and item.vendor) or 0
+  local cheap = tonumber(rec.cheapestNow) or 0
+  local mine = rec.live and own == true
+  local out = { rec = rec, live = rec.live, own = mine, cheapest = cheap }
+  if rec.vendorFar then
+    out.nowWhy = "unreliable"
+  elseif cheap > 1 then
+    out.now = mine and cheap or (cheap - 1)
+  else
+    out.nowWhy = "none"
+  end
+  if not rec.history then
+    out.bestWhy = "history"
+  elseif rec.advice == false then
+    out.bestWhy = "unreliable"
+  else
+    local b = tonumber(rec.sell) or 0
+    if cheap > 1 and not rec.far and b < cheap - 1 then b = cheap - 1 end
+    if mine and b == cheap - 1 then b = cheap end
+    if b > 0 then out.best = b else out.bestWhy = "history" end
+  end
+  out.nowVendor = vendor > 0 and out.now ~= nil and floor(out.now * AH_CUT) <= vendor
+  out.bestVendor = vendor > 0 and out.best ~= nil and floor(out.best * AH_CUT) <= vendor
+  return out
 end

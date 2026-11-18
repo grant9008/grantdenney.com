@@ -153,7 +153,7 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
     follow_floor = list_at          # the List At rule from today's prices, kept with no advice
     if not advice:
         buy = sell = list_at = 0
-    # what a player would post at: List At, or with no advice what Use List At fills
+    # what a player would post at: List At, or with no advice 1c under the cheapest (or the market rule)
     post_at = list_at
     if not advice:
         post_at = cheap_now - 1 if cheap_now > 1 else 0
@@ -209,40 +209,70 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
             "far": far, "vendorBetter": vendor_better}
 
 
-def sell_mode(rec, live=None):
-    """How AH.lua's Use List At button gets its price: "advice" (the List At
-    price), "cheapest" (1 copper under the live listing), "market" (only the
-    history is short: today's List At rule, never far under the market price)
-    or None when it hides (no advice and no live listing, or a few units far
-    above the vendor price, where the cheapest listing is that silly price)."""
-    if rec is None:
-        return None
-    if rec.get("advice") is not False:
-        return "advice"
-    if rec.get("vendorFar"):
-        return None
-    if live is None or live <= 1:
-        return None
-    if not rec.get("thinListings") and rec.get("followFloor", 0) > live - 1:
-        return "market"
-    return "cheapest"
-
-
-def sell_price(rec, live=None, own=False):
-    """What AH.lua's Use List At button fills (before rounding for the frame),
-    or None when it hides (see sell_mode). Your own cheapest listing is
-    matched, not undercut."""
-    mode = sell_mode(rec, live)
-    if mode is None:
-        return None
-    if mode == "advice":
-        v = rec["listAt"]
-    elif mode == "market":
-        v = rec["followFloor"]
+def sell_prices(rec, live=None, own=False, vendor=0):
+    """ns.SellPrices (Recommend.lua): the sell screen's two prices.
+    now   Sell now: 1 copper under the cheapest listing (the live one when
+          given; your own live listing is matched), None when nothing is
+          listed (nowWhy "none") or a few units sit far above the vendor price
+          (nowWhy "unreliable").
+    best  Best price: the sell target, never under a normal cheapest listing,
+          None without history (bestWhy "history") or without advice
+          (bestWhy "unreliable").
+    rec is recommend(...) for the same live price."""
+    cheap = rec["cheapestNow"]
+    is_live = live is not None and live > 0
+    mine = is_live and bool(own)
+    out = {"now": None, "best": None, "nowWhy": None, "bestWhy": None, "live": is_live, "own": mine,
+           "cheapest": cheap}
+    if rec["vendorFar"]:
+        out["nowWhy"] = "unreliable"
+    elif cheap > 1:
+        out["now"] = cheap if mine else cheap - 1
     else:
-        v = live - 1
-    if v is None or v <= 0:
-        return None
-    if live is not None and own and v == live - 1:
-        v = live
-    return v
+        out["nowWhy"] = "none"
+    if not rec["history"]:
+        out["bestWhy"] = "history"
+    elif not rec["advice"]:
+        out["bestWhy"] = "unreliable"
+    else:
+        b = rec["sell"]
+        if cheap > 1 and not rec["far"] and b < cheap - 1:
+            b = cheap - 1
+        if mine and b == cheap - 1:
+            b = cheap
+        if b > 0:
+            out["best"] = b
+        else:
+            out["bestWhy"] = "history"
+    out["nowVendor"] = vendor > 0 and out["now"] is not None and math.floor(out["now"] * AH_CUT) <= vendor
+    out["bestVendor"] = vendor > 0 and out["best"] is not None and math.floor(out["best"] * AH_CUT) <= vendor
+    return out
+
+
+WEEK_MIN_POINTS = 6
+
+
+def week_range(cheap_week):
+    """ns.WeekRange: (lowest, highest) cheapest price over the last 168 hourly
+    points (None = nothing listed), or (None, None) with fewer than 6 prices."""
+    vals = [v for v in cheap_week if v]
+    if len(vals) < WEEK_MIN_POINTS:
+        return None, None
+    return min(vals), max(vals)
+
+
+def stack_values(unit_now, count, vendor):
+    """The tooltip's "This stack (N)" numbers: (auction value after the 5% cut
+    or None, vendor value, verdict) where verdict is "auction", "vendor",
+    "same", "novendor" or None (no auction price to compare)."""
+    auction = math.floor(unit_now * count * AH_CUT) if unit_now else None
+    vend = vendor * count
+    if auction is None:
+        return None, vend, None
+    if vendor <= 0:
+        return auction, vend, "novendor"
+    if auction > vend:
+        return auction, vend, "auction"
+    if auction == vend:
+        return auction, vend, "same"
+    return auction, vend, "vendor"

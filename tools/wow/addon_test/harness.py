@@ -131,8 +131,47 @@ def decode_series(s):
 
 
 def known_name(n):
-    """False for the names the data uses when it has none: "" and "Item 12345"."""
-    return isinstance(n, str) and n != "" and re.match(r"^Item \d+$", n) is None
+    """False for the names the data uses when it has none: "" and "Item 12345"
+    (and, for a version, "Item 12345 (version 2)" or " (version 2)")."""
+    return (isinstance(n, str) and n != "" and re.match(r"^Item \d+$", n) is None
+            and re.match(r"^\s*\(version \d+\)$", n) is None and re.match(r"^Item \d+ \(version \d+\)$", n) is None)
+
+
+def table_block(raw, name):
+    """The text inside a top-level table of the data file (items, variants,
+    flips): from its "name = {" line to the line that closes it, or None."""
+    m = re.search(r"(?m)^[ \t]*" + name + r"[ \t]*=[ \t]*\{[ \t]*\r?$", raw)
+    if not m:
+        return None
+    end = re.search(r"(?m)^[ \t]*\},?[ \t]*\r?$", raw[m.end():])
+    return raw[m.end():m.end() + end.start()] if end else raw[m.end():]
+
+
+def block_span(raw, name):
+    """(start, end) of the inside of a top-level table, or None."""
+    m = re.search(r"(?m)^[ \t]*" + name + r"[ \t]*=[ \t]*\{[ \t]*\r?$", raw)
+    if not m:
+        return None
+    end = re.search(r"(?m)^[ \t]*\},?[ \t]*\r?$", raw[m.end():])
+    return (m.end(), m.end() + end.start()) if end else (m.end(), len(raw))
+
+
+def parse_flip(s):
+    """One "id|kind|buyMax|units|cost|relist|profit|roi|risk" flip, checked
+    the way Core.lua's DataFlips checks it, or None."""
+    f = s.split("|")
+    f += [""] * (9 - len(f))
+
+    def whole(x):
+        return int(x) if re.match(r"^-?\d+$", x or "") else None
+    iid, kind, buy, units, cost, relist, profit = (whole(f[0]), f[1], whole(f[2]), whole(f[3]), whole(f[4]),
+                                                   whole(f[5]) or 0, whole(f[6]))
+    if not (iid and iid > 0 and (kind == "vendor" or (kind == "gap" and relist > 0)) and buy and buy > 0
+            and units and units > 0 and profit and profit > 0):
+        return None
+    return {"id": iid, "kind": kind, "buyMax": buy, "units": units,
+            "cost": cost if cost and cost > 0 else buy * units, "relist": relist if kind == "gap" else 0,
+            "profit": profit, "roi": whole(f[7]) or 0, "risk": [w.lower() for w in re.findall(r"[^,\s]+", f[8])]}
 
 
 class RefData:
@@ -161,8 +200,30 @@ class RefData:
         self.houseName = strv("houseName")
         self.region = strv("region")
         self.ruleset = strv("ruleset")
+        # Versions of items (newer files): base id -> [(key, vid)], and vid -> base id.
+        self.variants, self.base_of = {}, {}
+        vblock = table_block(raw, "variants")
+        for m in re.finditer(r'\[(\d+)\]\s*=\s*"((?:[^"\\\n]|\\.)*)"', vblock or ""):
+            base = int(m.group(1))
+            lst = []
+            for entry in lua_unescape(m.group(2)).split(","):
+                mm = re.match(r"^\s*(.*?)=(\d+)\s*$", entry)
+                # a vid is base * 1000 + 1..999; each key part a bonus id or m<type>=<value>
+                if (mm and mm.group(1) != "" and base * 1000 < int(mm.group(2)) < base * 1000 + 1000
+                        and all(re.match(r"^(\d+|m-?\d+=-?\d+)$", t) for t in mm.group(1).split(":") if t != "")):
+                    lst.append((mm.group(1), int(mm.group(2))))
+                    self.base_of[int(mm.group(2))] = base
+            if lst:
+                self.variants[base] = lst
+        # Flip ideas the collector found (newer files), best first, as Core.lua keeps them.
+        self.flips = []
+        fblock = table_block(raw, "flips")
+        for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"', fblock or ""):
+            fl = parse_flip(lua_unescape(m.group(1)))
+            if fl:
+                self.flips.append(fl)
         self.items = {}
-        for m in re.finditer(r'\[(\d+)\]\s*=\s*"((?:[^"\\\n]|\\.)*)"', raw):
+        for m in re.finditer(r'\[(\d+)\]\s*=\s*"((?:[^"\\\n]|\\.)*)"', table_block(raw, "items") or ""):
             iid = int(m.group(1))
             f = lua_unescape(m.group(2)).split("|")
             f += [""] * (10 - len(f))
@@ -179,6 +240,29 @@ class RefData:
                 # separate listings behind today's prices (10th field, newer files; None = unknown)
                 "auctions": int(f[9]) if f[9].isdigit() else None,
             }
+
+    def base_count(self):
+        """Items, not counting versions (Core.lua's ItemCount)."""
+        return sum(1 for i in self.items if i not in self.base_of)
+
+    def find_variant(self, iid, bonus, mods=None):
+        """Core.lua's FindVariant for an item and a link's bonus ids (and modifiers)."""
+        key = ":".join(str(b) for b in sorted(bonus))
+        mods = mods or {}
+        best, best_n = None, None
+        for k, vid in self.variants.get(iid, []):
+            bon, km = [], {}
+            for tok in k.split(":"):
+                mm = re.match(r"^m(-?\d+)=(-?\d+)$", tok)
+                if mm:
+                    km[int(mm.group(1))] = int(mm.group(2))
+                elif re.match(r"^-?\d+$", tok):
+                    bon.append(int(tok))
+            if ":".join(str(b) for b in sorted(bon)) != key or (key == "" and not km):
+                continue
+            if all(mods.get(t) == v for t, v in km.items()) and (best_n is None or len(km) > best_n):
+                best, best_n = vid, len(km)
+        return best if best in self.items else None
 
     def window(self, iid, tf):
         key, n, step = TF_SPEC[tf]
@@ -245,13 +329,6 @@ def no_advice_text(rec):
     if not rec["advice"]:
         return "Price not reliable"
     return None
-
-
-def ref_sell_price(ref, iid, tf, live=None, own=False, is_commodity=True, copper_ok=True):
-    """The price the Use List At button shows and fills, or None when it is hidden
-    (market and suffix rules are checked by the scenarios themselves)."""
-    v = rec_model.sell_price(ref_recommend(ref, iid, tf, live), live, own)
-    return price_for_frame(v, is_commodity, copper_ok) if v is not None else None
 
 
 def collecting_msg(ref, iid, tf):
@@ -993,7 +1070,7 @@ function Tooltip:GetItem()
   local d = info and info.tooltipData
   if d and d.id then
     local it = M["items"][d.id]
-    return it and it.name or "", M.ItemLink(d.id), d.id
+    return it and it.name or "", d.link or M.ItemLink(d.id), d.id
   end
   if self._legacyItem then
     local id = self._legacyItem
@@ -1005,17 +1082,19 @@ end
 
 -- What C_TooltipInfo would return for a getter.
 function M.TooltipData(getterName, args)
-  local id, guid, count
+  local id, guid, count, link
   if getterName == "GetBagItem" then
     local slot = M.bags[args[1]] and M.bags[args[1]][args[2]]
     if not slot then return nil end
     id = slot.itemID
+    link = M.SlotLink(slot)
     guid = "Item-1-0-" .. args[1] .. "-" .. args[2]
     M.guids[guid] = ItemLocation:CreateFromBagAndSlot(args[1], args[2])
   elseif getterName == "GetItemByID" then
     id = args[1]
   elseif getterName == "GetHyperlink" then
     id = tonumber(tostring(args[1]):match("item:(%d+)"))
+    link = tostring(args[1])   -- the very link, bonus ids and all
   elseif getterName == "GetInventoryItem" then
     id = M.equipped and M.equipped[args[2]]
   end
@@ -1024,7 +1103,7 @@ function M.TooltipData(getterName, args)
   local lines = { { type = 0, leftText = it and it.name or "Retrieving item information" } }
   if it and it.class then lines[2] = { type = 0, leftText = it.class } end
   return { type = Enum.TooltipDataType and Enum.TooltipDataType.Item or 0, id = id, guid = guid,
-           hyperlink = M.ItemLink(id), lines = lines }
+           hyperlink = (not M.noHyperlink) and (link or M.ItemLink(id)) or nil, link = link or M.ItemLink(id), lines = lines }
 end
 
 -- Modern TooltipDataHandlerMixin:ProcessInfo, as in the Forever FrameXML.
@@ -1387,14 +1466,29 @@ C_TooltipInfo = { GetBagItem = function(b, s) return M.TooltipData("GetBagItem",
 TooltipUtil = {}
 
 -- Items, bags, locations ---------------------------------------------------------------
-function M.ItemLink(id, suffix)
+-- Links as the modern client writes them: item:id:enchant:gem1:gem2:gem3:gem4:
+-- suffix:unique:level:spec:modifierMask:context:numBonus[:bonus...]:numModifiers
+-- [:type:value...]:relic fields. Gear with a random suffix carries its bonus
+-- ids (and, like the real API, a type 28 modifier).
+function M.ItemLink(id, suffix, bonus)
   local it = M["items"][id]
   local name = it and it.name or ("item:" .. id)
+  if bonus and #bonus > 0 then
+    local f = { "item:" .. id, "", "", "", "", "", suffix or "", "", "60", "", "", "1", tostring(#bonus) }
+    for _, b in ipairs(bonus) do f[#f + 1] = tostring(b) end
+    f[#f + 1] = "1"; f[#f + 1] = "28"; f[#f + 1] = "6874"
+    f[#f + 1] = ""; f[#f + 1] = ""; f[#f + 1] = ""; f[#f + 1] = ""
+    return "|cff1eff00|H" .. table.concat(f, ":") .. "|h[" .. name .. (M.suffixName or " of the Bear") .. "]|h|r"
+  end
   if suffix then
     return "|cff1eff00|Hitem:" .. id .. "::::::" .. suffix .. "::60:::::::::|h[" .. name .. " of the Monkey]|h|r"
   end
   return "|cffffffff|Hitem:" .. id .. "::::::::60:::::::::|h[" .. name .. "]|h|r"
 end
+function M.SlotLink(s) return M.ItemLink(s.itemID, s.suffix, s.bonus) end
+M.cursorSet = {}
+function SetCursor(c) M.cursorSet[#M.cursorSet + 1] = c or false; M.cursor = c; return true end
+function ResetCursor() M.cursor = nil end
 local ItemLocationMixin = {}
 ItemLocation = {}
 function ItemLocation:CreateFromBagAndSlot(bag, slot)
@@ -1414,7 +1508,7 @@ M.locSlot = locSlot
 
 C_Item = {}
 function C_Item.GetItemID(loc) local s = locSlot(loc); return s and s.itemID end
-function C_Item.GetItemLink(loc) local s = locSlot(loc); return s and M.ItemLink(s.itemID, s.suffix) end
+function C_Item.GetItemLink(loc) local s = locSlot(loc); return s and M.SlotLink(s) end
 function C_Item.IsBound(loc) local s = locSlot(loc); return s and s.bound == true or false end
 function C_Item.GetStackCount(loc) local s = locSlot(loc); return s and s.count or 0 end
 function C_Item.DoesItemExist(loc) return locSlot(loc) ~= nil end
@@ -1443,10 +1537,10 @@ function C_Container.GetContainerItemInfo(bag, slot)
   if not s then return nil end
   local it = M["items"][s.itemID]
   return { iconFileID = it and it.icon or 134400, stackCount = s.count, isLocked = false, quality = it and it.quality or 1,
-           isReadable = false, hasLoot = false, hyperlink = M.ItemLink(s.itemID), isFiltered = false,
+           isReadable = false, hasLoot = false, hyperlink = M.SlotLink(s), isFiltered = false,
            hasNoValue = false, itemID = s.itemID, isBound = false }
 end
-function C_Container.GetContainerItemLink(bag, slot) local s = M.bags[bag] and M.bags[bag][slot]; return s and M.ItemLink(s.itemID) end
+function C_Container.GetContainerItemLink(bag, slot) local s = M.bags[bag] and M.bags[bag][slot]; return s and M.SlotLink(s) end
 function C_Container.GetContainerNumSlots(bag) return 16 end
 function GetInventoryItemCount(unit, slot) return 1 end
 
@@ -1536,7 +1630,7 @@ function CAH.GetNumItemSearchResults(itemKey) return #(M.itemResults[itemKey.ite
 function CAH.GetItemSearchResultInfo(itemKey, i)
   local r = (M.itemResults[itemKey.itemID] or {})[i]
   if r then return { itemKey = itemKey, owners = {}, totalNumberOfOwners = 1, timeLeft = 2, auctionID = 100 + i, quantity = r.quantity or 1,
-                     itemLink = M.ItemLink(itemKey.itemID), containsOwnerItem = r.own == true, containsAccountItem = false,
+                     itemLink = M.ItemLink(itemKey.itemID, nil, r.bonus), containsOwnerItem = r.own == true, containsAccountItem = false,
                      containsSocketedItem = false, buyoutAmount = r.buyout, bidAmount = nil } end
 end
 function CAH.CalculateCommodityDeposit(itemID, duration, quantity) return 15 * quantity end
@@ -2068,6 +2162,7 @@ class World:
                  faction="Alliance", screen=None, auctionator=False, bare_coin=False, ah_width=800,
                  set_owner_clears=True, copper_values=True):
         self.ref = ref
+        self.items_json = items_json
         self.lua = lua51.LuaRuntime(unpack_returned_tuples=True)
         self.g = self.lua.globals()
         self.loader = self.lua.eval(
@@ -2207,7 +2302,7 @@ class World:
     def all_lines(self, tt):
         return [(tt._lines[i].left, tt._lines[i].right) for i in range(1, len(tt._lines) + 1)]
 
-    def put_bag(self, bag, slot, iid, count, suffix=None):
+    def put_bag(self, bag, slot, iid, count, suffix=None, bonus=None):
         M = self.M
         if M.bags[bag] is None:
             M.bags[bag] = self.lua.table()
@@ -2215,6 +2310,8 @@ class World:
         s.itemID, s.count = iid, count
         if suffix:
             s.suffix = suffix
+        if bonus:
+            s.bonus = self.to_lua(list(bonus))
         M.bags[bag][slot] = s
 
     def set_commodity_results(self, iid, rows):
@@ -2305,10 +2402,49 @@ class Scenario:
         self.check(not bad, "%s: no error messages in chat (%s)" % (label, bad[:2]))
 
 
-def expected_tooltip(ref, iid, age, mult=1, compact=False):
+def ref_sell_prices(ref, iid, tf="1D", live=None, own=False):
+    """rec_model.sell_prices for an item: what ns.SellPrices gives (Sell now, Best price)."""
+    rec = ref_recommend(ref, iid, tf, live)
+    return rec_model.sell_prices(rec, live, own, ref.items[iid]["vendor"])
+
+
+def week_range(ref, iid):
+    return rec_model.week_range(ref.window(iid, "1W")["cheap"])
+
+
+def stack_lines(it, unit_now, count):
+    """The tooltip's "This stack (N)" lines (Core.lua addStackLines)."""
+    vendor = it["vendor"]
+    auction, vend, verdict = rec_model.stack_values(unit_now, count, vendor)
+    if auction is None and vendor <= 0:
+        return []
+    label = ("This stack (%d)" % count) if count > 1 else "This item"
+    out = []
+    if auction is not None:
+        out.append((label + " at auction, after 5% cut", money_icons(auction)))
+    out.append((label + " at a vendor", money_icons(vend)) if vendor > 0 else (label + " at a vendor", "will not buy it"))
+    if verdict == "novendor":
+        out.append(("Auction it: a vendor will not buy it", None))
+    elif verdict == "auction":
+        out.append(("Auction it: %s more than a vendor pays" % money_icons(auction - vend), None))
+    elif verdict == "same":
+        out.append(("Vendor it: a vendor pays the same", None))
+    elif verdict == "vendor":
+        out.append(("Vendor it: a vendor pays %s more" % money_icons(vend - auction), None))
+    return out
+
+
+def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None, own=False, tf="1D", cover="auto"):
+    """The Forever AH lines of an item tooltip. mult > 1: Shift held on a stack of
+    that many (count defaults to it). cover: "version", "all", None, or "auto"
+    (plain link: "all" for an item whose versions the data lists)."""
     it = ref.items.get(iid)
     if it is None:
         return [("Forever AH: no recent listings", None)]
+    if count is None:
+        count = mult if mult > 1 else 1
+    if cover == "auto":
+        cover = "all" if iid in ref.variants else None
     tag = " (x%d)" % mult if mult > 1 else ""
 
     def m(v):
@@ -2329,23 +2465,54 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False):
         out.append(("Forever AH", age_text(age)))
         out.append(("Market" + tag, m(it["market"])) if it["market"] > 0 else ("Market", "none listed"))
         out.append(("Cheapest" + tag, m(it["cheapest"])) if it["cheapest"] > 0 else ("Cheapest", "none listed"))
-        # On the first day the 7-day average is just the market price: left out.
-        if it["avg7"] > 0 and it["D"]["n"] >= 2:
-            out.append(("7-day avg" + tag, m(it["avg7"])))
+        # The week's range of cheapest prices, once there are 6 hourly prices.
+        lo, hi = week_range(ref, iid)
+        if lo is not None:
+            out.append(("7-day low" + tag, m(lo)))
+            out.append(("7-day high" + tag, m(hi)))
+        if cover == "all":
+            # the prices mix versions that sell for different prices: nothing to sell at
+            P = {"now": None}
+            out.append(("Sell now", "depends on the version"))
+            out.append(("Best price", "depends on the version"))
+        else:
+            P = ref_sell_prices(ref, iid, tf, live, own)
+            if P["now"] is not None:
+                out.append((("Sell now (live)" if P["live"] else "Sell now") + tag, m(P["now"])))
+            else:
+                out.append(("Sell now", "price not reliable" if P["nowWhy"] == "unreliable" else "none listed"))
+            if P["best"] is not None:
+                out.append(("Best price" + tag, m(P["best"])))
+            else:
+                out.append(("Best price", "price not reliable" if P["bestWhy"] == "unreliable" else "needs more history"))
         out.append(("Listed %s, %s" % (commas(it["listed"]), rec_model.sold_text(it["sold24"], ref.salesHours)), None))
+        out += stack_lines(it, P["now"], count)
+    if cover == "version":
+        out.append(("Prices for this version only", None))
+    elif cover == "all":
+        out.append(("Price covers all versions of this item", None))
     if age > 6 * 3600:
         out.append(("Prices are %dh old: run Update-WoW-Prices.bat, then /reload" % (age // 3600), None))
     return out
 
 
-def tooltip_values_ok(sc, ref, iid, lines, mult, label):
-    """Value-level check, independent of wording: every price on the tooltip equals the data file."""
+def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D"):
+    """Value-level check, independent of wording: every price on the tooltip
+    equals the data file (Market, Cheapest, the week's low and high) or the
+    model (Sell now, Best price)."""
     it = ref.items[iid]
-    want = {"Market": it["market"], "Cheapest": it["cheapest"], "7-day avg": it["avg7"]}
+    lo, hi = week_range(ref, iid)
+    P = ref_sell_prices(ref, iid, tf, live)
+    want = {"Market": it["market"], "Cheapest": it["cheapest"], "7-day low": lo, "7-day high": hi,
+            "Sell now": P["now"], "Sell now (live)": P["now"], "Best price": P["best"]}
+    seen = set()
     for left, right in lines:
         base = (left or "").split(" (x")[0]
-        if base in want and right and right != "none listed":
-            sc.eq(parse_coins(right), display_copper(want[base] * mult), "%s %s value" % (label, base))
+        if base in want and right and parse_coins(right) is not None:
+            seen.add(base)
+            sc.eq(parse_coins(right), display_copper((want[base] or 0) * mult), "%s %s value" % (label, base))
+    if lo is not None:
+        sc.check({"7-day low", "7-day high"} <= seen, "%s: 7-day low and high shown (%s)" % (label, sorted(seen)))
 
 
 def check_series_and_recommend(sc, w, ref, ids=None, tfs=TFS):
@@ -2412,7 +2579,12 @@ def chart_check(sc, w, ref, iid, tf, label):
     if win["n"] > 1 and mk:
         p = (mk[-1] - mk[0]) / mk[0] * 100
         sc.eq(C.change._text, "%+.1f%% %s" % (p, tf), "%s: header change" % label)
-    why = no_advice_text(want)
+    ahs0 = ns.AHState
+    mixed = iid not in ref.base_of and (iid in ref.variants or (ahs0 is not None and bool(ahs0.suffix[iid])))
+    if mixed:
+        # the whole item of gear whose versions differ: its targets would mix them
+        want = dict(want, buy=0, listAt=0, sell=0, margin=0, notes=[])
+    why = "Depends on the version" if mixed else no_advice_text(want)
     sc.eq(C.buyBox.value._text, why or (money_icons(want["buy"]) if want["buy"] > 0 else "-"), "%s: Target Buy box" % label)
     sc.eq(C.listBox.value._text, why or (money_icons(want["listAt"]) if want["listAt"] > 0 else "-"), "%s: List At box" % label)
     muted = (abs(C.buyBox.value._textColor[1] - 0.55) < 0.01) if C.buyBox.value._textColor else False
@@ -2441,17 +2613,26 @@ def chart_check(sc, w, ref, iid, tf, label):
           "%s: volume text" % label)
     notes = [mismatch] if mismatch else list(want["notes"])
     ahs = ns.AHState
-    if ahs is not None and ahs.suffix[iid]:
+    if (ahs is not None and ahs.suffix[iid]) or iid in ref.variants:
         notes.append("Price covers all versions of this item")
     sc.eq(C.notes._text or "", ". ".join(notes), "%s: notes" % label)
     narrow = C.frame._w < 650
     sc.check(C.change._shown != narrow and C.volume._shown != narrow,
              "%s: change and volume %s at width %s" % (label, "hidden" if narrow else "shown", C.frame._w))
     compact = (C.panelH or 260) < 230
-    sc.check(C.buyBox._shown != compact and C.listBox._shown != compact,
-             "%s: boxes %s at height %s" % (label, "hidden" if compact else "shown", C.panelH))
+    sc.check(C.buyBox._shown and C.listBox._shown, "%s: boxes shown at height %s" % (label, C.panelH))
+    sc.check(C.buyBox._h == (18 if compact else 40) and C.listBox._h == C.buyBox._h,
+             "%s: boxes %s at height %s (%s)" % (label, "are one-line chips" if compact else "full", C.panelH, C.buyBox._h))
+    sc.check(C.plot._points[1][5] == -(58 if compact else 86), "%s: the plot starts under the boxes" % label)
     sc.eq(C.age._text, "Data: %s \u00b7 %s" % (age_text(w.now - ref.updated), ref.houseName), "%s: age" % label)
     pools = C.pools
+    # The box whose dashed line is on is lit (tinted background, border), the other is not.
+    line = ns.settings.chartLine
+    for box, which in ((C.buyBox, "buy"), (C.listBox, "sell")):
+        lit = line == which
+        sc.eq(bool(box.lit), lit, "%s: %s box lit" % (label, which))
+        sc.check(all(bool(box.edges[k]._shown) == lit for k in range(1, len(box.edges) + 1)),
+                 "%s: %s box border %s" % (label, which, "shown" if lit else "hidden"))
     # Timeframe buttons: active one highlighted
     for k in TFS:
         btn = C.tfButtons[k]
@@ -2509,12 +2690,18 @@ def chart_check(sc, w, ref, iid, tf, label):
                 if v is None or abs(y - (a + b * v)) > 1e-6:
                     ok = False
             sc.check(ok and int(ylab.used) >= 2, "%s: y-axis labels on the price scale (%d labels)" % (label, int(ylab.used)))
-            # Dashed target tags show the advice numbers.
-            tags = [pools.tag["items"][k]._text for k in range(1, int(pools.tag.used) + 1)]
-            if want["buy"] > 0:
-                sc.check("Target Buy " + money_text(want["buy"]) in tags, "%s: buy line label (%s)" % (label, tags))
-            if want["listAt"] > 0:
-                sc.check("List At " + money_text(want["listAt"]) in tags, "%s: list line label (%s)" % (label, tags))
+    # Dashed target lines: only the one picked with the boxes (none by default),
+    # on a short panel too (its chips switch it). Labels carry the advice numbers.
+    show_buy = line == "buy" and want["buy"] > 0
+    show_list = line == "sell" and want["listAt"] > 0
+    tags = [pools.tag["items"][k]._text for k in range(1, int(pools.tag.used) + 1)]
+    sc.eq(sorted(t.split(" ")[0] for t in tags), sorted((["Target"] if show_buy else []) + (["List"] if show_list else [])),
+          "%s: target lines shown for chartLine=%s (%s)" % (label, line, tags))
+    if show_buy:
+        sc.check("Target Buy " + money_text(want["buy"]) in tags, "%s: buy line label (%s)" % (label, tags))
+    if show_list:
+        sc.check("List At " + money_text(want["listAt"]) in tags, "%s: list line label (%s)" % (label, tags))
+    sc.eq(int(pools.dash.used) > 0, show_buy or show_list, "%s: dashes drawn only for a shown line" % label)
     # Sold bars
     sold = win["sold"]
     sc.eq(int(pools.vol.used), sum(1 for v in sold if v > 0) if max(sold or [0]) > 0 else 0, "%s: sold bar count" % label)
@@ -2700,7 +2887,7 @@ def sc_load(sc, ref, items):
     sc.eq(ns.db.updated, ref.updated, "ns.db.updated")
     sc.eq(ns.db.hourEnd, ref.hourEnd, "ns.db.hourEnd")
     sc.eq(ns.db.dayEnd, ref.dayEnd, "ns.db.dayEnd")
-    sc.eq(ns.ItemCount(), len(ref.items), "item count")
+    sc.eq(ns.ItemCount(), ref.base_count(), "item count (versions of an item not counted)")
     sc.eq(ns.DataAge(), 25 * 60, "DataAge")
     sc.eq(ns.tooltipMode, "processor", "tooltips use TooltipDataProcessor")
     S = ns.settings
@@ -2764,11 +2951,14 @@ def sc_status(sc, ref, items):
     out = w.slash("/fah")
     txt = "\n".join(out)
     # The count is written the addon's way: 6,641
-    sc.check(("prices for %s items from the %s" % (commas(len(ref.items)), ref.houseName)) in txt,
+    sc.check(("prices for %s items from the %s" % (commas(ref.base_count()), ref.houseName)) in txt,
              "status names item count and house (%s)" % out[:1])
     sc.check("(US, PvP)" in txt, "status names region and ruleset")
     sc.check("updated 25m ago" in txt, "status shows data age")
     sc.check("Type /fah help" in txt, "status points at help")
+    nv = len(ref.base_of)
+    sc.eq(any(("%s versions of gear" % commas(nv)) in l for l in out), nv > 0,
+          "status says how many gear versions have their own prices (%d)" % nv)
     sc.check("old" not in txt, "no stale warning for fresh data")
     sc.eq(w.slash("/foreverah status"), out, "/foreverah alias gives the same status")
     h = w.slash("/fah help")
@@ -2787,7 +2977,7 @@ def sc_tooltip(sc, ref, items):
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 0, 1)
     lines = w.lines(tt)
-    sc.eq(lines, expected_tooltip(ref, R.LINEN, age), "2589 bag tooltip lines")
+    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, count=20), "2589 bag tooltip lines")
     tooltip_values_ok(sc, ref, R.LINEN, lines, 1, "2589")
     # Post call fires a second time without a clear: no duplicates
     for fn_i in range(1, len(w.M.postCalls[0]) + 1):
@@ -2824,7 +3014,7 @@ def sc_tooltip(sc, ref, items):
     tt.SetBagItem(tt, 0, 1)
     w.M.shift = False
     tt.RefreshData(tt)
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "2589 after shift released")
+    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, count=20), "2589 after shift released")
     # Every item (a sample of a big file), full and compact
     ids = sample_ids(ref, SAMPLE * 4)
     for iid in ids:
@@ -2870,6 +3060,26 @@ def sc_tooltip(sc, ref, items):
     tt.ProcessInfo(tt, info)
     sc.eq(w.lines(tt), [], "excludeLines tooltip gets nothing")
     sc.clean(w)
+    # the week's low and high wait for 6 hourly prices: 5 is not enough
+    def fn(iid, f):
+        if iid in (R.LINEN, R.RUNE):
+            f = f + [""] * (10 - len(f))
+            k = 5 if iid == R.LINEN else 6
+            base = max(10, ref.items[iid]["cheapest"])
+            vals = [base + 3 * j for j in range(k)]
+            f[7] = enc_series(vals, vals, [1] * k)
+        return f
+    text = rewrite_items(ref.text, fn)
+    r2 = RefData(text=text)
+    w2 = World(r2, items, data_src=text)
+    tt2 = w2.g.GameTooltip
+    for iid, shown in ((R.LINEN, False), (R.RUNE, True)):
+        tt2.SetItemByID(tt2, iid)
+        lines = w2.lines(tt2)
+        sc.eq(lines, expected_tooltip(r2, iid, w2.now - r2.updated), "week range test %d" % iid)
+        sc.eq(any(a == "7-day low" for a, _ in lines), shown, "%d: 7-day low %s with %d hourly prices"
+              % (iid, "shown" if shown else "hidden", 6 if shown else 5))
+    sc.clean(w2, "week range")
 
 
 def sc_tooltip_legacy_hooks(sc, ref, items):
@@ -2946,13 +3156,8 @@ def sc_placeholder(sc, ref, items):
     sc.check(C.msg._shown, "still the no-data message after a search")
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.settle(0.2)
-    b = ns.AHState and None
-    # Use button stays hidden without advice
-    shown = [k for k in ("CommoditiesSellFrame", "ItemSellFrame")]
-    sf = ah.CommoditiesSellFrame
-    btns = [c for c in (sf._children[i] for i in range(1, len(sf._children) + 1))
-            if c._otype == "Button" and (c._text or "").startswith("Use List At")]
-    sc.check(all(not b._shown for b in btns), "Use List At hidden without data")
+    # The sell buttons stay hidden without data
+    buttons_ok(sc, find_sell_buttons(ah.CommoditiesSellFrame), (None, None), "no data: sell buttons")
     w.close_ah_modern()
     sc.check(not C.frame.IsShown(C.frame), "chart hidden on AH close")
     sc.clean(w)
@@ -3063,12 +3268,41 @@ def sc_chart_no_setowner_clear(sc, ref, items):
     sc.clean(w)
 
 
-def find_use_button(sf):
+def find_sell_buttons(sf):
+    """(Sell now, Best price) buttons on a Blizzard sell frame."""
+    now = best = None
     for i in range(1, len(sf._children) + 1):
         c = sf._children[i]
         if c._otype == "Button" and c.isCommodity is not None:
-            return c
-    return None
+            if c.kind == "now":
+                now = c
+            elif c.kind == "best":
+                best = c
+    return now, best
+
+
+def ref_buttons(ref, iid, tf="1D", live=None, own=False, is_commodity=True, copper_ok=True, stale=False):
+    """The prices the Sell now and Best price buttons show and fill (rounded for
+    the frame), as (now, best); None = that button is hidden. stale: the data is
+    over 6 hours old, so without a live listing there are no buttons."""
+    if stale and not (live and live > 0):
+        return None, None
+    P = ref_sell_prices(ref, iid, tf, live, own)
+    now = price_for_frame(P["now"], is_commodity, copper_ok) if P["now"] else None
+    best = price_for_frame(P["best"], is_commodity, copper_ok) if P["best"] else None
+    return now, best
+
+
+def buttons_ok(sc, pair, want, label):
+    """The two buttons show exactly the model's prices (or are hidden)."""
+    nb, bb = pair
+    for b, w_, word in ((nb, want[0], "Sell now"), (bb, want[1], "Best price")):
+        if not sc.check(b is not None, "%s: %s button exists" % (label, word)):
+            continue
+        sc.eq(bool(b.IsVisible(b)), w_ is not None, "%s: %s button %s" % (label, word, "shown" if w_ is not None else "hidden"))
+        if w_ is not None:
+            sc.eq(b._text, "%s: %s" % (word, money_icons(w_)), "%s: %s text" % (label, word))
+            sc.eq(b.price, w_, "%s: %s fills that price" % (label, word))
 
 
 def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default screen", placement=None):
@@ -3195,21 +3429,34 @@ def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default scree
     sc.check(csf._shown, "%s: commodity sell frame shown" % label)
     sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), lowest, "%s: Blizzard auto-filled the lowest price first" % label)
     sc.eq(ns.ChartItem(), R.RUNE, "%s: sell item switches the chart" % label)
-    b = find_use_button(csf)
-    # the live listing is loaded: with no advice yet the button follows it
-    want = ref_sell_price(ref, R.RUNE, "1D", lowest)
-    sc.check(b is not None and b.IsVisible(b), "%s: Use List At button visible" % label)
-    if b is not None:
-        sc.eq(b._text, "Use List At: " + money_icons(want), "%s: Use List At button text" % label)
+    pair = find_sell_buttons(csf)
+    b, bb = pair
+    # the live listing is loaded: Sell now undercuts it, Best price from the history
+    want = ref_buttons(ref, R.RUNE, "1D", lowest)
+    buttons_ok(sc, pair, want, label + ": commodity sell")
+    sc.check(want[0] is not None, "%s: Sell now shown with a live listing" % label)
+    if b is not None and want[0] is not None:
         r_b, r_p = w.rect(b), w.rect(csf.PostButton)
-        sc.check(r_b and r_p and r_b[3] <= r_p[1] + 1e-6, "%s: Use button sits under Post" % label)
+        sc.check(r_b and r_p and r_b[3] <= r_p[1] + 1e-6, "%s: Sell now sits under Post" % label)
+        if want[1] is not None:
+            r_bb = w.rect(bb)
+            sc.check(r_bb and r_bb[3] <= r_p[1] + 1e-6 and r_bb[0] >= r_b[2] - 1e-6 and abs(r_bb[3] - r_b[3]) < 1e-6,
+                     "%s: Best price sits beside it, also under Post (%s, %s)" % (label, r_b, r_bb))
+            sc.check(r_b[0] >= w.rect(csf)[0] - 1e-6 and r_bb[2] <= w.rect(csf)[2] + 1e-6, "%s: both inside the sell frame" % label)
+        else:
+            sc.check(abs((r_b[0] + r_b[2]) / 2 - (r_p[0] + r_p[2]) / 2) < 1e-6, "%s: a lone Sell now is centred under Post" % label)
         before = csf.postStateUpdates
         M.click(b)
-        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "%s: Use List At fills the exact copper price" % label)
+        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[0], "%s: Sell now fills the exact copper price" % label)
         sc.check(csf.postStateUpdates > before, "%s: post state refreshed" % label)
-        sc.eq(csf.totalPrice, want * 20, "%s: total price refreshed" % label)
+        sc.eq(csf.totalPrice, want[0] * 20, "%s: total price refreshed" % label)
         M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
-        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "%s: later results do not overwrite our price" % label)
+        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[0], "%s: later results do not overwrite our price" % label)
+        if want[1] is not None:
+            M.click(bb)
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[1], "%s: Best price fills its price" % label)
+            sc.check(want[1] >= want[0] or ref_recommend(ref, R.RUNE, "1D", lowest)["far"],
+                     "%s: Best price is never under a normal cheapest listing" % label)
     sc.eq(len(w.M.cah.posted), 0, "%s: nothing posted" % label)
 
     # Sell frame: an item auction (gear path) rounds down to whole silver
@@ -3218,22 +3465,22 @@ def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default scree
     ah.SetPostItem(ah, loc2)
     w.settle(0.2)
     isf = ah.ItemSellFrame
-    want2 = ref_sell_price(ref, R.ARCANE, "1D", w.live(R.ARCANE), is_commodity=False)
-    b2 = find_use_button(isf)
-    sc.check(b2 is not None and b2.IsVisible(b2) == (want2 is not None),
-             "%s: item sell Use button %s" % (label, "visible" if want2 else "hidden without advice or a live listing"))
-    sc.check(b is None or not b.IsVisible(b), "%s: commodity Use button hidden once that frame is cleared" % label)
-    if b2 is not None and want2 is not None:
-        sc.eq(b2._text, "Use List At: " + money_icons(want2), "%s: item sell button text (silver)" % label)
-        M.click(b2)
-        sc.eq(isf.PriceInput.GetAmount(isf.PriceInput), want2, "%s: item price rounded to silver" % label)
-        sc.eq(want2 % 100, 0, "%s: item price is whole silver" % label)
+    want2 = ref_buttons(ref, R.ARCANE, "1D", w.live(R.ARCANE), is_commodity=False)
+    pair2 = find_sell_buttons(isf)
+    b2 = pair2[0]
+    buttons_ok(sc, pair2, want2, label + ": item sell (whole silver)")
+    sc.check(not b.IsVisible(b) and not bb.IsVisible(bb), "%s: commodity buttons hidden once that frame is cleared" % label)
+    for k, wv in enumerate(want2):
+        if wv is not None:
+            M.click(pair2[k])
+            sc.eq(isf.PriceInput.GetAmount(isf.PriceInput), wv, "%s: item price rounded to silver (%d)" % (label, k))
+            sc.eq(wv % 100, 0, "%s: item price is whole silver (%d)" % (label, k))
     w.M["items"][R.ARCANE].commodity = True
-    # An item we have no advice for: button hidden
+    # An item we have no advice for: buttons hidden
     loc3 = w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 3)
     ah.SetPostItem(ah, loc3)
     w.settle(0.2)
-    sc.check(b2 is None or not b2.IsVisible(b2), "%s: Use button hidden for an item without data" % label)
+    sc.check(not any(x.IsVisible(x) for x in pair2), "%s: buttons hidden for an item without data" % label)
 
     # Close button on the docked chart turns the AH chart off; toggle brings it back
     M.click(C.closeButton)
@@ -3272,8 +3519,8 @@ def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default scree
     w.close_ah_modern()
     sc.check(not ns.AH_IsOpen(), "%s: AH closed" % label)
     sc.check(not C.frame.IsShown(C.frame), "%s: docked chart hidden on close" % label)
-    sc.check(b2 is None or not b2._shown, "%s: Use buttons hidden on close" % label)
-    sc.check(b is None or not b._shown, "%s: commodity Use button hidden on close" % label)
+    sc.check(not any(x._shown for x in pair2), "%s: item sell buttons hidden on close" % label)
+    sc.check(not any(x._shown for x in pair), "%s: commodity sell buttons hidden on close" % label)
     # Searches after close are ignored
     M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
     w.settle(0.3)
@@ -3363,32 +3610,30 @@ def sc_ah_legacy(sc, ref, items):
     M.click(w.g.AuctionsItemButton)
     w.settle(0.2)
     sc.eq(ns.ChartItem(), R.RUNE, "legacy: sell item switches the chart")
-    unit = ref_sell_price(ref, R.RUNE, "1D")   # the old AH has no live listings to follow
-    btn = None
+    want = ref_buttons(ref, R.RUNE, "1D")   # the old AH has no live listings to follow
     auc = w.g.AuctionFrameAuctions
-    for i in range(1, len(auc._children) + 1):
-        c = auc._children[i]
-        if c._otype == "Button" and (c._text or "").startswith("Use List At"):
-            btn = c
-    if unit is None:
-        sc.check(btn is None or not btn.IsVisible(btn), "legacy: no Use List At button without advice")
-    else:
-        sc.check(btn is not None and btn.IsVisible(btn), "legacy: Use List At button visible")
-    if btn is not None and unit is not None:
-        sc.eq(btn._text, "Use List At: " + money_icons(unit), "legacy: button text")
+    pair = find_sell_buttons(auc)
+    buttons_ok(sc, pair, want, "legacy")
+    for k, unit in enumerate(want):
+        btn = pair[k]
+        if btn is None or unit is None:
+            continue
         w.g.AuctionsStackSizeEntry.SetText(w.g.AuctionsStackSizeEntry, "20")
         auc.priceType = 2
         M.click(btn)
-        sc.eq(w.g.BuyoutPrice._copper, unit * 20, "legacy: per-stack buyout")
-        sc.eq(w.g.StartPrice._copper, unit * 20, "legacy: per-stack start price")
+        sc.eq(w.g.BuyoutPrice._copper, unit * 20, "legacy %d: per-stack buyout" % k)
+        sc.eq(w.g.StartPrice._copper, unit * 20, "legacy %d: per-stack start price" % k)
         auc.priceType = 1
         M.click(btn)
-        sc.eq(w.g.BuyoutPrice._copper, unit, "legacy: per-unit buyout")
+        sc.eq(w.g.BuyoutPrice._copper, unit, "legacy %d: per-unit buyout" % k)
+    if pair[0] is not None and want[0] is not None:
+        r_b, r_c = w.rect(pair[0]), w.rect(w.g.AuctionsCreateAuctionButton)
+        sc.check(r_b and r_c and abs(r_b[1] - (r_c[3] + 4)) < 1e-6, "legacy: buttons sit just above Create Auction")
     sc.eq(len(M.cah.posted), 0, "legacy: nothing posted")
     M.fire("AUCTION_HOUSE_CLOSED")
     w.settle(0.3)
     sc.check(not af._shown and not C.frame.IsShown(C.frame), "legacy: closed and chart hidden")
-    sc.check(btn is None or not btn._shown, "legacy: Use button hidden on close")
+    sc.check(not any(b is not None and b._shown for b in pair), "legacy: buttons hidden on close")
     sc.clean(w)
 
 
@@ -3423,42 +3668,49 @@ def sc_auctionator(sc, ref, items):
     w.settle(0.4)
     sc.eq(ns.ChartItem(), R.RUNE, "Auctionator selling: bag item switches the chart")
     price_box = sell.SaleItemFrame.Price
-    btn = None
     sale = sell.SaleItemFrame
+    pair = [None, None]
     for i in range(1, len(sale._children) + 1):
         c = sale._children[i]
-        if c._otype == "Button" and c._text != "Post":
-            btn = c
-    sc.check(btn is not None and not btn.IsVisible(btn),
-             "Auctionator selling: no button until Auctionator has filled its own price (it would overwrite ours)")
-    # Auctionator's search comes back: it fills its undercut, then our button appears
+        if c._otype == "Button" and c.kind in ("now", "best"):
+            pair[0 if c.kind == "now" else 1] = c
+    btn, bbtn = pair
+    sc.check(btn is not None and bbtn is not None and not btn.IsVisible(btn) and not bbtn.IsVisible(bbtn),
+             "Auctionator selling: no buttons until Auctionator has filled its own price (it would overwrite ours)")
+    # Auctionator's search comes back: it fills its undercut, then our buttons appear
     M.atrResults(R.RUNE, 1234)
     sc.check(btn is not None and not btn.IsVisible(btn), "Auctionator selling: waits a moment after its results")
     w.settle(0.5)
-    want = ref_sell_price(ref, R.RUNE, "1D", lowest)
-    sc.check(btn is not None and btn.IsVisible(btn), "Auctionator selling: Use List At button visible once ready")
-    if btn is not None:
-        sc.eq(btn._text, "Use List At: " + money_icons(want), "Auctionator selling: button text")
+    want = ref_buttons(ref, R.RUNE, "1D", lowest)
+    buttons_ok(sc, pair, want, "Auctionator selling")
+    if btn is not None and want[0] is not None:
         rb, rm, rah = w.rect(btn), w.rect(price_box.MoneyInput), w.rect(w.g.AuctionHouseFrame)
         sc.check(rb and rm and abs(rb[0] - rm[0]) < 1e-6 and rb[3] <= rm[1] + 1e-6,
-                 "Auctionator selling: button sits under the buyout money box (%s, %s)" % (rb, rm))
+                 "Auctionator selling: Sell now sits under the buyout money box (%s, %s)" % (rb, rm))
         sc.check(rb and rah and rb[2] <= rah[2] + 1e-6, "Auctionator selling: button inside the AH frame (%s)" % (rb,))
+        if want[1] is not None:
+            rbb = w.rect(bbtn)
+            sc.check(rbb and abs(rbb[3] - rb[3]) < 1e-6 and rbb[0] >= rb[2] - 1e-6 and rbb[2] <= rah[2] + 1e-6,
+                     "Auctionator selling: Best price beside it, inside the AH frame (%s)" % (rbb,))
         M.click(btn)
-        sc.eq(price_box.GetAmount(price_box), want, "Auctionator selling: price set through PriceSelected")
+        sc.eq(price_box.GetAmount(price_box), want[0], "Auctionator selling: price set through PriceSelected")
         fired = [M.atrFired[i].name for i in range(1, len(M.atrFired) + 1)]
         sc.check("ForeverAH" in fired, "Auctionator selling: fired as source ForeverAH")
+        if want[1] is not None:
+            M.click(bbtn)
+            sc.eq(price_box.GetAmount(price_box), want[1], "Auctionator selling: Best price set too")
         # Auctionator ignoring PriceSelected (no item yet): we notice and fill the box ourselves
         M.atrItem = None
         price_box.SetAmount(price_box, 777)
         M.click(btn)
-        sc.eq(price_box.GetAmount(price_box), want, "Auctionator selling: read back, filled directly when PriceSelected was ignored")
+        sc.eq(price_box.GetAmount(price_box), want[0], "Auctionator selling: read back, filled directly when PriceSelected was ignored")
         M.atrItem = R.RUNE
-        # with the bid box shown the button moves under it
+        # with the bid box shown the buttons move under it
         bidbox = sale.BidPrice
         bidbox.Show(bidbox)
         ns.AH_RefreshButtons()
         rb, rbid = w.rect(btn), w.rect(bidbox.MoneyInput)
-        sc.check(rb and rbid and rb[3] <= rbid[1] + 1e-6, "Auctionator selling: button under the bid box when it is shown")
+        sc.check(rb and rbid and rb[3] <= rbid[1] + 1e-6, "Auctionator selling: buttons under the bid box when it is shown")
         bidbox.Hide(bidbox)
     # Auctionator's undercut scan while the Selling tab is hidden must not move the chart
     sell.Hide(sell)
@@ -3467,7 +3719,7 @@ def sc_auctionator(sc, ref, items):
     sc.eq(ns.ChartItem(), R.RUNE, "Auctionator background sell search ignored")
     w.close_ah_modern()
     sc.check(not C.frame.IsShown(C.frame), "Auctionator: chart hidden on close")
-    sc.check(btn is None or not btn._shown, "Auctionator: button hidden on close")
+    sc.check(not any(b is not None and b._shown for b in pair), "Auctionator: buttons hidden on close")
     sc.clean(w)
 
 
@@ -3484,7 +3736,7 @@ def sc_horde(sc, ref, items):
 
 
 def sc_live_prices(sc, ref, items):
-    """Use List At follows the live listings the sell frame loaded, not only the hourly data."""
+    """Sell now and Best price follow the live listings the sell frame loaded, not only the hourly data."""
     w = World(ref, items)
     ns, M = w.ns, w.M
     w.put_bag(0, 1, R.RUNE, 20)
@@ -3492,7 +3744,8 @@ def sc_live_prices(sc, ref, items):
     w.open_ah_modern()
     ah = w.g.AuctionHouseFrame
     csf = ah.CommoditiesSellFrame
-    b = find_use_button(csf)
+    pair = find_sell_buttons(csf)
+    b, bb = pair
     snap = ref.items[R.RUNE]["cheapest"]
     # the cheap stock in the snapshot was bought: the live cheapest is 60% higher
     livep = int(snap * 1.6)
@@ -3501,65 +3754,70 @@ def sc_live_prices(sc, ref, items):
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
     sc.eq(w.live(R.RUNE), livep, "live: cheapest listing read from the loaded results")
-    want = ref_sell_price(ref, R.RUNE, "1D", livep)
-
-    def label_ok(want_price, msg):
-        if want_price is None:
-            sc.check(not b.IsVisible(b), msg + " (hidden: no advice and no live listing)")
-        else:
-            sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(want_price), "%s (%s)" % (msg, b._text))
-    sc.check(want >= livep - 1, "live: the advice does not undercut a listing that is no longer there (%s vs live %s)" % (want, livep))
-    label_ok(want, "live: button label uses the live price")
+    want = ref_buttons(ref, R.RUNE, "1D", livep)
+    sc.eq(want[0], livep - 1, "live: Sell now is 1 copper under the live listing")
+    sc.check(want[1] is None or want[1] >= livep - 1 or ref_recommend(ref, R.RUNE, "1D", livep)["far"],
+             "live: Best price does not undercut a listing that is no longer there (%s vs live %s)" % (want[1], livep))
+    buttons_ok(sc, pair, want, "live: labels use the live price")
     sc.check("cheapest listing right now" in (b.tipBody or ""), "live: tooltip says the live price was used (%s)" % b.tipBody)
     M.click(b)
-    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "live: fills exactly the label's price")
+    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[0], "live: Sell now fills exactly the label's price")
+    if want[1] is not None:
+        M.click(bb)
+        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[1], "live: Best price fills exactly its label's price")
     chart_check(sc, w, ref, R.RUNE, "1D", "live chart")
     # the cheapest listing is the player's own: match it, do not undercut yourself
     w.set_commodity_results(R.RUNE, [(livep, 5, True)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
-    label_ok(ref_sell_price(ref, R.RUNE, "1D", livep, own=True), "own listing: matched, not undercut")
-    # timeframe change without live listings: pick a timeframe whose advice differs from 1D
+    own = ref_buttons(ref, R.RUNE, "1D", livep, own=True)
+    sc.eq(own[0], livep, "own listing: the model matches it")
+    buttons_ok(sc, pair, own, "own listing: matched, not undercut")
+    sc.check("That listing is yours" in (b.tipBody or ""), "own listing: tooltip says so (%s)" % b.tipBody)
+    # no live listing: back to the hourly data, and the timeframe changes Best price only
     w.set_commodity_results(R.RUNE, [])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
-    base = ref_sell_price(ref, R.RUNE, "1D")
-    label_ok(base, "no live listing: back to the hourly data")
-    other = next((tf for tf in TFS if ref_sell_price(ref, R.RUNE, tf) != base), None)
+    base = ref_buttons(ref, R.RUNE, "1D")
+    buttons_ok(sc, pair, base, "no live listing: back to the hourly data")
+    other = next((tf for tf in TFS if ref_buttons(ref, R.RUNE, tf) != base), None)
     if R.SIM:
-        sc.check(other is not None, "test data has a timeframe with different advice")
+        sc.check(other is not None, "test data has a timeframe with a different Best price")
     if other:
         ns.SetChartTF(other)
-        want_o = ref_sell_price(ref, R.RUNE, other)
-        label_ok(want_o, "%s: label refreshed on timeframe change" % other)
-        if want_o is not None:
-            M.click(b)
-            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want_o, "%s: fill equals the label" % other)
+        want_o = ref_buttons(ref, R.RUNE, other)
+        sc.eq(want_o[0], base[0], "%s: Sell now does not depend on the timeframe" % other)
+        buttons_ok(sc, pair, want_o, "%s: labels refreshed on timeframe change" % other)
+        if want_o[1] is not None:
+            M.click(bb)
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want_o[1], "%s: fill equals the label" % other)
         ns.SetChartTF("1D")
-        label_ok(base, "back to 1D: label follows")
-    # timeframe change: label and fill follow the chart's timeframe together
+        buttons_ok(sc, pair, base, "back to 1D: labels follow")
+    # timeframe change with a live listing: labels and fills follow the chart's timeframe together
     w.set_commodity_results(R.RUNE, [(livep, 50, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
     ns.SetChartTF("1Y")
-    want_y = ref_sell_price(ref, R.RUNE, "1Y", livep)
-    label_ok(want_y, "1Y: label refreshed on timeframe change")
-    M.click(b)
-    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want_y, "1Y: fill equals the label")
+    want_y = ref_buttons(ref, R.RUNE, "1Y", livep)
+    buttons_ok(sc, pair, want_y, "1Y: labels refreshed on timeframe change")
+    for k, v in enumerate(want_y):
+        if v is not None:
+            M.click(pair[k])
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), v, "1Y: fill equals the label (%d)" % k)
     ns.SetChartTF("1D")
-    # stale data and no live results yet: no button; live results arrive: button
+    # stale data and no live results yet: no buttons; live results arrive: buttons
     w.M.commodityResults[R.LINEN] = None
     M.now = ref.updated + 9 * 3600
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 2))
     w.settle(0.3)
-    sc.check(not b.IsVisible(b), "stale data with no live listing: no Use List At button")
+    sc.check(not b.IsVisible(b) and not bb.IsVisible(bb), "stale data with no live listing: no buttons")
     lp2 = ref.items[R.LINEN]["cheapest"] + 3
     w.set_commodity_results(R.LINEN, [(lp2, 100, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.3)
-    want2 = ref_sell_price(ref, R.LINEN, "1D", lp2)
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(want2),
-             "stale data: button comes back once the live listing loads (%s)" % b._text)
+    want2 = ref_buttons(ref, R.LINEN, "1D", lp2)
+    sc.eq(want2[0], lp2 - 1, "stale data: Sell now from the live listing")
+    buttons_ok(sc, pair, want2, "stale data: buttons come back once the live listing loads")
     M.now = w.now
     # live prices are only for the open AH
     w.close_ah_modern()
@@ -3590,9 +3848,8 @@ def sc_other_house(sc, ref, items):
         chart_check(sc, w, ref, R.RUNE, "1D", label)
         ah.SetPostItem(ah, loc)
         w.settle(0.2)
-        b = find_use_button(ah.CommoditiesSellFrame)
-        shown = not other and ref_sell_price(ref, R.RUNE, "1D", w.live(R.RUNE)) is not None
-        sc.check(b is not None and b.IsVisible(b) == shown, "%s: Use List At %s" % (label, "shown" if shown else "hidden"))
+        want = (None, None) if other else ref_buttons(ref, R.RUNE, "1D", w.live(R.RUNE))
+        buttons_ok(sc, find_sell_buttons(ah.CommoditiesSellFrame), want, "%s: sell buttons" % label)
         w.close_ah_modern()
     M.npc, M.subzone = None, None
     M.hardcore = True
@@ -3600,8 +3857,7 @@ def sc_other_house(sc, ref, items):
     ah = w.g.AuctionHouseFrame
     ah.SetPostItem(ah, loc)
     w.settle(0.2)
-    b = find_use_button(ah.CommoditiesSellFrame)
-    sc.check(b is not None and not b.IsVisible(b), "Hardcore: Use List At hidden")
+    buttons_ok(sc, find_sell_buttons(ah.CommoditiesSellFrame), (None, None), "Hardcore: sell buttons hidden")
     chart_check(sc, w, ref, R.RUNE, "1D", "Hardcore")
     w.close_ah_modern()
     M.hardcore = False
@@ -3609,7 +3865,8 @@ def sc_other_house(sc, ref, items):
 
 
 def sc_suffix_gear(sc, ref, items):
-    """Random-suffix gear shares an item ID: no List At fill, and a note."""
+    """Old-style random-suffix links (a suffix id, no bonus ids) cannot be told
+    apart: no sell buttons for them, and a note. A plain copy still gets them."""
     w = World(ref, items)
     ns, M = w.ns, w.M
     w.M["items"][R.ARCANE].commodity = False
@@ -3618,27 +3875,31 @@ def sc_suffix_gear(sc, ref, items):
     ah = w.g.AuctionHouseFrame
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.settle(0.2)
-    b = find_use_button(ah.ItemSellFrame)
-    sc.check(b is not None and not b.IsVisible(b), "suffix item: no Use List At")
+    pair = find_sell_buttons(ah.ItemSellFrame)
+    buttons_ok(sc, pair, (None, None), "suffix item: no sell buttons")
     chart_check(sc, w, ref, R.ARCANE, "1D", "suffix item chart")
     sc.check("Price covers all versions of this item" in (ns.ChartPanel.notes._text or ""), "suffix item: chart note")
-    # the same item without a suffix still gets the button (the note stays: it is about the item ID)
+    # the same item without a suffix still gets the buttons (the note stays: it is about the item ID)
     w.put_bag(0, 2, R.ARCANE, 1)
     w.set_commodity_results(R.ARCANE, [])
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 2))
     w.settle(0.2)
-    plain = ref_sell_price(ref, R.ARCANE, "1D", is_commodity=False)
-    sc.check(b.IsVisible(b) == (plain is not None), "plain copy: Use List At %s" % ("shown" if plain else "hidden (no advice yet)"))
-    # live item results feed the item sell button too (whole silver)
+    versioned = R.ARCANE in ref.variants   # then a plain copy is a version the data has no prices for
+    plain = (None, None) if versioned else ref_buttons(ref, R.ARCANE, "1D", is_commodity=False)
+    buttons_ok(sc, pair, plain, "plain copy")
+    # live item results feed the item sell buttons too (whole silver)
     t = w.lua.table()
     t[1] = w.to_lua({"buyout": 2512345, "quantity": 1})
     w.M.itemResults[R.ARCANE] = t
     M.fire("ITEM_SEARCH_RESULTS_UPDATED", w.to_lua({"itemID": R.ARCANE, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0}))
     w.settle(0.3)
-    sc.eq(w.live(R.ARCANE), 2512345, "item results: live cheapest buyout")
-    want = ref_sell_price(ref, R.ARCANE, "1D", 2512345, is_commodity=False)
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(want),
-             "item sell button uses the live buyout, rounded to silver (%s)" % b._text)
+    if versioned:
+        sc.eq(w.live(R.ARCANE), None, "item results: no all-versions live price for an item whose versions differ")
+        want = (price_for_frame(2512344, False), None)
+    else:
+        sc.eq(w.live(R.ARCANE), 2512345, "item results: live cheapest buyout")
+        want = ref_buttons(ref, R.ARCANE, "1D", 2512345, is_commodity=False)
+    buttons_ok(sc, pair, want, "item sell buttons use the live buyout, rounded to silver")
     w.M["items"][R.ARCANE].commodity = True
     w.close_ah_modern()
     sc.clean(w)
@@ -3685,13 +3946,15 @@ def sc_ah_no_copper(sc, ref, items):
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.2)
     csf = ah.CommoditiesSellFrame
-    b = find_use_button(csf)
-    want = ref_sell_price(ref, R.LINEN, "1D", lowest, copper_ok=False)
-    sc.check(b is not None and b.IsVisible(b), "no copper: Use button visible")
-    if b is not None:
-        sc.eq(b._text, "Use List At: " + money_icons(want), "no copper: button text in whole silver")
-        M.click(b)
-        sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "no copper: price box gets whole silver")
+    pair = find_sell_buttons(csf)
+    want = ref_buttons(ref, R.LINEN, "1D", lowest, copper_ok=False)
+    sc.check(want[0] is not None, "no copper: Sell now with a live listing")
+    buttons_ok(sc, pair, want, "no copper: buttons in whole silver")
+    for k, v in enumerate(want):
+        if v is not None:
+            M.click(pair[k])
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), v, "no copper: price box gets whole silver (%d)" % k)
+            sc.eq(v % 100, 0, "no copper: whole silver (%d)" % k)
     w.close_ah_modern()
     sc.clean(w)
 
@@ -3744,13 +4007,59 @@ FLIP_SLASH = {
 }
 
 
+def price_doubt(ref, iid):
+    """Recommend.lua priceDoubt: only 1 or 2 listings, or a few units far above what a vendor pays."""
+    it = ref.items.get(iid)
+    if not it:
+        return False
+    auctions = it["auctions"]
+    thin = auctions is not None and 1 <= auctions < 3
+    far = it["vendor"] > 0 and it["market"] > 200 * it["vendor"] and it["listed"] < 10
+    return thin or far
+
+
 def ref_flips_why(ref, limit=5, hidden=()):
-    """Python model of ns.FlipIdeas: rank by money traded, full advice on the top 60, filter,
-    rank by a day's profit. Returns (ideas, why) where why says why there are none."""
+    """Python model of ns.FlipIdeas: the collector's flips from the data file
+    first (best first, hidden ones left out), then the history-based ideas,
+    each item once. Returns (ideas, why) where why says why there are none."""
+    if not ref.items or not ref.updated:
+        return [], "nodata"
+    out, seen = [], set()
+    for f in ref.flips:
+        if len(out) >= limit:
+            break
+        if f["id"] in hidden or f["id"] in seen:
+            continue
+        seen.add(f["id"])
+        x = dict(f, data=True, buy=f["buyMax"], risk=list(f["risk"]))
+        if f["kind"] == "gap" and price_doubt(ref, f["id"]):
+            x["risk"].append("unsure")
+        out.append(x)
+    if len(out) >= limit:
+        return out, None
+    hist, why = ref_history_flips_why(ref, limit + len(out), hidden)
+    for x in hist:
+        if len(out) >= limit:
+            break
+        if x["id"] in seen:
+            continue
+        seen.add(x["id"])
+        out.append(x)
+    if out:
+        return out, None
+    return out, why
+
+
+def ref_history_flips_why(ref, limit=5, hidden=()):
+    """Python model of the history-based ideas (Sidebar.lua HistoryIdeas): rank
+    by money traded, full advice on the top 60, filter, rank by a day's profit.
+    An item whose versions differ is left out (its prices mix them)."""
     if rec_model.sales_hours_of(ref.salesHours) < 3:
         return [], "history"
     cand = []
     for iid, it in ref.items.items():
+        if iid in ref.variants:
+            continue
         sold, _ = rec_model.sold_per_day(it["sold24"], ref.salesHours)
         thin = it["auctions"] is not None and it["auctions"] < 3
         vfar = it["vendor"] > 0 and it["market"] > 200 * it["vendor"] and it["listed"] < 10
@@ -3787,6 +4096,36 @@ def ref_flips_why(ref, limit=5, hidden=()):
 
 def ref_flips(ref, limit=5, hidden=()):
     return ref_flips_why(ref, limit, hidden)[0]
+
+
+def items_of(w):
+    return w.items_json
+
+
+def risk_short(risk):
+    """The small grey risk note on a collector flip row."""
+    if not risk:
+        return ""
+    return risk[0] if len(risk) == 1 else "%d risks" % len(risk)
+
+
+def flip_row_ok(sc, r, x, ref, items, lab):
+    """One flip row shows the idea: name, profit, what to buy and what to do with it."""
+    sc.eq(r.itemID, x["id"], lab + ": item")
+    sc.eq(strip_codes(r.right._text), "+" + short_money(x["profit"]), lab + ": profit")
+    sc.eq(r.name._text, item_name(ref, items, x["id"]), lab + ": name")
+    if x.get("data"):
+        sc.eq(strip_codes(r.sub._text), "Buy up to %s (%s)" % (short_money(x["buyMax"]), count_text(x["units"])),
+              lab + ": buy up to (units)")
+        sc.eq(strip_codes(r.sub2._text), "Sell to vendor" if x["kind"] == "vendor" else "Relist " + short_money(x["relist"]),
+              lab + ": relist or vendor")
+        sc.eq(r.right2._text, risk_short(x["risk"]), lab + ": risk note")
+    else:
+        sc.eq(strip_codes(r.sub._text), "Buy at %s" % short_money(x["buy"]), lab + ": buy")
+        sc.eq(strip_codes(r.sub2._text), "Sell at %s" % short_money(x["sell"]), lab + ": sell")
+        sc.eq(r.right2._text, "~%s/day" % count_text(x["sold"]), lab + ": sold per day")
+    base = ref.base_of.get(x["id"], x["id"])
+    sc.eq(r.icon._texture, 130000 + base if str(base) in items else r.icon._texture, lab + ": icon of the game's item")
 
 
 def lua_num_text(v):
@@ -3889,13 +4228,9 @@ def sc_sidebar(sc, ref, items):
     got = shown_rows(SB, "flipRows")
     sc.eq(len(got), len(want), "flip ideas shown")
     for r, x in zip(got, want):
-        lab = "flip %s" % x["id"]
-        sc.eq(r.itemID, x["id"], lab + ": item (ranked by a day's profit)")
-        sc.eq(strip_codes(r.right._text), "+" + short_money(x["profit"]), lab + ": profit each after the cut")
-        sc.eq(strip_codes(r.sub._text), "Buy %s  Sell %s" % (short_money(x["buy"]), short_money(x["sell"])),
-              lab + ": buy and sell")
-        sc.eq(r.right2._text, "~%s/day" % count_text(x["sold"]), lab + ": sold per day")
-        sc.eq(r.name._text, item_name(ref, items, x["id"]), lab + ": name")
+        flip_row_ok(sc, r, x, ref, items, "flip %s" % x["id"])
+    sc.eq([r.itemID for r in got], [x["id"] for x in want], "flip ideas in order (collector flips first)")
+    sc.check(len(set(r.itemID for r in got)) == len(got), "each item once")
     if not want:
         sc.check(SB.flipMsg._shown, "no ideas: says why")
         sc.eq(SB.flipMsg._text, FLIP_MESSAGES[why], "no ideas: the message for %s" % why)
@@ -3940,8 +4275,12 @@ def sc_sidebar(sc, ref, items):
         lines = w.all_lines(tt)
         flat = [strip_codes(a or "") + " | " + strip_codes(b or "") for a, b in lines]
         sc.check(any("Forever AH" in f for f in flat), "flip hover: Forever AH price lines are there")
-        sc.check(any(f.startswith("Profit each, after the 5% cut") and ("+" + ns.MoneyText(want[0]["profit"])) in f
-                     for f in flat), "flip hover: profit line")
+        if want[0].get("data"):
+            pl = "Profit over the cost" if want[0]["kind"] == "vendor" else "Profit, after the 5% cut"
+        else:
+            pl = "Profit each, after the 5% cut"
+        sc.check(any(f.startswith(pl) and ("+" + ns.MoneyText(want[0]["profit"])) in f
+                     for f in flat), "flip hover: profit line (%s)" % pl)
         sc.check(any("Click: open it in the auction house" in f for f in flat), "flip hover: says what a click does")
         M.leave(got[0])
 
@@ -4082,8 +4421,11 @@ def sc_sidebar(sc, ref, items):
     out = w.slash("/fah watchlist reset")
     sc.eq(watch_ids(w), SIDEBAR_WATCH, "/fah watchlist reset brings back the starter list")
     out = w.slash("/fah flips")
-    ideas_now = ref_flips(ref, hidden={fid} if got else ())
-    sc.eq(len(out), len(ideas_now) + 1 if ideas_now else 1, "/fah flips prints a line per idea")
+    ideas_now = ref_flips(ref, limit=10, hidden={fid} if got else ())
+    sc.eq(len(out), len(ideas_now) + 1 if ideas_now else 1, "/fah flips prints a line per idea (up to 10)")
+    for line, x in zip(out[1:], ideas_now):
+        sc.check(item_name(ref, items, x["id"]) in strip_codes(line) and ("+" + ns.MoneyText(x["profit"])) in line,
+                 "/fah flips line for %d (%s)" % (x["id"], strip_codes(line)))
     out = w.slash("/fah help")
     sc.check(any("/fah watch" in c for c in out) and any("/fah chart" in c for c in out), "/fah help has both lists")
     out = w.slash("/fah sidebar")
@@ -4157,11 +4499,13 @@ def sc_sidebar_first_snapshot(sc, ref, items):
     snapshots): the sidebar says it is collecting history, not 'no good flips'."""
     src = open(DATA_FILE, "rb").read().decode("utf-8")
 
-    def zero_sold(m):
-        f = m.group(2).split("|")
+    def zero_sold(iid, f):
+        f = f + [""] * (10 - len(f))
         f[4] = "0"
-        return m.group(1) + "|".join(f) + '"'
-    first = re.sub(r'(\[\d+\]\s*=\s*")((?:[^"\\\n]|\\.)*)"', zero_sold, src)
+        return f
+    # The collector's flips work from one snapshot: this scenario is about the
+    # history-based ideas, so the file has none (like an older file).
+    first = drop_table(rewrite_items(src, zero_sold), "flips")
     sc.check(first != src or all(it["sold24"] == 0 for it in ref.items.values()), "first snapshot: test data made")
     ref = RefData(text=first)
     _, why = ref_flips_why(ref)
@@ -4204,7 +4548,7 @@ def sc_edge(sc, ref_unused, items_unused):
     w = World(ref, items, data_src=src)
     ns, M = w.ns, w.M
     sc.eq(w.load_errors, [], "edge file loads")
-    sc.eq(ns.ItemCount(), len(ref.items), "edge item count")
+    sc.eq(ns.ItemCount(), ref.base_count(), "edge item count")
     idx = name_index(ref)
     for iid, it in ref.items.items():
         g = ns.GetItem(iid)
@@ -4264,16 +4608,13 @@ def sc_edge(sc, ref_unused, items_unused):
         ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 1, slot))
         w.settle(0.2)
         csf = ah.CommoditiesSellFrame
-        b = find_use_button(csf)
-        want = ref_sell_price(ref, iid, "1D")
-        if want:
-            sc.check(b is not None and b.IsVisible(b) and b._text == "Use List At: " + money_icons(want),
-                     "edge %d: Use button shows %s (%s)" % (iid, want, b and b._text))
-            if b is not None and b.IsVisible(b):
-                M.click(b)
-                sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "edge %d: Use button fills the price" % iid)
-        else:
-            sc.check(b is None or not b.IsVisible(b), "edge %d: no Use button without advice" % iid)
+        pair = find_sell_buttons(csf)
+        want = ref_buttons(ref, iid, "1D")
+        buttons_ok(sc, pair, want, "edge %d" % iid)
+        for k, v in enumerate(want):
+            if v is not None and pair[k] is not None and pair[k].IsVisible(pair[k]):
+                M.click(pair[k])
+                sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), v, "edge %d: button %d fills the price" % (iid, k))
     w.close_ah_modern()
     sc.clean(w)
 
@@ -4313,12 +4654,39 @@ def enc_series(cheap, market, sold):
 
 
 def rewrite_items(text, fn):
-    """Calls fn(id, fields) for every item line; fn returns the new field list (or None to keep it)."""
+    """Calls fn(id, fields) for every item line (only inside the items table);
+    fn returns the new field list (or None to keep it)."""
     def one(m):
         f = m.group(2).split("|")
         new = fn(int(m.group(1)[m.group(1).index("[") + 1:m.group(1).index("]")]), f)
         return m.group(1) + "|".join(new if new is not None else f) + '"'
-    return re.sub(r'(\[\d+\]\s*=\s*")((?:[^"\\\n]|\\.)*)"', one, text)
+    span = block_span(text, "items")
+    if not span:
+        return text
+    a, b = span
+    return text[:a] + re.sub(r'(\[\d+\]\s*=\s*")((?:[^"\\\n]|\\.)*)"', one, text[a:b]) + text[b:]
+
+
+def drop_table(text, name):
+    """The data text without a top-level table (variants or flips): an older data file."""
+    m = re.search(r"(?m)^[ \t]*" + name + r"[ \t]*=[ \t]*\{[ \t]*\r?\n", text)
+    if not m:
+        return text
+    end = re.search(r"(?m)^[ \t]*\},?[ \t]*\r?\n", text[m.end():])
+    return text[:m.start()] + text[m.end() + end.end():]
+
+
+def set_table(text, name, lines):
+    """The data text with a top-level table (variants or flips) replaced by
+    these entry lines, put before items = { like the collector writes it."""
+    text = drop_table(text, name)
+    body = "".join("    %s,\n" % ln for ln in lines)
+    return re.sub(r"(?m)^([ \t]*)items([ \t]*=[ \t]*\{)", lambda m: "  %s = {\n%s  },\n%sitems%s" % (
+        name, body, m.group(1), m.group(2)), text, count=1)
+
+
+def lua_quote(s):
+    return '"' + s.replace("\\", "\\\\").replace('"', '\\"') + '"'
 
 
 def set_header(text, key, value):
@@ -4364,7 +4732,7 @@ def check_sidebar_flips(sc, w, ref, label):
     got = shown_rows(SB, "flipRows")
     sc.eq([r.itemID for r in got], [x["id"] for x in want], "%s: flip ideas" % label)
     for r, x in zip(got, want):
-        sc.eq(r.right2._text, "~%s/day" % count_text(x["sold"]), "%s: flip %d sold per day" % (label, x["id"]))
+        flip_row_ok(sc, r, x, ref, items_of(w), "%s: flip %d" % (label, x["id"]))
     if not want:
         sc.check(SB.flipMsg._shown and SB.flipMsg._text == FLIP_MESSAGES[why],
                  "%s: flip message for %s (%r)" % (label, why, SB.flipMsg._text))
@@ -4402,10 +4770,14 @@ def sc_sales_hours(sc, ref, items):
         chart_check(sc, w, r2, R.LINEN, "1D", label + " chart")
         w.open_ah_modern()
         want, why = check_sidebar_flips(sc, w, r2, label)
+        hist, hwhy = ref_history_flips_why(r2)
         if hours < 3:
-            sc.eq((len(want), why), (0, "history"), "%s: no flip ideas from under 3 hours of sales" % label)
-        elif 0 < hours < 24 and want:
-            got = shown_rows(w.ns.SidebarPanel, "flipRows")
+            sc.eq((len(hist), hwhy), (0, "history"), "%s: no history ideas from under 3 hours of sales" % label)
+            sc.check(all(x.get("data") for x in want) and (len(want) > 0) == (len(r2.flips) > 0),
+                     "%s: the collector's flips still show (they need no sales history)" % label)
+        elif 0 < hours < 24 and any(not x.get("data") for x in want):
+            # a history idea (the collector's flips do not use the sales estimate)
+            got = [r for r in shown_rows(w.ns.SidebarPanel, "flipRows") if not r.idea.data]
             w.M.enter(got[0])
             flat = [strip_codes(a or "") for a, _ in w.all_lines(tt)]
             sc.check(any(f.startswith("Early estimate") for f in flat), "%s: flip hover says the sales are an early estimate" % label)
@@ -4459,7 +4831,7 @@ def sc_one_snapshot(sc, ref, items):
         lines = w.lines(tt)
         sc.eq(lines, expected_tooltip(r2, iid, age), "one snapshot: tooltip %d" % iid)
         sc.check(not any((a or "").startswith("7-day avg") for a, _ in lines), "one snapshot: no 7-day avg on day one (%d)" % iid)
-    # Use List At: no price from one snapshot, only 1 copper under a live listing
+    # Sell now from one snapshot: 1 copper under its cheapest listing; no Best price yet
     w.put_bag(0, 1, R.LINEN, 20)
     w.open_ah_modern()
     ah = w.g.AuctionHouseFrame
@@ -4467,22 +4839,28 @@ def sc_one_snapshot(sc, ref, items):
     w.M.commodityResults[R.LINEN] = None
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.settle(0.2)
-    b = find_use_button(csf)
-    sc.check(b is not None and not b.IsVisible(b), "one snapshot: no Use List At without a live listing")
-    # a live listing above today's market price: 1 copper under it (a lower one: see Runecloth below)
+    pair = find_sell_buttons(csf)
+    b, bb = pair
+    snap = ref_buttons(r2, R.LINEN, "1D")
+    sc.eq(snap, (r2.items[R.LINEN]["cheapest"] - 1 if r2.items[R.LINEN]["cheapest"] > 1 else None, None),
+          "one snapshot: the model has Sell now from the snapshot and no Best price")
+    buttons_ok(sc, pair, snap, "one snapshot, no live listing")
+    sc.check("not enough price history yet for a Best price" in (b.tipBody or ""),
+             "one snapshot: Sell now tooltip says why there is no Best price (%s)" % b.tipBody)
+    sc.check("live listings have not loaded yet" in (b.tipBody or ""), "one snapshot: and that it used the price data")
+    # a live listing above today's market price: 1 copper under it
     lp = max(r2.items[R.LINEN]["cheapest"], r2.items[R.LINEN]["market"]) + 7
     w.set_commodity_results(R.LINEN, [(lp, 40, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.3)
-    want = ref_sell_price(r2, R.LINEN, "1D", lp)
-    sc.eq(want, lp - 1, "one snapshot: the model follows the live listing")
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(want), "one snapshot: button follows the live listing (%s)" % b._text)
-    sc.check("not enough price history" in (b.tipBody or ""), "one snapshot: button tooltip says why (%s)" % b.tipBody)
+    want = ref_buttons(r2, R.LINEN, "1D", lp)
+    sc.eq(want, (lp - 1, None), "one snapshot: the model follows the live listing")
+    buttons_ok(sc, pair, want, "one snapshot, live listing")
     M.click(b)
-    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want, "one snapshot: fills that price")
+    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[0], "one snapshot: fills that price")
     chart_check(sc, w, r2, R.LINEN, "1D", "one snapshot docked")
-    # only the history is short: a live listing far under today's market price is not
-    # followed down, the button uses the market price (the same List At rule as always)
+    # a live listing far under today's market price: Sell now still undercuts it
+    # (that is what selling now means), and its tooltip says the market is higher
     mk = r2.items[R.RUNE]["market"]
     w.put_bag(0, 2, R.RUNE, 20)
     w.M.commodityResults[R.RUNE] = None
@@ -4493,20 +4871,23 @@ def sc_one_snapshot(sc, ref, items):
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
     rec2 = ref_recommend(r2, R.RUNE, "1D", lp2)
-    want2 = ref_sell_price(r2, R.RUNE, "1D", lp2)
-    sc.check(not rec2["advice"] and not rec2["history"] and rec_model.sell_mode(rec2, lp2) == "market"
-             and want2 is not None and want2 >= mk, "one snapshot: the model keeps the market price (%s, market %d)" % (want2, mk))
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(want2 or 0),
-             "one snapshot: button uses the market price, not 1c under %d (%s)" % (lp2, b._text))
-    sc.check("uses the market price seen so far" in (b.tipBody or ""), "one snapshot: tooltip says so (%s)" % b.tipBody)
+    want2 = ref_buttons(r2, R.RUNE, "1D", lp2)
+    sc.check(not rec2["advice"] and not rec2["history"] and want2 == (lp2 - 1, None),
+             "one snapshot: the model undercuts the cheap listing, no Best price (%s, market %d)" % (want2, mk))
+    buttons_ok(sc, pair, want2, "one snapshot, cheap live listing")
+    sc.check("Today's market price is higher" in (b.tipBody or ""), "one snapshot: tooltip says the market is higher (%s)" % b.tipBody)
     M.click(b)
-    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want2, "one snapshot: fills the market price")
+    sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want2[0], "one snapshot: fills 1 copper under the listing")
     r = ns.Recommend(R.RUNE, "1D", lp2)
     sc.eq((r.postAt, r.followFloor, r.listAt), (rec2["postAt"], rec2["followFloor"], 0),
           "one snapshot: postAt and followFloor match the model, no List At advice")
-    chart_check(sc, w, r2, R.RUNE, "1D", "one snapshot docked, market price")
-    check_sidebar_flips(sc, w, r2, "one snapshot")
-    sc.eq(ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], "one snapshot: sidebar says it is collecting price history")
+    chart_check(sc, w, r2, R.RUNE, "1D", "one snapshot docked, cheap listing")
+    want_f, why_f = check_sidebar_flips(sc, w, r2, "one snapshot")
+    if r2.flips:
+        sc.check(len(want_f) > 0 and all(x.get("data") for x in want_f),
+                 "one snapshot: the collector's flips show from the first snapshot")
+    else:
+        sc.eq(ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], "one snapshot: sidebar says it is collecting price history")
     w.close_ah_modern()
     sc.clean(w)
 
@@ -4528,7 +4909,8 @@ def sc_short_history(sc, ref, items):
     w.open_ah_modern()
     want, why = check_sidebar_flips(sc, w, r2, "two prices")
     if R.SIM:
-        sc.eq((len(want), why), (0, "history"), "two prices: every candidate waits for history")
+        hist, hwhy = ref_history_flips_why(r2)
+        sc.eq((len(hist), hwhy), (0, "history"), "two prices: every history candidate waits for history")
     w.close_ah_modern()
     sc.clean(w)
 
@@ -4540,7 +4922,7 @@ def sc_unreliable(sc, ref, items):
     price (enchanting dust: vendor 1c) is a real price and keeps its advice."""
     # an item with 10 or more units listed, made to sell for 300x its vendor
     # price; a flip idea when there is one, so the sidebar's own filter is tested too
-    was_ideas = [x["id"] for x in ref_flips_why(ref)[0]]
+    was_ideas = [x["id"] for x in ref_history_flips_why(ref)[0]]
     dust = next((i for i in was_ideas + other_items(ref, items, 400, avoid=SIDEBAR_WATCH)
                  if i not in ROLE_IDS() and ref.items[i]["listed"] >= 10 and ref.items[i]["market"] >= 300
                  and (ref.items[i]["auctions"] is None or ref.items[i]["auctions"] >= 3)), None)
@@ -4599,15 +4981,19 @@ def sc_unreliable(sc, ref, items):
     w.M.commodityResults[R.LINEN] = None
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.settle(0.2)
-    b = find_use_button(csf)
-    sc.check(b is not None and not b.IsVisible(b), "unreliable: no Use List At without a live listing")
+    pair = find_sell_buttons(csf)
+    b, bb = pair
+    # 2 listings: Sell now from the snapshot's cheapest, no Best price (not reliable)
+    want0 = ref_buttons(r2, R.LINEN, "1D")
+    sc.eq(want0[1], None, "unreliable: the model has no Best price")
+    buttons_ok(sc, pair, want0, "unreliable, no live listing")
     lp = r2.items[R.LINEN]["cheapest"] + 5
     w.set_commodity_results(R.LINEN, [(lp, 40, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.3)
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(lp - 1), "unreliable: follows the live listing (%s)" % b._text)
+    buttons_ok(sc, pair, (lp - 1, None), "unreliable: follows the live listing")
     reason = "not enough price history" if not ref_recommend(r2, R.LINEN, "1D", lp)["history"] else "may not be reliable"
-    sc.check(reason in (b.tipBody or ""), "unreliable: button tooltip says why (%s)" % b.tipBody)
+    sc.check(reason in (b.tipBody or ""), "unreliable: button tooltip says why there is no Best price (%s)" % b.tipBody)
     # following a listing a vendor pays more for: the button and the chart notes still say so
     w.put_bag(0, 2, R.RUNE, 20)
     w.M.commodityResults[R.RUNE] = None
@@ -4619,10 +5005,10 @@ def sc_unreliable(sc, ref, items):
     w.settle(0.3)
     want_r = ref_recommend(r2, R.RUNE, "1D", lp_r)
     vend = r2.items[R.RUNE]["vendor"]
-    sc.check(not want_r["advice"] and rec_model.sell_mode(want_r, lp_r) == "cheapest" and want_r["vendorBetter"]
+    P_r = ref_sell_prices(r2, R.RUNE, "1D", lp_r)
+    sc.check(not want_r["advice"] and want_r["vendorBetter"] and P_r["nowVendor"] and P_r["now"] == lp_r - 1
              and (lp_r - 1) * 95 // 100 <= vend, "vendor beats the listing: the model warns (%s)" % want_r["notes"])
-    sc.check(b.IsVisible(b) and b._text == "Use List At: " + money_icons(lp_r - 1),
-             "vendor beats the listing: button follows it (%s)" % b._text)
+    buttons_ok(sc, pair, (lp_r - 1, None), "vendor beats the listing: Sell now follows it")
     sc.check("A vendor pays more than this after the 5% cut." in (b.tipBody or ""),
              "vendor beats the listing: button tooltip warns (%s)" % b.tipBody)
     r = ns.Recommend(R.RUNE, "1D", lp_r)
@@ -4630,7 +5016,7 @@ def sc_unreliable(sc, ref, items):
     sc.eq(notes, want_r["notes"], "vendor beats the listing: notes match the model")
     sc.check("A vendor pays more (%s)" % rec_model.money_text(vend) in notes and r.vendorBetter
              and r.postAt == lp_r - 1, "vendor beats the listing: note and postAt (%s, %s)" % (notes, r.postAt))
-    # a few units far above the vendor price: the live listing is that same silly price, so no button
+    # a few units far above the vendor price: the live listing is that same silly price, so no buttons
     w.put_bag(0, 3, R.ARCANE, 1)
     w.M.commodityResults[R.ARCANE] = None
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 3))
@@ -4640,12 +5026,17 @@ def sc_unreliable(sc, ref, items):
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.ARCANE)
     w.settle(0.3)
     want_a = ref_recommend(r2, R.ARCANE, "1D", lp_a)
-    sc.check(want_a["vendorFar"] and ref_sell_price(r2, R.ARCANE, "1D", lp_a) is None, "vendor-far: the model has no button")
-    sc.check(not b.IsVisible(b), "vendor-far: no Use List At, even with a live listing (%s)" % b._text)
+    sc.check(want_a["vendorFar"] and ref_buttons(r2, R.ARCANE, "1D", lp_a) == (None, None), "vendor-far: the model has no buttons")
+    buttons_ok(sc, pair, (None, None), "vendor-far: no buttons, even with a live listing")
     want, why = check_sidebar_flips(sc, w, r2, "unreliable")
-    sc.check(not ({x["id"] for x in want} & {R.LINEN, R.RUNE, R.ARCANE}), "unreliable: never a flip idea")
+    hist = ns.HistoryFlipIdeas(5)
+    if isinstance(hist, tuple):   # (ideas, why) when there are none
+        hist = hist[0]
+    hist_ids = {hist[i].id for i in range(1, len(hist) + 1)}
+    sc.eq(hist_ids, {x["id"] for x in ref_history_flips_why(r2)[0]}, "unreliable: history ideas match the model")
+    sc.check(not (hist_ids & {R.LINEN, R.RUNE, R.ARCANE}), "unreliable: never a history flip idea")
     if dust is not None and dust in was_ideas:
-        sc.check(dust in {x["id"] for x in want}, "vendor-far deep %d: still a flip idea" % dust)
+        sc.check(dust in hist_ids, "vendor-far deep %d: still a flip idea" % dust)
     w.close_ah_modern()
     sc.clean(w)
 
@@ -4783,6 +5174,734 @@ def sc_y_axis(sc, ref, items):
     sc.clean(w)
 
 
+def sc_chart_lines(sc, ref, items):
+    """The Target Buy and List At boxes are toggles: no dashed line by default;
+    a click lights a box and shows only its line; the other box switches; the
+    lit box again hides it. The choice is kept in the settings."""
+    w = World(ref, items)
+    ns, M = w.ns, w.M
+    w.slash("/fah chart " + N(R.RUNE))
+    C = ns.ChartPanel
+    panel = [0.07, 0.08, 0.10]
+    sc.eq(ns.settings.chartLine, None, "lines: none by default")
+    chart_check(sc, w, ref, R.RUNE, "1D", "lines: default")
+    sc.eq(int(C.pools.tag.used), 0, "lines: no dashed line by default")
+    sc.check(C.buyBox._otype == "Button" and C.listBox._otype == "Button", "lines: the boxes are buttons")
+    # hover: a hand cursor and a tooltip that says what a click does
+    tt = w.g.GameTooltip
+    M.enter(C.buyBox)
+    sc.eq(M.cursor, "INTERACT_CURSOR", "lines: hand cursor over the Target Buy box")
+    flat = [a for a, _ in w.all_lines(tt)]
+    sc.check(w.same(tt.GetOwner(tt), C.buyBox) and flat and flat[0] == "Target Buy"
+             and "Click to show the gold Target Buy line on the chart." in flat, "lines: Target Buy hover tooltip (%s)" % flat)
+    sc.check(C.buyBox.highlight is not None and C.buyBox.highlight._layer == "HIGHLIGHT", "lines: the box lights up under the mouse")
+    rec = ref_recommend(ref, R.RUNE, "1D")
+    # click Target Buy: gold line only, box lit
+    M.click(C.buyBox)
+    sc.eq(ns.settings.chartLine, "buy", "lines: Target Buy click picks the gold line")
+    chart_check(sc, w, ref, R.RUNE, "1D", "lines: buy")
+    flat = [a for a, _ in w.all_lines(tt)]
+    sc.check("Click to hide the gold Target Buy line." in flat, "lines: the tooltip now says a click hides it (%s)" % flat)
+    if rec["buy"] > 0 and ref.window(R.RUNE, "1D")["n"] >= 2:
+        d = C.pools.dash["items"][1]
+        sc.eq([round(d._color[k], 3) for k in (1, 2, 3)], [0.898, 0.722, 0.259], "lines: the dashes are gold")
+    bg = C.buyBox.bg._color
+    sc.check(any(abs(bg[k + 1] - panel[k]) > 0.02 for k in range(3)) and abs(C.listBox.bg._color[2] - panel[1]) < 1e-6,
+             "lines: the lit box is brighter, the other is not (%s)" % (bg,))
+    M.leave(C.buyBox)
+    sc.eq(M.cursor, None, "lines: cursor back to normal on leave")
+    sc.check(not tt._shown, "lines: tooltip hidden on leave")
+    # click List At: switches to the blue line only
+    M.click(C.listBox)
+    sc.eq(ns.settings.chartLine, "sell", "lines: List At click switches to the blue line")
+    chart_check(sc, w, ref, R.RUNE, "1D", "lines: sell")
+    if rec["listAt"] > 0 and ref.window(R.RUNE, "1D")["n"] >= 2:
+        d = C.pools.dash["items"][1]
+        sc.eq([round(d._color[k], 3) for k in (1, 2, 3)], [0.22, 0.74, 0.97], "lines: the dashes are blue")
+    # the line stays across timeframes
+    M.click(C.tfButtons["1W"])
+    chart_check(sc, w, ref, R.RUNE, "1W", "lines: sell, 1W")
+    M.click(C.tfButtons["1D"])
+    # clicking the lit box again: no line
+    M.click(C.listBox)
+    sc.eq(ns.settings.chartLine, None, "lines: clicking the lit box turns the line off")
+    chart_check(sc, w, ref, R.RUNE, "1D", "lines: off again")
+    # the API does the same
+    ns.SetChartLine("buy")
+    chart_check(sc, w, ref, R.RUNE, "1D", "lines: SetChartLine buy")
+    ns.SetChartLine("nonsense")
+    sc.eq(ns.settings.chartLine, None, "lines: SetChartLine with a bad value turns the line off")
+    # dragging a box still moves the panel
+    M.drag(C.buyBox, "CENTER", "CENTER", 30, 20)
+    cp = ns.settings.chartPoint
+    sc.check(cp is not None and cp[1] == "CENTER" and cp[3] == 30 and cp[4] == 20, "lines: dragging a box moves the chart")
+    sc.eq(ns.settings.chartLine, None, "lines: a drag is not a click")
+    # other items keep the choice; items without advice show no line but keep it
+    ns.SetChartLine("sell")
+    for iid in sample_ids(ref, 30):
+        ns.ShowChart(iid, "slash")
+        chart_check(sc, w, ref, iid, "1D", "lines: sell %d" % iid)
+    sc.clean(w, "lines")
+    # saved settings: the choice comes back after a reload; a bad value is dropped
+    w2 = World(ref, items, saved={"chartLine": "sell"})
+    sc.eq(w2.ns.settings.chartLine, "sell", "lines: saved choice kept")
+    w2.slash("/fah chart " + N(R.RUNE))
+    chart_check(sc, w2, ref, R.RUNE, "1D", "lines: saved sell")
+    w3 = World(ref, items, saved={"chartLine": "both"})
+    sc.eq(w3.ns.settings.chartLine, None, "lines: a bad saved value is dropped")
+    sc.clean(w2, "lines saved")
+    sc.clean(w3, "lines bad saved")
+    # a short panel under the AH: the boxes are one-line chips that work the same way,
+    # and the saved choice (or no line) holds there too; both lines are never forced on
+    w4 = World(ref, items, screen=(768 * 16 / 9, 768, 0.85), saved={"chartLine": "buy"})
+    w4.open_ah_modern()
+    w4.ns.ShowChart(R.RUNE, "ah")
+    C4 = w4.ns.ChartPanel
+    sc.check((C4.panelH or 260) < 230, "lines: short panel test set up (%s)" % C4.panelH)
+    chart_check(sc, w4, ref, R.RUNE, "1D", "lines: short panel, saved buy")
+    w4.M.click(C4.buyBox)
+    sc.eq(w4.ns.settings.chartLine, None, "lines: short panel, the lit chip turns the line off")
+    chart_check(sc, w4, ref, R.RUNE, "1D", "lines: short panel, no line")
+    sc.eq(int(C4.pools.tag.used), 0, "lines: short panel shows no line by default")
+    w4.M.click(C4.listBox)
+    sc.eq(w4.ns.settings.chartLine, "sell", "lines: short panel, the List At chip picks the blue line")
+    chart_check(sc, w4, ref, R.RUNE, "1D", "lines: short panel, sell")
+    sc.check(int(C4.pools.tag.used) <= 1, "lines: short panel shows at most one line")
+    w4.close_ah_modern()
+    sc.clean(w4, "lines short")
+    # a client where SetOwner does not clear: the box help does not stack up with each click
+    w5 = World(ref, items, set_owner_clears=False)
+    w5.slash("/fah chart " + N(R.RUNE))
+    C5 = w5.ns.ChartPanel
+    tt5 = w5.g.GameTooltip
+    w5.M.enter(C5.buyBox)
+    n0 = len(w5.all_lines(tt5))
+    w5.M.click(C5.buyBox)
+    w5.M.click(C5.buyBox)
+    sc.eq(len(w5.all_lines(tt5)), n0, "lines: box help does not stack up after clicks (no-clear tooltip)")
+    w5.M.leave(C5.buyBox)
+    sc.clean(w5, "lines no-clear")
+
+
+# ---------------------------------------------------------------------------
+# Versions of gear (C1/C2: variants and vids), the collector's flips (C2c),
+# and data files from before them.
+# ---------------------------------------------------------------------------
+def link_bonus_model(link):
+    """Python model of Core.lua's LinkBonus: (sorted bonus ids, {type: value}) or None."""
+    m = re.search(r"item:([-\d:]*)", link or "")
+    if not m or m.group(1) == "":
+        return None
+    f = m.group(1).split(":")
+    n = len(f)
+
+    def whole(i):
+        return int(f[i - 1]) if 1 <= i <= n and re.match(r"^-?\d+$", f[i - 1]) else None
+    nb = whole(13) or 0
+    if nb < 0 or nb > 40 or 13 + nb > n:
+        nb = 0
+    bonus = [v for v in (whole(13 + k) for k in range(1, nb + 1)) if v and v > 0]
+    i = 14 + nb
+    nm = whole(i) or 0
+    mods = {}
+    if 0 < nm <= 40 and i + 2 * nm <= n:
+        for k in range(1, nm + 1):
+            t, v = whole(i + 2 * k - 1), whole(i + 2 * k)
+            if t is not None and v is not None:
+                mods[t] = v
+    return sorted(bonus), mods
+
+
+def gear_link(iid, bonus, mods=((28, 6874),), level=30, suffix=""):
+    """A link the way the modern client writes one for random-suffix gear."""
+    f = [str(iid), "", "", "", "", "", suffix, "", str(level), "", "", "1", str(len(bonus))] + [str(b) for b in bonus]
+    f += [str(len(mods))] + [str(x) for tm in mods for x in tm] + ["", "", "", ""]
+    return "|cff1eff00|Hitem:" + ":".join(f) + "|h[Gear]|h|r"
+
+
+def versioned_data(ref, items):
+    """(text, ref, base, [vid1, vid2], [bonus1, bonus2]) with versions of one item.
+    The data's own versions when it has them; otherwise two versions of a role
+    item are written into the file (its prices x0.5 and x2), like the collector does."""
+    text = ref.text
+    for base in sorted(ref.variants):
+        vids = [(k, v) for k, v in ref.variants[base] if v in ref.items and re.match(r"^\d+$", k)]
+        if base in ref.items and str(base) in items and len(vids) >= 2:
+            return (text, ref, base, [vids[0][1], vids[1][1]], [[int(vids[0][0])], [int(vids[1][0])]])
+    base = R.ARCANE
+    it = ref.items[base]
+    keys = [[91001], [91002, 91003]]
+    lines, vlines = [], []
+    for n, (key, mult, suffix) in enumerate(((keys[0], 0.5, " of the Bear"), (keys[1], 2.0, " of the Owl")), start=1):
+        vid = base * 1000 + n
+
+        def sc_(vals):
+            return [int(v * mult) if v else None for v in vals]
+        h, d = it["H"], it["D"]
+        f = [it["name"] + suffix, str(int(it["cheapest"] * mult)), str(int(it["market"] * mult)), str(it["listed"]),
+             str(it["sold24"]), str(int(it["avg7"] * mult)), str(it["vendor"]),
+             enc_series(sc_(h["cheap"]), sc_(h["market"]), h["sold"]),
+             enc_series(sc_(d["cheap"]), sc_(d["market"]), d["sold"]), str(it["auctions"] or "")]
+        lines.append("    [%d] = %s,\n" % (vid, lua_quote("|".join(f))))
+        vlines.append("%s=%d" % (":".join(str(b) for b in sorted(key)), vid))
+    text = set_table(text, "variants", ["[%d] = %s" % (base, lua_quote(",".join(vlines)))])
+    span = block_span(text, "items")
+    text = text[:span[1]] + "".join(lines) + text[span[1]:]
+    r2 = RefData(text=text)
+    return text, r2, base, [base * 1000 + 1, base * 1000 + 2], keys
+
+
+def sc_versions(sc, ref, items):
+    """Gear versions: links are read for their bonus ids; a version the data has
+    prices for uses them (tooltip, chart, sell buttons), anything else falls
+    back to the whole item's prices and says they cover all versions."""
+    text, r2, base, vids, keys = versioned_data(ref, items)
+    v1, v2 = vids
+    sc.check(r2.base_of.get(v1) == base and r2.base_of.get(v2) == base, "versions: test data has two versions of %d" % base)
+    w = World(r2, items, data_src=text)
+    ns, M = w.ns, w.M
+    age = w.now - r2.updated
+    # the version lookups
+    sc.check(ns.HasVariants(base) and not ns.HasVariants(v1), "versions: HasVariants")
+    sc.check(ns.IsVariant(v1) and not ns.IsVariant(base), "versions: IsVariant")
+    sc.eq((ns.BaseItemID(v1), ns.BaseItemID(base)), (base, base), "versions: BaseItemID")
+    sc.eq(ns.VariantNumber(v1), v1 - base * 1000, "versions: VariantNumber")
+    sc.eq(ns.VariantCount(), len(r2.base_of), "versions: VariantCount")
+    sc.eq(ns.ItemCount(), r2.base_count(), "versions: ItemCount leaves versions out")
+    sc.eq(ns.GetItem(v1).base, base, "versions: GetItem(vid).base")
+    # link parsing, against the Python model
+    links = [gear_link(base, keys[0]), gear_link(base, list(reversed(keys[1]))), gear_link(base, keys[0], mods=()),
+             gear_link(base, [55555]), gear_link(base, []), M.ItemLink(base), M.ItemLink(base, 1034),
+             "|cff1eff00|Hitem:%d::::::::30:::1:5:%d|h[cut short]|h|r" % (base, keys[0][0]),
+             "|Hitem:%d::::::::30:::1:999:1:2:3|h[silly count]|h" % base,
+             "|Hitem:%d::::::::30:::1:1:abc:1:28:6874|h[junk]|h" % base,
+             "item:%d:0:0:0:0:0:0:0:30:0:0:1:1:%d:2:28:6874:9:5" % (base, keys[0][0]),
+             "not a link", "", "item:", "|Hitem:%d|h[short]|h" % base,
+             gear_link(base, [70002, 70001, 70003]), gear_link(base, keys[1][::-1] + [70009])]
+    for ln in links:
+        want = link_bonus_model(ln)
+        got = ns.LinkBonus(ln)
+        if isinstance(got, tuple):
+            gb, gm = got
+            gbl = [gb[i] for i in range(1, len(gb) + 1)]
+            gml = {int(k): int(v) for k, v in gm.items()}
+            sc.eq((gbl, gml), want, "versions: LinkBonus %r" % ln)
+        else:
+            sc.eq(got, want, "versions: LinkBonus %r" % ln)
+        wkey = ":".join(str(b) for b in want[0]) if want else ""
+        sc.eq(ns.VariantKey(ln), wkey, "versions: VariantKey %r" % ln)
+        wv = r2.find_variant(base, want[0], want[1]) if want else None
+        sc.eq(ns.FindVariant(base, ln), wv, "versions: FindVariant %r" % ln)
+    sc.eq(ns.FindVariant(base, gear_link(base, keys[0])), v1, "versions: the first version's link finds it")
+    sc.eq(ns.FindVariant(base, gear_link(base, list(reversed(keys[1])))), v2, "versions: bonus ids in any order")
+    sc.eq(ns.FindVariant(base, gear_link(base, [55555])), None, "versions: an unknown version is not found")
+    # VariantLink: a link the game can show, carrying that version's bonus ids
+    for vid, key in ((v1, keys[0]), (v2, keys[1])):
+        vl = ns.VariantLink(vid)
+        sc.check(vl is not None and link_bonus_model(vl)[0] == sorted(key), "versions: VariantLink(%d) carries its bonus ids (%s)" % (vid, vl))
+        sc.eq(ns.FindVariant(base, vl), vid, "versions: VariantLink(%d) finds it again" % vid)
+    sc.eq(ns.VariantLink(base), None, "versions: no VariantLink for a plain id")
+    sc.eq(ns.ResolveItem(gear_link(base, keys[0])), v1, "versions: ResolveItem of a version's link")
+    sc.eq(ns.ResolveItem(gear_link(base, [55555])), base, "versions: ResolveItem of an unknown version: the item")
+    # tooltips: bag items of each kind
+    tt = w.g.GameTooltip
+    cases = [("version", keys[0], v1, "version"), ("other version", keys[1], v2, "version"),
+             ("unknown version", [55555], base, "all"), ("plain copy", None, base, "all"),
+             ("old suffix link", "suffix", base, "all")]
+    for slot, (what, key, pid, cover) in enumerate(cases, start=1):
+        if key == "suffix":
+            w.put_bag(2, slot, base, 3, suffix=1034)
+        else:
+            w.put_bag(2, slot, base, 3, bonus=key)
+        for no_hl in (False, True):
+            M.noHyperlink = no_hl
+            tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+            tt.SetBagItem(tt, 2, slot)
+            sc.eq(w.lines(tt), expected_tooltip(r2, pid, age, count=3, cover=cover),
+                  "versions: %s tooltip%s" % (what, " (link from GetItem)" if no_hl else ""))
+        M.noHyperlink = False
+    ir = w.g.ItemRefTooltip
+    ir.SetHyperlink(ir, gear_link(base, keys[1]))
+    sc.eq(w.lines(ir), expected_tooltip(r2, v2, age, cover="version"), "versions: chat link of a version")
+    tt.SetItemByID(tt, base)
+    sc.eq(w.lines(tt), expected_tooltip(r2, base, age, cover="all"), "versions: the plain item by id covers all versions")
+    # chart for a version: its own prices, the game's icon
+    ns.ShowChart(v1, "slash")
+    chart_check(sc, w, r2, v1, "1D", "versions: chart of a version")
+    C = ns.ChartPanel
+    if str(base) in items:
+        sc.eq(C.icon._texture, 130000 + base, "versions: the chart shows the game item's icon")
+    ns.ShowChart(base, "slash")
+    chart_check(sc, w, r2, base, "1D", "versions: chart of the item")
+    sc.check("Price covers all versions of this item" in (C.notes._text or ""), "versions: the item's chart says it covers all versions")
+    sc.check(C.buyBox.value._text == "Depends on the version" and C.listBox.value._text == "Depends on the version"
+             and C.verdict._text == "No advice yet", "versions: the whole item's chart gives no targets (they would mix versions)")
+    for line in ("buy", "sell"):
+        ns.SetChartLine(line)
+        chart_check(sc, w, r2, base, "1D", "versions: chart of the item, %s line" % line)
+        sc.eq(int(C.pools.tag.used), 0, "versions: no %s line for the whole item" % line)
+    ns.SetChartLine(None)
+    w.slash("/fah chart " + gear_link(base, keys[0]))
+    sc.eq(ns.ChartItem(), v1, "versions: /fah chart with a version's link")
+    # names: a version without a name in the data
+    nm_text = rewrite_items(text, lambda iid, f: ([""] + f[1:]) if iid == v2 else None)
+    w5 = World(RefData(text=nm_text), items, data_src=nm_text)
+    gname = w5.game_name(base)
+    want_nm = (gname + " (version %d)" % (v2 - base * 1000)) if gname else "Item %d (version %d)" % (base, v2 - base * 1000)
+    sc.eq(w5.ns.ItemName(v2), want_nm, "versions: a version with no name in the data")
+    sc.clean(w5, "versions names")
+    # selling: the version's own prices; live gear listings per version
+    M["items"][base].commodity = False
+    w.put_bag(0, 1, base, 1, bonus=keys[0])
+    w.put_bag(0, 2, base, 1, bonus=[55555])
+    w.put_bag(0, 3, base, 1)
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    isf = ah.ItemSellFrame
+    pair = find_sell_buttons(isf)
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
+    w.settle(0.2)
+    sc.eq(ns.ChartItem(), v1, "versions: a version in the sell slot shows its chart")
+    buttons_ok(sc, pair, ref_buttons(r2, v1, "1D", is_commodity=False), "versions: sell buttons use the version's prices")
+    sc.check("Prices for this version only" in (pair[0].tipBody or "") or not pair[0].IsVisible(pair[0]),
+             "versions: the button tooltip says it is this version (%s)" % pair[0].tipBody)
+    # the sell search came back with several versions
+    cheap1 = max(200, r2.items[v1]["cheapest"] + 300)
+    cheap2 = max(150, cheap1 // 3)
+    t = w.lua.table()
+    for k, row in enumerate([{"buyout": cheap2, "quantity": 1, "bonus": keys[1]},
+                             {"buyout": cheap1, "quantity": 1, "bonus": keys[0]},
+                             {"buyout": cheap1 + 900, "quantity": 1, "bonus": keys[0]},
+                             {"buyout": 4321, "quantity": 1, "bonus": [55555]},
+                             {"buyout": 9999, "quantity": 1}], start=1):
+        t[k] = w.to_lua(row)
+    M.itemResults[base] = t
+    M.fire("ITEM_SEARCH_RESULTS_UPDATED", w.to_lua({"itemID": base, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0}))
+    w.settle(0.3)
+    sc.eq(w.live(v1), cheap1, "versions: live price of this version (not the cheaper other one)")
+    sc.eq(w.live(v2), cheap2, "versions: the other version's live price too")
+    sc.eq(w.live(base), None, "versions: no all-versions live price when versions differ")
+    buttons_ok(sc, pair, ref_buttons(r2, v1, "1D", cheap1, is_commodity=False), "versions: live listing of this version")
+    # a version the data does not have: only its own live listing
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 2))
+    w.settle(0.2)
+    sc.eq(ns.ChartItem(), base, "versions: an unknown version shows the item's chart")
+    buttons_ok(sc, pair, (price_for_frame(4320, False), None), "versions: unknown version follows its own live listing")
+    sc.check("does not have this version" in (pair[0].tipBody or ""), "versions: and says so (%s)" % pair[0].tipBody)
+    # a plain copy of an item whose versions differ: its own (no bonus ids) listings only
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 3))
+    w.settle(0.2)
+    buttons_ok(sc, pair, (price_for_frame(9998, False), None), "versions: plain copy follows plain listings")
+    M.itemResults[base] = w.lua.table()
+    M.fire("ITEM_SEARCH_RESULTS_UPDATED", w.to_lua({"itemID": base, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0}))
+    w.settle(0.3)
+    buttons_ok(sc, pair, (None, None), "versions: no listing of that version: no buttons")
+    sc.eq(w.live(v1), None, "versions: a version's live price is dropped with its listings")
+    # a version with prices of its own, after the listings loaded with none of it: nothing to undercut,
+    # so no Sell now from the gone listing (Best price, from the history, stays)
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
+    w.settle(0.2)
+    want_best = ref_buttons(r2, v1, "1D", is_commodity=False)[1]
+    buttons_ok(sc, pair, (None, want_best), "versions: version with no listing up: no Sell now")
+    if want_best:
+        sc.check("No listing of this version is up right now" in (pair[1].tipBody or ""),
+                 "versions: the Best price tooltip says no listing is up (%s)" % pair[1].tipBody)
+    # the sidebar searches a version by its item's name and keeps the version on the chart
+    ns.SearchAH(v1)
+    w.settle(0.2)
+    sc.eq(ah.SearchBar.SearchBox.GetText(ah.SearchBar.SearchBox), item_name(r2, items, base), "versions: search uses the item's name")
+    sc.eq(ns.ChartItem(), v1, "versions: chart shows the version")
+    w.set_browse([(base, 500, 3)])
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.5)
+    sc.eq(ns.ChartItem(), v1, "versions: and keeps it when the item's listings open")
+    w.settle(11)
+    r = w.lua.table()
+    r.itemKey = w.to_lua({"itemID": base, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0})
+    r.minPrice = 500
+    ah.SelectBrowseResult(ah, r)
+    sc.eq(ns.ChartItem(), base, "versions: a later click on the item shows the item again")
+    # an auction house that lists each version as its own row (item keys with a suffix)
+    v1name, v2name = item_name(r2, items, v1), item_name(r2, items, v2)
+    w.lua.execute("""
+      MOCK.splitNames = {}
+      local CAH = C_AuctionHouse
+      MOCK.origKeyInfo = MOCK.origKeyInfo or CAH.GetItemKeyInfo
+      CAH.GetItemKeyInfo = function(key)
+        local info = MOCK.origKeyInfo(key)
+        local n = key and MOCK.splitNames[key.itemSuffix or 0]
+        if info and n then info.itemName = n end
+        return info
+      end
+      MOCK.origBrowse = MOCK.origBrowse or CAH.GetBrowseResults
+      CAH.GetBrowseResults = function()
+        if not MOCK.splitRows then return MOCK.origBrowse() end
+        return MOCK.splitRows
+      end
+    """)
+
+    def split_rows(names):
+        w.lua.execute("MOCK.splitNames = {}; MOCK.splitRows = {}")
+        for k, (sfx, nm) in enumerate(names, start=1):
+            w.M.splitNames[sfx] = nm
+            w.M.splitRows[k] = w.to_lua({"itemKey": {"itemID": base, "itemLevel": 0, "itemSuffix": sfx,
+                                                     "battlePetSpeciesID": 0}, "minPrice": 400 + k, "totalQuantity": 1})
+
+    w.lua.execute("""
+      local f = AuctionHouseFrame
+      MOCK.openedRows = {}
+      if not MOCK.origSelect then
+        MOCK.origSelect = f.SelectBrowseResult
+        f.SelectBrowseResult = function(self, row)
+          MOCK.openedRows[#MOCK.openedRows + 1] = row.itemKey.itemSuffix
+          return MOCK.origSelect(self, row)
+        end
+      end
+    """)
+    # rows that do not carry the version's name: none is opened, the player picks
+    split_rows([(1017, "Odd Name One"), (1034, "Odd Name Two")])
+    ns.SearchAH(v1)
+    w.settle(0.2)
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.5)
+    sc.eq(len(w.M.openedRows), 0, "versions: split rows with no matching name: none opened for the player")
+    sc.eq(ns.ChartItem(), v1, "versions: and the chart stays on the version that was searched")
+    # the player clicks a row of a version the data cannot name: the item, never the searched version
+    rk = w.M.splitRows[1]
+    ah.SelectBrowseResult(ah, rk)
+    sc.eq(ns.ChartItem(), base, "versions: clicking another version's row does not keep the searched version")
+    w.settle(11)
+    # rows named after the versions: the searched one is opened, clicks show each row's own version
+    split_rows([(1017, v2name), (1034, v1name)])
+    w.lua.execute("MOCK.openedRows = {}")
+    ns.SearchAH(v1)
+    w.settle(0.2)
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.5)
+    sc.eq(list(w.M.openedRows.values()), [1034], "versions: the row with the version's name is the one opened")
+    sc.eq(ns.ChartItem(), v1, "versions: chart of that version")
+    ah.SelectBrowseResult(ah, w.M.splitRows[1])
+    sc.eq(ns.ChartItem(), v2, "versions: clicking the other version's row shows that version")
+    w.settle(11)
+    w.lua.execute("MOCK.splitRows = nil; MOCK.splitNames = {}")
+    # watchlist: a shift-clicked version link is watched as that version
+    SB = ns.SidebarPanel
+    box = SB.addBox
+    w.lua.execute("ChatEdit_InsertLink = function(link) return false end")
+    SB.hookedLink = None
+    SB.HookInsertLink()
+    box.SetFocus(box)
+    w.g.ChatEdit_InsertLink(gear_link(base, keys[1]))
+    sc.eq(watch_ids(w)[0], v2, "versions: a shifted-clicked version link is watched as that version")
+    row = shown_rows(SB, "watchRows")[0]
+    sc.eq(row.name._text, item_name(r2, items, v2), "versions: watch row shows the version's name")
+    if str(base) in items:
+        sc.eq(row.icon._texture, 130000 + base, "versions: watch row shows the item's icon")
+    # the old auction house frame gives no item link: gear whose versions differ gets no buttons
+    # there (never the mixed all-versions price)
+    wl = World(r2, items, data_src=text, client="legacy")
+    wl.M.fire("AUCTION_HOUSE_SHOW")
+    wl.settle(0.3)
+    wl.M.cursorItem = wl.to_lua({"itemID": base, "count": 1})
+    wl.M.click(wl.g.AuctionsItemButton)
+    wl.settle(0.2)
+    sc.eq(wl.ns.ChartItem(), base, "versions: old AH frame, gear in the sell slot")
+    buttons_ok(sc, find_sell_buttons(wl.g.AuctionFrameAuctions), (None, None),
+               "versions: old AH frame, gear whose versions differ: no buttons")
+    wl.M.fire("AUCTION_HOUSE_CLOSED")
+    wl.settle(0.3)
+    sc.clean(wl, "versions legacy")
+    # shift-click on a version's row puts a link in chat (not a search)
+    w.lua.execute("MOCK.inserted = {}; ChatFrameUtil = nil; "
+                  "ChatEdit_InsertLink = function(ln) table.insert(MOCK.inserted, ln) return true end")
+    w.lua.execute("IsModifiedClick = function(k) return k == 'CHATLINK' end")
+    bar = ah.SearchBar.SearchBox
+    bar.SetText(bar, "")
+    M.click(row)
+    w.lua.execute("IsModifiedClick = function() return false end")
+    inserted = list(w.M.inserted.values())
+    sc.check(len(inserted) == 1 and "item:%d" % base in str(inserted[0]),
+             "versions: shift-click on a version row links it in chat (%s)" % inserted)
+    sc.eq(bar.GetText(bar), "", "versions: and does not search")
+    M["items"][base].commodity = True
+    w.close_ah_modern()
+    sc.clean(w)
+
+
+def synth_flips(ref, items):
+    """Flip lines like the collector writes ("id|kind|buyMax|units|cost|relist|profit|roi|risk"),
+    made from the data's prices, plus a broken one and a repeat that must be skipped."""
+    out = []
+    it = ref.items[R.RUNE]
+    buy = max(2, it["cheapest"])
+    rel = max(buy + 10, it["market"])
+    units = 7
+    cost = buy * units
+    profit = int(rel * units * 0.95) - cost
+    out.append("%d|gap|%d|%d|%d|%d|%d|%d|thin,slow" % (R.RUNE, buy, units, cost, rel, max(1, profit), max(1, profit) * 1000 // cost))
+    lin = ref.items[R.LINEN]
+    vend = max(1, lin["vendor"])
+    out.append("%d|vendor|%d|40|%d|0|%d|%d|" % (R.LINEN, max(1, vend - 3), max(1, vend - 3) * 40, 3 * 40, 3 * 40 * 1000 // (max(1, vend - 3) * 40)))
+    out.append("%d|gap|%d|1|%d|%d|%d|%d|spike" % (R.LOTUS, ref.items[R.LOTUS]["cheapest"], ref.items[R.LOTUS]["cheapest"],
+                                                   ref.items[R.LOTUS]["cheapest"] * 2, ref.items[R.LOTUS]["cheapest"], 1000))
+    out.append("%d|bogus|1|1|1|1|1|1|" % R.ARCANE)         # unknown kind: skipped
+    out.append("garbage")                                  # not a flip: skipped
+    out.append("%d|gap|5|1|5|0|3|600|" % R.ARCANE)         # a gap flip with no relist price: skipped
+    out.append("%d|gap|%d|2|%d|%d|50|10|" % (R.RUNE, buy, buy * 2, rel))   # the same item again: shown once
+    return out
+
+
+def flips_data(ref, items):
+    """(text, ref) with the collector's flips: the data's own, else made up from its prices."""
+    if ref.flips:
+        return ref.text, ref
+    text = set_table(ref.text, "flips", [lua_quote(s) for s in synth_flips(ref, items)])
+    return text, RefData(text=text)
+
+
+def sc_data_flips(sc, ref, items):
+    """The collector's flips show first in the sidebar (they work from one
+    snapshot), each row: icon, name, Buy up to X (N), Relist Y or Sell to
+    vendor, +profit and a small risk note explained on hover."""
+    text, r2 = flips_data(ref, items)
+    sc.check(len(r2.flips) > 0, "collector flips: test data has flips (%d)" % len(r2.flips))
+    w = World(r2, items, data_src=text)
+    ns, M = w.ns, w.M
+    df = ns.DataFlips()
+    got = [{"id": df[i].id, "kind": df[i].kind, "buyMax": df[i].buyMax, "units": df[i].units, "cost": df[i].cost,
+            "relist": df[i].relist, "profit": df[i].profit, "roi": df[i].roi,
+            "risk": [df[i].risk[k] for k in range(1, len(df[i].risk) + 1)]} for i in range(1, len(df) + 1)]
+    sc.eq(got, r2.flips, "collector flips: DataFlips reads every valid flip, in order")
+    w.open_ah_modern()
+    SB = ns.SidebarPanel
+    want, why = check_sidebar_flips(sc, w, r2, "collector flips")
+    rows = shown_rows(SB, "flipRows")
+    sc.check(bool(want) and bool(want[0].get("data")) and len(rows) == len(want), "collector flips: a collector flip comes first")
+    tt = w.g.GameTooltip
+    for r, x in zip(rows, want):
+        if not x.get("data"):
+            continue
+        M.enter(r)
+        lines = w.all_lines(tt)
+        flat = [strip_codes(a or "") + " | " + strip_codes(b or "") for a, b in lines]
+        lab = "collector flip %d hover" % x["id"]
+        sc.check(any(f.startswith("Flip idea from the latest prices") for f in flat), lab + ": title")
+        sc.check(any(f.startswith("Buy up to (each) | " + ns.MoneyText(x["buyMax"])) for f in flat), lab + ": buy up to")
+        sc.check(any(f.startswith("That buys %s, costing | %s" % (count_text(x["units"]), ns.MoneyText(x["cost"]))) for f in flat),
+                 lab + ": units and cost")
+        if x["kind"] == "vendor":
+            sc.check(any(f == "Then | sell to a vendor" for f in flat), lab + ": sell to a vendor")
+            sc.check(any(f.startswith("Profit over the cost | +" + ns.MoneyText(x["profit"])) for f in flat), lab + ": profit")
+        else:
+            sc.check(any(f.startswith("Relist at (each) | " + ns.MoneyText(x["relist"])) for f in flat), lab + ": relist")
+            sc.check(any(f.startswith("Profit, after the 5% cut | +" + ns.MoneyText(x["profit"])) for f in flat), lab + ": profit")
+        if x["roi"] > 0:
+            sc.check(any(f.startswith("Return on what you spend | %.1f%%" % (x["roi"] / 10.0)) for f in flat), lab + ": return")
+        for flag in x["risk"]:
+            sc.check(any(f.lower().startswith(("versions" if flag == "suffix" else flag) + ":") for f in flat),
+                     lab + ": explains the %s risk" % flag)
+        if x["id"] in r2.base_of:
+            sc.check(any(f.startswith("Prices for this version only") for f in flat), lab + ": the item tooltip is the version's")
+        sc.check(any("Click: open it in the auction house" in f for f in flat), lab + ": says what a click does")
+        M.leave(r)
+    # clicking a collector flip searches its item and shows its chart
+    first = rows[0]
+    fid = first.itemID
+    M.click(first)
+    w.settle(0.2)
+    base = r2.base_of.get(fid, fid)
+    sc.eq(w.g.AuctionHouseFrame.SearchBar.SearchBox.GetText(w.g.AuctionHouseFrame.SearchBar.SearchBox),
+          item_name(r2, items, base), "collector flips: click searches the item's name")
+    sc.eq(ns.ChartItem(), fid, "collector flips: and shows its chart")
+    # not interested: the next one moves up
+    install_menu_mock(w)
+    M.click(first, "RightButton")
+    menu_pick(w, "Not interested (hide for a day)")
+    want2 = ref_flips(r2, hidden={fid})
+    sc.eq([r.itemID for r in shown_rows(SB, "flipRows")], [x["id"] for x in want2], "collector flips: a hidden flip is replaced")
+    out = w.slash("/fah flips")
+    ideas = ref_flips(r2, limit=10, hidden={fid})
+    sc.eq(len(out), len(ideas) + 1, "collector flips: /fah flips prints them")
+    for line, x in zip(out[1:], ideas):
+        s = strip_codes(line)
+        if x.get("data"):
+            what = "sell to vendor" if x["kind"] == "vendor" else "relist " + ns.MoneyText(x["relist"])
+            sc.check(("buy up to %s (%s), %s, +%s" % (ns.MoneyText(x["buyMax"]), count_text(x["units"]), what,
+                                                        ns.MoneyText(x["profit"]))) in s
+                     and (("risk: " + ", ".join(x["risk"])) in s) == bool(x["risk"]), "collector flips: chat line (%s)" % s)
+    w.close_ah_modern()
+    sc.clean(w)
+    # a collector flip on a price that may be one player's guess (a few units far above what a
+    # vendor pays): the addon gives no Sell now or Best price for it, so the flip warns too
+    lot = ref.items[R.LOTUS]
+    if lot["market"] > 0 and lot["cheapest"] > 0:
+        vend = max(1, lot["market"] // 300)
+        doubt = rewrite_items(ref.text, lambda iid, f: (f[:3] + ["4"] + f[4:6] + [str(vend)] + f[7:9] + ["4"])
+                              if iid == R.LOTUS else None)
+        buy = max(100, lot["cheapest"], lot["market"] // 2)
+        rel = buy * 2
+        doubt = set_table(doubt, "flips", [lua_quote("%d|gap|%d|1|%d|%d|%d|%d|" % (R.LOTUS, buy, buy, rel, rel * 95 // 100 - buy,
+                                                                                (rel * 95 // 100 - buy) * 1000 // buy))])
+        r4 = RefData(text=doubt)
+        sc.check(price_doubt(r4, R.LOTUS), "collector flips: test data with a doubtful price made")
+        w4 = World(r4, items, data_src=doubt)
+        w4.open_ah_modern()
+        want4, _ = check_sidebar_flips(sc, w4, r4, "collector flips, doubtful price")
+        sc.check(bool(want4) and want4[0]["id"] == R.LOTUS and want4[0]["risk"] == ["unsure"],
+                 "collector flips: the doubtful flip says unsure (%s)" % (want4[:1],))
+        rows4 = shown_rows(w4.ns.SidebarPanel, "flipRows")
+        if rows4:
+            w4.M.enter(rows4[0])
+            flat = [strip_codes(a or "") for a, _ in w4.all_lines(w4.g.GameTooltip)]
+            sc.check("Watch out" in flat and any(f.startswith("Unsure:") for f in flat),
+                     "collector flips: the hover explains it (%s)" % flat[-8:])
+            w4.M.leave(rows4[0])
+        w4.close_ah_modern()
+        sc.clean(w4, "doubtful flip")
+    # they work from a single snapshot (no history, no sales yet)
+    one = one_snapshot_text(r2)
+    r3 = RefData(text=one)
+    w2 = World(r3, items, data_src=one)
+    w2.open_ah_modern()
+    want3, _ = check_sidebar_flips(sc, w2, r3, "collector flips, one snapshot")
+    sc.check(len(want3) > 0 and all(x.get("data") for x in want3), "collector flips: shown from the very first snapshot")
+    w2.close_ah_modern()
+    sc.clean(w2, "one snapshot")
+
+
+def old_format_text(ref):
+    """The data as an older collector wrote it: no variants, no flips, no version lines."""
+    text = drop_table(drop_table(ref.text, "variants"), "flips")
+    span = block_span(text, "items")
+    if span and ref.base_of:
+        a, b = span
+        body = re.sub(r'(?m)^[ \t]*\[(\d+)\][ \t]*=[ \t]*"(?:[^"\\\n]|\\.)*",?[ \t]*\r?\n',
+                      lambda m: "" if int(m.group(1)) in ref.base_of else m.group(0), text[a:b])
+        text = text[:a] + body + text[b:]
+    return text
+
+
+def sc_old_format(sc, ref, items):
+    """A data file from before versions and flips: every item counts, the
+    sidebar shows the history ideas as before, gear links say "all versions",
+    and gear with bonus ids only follows a live listing of that version."""
+    text = old_format_text(ref)
+    r2 = RefData(text=text)
+    sc.check(not r2.variants and not r2.flips and not r2.base_of, "old format: test data made")
+    w = World(r2, items, data_src=text)
+    ns, M = w.ns, w.M
+    sc.eq((ns.ItemCount(), ns.VariantCount()), (len(r2.items), 0), "old format: item count, no versions")
+    sc.eq(ns.DataFlips() and len(ns.DataFlips()), 0, "old format: no collector flips")
+    out = "\n".join(w.slash("/fah"))
+    sc.check("versions of gear" not in out, "old format: status has no versions line")
+    w.open_ah_modern()
+    SB = ns.SidebarPanel
+    want, why = check_sidebar_flips(sc, w, r2, "old format")
+    sc.check(all(not x.get("data") for x in want), "old format: only history ideas")
+    rows = shown_rows(SB, "flipRows")
+    tt = w.g.GameTooltip
+    if rows:
+        M.enter(rows[0])
+        flat = [strip_codes(a or "") + " | " + strip_codes(b or "") for a, b in w.all_lines(tt)]
+        sc.check(any(f.startswith("Profit each, after the 5% cut") for f in flat), "old format: history idea hover")
+        M.leave(rows[0])
+    if R.SIM:
+        sc.check(len(want) > 0, "old format: the simulated data still gives history ideas")
+    # gear links carrying bonus ids: the whole item's prices, said to cover all versions
+    age = w.now - r2.updated
+    w.put_bag(3, 1, R.ARCANE, 2, bonus=[12718])
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+    tt.SetBagItem(tt, 3, 1)
+    sc.eq(w.lines(tt), expected_tooltip(r2, R.ARCANE, age, count=2, cover="all"), "old format: a version's tooltip covers all versions")
+    w.put_bag(3, 2, R.ARCANE, 2)
+    tt.SetBagItem(tt, 3, 2)
+    sc.eq(w.lines(tt), expected_tooltip(r2, R.ARCANE, age, count=2, cover=None), "old format: a plain copy is a plain item")
+    M["items"][R.ARCANE].commodity = False
+    ah = w.g.AuctionHouseFrame
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 3, 1))
+    w.settle(0.2)
+    pair = find_sell_buttons(ah.ItemSellFrame)
+    buttons_ok(sc, pair, (None, None), "old format: no buttons for a version without its own listing")
+    t = w.lua.table()
+    t[1] = w.to_lua({"buyout": 77700, "quantity": 1, "bonus": [12718]})
+    M.itemResults[R.ARCANE] = t
+    M.fire("ITEM_SEARCH_RESULTS_UPDATED", w.to_lua({"itemID": R.ARCANE, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0}))
+    w.settle(0.3)
+    buttons_ok(sc, pair, (price_for_frame(77699, False), None), "old format: Sell now from that version's live listing")
+    M["items"][R.ARCANE].commodity = True
+    w.close_ah_modern()
+    sc.clean(w)
+
+
+def sc_stack_verdicts(sc, ref, items):
+    """"This stack (N)": what it brings at auction (Sell now, after the 5% cut)
+    against a vendor, and a plain green or red verdict."""
+    picks = [i for i in other_items(ref, items, 60, avoid=SIDEBAR_WATCH) if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0]
+    if not sc.check(len(picks) >= 4, "stack: enough items to test with"):
+        return
+    a, b_, c, d = picks[:4]
+
+    def fn(iid, f):
+        f = f + [""] * (10 - len(f))
+        if iid == a:                      # a vendor pays more than the auction would
+            f[6] = str(max(int(f[1]), 1) * 3)
+        elif iid == b_:                   # a vendor will not buy it
+            f[6] = "0"
+        elif iid == c:                    # the same either way: (21 - 1) * 0.95 = 19
+            f[1], f[6] = "21", "19"
+            f[3] = "50"
+        elif iid == d:                    # nothing listed now
+            f[1] = "0"
+            f[6] = "25"
+        return f
+    text = rewrite_items(ref.text, fn)
+    r2 = RefData(text=text)
+    w = World(r2, items, data_src=text)
+    ns, M = w.ns, w.M
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    pos, neg = (0.25, 0.80, 0.45), (0.90, 0.33, 0.33)
+    for slot, (iid, count, verdict) in enumerate(((a, 20, "Vendor it"), (b_, 5, "Auction it: a vendor will not buy it"),
+                                                   (c, 1, "Vendor it: a vendor pays the same"), (d, 4, None),
+                                                   (R.LINEN, 20, None), (R.RUNE, 1, None)), start=1):
+        w.put_bag(4, slot, iid, count)
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 4, slot)
+        lines = w.lines(tt)
+        want = expected_tooltip(r2, iid, age, count=count)
+        sc.eq(lines, want, "stack %d x%d tooltip" % (iid, count))
+        texts = [l for l, _ in lines]
+        if verdict:
+            sc.check(any(t.startswith(verdict) for t in texts), "stack %d: verdict %r (%s)" % (iid, verdict, texts))
+        if iid == d:
+            sc.check(not any(t.startswith(("Auction it", "Vendor it")) for t in texts) and
+                     any(t.startswith("This stack (4) at a vendor") for t in texts),
+                     "stack %d: nothing listed: only what a vendor pays" % iid)
+        al = M.addonLines(tt)
+        for k in range(1, len(al) + 1):
+            ln = al[k]
+            if (ln.left or "").startswith("Auction it"):
+                sc.eq((round(ln.lr, 2), round(ln.lg, 2), round(ln.lb, 2)), pos, "stack %d: auction verdict is green" % iid)
+            elif (ln.left or "").startswith("Vendor it"):
+                sc.eq((round(ln.lr, 2), round(ln.lg, 2), round(ln.lb, 2)), neg, "stack %d: vendor verdict is red" % iid)
+    # with the auction house open, the live listing is used
+    w.open_ah_modern()
+    lp = r2.items[R.LINEN]["cheapest"] + 11
+    w.set_commodity_results(R.LINEN, [(lp, 30, False)])
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
+    w.settle(0.3)
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+    tt.SetBagItem(tt, 4, 5)
+    sc.eq(w.lines(tt), expected_tooltip(r2, R.LINEN, age, count=20, live=lp), "stack: live listing used for Sell now and the stack")
+    tooltip_values_ok(sc, r2, R.LINEN, w.lines(tt), 1, "stack live", live=lp)
+    w.close_ah_modern()
+    # compact tooltips stay one line
+    w.slash("/fah compact")
+    tt.SetBagItem(tt, 4, 1)
+    sc.eq(w.lines(tt), expected_tooltip(r2, a, age, compact=True), "stack: compact tooltip has no stack lines")
+    sc.clean(w)
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -4822,6 +5941,11 @@ SCENARIOS = [
     ("unreliable-prices", sc_unreliable),
     ("unknown-and-shared-names", sc_names),
     ("y-axis-tiny-range", sc_y_axis),
+    ("chart-line-toggles", sc_chart_lines),
+    ("gear-versions", sc_versions),
+    ("collector-flips", sc_data_flips),
+    ("old-data-format", sc_old_format),
+    ("stack-verdicts", sc_stack_verdicts),
 ]
 
 

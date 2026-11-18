@@ -14,7 +14,12 @@ app on /wow/ can read them with almost no changes:
   24h.json       {data: {id: {avgHighPrice, highPriceVolume, avgLowPrice, lowPriceVolume}}}
   volumes.json   {timestamp, data: {id: estimated units sold in 24h}}
   hist/<id>.json {h: [[t, low, high, listed, sold], ...] hourly, last 35 days,
-                  d: [[t, low, high, listed, sold], ...] daily, kept forever}
+                  d: [[t, low, high, listed, sold], ...] daily, kept forever,
+                  v: the variant key, only in a variant's file}
+  flips.json     {updated, flips: [...]} flip ideas found in this snapshot,
+                 best first (see write_flips)
+  suffix_names.json
+                 a copy of tools/wow/suffix_names.json (see below)
   houses.json    every house the API lists, with auction counts (for checking IDs)
   status.json    when Blizzard made the data, when this ran and what it saw
   ForeverAH_Data.lua
@@ -46,6 +51,37 @@ Last-Modified header), "fetched" is when this script ran.
 
 Prices are in copper (1g = 10000c), like the game.
 
+Versions of the same item (variants). Green gear comes with a random suffix
+("of the Bear", "of the Eagle"), and each suffix is really a different item
+with a different price. The API marks it in the auction's "bonus_lists". The
+variant key of an auction is its bonus ids sorted ascending and joined with
+":" ("12722"; "" when there are none). Every (item id, non-empty key) seen gets
+a stable index 1..999 for that item, in order of first appearance, kept in
+state.json "variants" and never reused, and a variant id
+vid = item id * 1000 + index. A vid is published like any item (history,
+latest, 24h, volumes, mapping, addon line); the plain item id keeps meaning
+"all versions together". hist/<vid>.json also carries "v": the key, so the
+indexes can be rebuilt from the files if state.json is ever lost.
+Modifiers and context are NOT part of the key. Checked on a real snapshot
+(18 Nov 2026, 113k item auctions): the only modifier is type 28, on 19k
+auctions of 2,979 items, recipes included; 32 distinct values that look like
+a content or drop tag. Within the same item and suffix, the median prices of
+the different type 28 values differ by 1.03x (median over 224 groups), and
+price against value has a rank correlation of -0.02 (250 groups), while
+different suffixes of one item differ by 3.8x. It does not change the item.
+Suffix names come from tools/wow/suffix_names.json {bonus id: "of the Bear"},
+made from the game's own tables for this client (wago.tools DB2 exports,
+product wowf, build 1.60.1.70959: ItemBonus rows of type 5 give an
+ItemNameDescription id, whose text is the suffix). All 84 bonus ids on the
+real snapshot are in it. A bonus id that is not in it is named
+"<item> (version N)". The file is looked for next to this script; a copy of
+this script installed on its own (the PC collector) uses the same table built
+into it (_SUFFIX_CODE), plus any newer copy in the data folder.
+
+Flip ideas (flips.json, and "flips" in the addon file) come from the listings
+of one snapshot, so they work from the first hour: see find_gap_flip and
+find_vendor_flip, and the FLIP_ limits below.
+
 Credentials: BNET_CLIENT_ID / BNET_CLIENT_SECRET env vars, or the file
 %USERPROFILE%\\.wow-ah\\bnet.txt (id on line 1, secret on line 2) that
 Setup-WoW-Key.bat writes.
@@ -56,9 +92,11 @@ so the workflow only publishes when Blizzard had new data (or when a held back
 download has to be remembered: then only state.json changed).
 """
 import base64
+import bisect
 import concurrent.futures as cf
 import email.utils
 import json
+import math
 import os
 import re
 import sys
@@ -94,6 +132,40 @@ ADDON_BRIDGE_D = 1   # same for one missing day
 ADDON_SOFT_MAX = 40 * 1024 * 1024   # above this the quietest items get a shorter daily history
 ADDON_HARD_MAX = 90 * 1024 * 1024   # never write more (GitHub refuses files over 100 MB)
 RULESET_NAMES = {1: "PvP"}
+
+# versions of an item (see the notes at the top)
+VID_MULT = 1000            # vid = item id * VID_MULT + index
+VARIANT_MAX = 999          # indexes per item; later versions are only counted in the item itself
+VARIANT_IDLE_HOURS = 72    # a version with nothing listed or sold for this long stops getting hourly points
+SUFFIX_FILE = "suffix_names.json"
+# item details (slot, item level, class ids) added to items.json; older entries are filled in
+META_VERSION = 2
+META_BACKFILL_MAX = 1500   # at most this many older items are looked up again per run, most listed first
+
+# flip ideas from one snapshot (all prices in copper)
+FLIPS_FILE = "flips.json"
+FLIP_AH_CUT_PCT = 5            # the auction house keeps 5% of a sale
+FLIP_MIN_ROI_PERMILLE = 150    # a gap flip must make at least 15% on what it costs
+FLIP_MIN_PROFIT_COMMODITY = 2000   # 20 silver, for stackable goods (the commodities list)
+FLIP_MIN_PROFIT_ITEM = 5000        # 50 silver, for gear and every other single item
+FLIP_MIN_LEFT = 2              # listings that must stay above what is bought
+FLIP_COVER_MIN_UNITS = 5       # "thin" unless the listings above hold at least this many units
+FLIP_COVER_MULT = 2            # and at least this many times the units bought
+FLIP_HIST_MIN_POINTS = 4       # hourly points of history needed before the 7-day cap applies
+FLIP_HIST_PCT = 0.90           # the relist price never goes above this percentile of the 7-day market
+FLIP_SALES_DAYS = 7            # sold per day comes from the measured hours of this many days
+FLIP_SALES_MIN_SECS = 3600     # less measured time than this: sales count as unknown
+FLIP_SALES_FULL_SECS = 86400   # sales are never scaled up to a day: under a day measured, the rate is what sold
+FLIP_UNKNOWN_SHARE = 0.20      # sales unknown: buy at most this share of the units listed (at least 1)
+FLIP_THIN_LEFT = 5             # fewer listings than this left above: flagged "thin"
+FLIP_SPIKE_RATIO = 1.5         # relist above this times the usual price: flagged "spike"
+FLIP_SPIKE_GAP = 3             # no 7-day history: relist above this times the buy price is "spike"
+FLIP_SPIKE_NEAR = 1.25         # unless at least FLIP_SPIKE_CONFIRM listings sit within this of the next one
+FLIP_SPIKE_CONFIRM = 3
+FLIP_VENDOR_MIN_PROFIT = 100   # 1 silver, the least a vendor flip must make
+FLIP_VENDOR_MIN_MARGIN_PERMILLE = 100   # each listing bought must make 10% at the vendor (not 1c on 5s)
+FLIPS_ADDON_MAX = 60           # flips in the addon file
+FLIPS_SITE_MAX = 400           # flips in flips.json
 
 
 # -- HTTP ---------------------------------------------------------------------
@@ -277,14 +349,63 @@ def market_value(units):
     return copper(sum(p * q for p, q in kept) / c)
 
 
-def aggregate(auctions):
-    """Raw API auctions -> (per, snap).
+def variant_key(item):
+    """An auction item's variant key: its bonus ids sorted ascending, joined
+    with ":" ("" when it has none). Modifiers and context are left out on
+    purpose (see the notes at the top)."""
+    ids = []
+    for b in (item or {}).get("bonus_lists") or []:
+        try:
+            ids.append(int(b))
+        except (TypeError, ValueError):
+            continue
+    return ":".join(str(b) for b in sorted(ids))
+
+
+def variant_id(registry, iid, key, add=True):
+    """The vid of (item id, key), or None (no key, or the item already has
+    VARIANT_MAX versions). registry: {str(item id): {key: index}}; a new key
+    gets the next index (changed in place) unless add is False."""
+    if not key:
+        return None
+    m = registry.get(str(iid))
+    idx = m.get(key) if m else None
+    if idx is None:
+        if not add:
+            return None
+        m = registry.setdefault(str(iid), {})
+        top = max((int(v) for v in m.values()), default=0)
+        if top >= VARIANT_MAX:
+            return None
+        idx = top + 1
+        m[key] = idx
+    return int(iid) * VID_MULT + int(idx)
+
+
+def registry_vids(registry):
+    """{vid: (item id, key, index)} for every version in the registry."""
+    out = {}
+    for sid, keys in (registry or {}).items():
+        for key, idx in (keys or {}).items():
+            out[int(sid) * VID_MULT + int(idx)] = (int(sid), str(key), int(idx))
+    return out
+
+
+def aggregate(auctions, registry=None):
+    """Raw API auctions -> (per, snap, vper).
     per:  item id -> list of (unit price, qty), one entry per auction. The unit
           price keeps fractions of a copper; an auction with a buyout is never
           dropped, however cheap per unit.
+    vper: vid -> the same list for the auctions of that version only (the
+          auctions whose item has bonus ids). They are in `per` as well.
     snap: auction id -> [item, qty, unit (whole copper, for reference), time left]
+          plus the vid as a 5th entry when the auction is a version.
+    registry: state.json "variants" (changed in place: new keys get the next
+          index, in the order they first appear). None = a throwaway one.
     Bid-only auctions (no buyout) are skipped: no price anyone can act on."""
-    per, snap = {}, {}
+    if registry is None:
+        registry = {}
+    per, snap, vper = {}, {}, {}
     for a in auctions:
         it = a.get("item") or {}
         iid = it.get("id")
@@ -305,17 +426,33 @@ def aggregate(auctions):
         if unit <= 0:
             continue
         per.setdefault(iid, []).append((unit, q))
+        vid = variant_id(registry, iid, variant_key(it))
+        if vid:
+            vper.setdefault(vid, []).append((unit, q))
         aid = a.get("id")
         if aid is not None:
-            snap[str(aid)] = [iid, q, copper(unit), a.get("time_left", "")]
-    return per, snap
+            e = [iid, q, copper(unit), a.get("time_left", "")]
+            if vid:
+                e.append(vid)
+            snap[str(aid)] = e
+    return per, snap, vper
 
 
 # -- estimated sales ----------------------------------------------------------
-def estimate_sold(prev, snap):
-    """Units that most likely sold between two snapshots, per item id."""
+def estimate_sold(prev, snap, by_variant=False):
+    """Units that most likely sold between two snapshots, per item id (or per
+    vid when by_variant: auctions that are not a version are left out). The
+    previous snapshot may come from an older state file without vids."""
     sold = {}
-    for aid, (iid, q, unit, tl) in prev.items():
+    for aid, e in prev.items():
+        try:
+            iid, q, tl = e[0], int(e[1]), e[3]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if by_variant:
+            iid = e[4] if len(e) > 4 else None
+            if not iid:
+                continue
         cur = snap.get(aid)
         if cur is None:
             if tl in SOLD_TIME_LEFT:
@@ -401,10 +538,22 @@ def item_name(meta):
 
 def unknown_entry(tried):
     return {"name": "", "icon": "", "quality": "COMMON", "sell": 0, "buy": 0, "cls": "", "sub": "",
-            "lvl": 0, "stack": 0, "unknown": True, "tried": int(tried)}
+            "lvl": 0, "stack": 0, "ilvl": 0, "slot": "", "slotType": "", "clsId": None, "subId": None,
+            "unknown": True, "tried": int(tried)}
+
+
+def _id_or_none(obj):
+    """An API reference's numeric id (0 is a real class id: Consumable), None when missing."""
+    try:
+        v = (obj or {}).get("id")
+        return None if v is None else int(v)
+    except (TypeError, ValueError, AttributeError):
+        return None
 
 
 def _meta(iid, item, icon):
+    inv = item.get("inventory_type") or {}
+    slot_type = str(inv.get("type") or "")
     return {
         "name": str(item.get("name") or ""),
         "icon": icon,
@@ -415,7 +564,161 @@ def _meta(iid, item, icon):
         "sub": ((item.get("item_subclass") or {}).get("name") or ""),
         "lvl": int(item.get("required_level") or 0),
         "stack": int(item.get("max_count") or 0),
+        "ilvl": int(item.get("level") or 0),
+        # "Chest", "One-Hand"...; "" for things you cannot wear
+        "slot": "" if slot_type in ("", "NON_EQUIP") else str(inv.get("name") or ""),
+        "slotType": slot_type,
+        "clsId": _id_or_none(item.get("item_class")),
+        "subId": _id_or_none(item.get("item_subclass")),
+        "mv": META_VERSION,
     }
+
+
+DETAIL_KEYS = ("cls", "sub", "lvl", "ilvl", "slot", "slotType", "clsId", "subId", "mv")
+
+
+def fetch_details(iid):
+    """The details older items.json entries lack (slot, item level, class ids),
+    from the first static namespace that knows the item; no icon request.
+    Returns (iid, fields): None when a request failed (tried again next run),
+    {} when no namespace knows the item."""
+    failed = False
+    for ns in STATIC_NS:
+        try:
+            item, _ = api(f"/data/wow/item/{iid}", ns)
+        except Exception:
+            failed = True
+            continue
+        if item:
+            m = _meta(iid, item, "")
+            return iid, {k: m[k] for k in DETAIL_KEYS}
+    return iid, (None if failed else {})
+
+
+def backfill_meta(items, counts, fetch=None, limit=META_BACKFILL_MAX, threads=LOOKUP_THREADS):
+    """Fills in the details of named items cached by an older version, at most
+    `limit` per run, the most listed (counts: item id -> auctions now) first.
+    Changes `items` in place. Returns (filled in, still missing)."""
+    fetch = fetch or fetch_details
+    todo = [s for s, m in items.items() if not is_unknown(m) and int(m.get("mv") or 0) < META_VERSION]
+    todo.sort(key=lambda s: (-int(counts.get(int(s), 0)), int(s)))
+    batch = [int(s) for s in todo[:max(0, int(limit))]]
+    done = 0
+    if batch:
+        with cf.ThreadPoolExecutor(max(1, threads)) as ex:
+            for iid, fields in ex.map(fetch, batch):
+                if fields is None:
+                    continue
+                m = items[str(iid)]
+                for k, v in (("ilvl", 0), ("slot", ""), ("slotType", ""), ("clsId", None), ("subId", None)):
+                    m.setdefault(k, v)
+                for k, v in fields.items():
+                    if k in ("cls", "sub") and not v:
+                        continue            # keep a class name we already had
+                    m[k] = v
+                m["mv"] = META_VERSION
+                done += 1
+    return done, len(todo) - done
+
+
+# The same table as suffix_names.json (bonus id -> suffix name), built in, so a copy of this
+# script on its own (the PC collector installs just this file) still names versions. Each entry
+# is <id minus the previous id>.<index into _SUFFIX_WORDS>. test_datafile.py checks it matches.
+_SUFFIX_WORDS = (
+    "of Intellect", "of Spirit", "of Stamina", "of the Owl", "of the Eagle", "of the Whale",
+    "of the Monkey", "of the Bear", "of the Gorilla", "of the Falcon", "of the Boar", "of the Wolf",
+    "of the Tiger", "of Agility", "of Strength", "of Power", "of Magic", "of Healing", "of Defense",
+    "of Regeneration", "of Concentration", "of Eluding", "of Arcane Protection",
+    "of Fire Protection", "of Frost Protection", "of Nature Protection", "of Shadow Protection",
+    "of the Sorcerer", "of the Elder", "of the Channeler", "of the Physician", "of the Prophet",
+    "of the Hierophant", "of the Bandit", "of the Beast", "of the Champion", "of the Defender",
+    "of the Knight", "of Arcane Wrath", "of Fiery Wrath", "of Frozen Wrath", "of Holy Wrath",
+    "of Nature's Wrath", "of Shadow Wrath", "of Arcane Resistance", "of Frost Resistance",
+    "of Nature Resistance", "of Shadow Resistance", "of Fire Resistance",
+)
+_SUFFIX_CODE = (
+    "12688.0 1.1 1.2 1.3 27.4 1.5 1.3 1.6 1.7 1.8 1.9 1.10 1.11 1.12 1.13 1.0 1.1 1.2 1.14 1.15 1.16 "
+    "1.17 1.18 1.19 1.20 1.21 1.22 1.23 1.24 1.25 1.26 1.27 1.28 1.29 1.30 1.31 1.32 1.33 1.34 1.35 "
+    "1.36 1.37 1.38 1.39 1.40 1.41 1.42 1.43 144.27 1.27 1.28 1.28 1.29 1.29 1.30 1.30 1.31 1.31 1.32 "
+    "1.32 1.16 1.16 1.17 1.17 3.27 1.28 1.30 1.31 1.32 1.27 1.29 1.28 1.29 1.30 1.31 1.32 1.33 1.34 "
+    "1.35 1.36 1.37 1.33 1.34 1.35 1.36 1.37 1.4 1.5 1.3 1.6 1.7 1.8 1.9 1.10 1.11 1.12 1.0 1.13 1.1 "
+    "1.2 1.14 1.15 1.16 1.17 1.44 1.23 1.24 1.25 1.26 1.41 1.30 1.31 1.32 1.34 1.37 1.18 1.35 1.36 "
+    "1.38 1.39 1.40 1.43 1.27 1.28 1.29 1.42 1.33 1.45 1.46 1.47 1.48 3.44 1.45 1.46 1.47 1.48 1.44 "
+    "1.45 1.46 1.47 1.48 1.44 1.45 1.46 1.47 1.48 1.44 1.45 1.47 1.46 1.48 1.4 1.5 1.6 1.7 1.10 1.11 "
+    "1.12 1.13 1.2 1.14 1.15 1.34 1.33 1.41 1.35 1.36 1.4 1.5 1.6 1.7 1.10 1.11 1.12 1.13 1.2 1.14 "
+    "1.15 1.34 1.33 1.41 1.35 1.36 1.3 1.0 1.1 1.30 1.31 1.32 1.27 1.28 1.29 1.16 1.17 1.16 1.17 1.38 "
+    "1.39 1.40 1.41 1.42 1.43 1.19 1.20 1.4 1.5 1.3 1.0 1.1 1.30 1.31 1.32 1.27 1.28 1.29 1.16 1.17 "
+    "1.38 1.39 1.40 1.41 1.42 1.43 1.38 1.39 1.40 1.42 1.43 1.3 1.1 1.0 1.27 1.28 1.29 1.31 1.30 1.32 "
+    "1.44 1.8 1.9 1.16 1.17 1.18 1.27 1.28 1.29 1.30 1.31 1.32 1.35 1.36 1.18 1.4 1.5 1.3 1.0 1.1 1.2 "
+    "1.22 1.23 1.24 1.25 1.26 1.30 1.31 1.32 1.27 1.28 1.29 1.16 1.17 1.38 1.39 1.40 1.41 1.42 1.43 "
+    "1.4 1.5 1.3 1.6 1.7 1.9 1.8 1.10 1.11 1.12 1.13 1.0 1.1 1.2 1.14 1.15 1.16 1.17 1.18 1.44 1.23 "
+    "1.24 1.25 1.26 1.38 1.42 1.27 1.28 1.29 1.30 1.31 1.32 1.33 1.34 1.35 5.22 1.23 1.24 1.25 1.26 "
+    "1.37 6.4 1.5 1.6 1.7 1.8 1.10 1.12 1.34 1.37 1.18 1.35 1.36 1.4 1.5 1.3 1.0 1.1 1.21 572.8 1.9 "
+    "1.23 1.24 1.25 1.26 1.42 1.37"
+)
+
+
+def builtin_suffix_names():
+    """{bonus id: "of the Bear"} from the table built into this script."""
+    names, bid = {}, 0
+    for tok in _SUFFIX_CODE.split():
+        delta, idx = tok.split(".")
+        bid += int(delta)
+        names[bid] = _SUFFIX_WORDS[int(idx)]
+    return names
+
+
+def _read_suffix_file(path):
+    raw = load(path, None)
+    names = {}
+    if isinstance(raw, dict):
+        for k, v in raw.items():
+            try:
+                if isinstance(v, str) and v.strip():
+                    names[int(k)] = v.strip()
+            except (TypeError, ValueError):
+                continue
+    return raw, names
+
+
+def load_suffix_names(out):
+    """{bonus id: "of the Bear"} from suffix_names.json next to this script.
+    Without that file (the PC collector installs this script on its own), the
+    table built into this script, plus anything newer a copy in the data folder
+    has (written there by a collector that had the file). A copy is written to
+    the data folder so every collector finds it."""
+    here = os.path.join(os.path.dirname(os.path.abspath(__file__)), SUFFIX_FILE)
+    there = os.path.join(out, SUFFIX_FILE)
+    raw, names = _read_suffix_file(here)
+    if names:
+        if load(there, None) != raw:
+            try:
+                save(there, raw)
+            except OSError:
+                pass
+        return names
+    names = builtin_suffix_names()
+    names.update(_read_suffix_file(there)[1])
+    return names
+
+
+def variant_name(base_meta, key, index, suffixes):
+    """'Archer's Cloak of the Bear', or 'Archer's Cloak (version 3)' when a bonus
+    id has no known suffix name; "" when the item itself has no name yet."""
+    base = item_name(base_meta)
+    if not base:
+        return ""
+    parts = []
+    for b in str(key).split(":"):
+        try:
+            n = suffixes.get(int(b))
+        except (TypeError, ValueError):
+            n = None
+        if n:
+            parts.append(n)
+    if parts:
+        return base + " " + " ".join(parts)
+    return f"{base} (version {int(index)})"
 
 
 def fetch_item(iid):
@@ -486,6 +789,194 @@ def refresh_items(items, listed_ids, now, fetch=None, retry_max=UNKNOWN_RETRY_MA
             entry.update({"name": "", "unknown": True, "tried": int(now)})
             items[sid] = entry
     return len(new), len(due), found
+
+
+# -- flip ideas from one snapshot ---------------------------------------------
+def percentile(sorted_vals, p):
+    """Linear interpolation between the closest ranks (the site's method)."""
+    n = len(sorted_vals)
+    if not n:
+        return None
+    if n == 1:
+        return sorted_vals[0]
+    x = p * (n - 1)
+    lo = int(math.floor(x))
+    hi = min(lo + 1, n - 1)
+    return sorted_vals[lo] + (sorted_vals[hi] - sorted_vals[lo]) * (x - lo)
+
+
+def measured_index(measured):
+    """(sorted hour slots, running total of their seconds) for sold_per_day."""
+    slots = sorted(measured)
+    pre = [0]
+    for t in slots:
+        pre.append(pre[-1] + int(measured[t]))
+    return slots, pre
+
+
+def sales_window(h, measured, hour, index=None):
+    """(units of this item or version seen selling, seconds of sales measured)
+    over the measured hours of the last FLIP_SALES_DAYS days. Only hours after
+    its first hourly point count: the comparison that made that point could
+    not see its sales (new items, and versions just after the upgrade that
+    started tracking them). None = not measured (less than FLIP_SALES_MIN_SECS)."""
+    pts = h.get("h") or []
+    if not pts:
+        return None
+    lo = max(int(pts[0][0]), hour - FLIP_SALES_DAYS * 86400)    # hours after lo count
+    slots, pre = index or measured_index(measured)
+    a, b = bisect.bisect_right(slots, lo), bisect.bisect_right(slots, hour)
+    secs = pre[b] - pre[a]
+    if secs < FLIP_SALES_MIN_SECS:
+        return None
+    sold = 0
+    for p in reversed(pts):
+        if p[0] <= lo:
+            break
+        if p[0] <= hour and p[0] in measured:
+            sold += int(p[4] or 0)
+    return sold, secs
+
+
+def sold_per_day(h, measured, hour, index=None):
+    """Units sold per day, for sizing flips: never scaled up from part of a
+    day (one vanished auction in one measured hour is 1 a day, not 24).
+    Under FLIP_SALES_FULL_SECS measured, it is simply what was seen selling.
+    None = not measured (see sales_window)."""
+    w = sales_window(h, measured, hour, index)
+    if w is None:
+        return None
+    return w[0] * 86400.0 / max(w[1], FLIP_SALES_FULL_SECS)
+
+
+def history_prices(h, hour):
+    """(cap, usual) from the last 7 days of hourly market values: cap = the
+    FLIP_HIST_PCT percentile, usual = the median. (None, None) with fewer than
+    FLIP_HIST_MIN_POINTS points."""
+    vals = sorted(int(p[2]) for p in (h.get("h") or []) if hour - 168 * 3600 < p[0] <= hour and p[2] > 0)
+    if len(vals) < FLIP_HIST_MIN_POINTS:
+        return None, None
+    return int(percentile(vals, FLIP_HIST_PCT)), percentile(vals, 0.5)
+
+
+def after_cut(price):
+    """What a sale at `price` pays after the auction house cut (whole copper, rounded down)."""
+    return int(price) * (100 - FLIP_AH_CUT_PCT) // 100
+
+
+def find_gap_flip(units, commodity=False, sold_day=None, hist_cap=None, usual=0, early=False):
+    """The best "gap" flip in one item's (or version's) listings, or None.
+    units: [(unit price, qty)] one per listing, sorted by price.
+    Buy every listing up to price level k (all listings at the cheapest k
+    prices), relist at R = the next listing's price - 1c, and with
+    FLIP_HIST_MIN_POINTS+ hourly points never above hist_cap (the 7-day
+    FLIP_HIST_PCT market). profit = units * R after the 5% cut - cost.
+    The k with the best profit wins, among those with: ROI >= 15%, profit >=
+    20s (commodities) or 50s (everything else), the dearest listing bought
+    (buyMax) itself making 15% at R after the cut (so every listing you buy
+    pays, even if the cheaper ones are gone when you get there), units bought
+    <= sold per day (sold_day, see sold_per_day; when it is None, sales are
+    unknown: <= 20% of the units listed, at least 1), and at least
+    FLIP_MIN_LEFT listings left above.
+    Risk flags: thin (few listings left above, or the listings above hold
+    fewer than max(FLIP_COVER_MIN_UNITS, FLIP_COVER_MULT x the units bought)
+    units), slow (sold per day below the units bought, sales unknown, or
+    `early`: measured for less than a day), spike (R above FLIP_SPIKE_RATIO x
+    usual; or, with no 7-day history (hist_cap None), R above FLIP_SPIKE_GAP x
+    buyMax with fewer than FLIP_SPIKE_CONFIRM listings within FLIP_SPIKE_NEAR
+    of the next one: a few high listings may be one player's guess)."""
+    n = len(units)
+    if n < 1 + FLIP_MIN_LEFT:
+        return None
+    listed = sum(q for _, q in units)
+    if sold_day is None:
+        limit = max(1, int(listed * FLIP_UNKNOWN_SHARE))
+    else:
+        limit = int(sold_day + 1e-9)
+        if limit < 1:
+            return None
+    min_profit = FLIP_MIN_PROFIT_COMMODITY if commodity else FLIP_MIN_PROFIT_ITEM
+    cum, acc = [], 0
+    for _, q in units:
+        acc += q
+        cum.append(acc)
+    best = None
+    i, cost, bought = 0, 0.0, 0
+    while i < n:
+        price = units[i][0]
+        j = i
+        while j < n and units[j][0] == price:
+            cost += units[j][0] * units[j][1]
+            bought += units[j][1]
+            j += 1
+        if bought > limit:
+            break
+        left = n - j
+        if left < FLIP_MIN_LEFT:
+            break
+        nxt = units[j][0]
+        relist = int(math.ceil(nxt)) - 1
+        if hist_cap:
+            relist = min(relist, int(hist_cap))
+        c = max(1, int(round(cost)))
+        profit = bought * after_cut(relist) - c if relist > 0 else -c
+        if (profit >= min_profit and profit * 1000 >= FLIP_MIN_ROI_PERMILLE * c
+                and after_cut(relist) * 1000 >= price * (1000 + FLIP_MIN_ROI_PERMILLE)
+                and (best is None or profit > best["profit"])):
+            risk = []
+            covered = listed - cum[j - 1] >= max(FLIP_COVER_MIN_UNITS, FLIP_COVER_MULT * bought)
+            if left < FLIP_THIN_LEFT or not covered:
+                risk.append("thin")
+            if sold_day is None or early or sold_day < bought:
+                risk.append("slow")
+            spike = bool(usual) and relist > FLIP_SPIKE_RATIO * usual
+            if not spike and not hist_cap and relist > FLIP_SPIKE_GAP * price:
+                near, top = 0, nxt * FLIP_SPIKE_NEAR
+                for k in range(j, min(n, j + FLIP_SPIKE_CONFIRM)):
+                    if units[k][0] <= top:
+                        near += 1
+                spike = near < FLIP_SPIKE_CONFIRM
+            if spike:
+                risk.append("spike")
+            best = {"kind": "gap", "buyMax": int(math.ceil(price)), "units": bought, "cost": c,
+                    "relist": relist, "profit": profit, "roi": profit * 1000 // c, "risk": risk,
+                    "next": int(math.ceil(nxt))}
+        i = j
+    return best
+
+
+def find_vendor_flip(units, vendor):
+    """Listings priced under what a vendor pays (units sorted by price): buy
+    them and sell them to a vendor. No auction house cut, no relisting. Only
+    listings that each make FLIP_VENDOR_MIN_MARGIN_PERMILLE at the vendor
+    count (hundreds of leggings at 1c under the vendor price are no flip).
+    None when there are none, or they make less than FLIP_VENDOR_MIN_PROFIT."""
+    vendor = int(vendor or 0)
+    if vendor <= 0:
+        return None
+    take = [(p, q) for p, q in units if p * (1000 + FLIP_VENDOR_MIN_MARGIN_PERMILLE) <= vendor * 1000]
+    if not take:
+        return None
+    n = sum(q for _, q in take)
+    c = max(1, int(round(sum(p * q for p, q in take))))
+    profit = n * vendor - c
+    if profit < FLIP_VENDOR_MIN_PROFIT:
+        return None
+    rest = units[len(take):]
+    return {"kind": "vendor", "buyMax": int(math.ceil(take[-1][0])), "units": n, "cost": c, "relist": 0,
+            "profit": profit, "roi": profit * 1000 // c, "risk": [],
+            "next": int(math.ceil(rest[0][0])) if rest else 0}
+
+
+def rank_flips(flips):
+    """Best first: most profit, then best ROI, then the lower id."""
+    return sorted(flips, key=lambda f: (-f["profit"], -f["roi"], f["id"], f["kind"]))
+
+
+def flip_line(f):
+    """One flip as the addon file carries it: id|kind|buyMax|units|cost|relist|profit|roi|risk"""
+    return "|".join(str(x) for x in (int(f["id"]), f["kind"], int(f["buyMax"]), int(f["units"]), int(f["cost"]),
+                                     int(f["relist"]), int(f["profit"]), int(f["roi"]), ",".join(f["risk"])))
 
 
 # -- in-game addon data file (ForeverAH_Data.lua) -----------------------------
@@ -596,16 +1087,18 @@ def _addon_series(points, end, step, count, bridge=0):
     return ",".join(cheap) + ";" + ",".join(mkt) + ";" + ",".join(sold)
 
 
-def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auctions=0, measured=None):
+def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auctions=0, measured=None,
+                    sold24=None):
     """One `[id] = "...",` line for ForeverAH_Data.items, or None when the item
     had no listing and no estimated sale in the last 7 days. `days` is how many
     daily points to keep (fewer only when the file would be too big).
     `auctions` is how many separate auctions are listed now. `measured` is the
     set of hours with a measured sold estimate (None = every hour); sold24
-    only adds up those hours."""
+    only adds up those hours, unless `sold24` gives it (a version just after
+    the upgrade that started tracking versions)."""
     hstart = hour - (ADDON_HOURS - 1) * 3600
     recent = False
-    sold24 = 0
+    given, sold24 = sold24, 0
     for p in reversed(h["h"]):
         if p[0] < hstart:
             break
@@ -617,6 +1110,8 @@ def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auction
             sold24 += int(p[4])
     if not recent:
         return None
+    if given is not None:
+        sold24 = max(0, int(given))
     day_end = hour - hour % 86400
     week = [int(p[2]) for p in h["d"] if day_end - 6 * 86400 <= p[0] <= day_end and p[2] > 0]
     avg7 = int(sum(week) / len(week) + 0.5) if week else 0
@@ -637,19 +1132,26 @@ def _line_sold24(line):
         return 0
 
 
-def fit_addon_lines(lines, rebuild, limit=ADDON_SOFT_MAX):
+def fit_addon_lines(lines, rebuild, limit=ADDON_SOFT_MAX, vids=(), extra=0):
     """Keeps the addon file under `limit` bytes. When it is too big, the
-    quietest items (fewest sold in 24h) get a shorter daily history: 90 days
-    first, then 30, until it fits. rebuild(iid, days) returns the shorter line
-    (or None to leave it). Changes `lines` in place. Returns (bytes, shortened)."""
+    quietest lines (fewest sold in 24h) get a shorter daily history until it
+    fits: versions of items (`vids`) first, 90, 30, 7 and then 1 day, and only
+    after that the items themselves, 90 then 30 days. No line is ever left
+    out. rebuild(iid, days) returns the shorter line (or None to leave it).
+    `extra` = bytes of the rest of the file. Changes `lines` in place.
+    Returns (bytes, shortened)."""
     sizes = {k: len(v.encode("utf-8")) for k, v in lines.items()}
-    total = sum(sizes.values())
+    total = sum(sizes.values()) + int(extra)
     shortened = 0
     if total <= limit:
         return total, shortened
+    vids = set(vids)
     quiet_first = sorted(lines, key=lambda k: (_line_sold24(lines[k]), k))
-    for days in (90, 30):
-        for iid in quiet_first:
+    quiet_vids = [k for k in quiet_first if k in vids]
+    quiet_items = [k for k in quiet_first if k not in vids]
+    passes = [(quiet_vids, d) for d in (90, 30, 7, 1)] + [(quiet_items, d) for d in (90, 30)]
+    for group, days in passes:
+        for iid in group:
             if total <= limit:
                 return total, shortened
             try:
@@ -667,10 +1169,33 @@ def fit_addon_lines(lines, rebuild, limit=ADDON_SOFT_MAX):
     return total, shortened
 
 
-def write_addon_data(out, lines, updated, hour, house_name, fetched=None, sales_hours=0):
-    """lines: {item id: line from addon_item_line}. Written atomically.
+def addon_tables(variants=None, flips=None):
+    """The variants and flips tables of the addon file (before items, so
+    nothing that scans for item lines after "items = {" ever sees them).
+    variants: {item id: [(key, vid), ...]} -> [itemId] = "key=vid,key=vid"
+    flips:    flip dicts, best first -> "id|kind|buyMax|units|cost|relist|profit|roi|risk"
+    None leaves a table out (older callers)."""
+    parts = []
+    if variants is not None:
+        parts.append("  variants = {\n")
+        for iid in sorted(variants):
+            body = ",".join(f"{k}={int(v)}" for k, v in sorted(variants[iid], key=lambda kv: kv[1]))
+            parts.append(f"    [{int(iid)}] = {lua_str(body)},\n")
+        parts.append("  },\n")
+    if flips is not None:
+        parts.append("  flips = {\n")
+        for f in flips:
+            parts.append(f"    {lua_str(flip_line(f))},\n")
+        parts.append("  },\n")
+    return "".join(parts)
+
+
+def write_addon_data(out, lines, updated, hour, house_name, fetched=None, sales_hours=0,
+                     variants=None, flips=None):
+    """lines: {item id or vid: line from addon_item_line}. Written atomically.
     updated = when Blizzard made the snapshot, fetched = when this ran,
-    sales_hours = how many of the last 24 hours have a measured sold estimate."""
+    sales_hours = how many of the last 24 hours have a measured sold estimate,
+    variants / flips: see addon_tables (left out when None)."""
     path = os.path.join(out, ADDON_FILE)
     tmp = path + ".tmp"
     head = (f"{ADDON_HEADER}\n"
@@ -683,6 +1208,7 @@ def write_addon_data(out, lines, updated, hour, house_name, fetched=None, sales_
             f"ruleset = {lua_str(RULESET_NAMES.get(RULESET, f'Ruleset {RULESET}'))},\n"
             f"  hourEnd = {int(hour)},\n"
             f"  dayEnd = {int(hour - hour % 86400)},\n"
+            + addon_tables(variants, flips) +
             "  items = {\n")
     with open(tmp, "w", encoding="utf-8", errors="replace", newline="\n") as fh:
         fh.write(head)
@@ -708,7 +1234,88 @@ def _state_hour(state):
     return None
 
 
-DATA_FORMAT = 2   # state.json layout; raise it when the layout changes
+_HIST_V = re.compile(r'^\s*\{\s*"v"\s*:\s*"([0-9:]*)"')
+
+
+def load_registry(state, hist_dir):
+    """state.json "variants" ({str(item id): {key: index}}). When it is missing
+    (state from an older version, or state.json was lost) it is rebuilt from
+    the "v" key at the start of the versions' hist files, so indexes are never
+    handed out twice. State from before versions existed simply starts empty."""
+    reg = state.get("variants")
+    if isinstance(reg, dict):
+        out = {}
+        for sid, keys in reg.items():
+            try:
+                out[str(int(sid))] = {str(k): int(v) for k, v in (keys or {}).items()}
+            except (TypeError, ValueError, AttributeError):
+                continue
+        return out
+    reg = {}
+    if not os.path.isdir(hist_dir):
+        return reg
+    for f in os.listdir(hist_dir):
+        if not f.endswith(".json"):
+            continue
+        try:
+            vid = int(f[:-5])
+        except ValueError:
+            continue
+        if vid < VID_MULT:
+            continue
+        try:
+            with open(os.path.join(hist_dir, f), encoding="utf-8") as fh:
+                m = _HIST_V.match(fh.read(200))
+        except OSError:
+            continue
+        base, idx = divmod(vid, VID_MULT)
+        if m and m.group(1) and 1 <= idx <= VARIANT_MAX:
+            reg.setdefault(str(base), {})[m.group(1)] = idx
+    return reg
+
+
+def info_fields(m):
+    """The item details every mapping.json and flips.json entry carries."""
+    m = m or {}
+    return {"quality": m.get("quality", "COMMON"), "cls": m.get("cls", ""), "sub": m.get("sub", ""),
+            "clsName": m.get("cls", ""), "subName": m.get("sub", ""),
+            "clsId": m.get("clsId"), "subId": m.get("subId"),
+            "slot": m.get("slot", ""), "ilvl": int(m.get("ilvl") or 0), "reqlvl": int(m.get("lvl") or 0)}
+
+
+def mapping_entry(eid, m, name, extra=None):
+    m = m or {}
+    e = {"id": int(eid), "name": name, "examine": m.get("sub") or m.get("cls") or "",
+         "members": True, "value": m.get("sell", 0), "lowalch": m.get("sell", 0),
+         "highalch": m.get("sell", 0), "limit": None, "icon": m.get("icon", ""),
+         "lvl": m.get("lvl", 0)}
+    e.update(info_fields(m))
+    if extra:
+        e.update(extra)
+    return e
+
+
+def write_flips(out, flips, data_time, meta_of, limit=FLIPS_SITE_MAX):
+    """flips.json: {updated, flips: [{id, base, variant, name, quality, cls,
+    sub, clsName, subName, clsId, subId, slot, reqlvl, ilvl, kind, buyMax,
+    units, cost, relist, profit, roi, risk: [...], listed, auctions, market,
+    sold24, next}, ...]} best first. meta_of(id) -> (meta, name)."""
+    rows = []
+    for f in flips[:limit]:
+        m, name = meta_of(f["id"])
+        r = {"id": f["id"], "base": f["base"], "variant": f["variant"], "name": name}
+        r.update(info_fields(m))
+        for k in ("kind", "buyMax", "units", "cost", "relist", "profit", "roi", "risk",
+                  "listed", "auctions", "market", "sold24", "next"):
+            r[k] = f[k]
+        rows.append(r)
+    save(os.path.join(out, FLIPS_FILE), {"updated": int(data_time), "flips": rows})
+    return len(rows)
+
+
+DATA_FORMAT = 3   # state.json layout; raise it when the layout changes
+# 3: snap entries may carry a vid as a 5th entry; "variants" = the version indexes.
+#    Format 1 and 2 state is read as it is (no vids yet) and written back as 3.
 
 
 def main(out=None):
@@ -755,6 +1362,7 @@ def main(out=None):
     auctions = list(data.get("auctions") or [])
     endpoints = {"auctions": len(auctions), "commodities": 0}
     failed = []
+    com_list = []
     try:
         com, _ = api(f"/data/wow/ruleset/{RULESET}/auctions/{HOUSE}/commodities", DYN)
         com_list = list((com or {}).get("auctions") or [])
@@ -763,8 +1371,11 @@ def main(out=None):
     except Exception as e:
         print("commodities endpoint skipped:", e)
         failed.append("commodities")
+    commodity_ids = {(a.get("item") or {}).get("id") for a in com_list}
 
-    per, snap = aggregate(auctions)
+    hist_dir = os.path.join(out, "hist")
+    registry = load_registry(state, hist_dir)
+    per, snap, vper = aggregate(auctions, registry)
 
     # A download that looks incomplete (a list failed, or far fewer auctions
     # than last time) is held back: nothing is published from it and the
@@ -796,6 +1407,7 @@ def main(out=None):
     elif not skipped and state.get("incompleteBase"):
         skipped = "the previous snapshot looked incomplete, so sales are counted again from the next snapshot"
     sold = {} if skipped else estimate_sold(prev, snap)
+    vsold = {} if skipped else estimate_sold(prev, snap, by_variant=True)
     if skipped:
         print("sold estimate skipped:", skipped)
     measured = measured_secs(state)
@@ -804,37 +1416,127 @@ def main(out=None):
     measured = {t: s for t, s in measured.items() if hour - HOURLY_KEEP * 3600 < t <= hour}
     sales_h = sales_hours(measured, hour)
     sales_min = int(sales_seconds(measured, hour) / 60 + 0.5)
+    # Versions: the run that upgrades older state compares with a snapshot that has no
+    # versions in it, so that comparison (and every hour before it) measured no sales of
+    # versions. Their sold24 counts only the hours after it, scaled to the measured hours
+    # everything else counts (sales_hours), for the day after the upgrade.
+    vfrom = state.get("versionsFrom") if isinstance(state.get("versionsFrom"), dict) else None
+    if prev and int(state.get("format") or 1) < 3:
+        vfrom = {"hour": hour, "secs": 0 if skipped else max(0, int(data_time - prev_time))}
+    if vfrom and int(vfrom.get("hour") or 0) <= hour - 86400:
+        vfrom = None                     # a full day of version sales is measured now
 
-    # item metadata (cached; new ids and a few unnamed ones cost requests)
+    # item metadata (cached; new ids and a few unnamed ones cost requests, and
+    # up to META_BACKFILL_MAX older entries get their slot and item level)
     items = load(os.path.join(out, "items.json"), {})
     n_new, n_retry, n_found = refresh_items(items, per.keys(), now)
     if n_new or n_retry:
         print(f"looked up {n_new} new items, retried {n_retry} unnamed items ({n_found} names found)")
+    n_fill, n_fill_left = backfill_meta(items, {iid: len(u) for iid, u in per.items()})
+    if n_fill:
+        print(f"added slot and item level to {n_fill} older items ({n_fill_left} still to do)")
     save(os.path.join(out, "items.json"), items)
+    suffixes = load_suffix_names(out)
+
+    # versions: a vid that happens to be a real item id is never published
+    vinfo = registry_vids(registry)
+    clash = sorted(v for v in vinfo if str(v) in items or v in per)
+    for v in clash:
+        vinfo.pop(v, None)
+        vper.pop(v, None)
+        vsold.pop(v, None)
+    if clash:
+        print(f"{len(clash)} version ids are also real item ids and are left out, first: {clash[0]}")
+    vmeta_cache = {}
+
+    def vmeta(vid):
+        if vid not in vmeta_cache:
+            iid, key, vidx = vinfo[vid]
+            base = items.get(str(iid)) or {}
+            vmeta_cache[vid] = dict(base, name=variant_name(base, key, vidx, suffixes))
+        return vmeta_cache[vid]
 
     # history
-    hist_dir = os.path.join(out, "hist")
     os.makedirs(hist_dir, exist_ok=True)
     latest, day, vols = {}, {}, {}
-    addon, addon_now, addon_errors = {}, {}, []
-    seen = set(str(i) for i in per) | set(str(i) for i in sold)
+    addon, addon_now, addon_meta, addon_errors = {}, {}, {}, []
+    flips = []
+    midx = measured_index(measured)
+    with_versions = {vinfo[v][0] for v in vper}      # items whose listings right now are versions
+    seen_items = set(per) | set(sold)
+    seen_vids = set(vper) | set(vsold)
     # items that vanished entirely still get a point so the chart shows the gap close
     for f in os.listdir(hist_dir):
         if f.endswith(".json"):
-            seen.add(f[:-5])
+            try:
+                n = int(f[:-5])
+            except ValueError:
+                continue
+            (seen_vids if n in vinfo else seen_items).add(n)
 
-    for sid in seen:
-        iid = int(sid)
-        units = sorted(per.get(iid, []))
+    def version_sold24(h, key):
+        """sold24 of a version while the upgrade is under a day old (None: count it as usual)."""
+        if key is None or not vfrom:
+            return None
+        u, skip = int(vfrom.get("hour") or 0), int(vfrom.get("secs") or 0)
+
+        def secs(t):
+            v = measured.get(t, 0)
+            return 0 if t < u else (max(0, v - skip) if t == u else v)
+        raw = sum(int(p[4] or 0) for p in h["h"] if hour - 86400 < p[0] <= hour and p[0] in measured and secs(p[0]) > 0)
+        glob = sales_seconds(measured, hour)
+        own = sales_seconds({t: secs(t) for t in measured}, hour)
+        if own < FLIP_SALES_MIN_SECS or own >= glob:
+            return raw
+        return int(raw * glob / own + 0.5)
+
+    vsold24 = {}     # vid -> its sold24 when version_sold24 changed it (for the addon file's rebuilds)
+
+    def series(sid, units, s, meta, key=None):
+        """Adds this snapshot to one item's (key None) or version's hist file,
+        its addon line and its latest / 24h / volumes entries. Returns
+        (hist, now) or None. now = (cheapest, market, listed, auctions, sold24)."""
+        path = os.path.join(hist_dir, f"{sid}.json")
+        h = load(path, None)
+        if not isinstance(h, dict) or not isinstance(h.get("h"), list) or not isinstance(h.get("d"), list):
+            h = None
+        if key is None:
+            if h is not None and h.get("v"):
+                return None              # a version's file whose index is not known (any more)
+            h = h or {"h": [], "d": []}
+        elif h is None or h.get("v") != key:
+            if h is not None and (h["h"] or h["d"]):
+                print(f"hist/{sid}.json belonged to another version ({h.get('v')!r}), started again")
+            h = {"v": key, "h": [], "d": []}
         listed = sum(q for _, q in units)
         nauc = len(units)
         lo = copper(units[0][0]) if units else 0
         hi = market_value(units) if units else 0
-        s = int(sold.get(iid, 0))
-        path = os.path.join(hist_dir, sid + ".json")
-        h = load(path, {"h": [], "d": []})
         if not units and not s and not h["h"]:
-            continue
+            return None
+        if key is not None and not units and not s:
+            # a version nobody listed or bought for VARIANT_IDLE_HOURS: its file is left as it is
+            # (most versions are one listing that sells and is gone for weeks)
+            cut = hour - VARIANT_IDLE_HOURS * 3600
+            active = False
+            for p in reversed(h["h"]):
+                if p[0] <= cut:
+                    break
+                if p[1] > 0 or p[3] > 0 or p[4] > 0:
+                    active = True
+                    break
+            if not active:
+                try:
+                    vs = version_sold24(h, key)
+                    if vs is not None:
+                        vsold24[sid] = vs
+                    line = addon_item_line(sid, meta, h, 0, 0, 0, hour, auctions=0, measured=measured,
+                                           sold24=vs)
+                    if line:
+                        addon[sid], addon_now[sid], addon_meta[sid] = line, (0, 0, 0, 0), meta
+                except Exception as e:
+                    addon_errors.append(f"{sid}: {e!r}")
+                return None
         pt = [hour, lo, hi, listed, s]
         if h["h"] and h["h"][-1][0] == hour:
             # a second snapshot in the same hour: newest prices, sales add up
@@ -857,67 +1559,124 @@ def main(out=None):
         else:
             h["d"].append(dpt)
         try:   # the addon file must never stop the site's own files being written
-            line = addon_item_line(iid, items.get(sid), h, lo, hi, listed, hour,
-                                   auctions=nauc, measured=measured)
+            vs = version_sold24(h, key)
+            if vs is not None:
+                vsold24[sid] = vs
+            line = addon_item_line(sid, meta, h, lo, hi, listed, hour, auctions=nauc, measured=measured,
+                                   sold24=vs)
             if line:
-                addon[iid] = line
-                addon_now[iid] = (lo, hi, listed, nauc)
+                addon[sid], addon_now[sid], addon_meta[sid] = line, (lo, hi, listed, nauc), meta
         except Exception as e:
             addon_errors.append(f"{sid}: {e!r}")
+        save(path, h)
+        win = [p for p in h["h"] if p[0] > hour - 86400]
+        sold24 = vsold24[sid] if sid in vsold24 else sum(p[4] for p in win if p[0] in measured)
         if not units and all(p[3] == 0 for p in h["h"][-72:]) and not any(p[4] for p in h["h"][-72:]):
             # nothing listed or sold for 3 days: keep the file, stop updating latest
-            save(path, h)
-            continue
-        save(path, h)
-
+            return h, (lo, hi, listed, nauc, sold24)
+        k = str(sid)
         if units:
-            latest[sid] = {"high": hi, "highTime": data_time, "low": lo, "lowTime": data_time, "n": nauc}
+            latest[k] = {"high": hi, "highTime": data_time, "low": lo, "lowTime": data_time, "n": nauc}
         else:
             # nothing listed right now: show the last seen prices, with their real age
             last = next((p for p in reversed(h["h"]) if p[1] > 0), None)
             if last:
-                latest[sid] = {"high": last[2], "highTime": last[0], "low": last[1], "lowTime": last[0], "n": 0}
-        win = [p for p in h["h"] if p[0] > hour - 86400]
+                latest[k] = {"high": last[2], "highTime": last[0], "low": last[1], "lowTime": last[0], "n": 0}
         wp = [p for p in win if p[1] > 0]
-        sold24 = sum(p[4] for p in win if p[0] in measured)
         if wp:
-            day[sid] = {"avgHighPrice": int(sum(p[2] for p in wp) / len(wp)),
-                        "highPriceVolume": sold24 - sold24 // 2,
-                        "avgLowPrice": int(sum(p[1] for p in wp) / len(wp)),
-                        "lowPriceVolume": sold24 // 2,
-                        "listed": listed}
-        vols[sid] = sold24
+            day[k] = {"avgHighPrice": int(sum(p[2] for p in wp) / len(wp)),
+                      "highPriceVolume": sold24 - sold24 // 2,
+                      "avgLowPrice": int(sum(p[1] for p in wp) / len(wp)),
+                      "lowPriceVolume": sold24 // 2,
+                      "listed": listed}
+        vols[k] = sold24
+        return h, (lo, hi, listed, nauc, sold24)
+
+    def add_flips(fid, base, key, units, h, now_, vendor=0, gap=True, commodity=False):
+        lo, hi, listed, nauc, sold24 = now_
+        found = []
+        if vendor:
+            found.append(find_vendor_flip(units, vendor))
+        if gap:
+            cap, usual = history_prices(h, hour)
+            # the usual price: this series' own 7-day median, else today's market value. Without
+            # 7 days of history find_gap_flip also checks the relist against what is bought (in a
+            # thin market today's market value is the next listing itself, so it never looks far
+            # above). A version never borrows the whole item's price: another version sets that.
+            w = sales_window(h, measured, hour, midx)
+            spd = None if w is None else w[0] * 86400.0 / max(w[1], FLIP_SALES_FULL_SECS)
+            g = find_gap_flip(units, commodity, spd, cap, usual or hi,
+                              early=w is not None and w[1] < FLIP_SALES_FULL_SECS)
+            if g and key:
+                g["risk"].append("suffix")
+            found.append(g)
+        for f in found:
+            if f:
+                f.update({"id": int(fid), "base": int(base), "variant": key or "", "listed": listed,
+                          "auctions": nauc, "market": hi, "sold24": sold24})
+                flips.append(f)
+
+    for iid in seen_items:
+        units = sorted(per.get(iid, []))
+        meta = items.get(str(iid))
+        r = series(iid, units, int(sold.get(iid, 0)), meta)
+        if r and units:
+            add_flips(iid, iid, None, units, r[0], r[1], vendor=int((meta or {}).get("sell") or 0),
+                      gap=iid not in with_versions, commodity=iid in commodity_ids)
+    for vid in seen_vids:
+        iid, key, _ = vinfo[vid]
+        units = sorted(vper.get(vid, []))
+        r = series(vid, units, int(vsold.get(vid, 0)), vmeta(vid), key)
+        if r and units:
+            add_flips(vid, iid, key, units, r[0], r[1], gap=True, commodity=iid in commodity_ids)
+    flips = rank_flips(flips)
+
+    def meta_of(eid):
+        if eid in vinfo:
+            m = vmeta(eid)
+            return m, item_name(m)
+        m = items.get(str(eid))
+        return m, item_name(m)
 
     mapping = []
     for sid, m in items.items():
-        if sid not in latest:
-            continue
-        mapping.append({"id": int(sid), "name": item_name(m), "examine": m.get("sub") or m.get("cls") or "",
-                        "members": True, "value": m.get("sell", 0), "lowalch": m.get("sell", 0),
-                        "highalch": m.get("sell", 0), "limit": None, "icon": m.get("icon", ""),
-                        "quality": m.get("quality", "COMMON"),
-                        "cls": m.get("cls", ""), "sub": m.get("sub", ""), "lvl": m.get("lvl", 0)})
+        if sid in latest:
+            mapping.append(mapping_entry(sid, m, item_name(m)))
+    for vid, (iid, key, vidx) in vinfo.items():
+        if str(vid) in latest:
+            m = vmeta(vid)
+            mapping.append(mapping_entry(vid, m, item_name(m), {"base": iid, "variant": key, "vindex": vidx}))
     mapping.sort(key=lambda x: (x["name"] == "", x["name"], x["id"]))   # unnamed items last
 
     save(os.path.join(out, "mapping.json"), mapping)
     save(os.path.join(out, "latest.json"), {"data": latest})
     save(os.path.join(out, "24h.json"), {"data": day, "timestamp": hour})
     save(os.path.join(out, "volumes.json"), {"timestamp": data_time * 1000, "data": vols})
+    n_flips = write_flips(out, flips, data_time, meta_of)
+    n_vlatest = sum(1 for v in vinfo if str(v) in latest)
     save(os.path.join(out, "status.json"), {
         "updated": data_time, "fetched": now, "blizzardModified": modified, "region": REGION, "house": HOUSE,
-        "auctions": len(auctions), "auctionsPerEndpoint": endpoints, "items": len(latest),
+        "auctions": len(auctions), "auctionsPerEndpoint": endpoints, "items": len(latest) - n_vlatest,
+        "versions": n_vlatest, "itemsWithVersions": len({vinfo[v][0] for v in vinfo if str(v) in latest}),
+        "flips": n_flips, "suffixNames": len(suffixes), "detailsMissing": n_fill_left,
         "soldUnitsThisHour": sum(sold.values()), "firstSnapshot": not prev,
         "salesHours": sales_h, "salesMinutes": sales_min, "gapMinutes": gap_min, "soldSkipped": skipped,
-        "unnamedItems": sum(1 for sid in latest if is_unknown(items.get(sid)))})
-    state.update({"format": DATA_FORMAT, "modified": modified, "dataTime": data_time, "hour": hour, "snap": snap, "at": now,
-                  "measured": {str(t): s for t, s in sorted(measured.items())}, "endpoints": endpoints})
+        "unnamedItems": sum(1 for sid in latest if int(sid) not in vinfo and is_unknown(items.get(sid)))})
+    state.update({"format": DATA_FORMAT, "modified": modified, "dataTime": data_time, "hour": hour, "snap": snap,
+                  "at": now, "measured": {str(t): s for t, s in sorted(measured.items())}, "endpoints": endpoints,
+                  "variants": registry})
+    if vfrom:
+        state["versionsFrom"] = vfrom
+    else:
+        state.pop("versionsFrom", None)
     if short:
         state["incompleteBase"] = True      # the next comparison is not measured
     else:
         state.pop("incompleteBase", None)
     save(os.path.join(out, "state.json"), state)
-    print(f"house {HOUSE}: {len(auctions)} auctions, {len(latest)} items, "
-          f"~{sum(sold.values())} units sold since last snapshot, {sales_h} of the last 24 hours measured")
+    print(f"house {HOUSE}: {len(auctions)} auctions, {len(latest) - n_vlatest} items and {n_vlatest} versions, "
+          f"~{sum(sold.values())} units sold since last snapshot, {sales_h} of the last 24 hours measured, "
+          f"{len(flips)} flip ideas")
 
     # in-game addon file
     if addon_errors:
@@ -925,23 +1684,34 @@ def main(out=None):
     try:
         hname = next((h.get("name") for h in houses if h.get("id") == HOUSE and h.get("name")), None)
         hname = hname or ("Alliance Auction House" if HOUSE == 110 else f"Auction House {HOUSE}")
+        vid_lines = {v for v in addon if v in vinfo}
+        vtable = {}
+        for vid in vid_lines:
+            iid, key, _ = vinfo[vid]
+            if iid in addon:
+                vtable.setdefault(iid, []).append((key, vid))
+        addon_flips = [f for f in flips if f["id"] in addon][:FLIPS_ADDON_MAX]
 
-        def rebuild(iid, days):
-            hh = load(os.path.join(hist_dir, f"{iid}.json"), None)
+        def rebuild(eid, days):
+            hh = load(os.path.join(hist_dir, f"{eid}.json"), None)
             if not hh:
                 return None
-            lo_, hi_, listed_, nauc_ = addon_now[iid]
-            return addon_item_line(iid, items.get(str(iid)), hh, lo_, hi_, listed_, hour, days,
+            lo_, hi_, listed_, nauc_ = addon_now[eid]
+            return addon_item_line(eid, addon_meta.get(eid), hh, lo_, hi_, listed_, hour, days,
+                                   sold24=vsold24.get(eid),
                                    auctions=nauc_, measured=measured)
-        est, shortened = fit_addon_lines(addon, rebuild)
+        extra = len(addon_tables(vtable, addon_flips).encode("utf-8")) + 1024
+        est, shortened = fit_addon_lines(addon, rebuild, vids=vid_lines, extra=extra)
         if shortened:
-            print(f"{ADDON_FILE}: shortened the daily history of {shortened} quiet items to keep it small")
+            print(f"{ADDON_FILE}: shortened the daily history of {shortened} quiet lines to keep it small")
         if est > ADDON_HARD_MAX:
             # a file this big would make the push fail and stop the site updating too
             print(f"{ADDON_FILE} NOT written: {est / 1048576:.0f} MB is too big, the previous file is kept")
         else:
-            size = write_addon_data(out, addon, data_time, hour, str(hname), fetched=now, sales_hours=sales_h)
-            print(f"{ADDON_FILE}: {len(addon)} items, {size / 1024:.0f} KB ({size} bytes)")
+            size = write_addon_data(out, addon, data_time, hour, str(hname), fetched=now, sales_hours=sales_h,
+                                    variants=vtable, flips=addon_flips)
+            print(f"{ADDON_FILE}: {len(addon) - len(vid_lines)} items, {len(vid_lines)} versions, "
+                  f"{len(addon_flips)} flips, {size / 1024:.0f} KB ({size} bytes)")
     except Exception as e:
         print(f"{ADDON_FILE} NOT written: {e!r}")
     tell_workflow(True)

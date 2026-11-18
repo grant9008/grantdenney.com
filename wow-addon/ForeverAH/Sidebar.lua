@@ -3,7 +3,11 @@ local ADDON_NAME, ns = ...
 -- A slim panel attached to the right edge of the game's own auction house
 -- window, PocketGE plugin style. It opens and closes with the auction house
 -- (it is a child of that window), so there is no extra window to manage.
---   Flip ideas : the best buy-low, sell-high items right now, after the 5% cut
+--   Flip ideas : first the flips the price collector found in the latest
+--                snapshot (Data.lua's flips: cheap listings to buy and relist,
+--                or listings under what a vendor pays), then the ideas from
+--                the price history (buy under Target Buy, sell at the sell
+--                target), each item once
 --   Watchlist  : a starter list of staple trade goods that you add to and trim
 -- Clicking a row searches that item in the game's auction house, so the
 -- listings and the price chart come up as if you had typed it yourself.
@@ -20,7 +24,7 @@ local W = 250                -- sidebar width
 local PAD = 8
 local HEADER_H = 40
 local TITLE_H = 18
-local FLIP_H = 34
+local FLIP_H = 42
 local WATCH_H = 22
 local ADD_H = 22
 local MAX_FLIPS = 5
@@ -159,7 +163,24 @@ local function KnownName(n)
   return type(n) == "string" and n ~= "" and not IsSecret(n) and n:match("^Item %d+$") == nil
 end
 
+-- The game's item id behind a version id (vid); the id itself otherwise.
+local function BaseID(id)
+  if type(ns.BaseItemID) == "function" then
+    local ok, b = pcall(ns.BaseItemID, id)
+    if ok and Num(b) then return b end
+  end
+  return id
+end
+
 local function GameItemName(id)
+  if BaseID(id) ~= id then
+    -- A version: Core.lua knows how to name it.
+    if type(ns.GameItemName) == "function" then
+      local ok, n = pcall(ns.GameItemName, id)
+      if ok and KnownName(n) then return n end
+    end
+    return nil
+  end
   local CI = _G.C_Item
   if type(CI) == "table" then
     if type(CI.GetItemNameByID) == "function" then
@@ -207,6 +228,7 @@ local function SoldPerDay(it)
 end
 
 local function ItemIcon(id)
+  id = BaseID(id)
   local CI = _G.C_Item
   if type(CI) == "table" and type(CI.GetItemIconByID) == "function" then
     local ok, ic = pcall(CI.GetItemIconByID, id)
@@ -220,6 +242,7 @@ local function ItemIcon(id)
 end
 
 local function QualityRGB(id)
+  id = BaseID(id)
   local CI = _G.C_Item
   local q
   if type(CI) == "table" and type(CI.GetItemQualityByID) == "function" then
@@ -393,9 +416,12 @@ local function Candidates()
   local key = tostring(db.updated)
   if candCache.key == key and candCache.list then return candCache.list end
   local cand = {}
+  local hasVersions = type(ns.HasVariants) == "function" and ns.HasVariants or function() return false end
   for id in pairs(db.items) do
     local n = tonumber(id)
-    local it = n and ns.GetItem(n)
+    -- An item whose versions differ: its prices mix them (each version that
+    -- has its own prices is a candidate of its own).
+    local it = n and not hasVersions(n) and ns.GetItem(n)
     local sold = it and SoldPerDay(it)
     local auctions = it and tonumber(it.auctions)
     if it and sold and it.cheapest > 0 and it.market > 0 and sold >= MIN_SOLD_RELAX and it.listed >= 2
@@ -418,7 +444,7 @@ end
 -- best first: { id, buy, sell, profit, perDay, sold, early, verdict, rec },
 -- and, when there are none, why: "nodata", "history" (prices or sales are
 -- still being collected), "nosales" (nothing sells enough yet) or "none".
-function ns.FlipIdeas(limit)
+local function HistoryIdeas(limit)
   limit = limit or MAX_FLIPS
   if not HasData() then return {}, "nodata" end
   -- Sales from the first hour or two, scaled up to a day, are too rough to rank by.
@@ -467,6 +493,68 @@ function ns.FlipIdeas(limit)
   if tried > 0 and noHistory == tried then return out, "history" end
   return out, "none"
 end
+ns.HistoryFlipIdeas = HistoryIdeas
+
+-- The flip ideas the sidebar shows, best first, up to `limit`: the
+-- collector's flips from the latest snapshot first (they need no history:
+-- { id, data = true, kind, buy = buyMax, units, cost, relist, profit, roi,
+-- risk }), then the ideas from the price history, each item once. Ideas
+-- hidden with "Not interested" are left out. When there are none, the
+-- second value says why (see HistoryIdeas).
+function ns.FlipIdeas(limit)
+  limit = limit or MAX_FLIPS
+  if not HasData() then return {}, "nodata" end
+  local hidden = HiddenIdeas()
+  local out, seen = {}, {}
+  local flips = type(ns.DataFlips) == "function" and ns.DataFlips() or {}
+  for _, f in ipairs(flips) do
+    if #out >= limit then break end
+    if not hidden[f.id] and not seen[f.id] then
+      seen[f.id] = true
+      local risk = {}
+      for _, w in ipairs(f.risk or {}) do risk[#risk + 1] = w end
+      -- The addon's own rule (no Sell now or Best price for a price that may be
+      -- one player's guess) applies to the relist price too.
+      if f.kind == "gap" and type(ns.PriceDoubt) == "function" and ns.PriceDoubt(f.id) then
+        risk[#risk + 1] = "unsure"
+      end
+      out[#out + 1] = {
+        id = f.id, data = true, kind = f.kind, buy = f.buyMax, units = f.units, cost = f.cost,
+        relist = f.relist, profit = f.profit, roi = f.roi, risk = risk,
+      }
+    end
+  end
+  if #out >= limit then return out end
+  local hist, why = HistoryIdeas(limit + #out)
+  for _, x in ipairs(hist) do
+    if #out >= limit then break end
+    if not seen[x.id] then
+      seen[x.id] = true
+      out[#out + 1] = x
+    end
+  end
+  if #out > 0 then return out end
+  return out, why
+end
+
+-- Plain-English words for the collector's risk flags.
+local RISK_TEXT = {
+  thin = "Thin: only a few listings are left above your relist price, so one new seller can undercut you.",
+  slow = "Slow: fewer sell in a day than you would buy, or sales have been measured for less than a day. It may take days to sell them all.",
+  spike = "Spike: the relist price is far above this item's usual price (or far above what you pay, with only a few listings up there). It may not sell there.",
+  unsure = "Unsure: only a few are listed, far above what a vendor pays (or only 1 or 2 listings), so the price may be one player's guess.",
+  suffix = "Versions: this gear comes in versions (like \"of the Bear\") that sell for different prices. Check the version before you buy.",
+}
+ns.RISK_TEXT = RISK_TEXT
+
+-- What the small risk note on a flip row says: "", the one flag, or "N risks".
+local function RiskShort(risk)
+  local n = type(risk) == "table" and #risk or 0
+  if n == 0 then return "" end
+  if n == 1 then return tostring(risk[1]) end
+  return n .. " risks"
+end
+ns.RiskShort = RiskShort
 
 -- What the flip area says when there are no ideas (why from ns.FlipIdeas).
 local FLIP_MESSAGES = {
@@ -498,7 +586,9 @@ end
 function ns.SearchAH(id)
   id = tonumber(id)
   if not id then return false end
-  local name = ItemName(id)
+  -- A version (vid) is searched by its item's name; the chart shows the version.
+  local base = BaseID(id)
+  local name = ItemName(base)
   local F, kind = AHFrame()
   if not F then return false end
   -- Tell AH.lua which item this is, so a name two items share (Squire's
@@ -517,7 +607,7 @@ function ns.SearchAH(id)
       pcall(bar.SearchBox.SetText, bar.SearchBox, name)
     end
     openToken = openToken + 1
-    pendingOpen = { id = id, token = openToken, t = Now() }
+    pendingOpen = { id = base, vid = (base ~= id) and id or nil, token = openToken, t = Now() }
     local tok = openToken
     After(5, function()
       if pendingOpen and pendingOpen.token == tok then pendingOpen = nil end
@@ -538,8 +628,22 @@ function ns.SearchAH(id)
   return true
 end
 
+-- The game's name for a browse row ("Ridge Cleaver of the Bear" when the
+-- auction house lists each version as its own row), or nil.
+local function RowName(r)
+  local CAH = _G.C_AuctionHouse
+  if type(CAH) ~= "table" or type(CAH.GetItemKeyInfo) ~= "function" then return nil end
+  local ok, info = pcall(CAH.GetItemKeyInfo, r.itemKey)
+  local n = ok and type(info) == "table" and info.itemName or nil
+  if type(n) == "string" and not IsSecret(n) and n ~= "" then return n end
+  return nil
+end
+
 -- When the search comes back, open the exact item (a name search also finds
--- "Bolt of Silk Cloth" when you asked for "Silk Cloth").
+-- "Bolt of Silk Cloth" when you asked for "Silk Cloth"). For a version: when
+-- the auction house lists versions as rows of their own, only the row with
+-- that version's name is opened; when none has it, the list stays for you to
+-- pick (opening another version would show the wrong listings).
 local function OnBrowseResults()
   local p = pendingOpen
   if not p then return end
@@ -547,14 +651,22 @@ local function OnBrowseResults()
   if type(CAH) ~= "table" or type(CAH.GetBrowseResults) ~= "function" or type(F) ~= "table" then return end
   local ok, list = pcall(CAH.GetBrowseResults)
   if not ok or type(list) ~= "table" then return end
+  local rows = {}
   for _, r in ipairs(list) do
     local key = type(r) == "table" and r.itemKey
-    if type(key) == "table" and Num(key.itemID) == p.id then
-      pendingOpen = nil
-      if type(F.SelectBrowseResult) == "function" then pcall(F.SelectBrowseResult, F, r) end
-      return
+    if type(key) == "table" and Num(key.itemID) == p.id then rows[#rows + 1] = r end
+  end
+  if #rows == 0 then return end
+  pendingOpen = nil
+  local pick = rows[1]
+  if p.vid and #rows > 1 then
+    pick = nil
+    local want = ItemName(p.vid)
+    for _, r in ipairs(rows) do
+      if RowName(r) == want then pick = r break end
     end
   end
+  if pick and type(F.SelectBrowseResult) == "function" then pcall(F.SelectBrowseResult, F, pick) end
 end
 
 ---------------------------------------------------------------------------
@@ -627,6 +739,51 @@ local function TextButton(parent, label, w, h)
   return b
 end
 
+-- Shows the game's item tooltip for an id: a version through a link with its
+-- bonus ids (so the game shows that version and the price lines are its own).
+local function SetItemTooltip(tt, id)
+  local link = type(ns.VariantLink) == "function" and ns.VariantLink(id) or nil
+  if link and type(tt.SetHyperlink) == "function" then
+    local ok = pcall(tt.SetHyperlink, tt, link)
+    if ok then return true end
+  end
+  if type(tt.SetItemByID) == "function" then
+    local ok = pcall(tt.SetItemByID, tt, BaseID(id))
+    return ok
+  end
+  return false
+end
+
+local function DataFlipTooltip(tt, idea)
+  tt:AddLine(Paint("Flip idea from the latest prices", "buy"))
+  if idea.kind == "vendor" then
+    tt:AddLine("These listings cost less than a vendor pays for them: buy them and sell them to a vendor.", 0.8, 0.8, 0.8, true)
+  else
+    tt:AddLine("Buy the cheap listings, then relist them just under the next listing.", 0.8, 0.8, 0.8, true)
+  end
+  tt:AddDoubleLine("Buy up to (each)", Money(idea.buy), 0.8, 0.8, 0.8, 1, 1, 1)
+  tt:AddDoubleLine("That buys " .. Count(idea.units) .. ", costing", Money(idea.cost), 0.8, 0.8, 0.8, 1, 1, 1)
+  if idea.kind == "vendor" then
+    tt:AddDoubleLine("Then", "sell to a vendor", 0.8, 0.8, 0.8, 1, 1, 1)
+    tt:AddDoubleLine("Profit over the cost", Paint("+" .. Money(idea.profit), "pos"), 0.8, 0.8, 0.8)
+  else
+    tt:AddDoubleLine("Relist at (each)", Money(idea.relist), 0.8, 0.8, 0.8, 1, 1, 1)
+    tt:AddDoubleLine("Profit, after the 5% cut", Paint("+" .. Money(idea.profit), "pos"), 0.8, 0.8, 0.8)
+  end
+  local roi = Num(idea.roi)
+  if roi and roi > 0 then
+    tt:AddDoubleLine("Return on what you spend", sformat("%.1f%%", roi / 10), 0.8, 0.8, 0.8, 1, 1, 1)
+  end
+  local risk = type(idea.risk) == "table" and idea.risk or {}
+  if #risk > 0 then
+    tt:AddLine(" ")
+    tt:AddLine(Paint("Watch out", "neg"))
+    for _, flag in ipairs(risk) do
+      tt:AddLine(RISK_TEXT[flag] or ("Risk: " .. tostring(flag)), 0.6, 0.6, 0.6, true)
+    end
+  end
+end
+
 -- Tooltip for a row: the game's own item tooltip (which already carries the
 -- Forever AH price lines), then the flip numbers and what clicks do.
 local function RowTooltip(row)
@@ -634,11 +791,13 @@ local function RowTooltip(row)
   local tt = _G.GameTooltip
   if not id or not tt then return end
   tt:SetOwner(row, "ANCHOR_RIGHT")
-  local shown = false
-  if type(tt.SetItemByID) == "function" then shown = pcall(tt.SetItemByID, tt, id) end
+  local shown = SetItemTooltip(tt, id)
   if not shown then tt:AddLine(ItemName(id), QualityRGB(id)) end
   local idea = row.idea
-  if idea then
+  if idea and idea.data then
+    tt:AddLine(" ")
+    DataFlipTooltip(tt, idea)
+  elseif idea then
     tt:AddLine(" ")
     tt:AddLine(Paint("Flip idea", "buy"))
     tt:AddDoubleLine("Buy at or under", Money(idea.buy), 0.8, 0.8, 0.8, 1, 1, 1)
@@ -683,6 +842,25 @@ local function OpenMenu(row)
   ns.ToggleWatch(id)
 end
 
+-- A chat link for an item, or for a version (the game builds it from the
+-- version's bonus ids, so it names the version; else the item's own link).
+local function ChatLink(id)
+  local CI = _G.C_Item
+  if type(CI) ~= "table" or type(CI.GetItemInfo) ~= "function" then return nil end
+  local function linkOf(x)
+    local ok, _, l = pcall(CI.GetItemInfo, x)
+    if ok and type(l) == "string" and not IsSecret(l) then return l end
+    return nil
+  end
+  local base = BaseID(id)
+  if base ~= id and type(ns.VariantLink) == "function" then
+    local v = ns.VariantLink(id)
+    local l = v and linkOf(v)
+    if l then return l end
+  end
+  return linkOf(base)
+end
+
 local function RowClick(row, button)
   local id = row.itemID
   if not id then return end
@@ -691,12 +869,7 @@ local function RowClick(row, button)
     return
   end
   if type(_G.IsModifiedClick) == "function" and _G.IsModifiedClick("CHATLINK") then
-    local link
-    local CI = _G.C_Item
-    if type(CI) == "table" and type(CI.GetItemInfo) == "function" then
-      local ok, _, l = pcall(CI.GetItemInfo, id)
-      if ok then link = l end
-    end
+    local link = ChatLink(id)
     if type(link) == "string" then
       local CFU = _G.ChatFrameUtil
       if type(CFU) == "table" and type(CFU.InsertLink) == "function" then
@@ -741,16 +914,22 @@ local function MakeRow(parent, h, isFlip)
     end)
     SimpleTip(r.star, function() return ns.IsWatched(r.itemID) and "On your watchlist" or "Add to watchlist" end,
       function() return ns.IsWatched(r.itemID) and "Click to remove it." or "Keep an eye on it in the watchlist below." end)
-    r.name:SetPoint("TOPLEFT", r.icon, "TOPRIGHT", 6, 1)
+    -- Three lines: name and profit; what to buy (and a small risk note or
+    -- the sales per day); what to do with it.
+    local left = 5 + isz + 6
+    r.name:SetPoint("TOPLEFT", r, "TOPLEFT", left, -3)
     r.name:SetPoint("RIGHT", r, "RIGHT", -64, 0)
-    r.sub = NewFS(r, "GameFontHighlightSmall")
-    r.sub:SetPoint("BOTTOMLEFT", r.icon, "BOTTOMRIGHT", 6, -1)
-    r.sub:SetPoint("RIGHT", r, "RIGHT", -60, 0)
-    r.right:SetPoint("TOPRIGHT", r, "TOPRIGHT", -20, -4)
+    r.right:SetPoint("TOPRIGHT", r, "TOPRIGHT", -20, -3)
     r.right2 = NewFS(r, "GameFontHighlightSmall")
     r.right2:SetJustifyH("RIGHT")
-    r.right2:SetPoint("BOTTOMRIGHT", r, "BOTTOMRIGHT", -4, 4)
+    r.right2:SetPoint("RIGHT", r, "RIGHT", -4, 0)
     SetFSColor(r.right2, "muted")
+    r.sub = NewFS(r, "GameFontHighlightSmall")
+    r.sub:SetPoint("LEFT", r, "LEFT", left, 0)
+    r.sub:SetPoint("RIGHT", r.right2, "LEFT", -4, 0)
+    r.sub2 = NewFS(r, "GameFontHighlightSmall")
+    r.sub2:SetPoint("BOTTOMLEFT", r, "BOTTOMLEFT", left, 3)
+    r.sub2:SetPoint("RIGHT", r, "RIGHT", -4, 0)
   else
     r.name:SetPoint("LEFT", r.icon, "RIGHT", 6, 0)
     r.name:SetPoint("RIGHT", r, "RIGHT", -96, 0)
@@ -829,8 +1008,10 @@ function SB:Build(parent)
   flipHelp:SetAllPoints(self.flipTitle)
   flipHelp:EnableMouse(true)
   SimpleTip(flipHelp, "Flip ideas",
-    "Items to buy under the Target Buy price and relist at the sell price, ranked by a day's profit after the 5% auction cut. "
-    .. "Sales per day are estimates from the hourly snapshots, so treat these as ideas, not promises.")
+    "First, flips found in the latest prices: cheap listings to buy and relist just under the next one, or listings "
+    .. "that cost less than a vendor pays. Then items to buy under the Target Buy price and sell at the sell price, "
+    .. "from the price history. Profits are after the 5% auction cut. Prices move and sales are estimates, so treat "
+    .. "these as ideas, not promises. Hover a row for the details and the risks.")
   self.flipBox = CreateFrame("Frame", nil, F)
   self.flipBox:SetPoint("TOPLEFT", F, "TOPLEFT", 4, -(HEADER_H + TITLE_H))
   self.flipBox:SetPoint("RIGHT", F, "RIGHT", -4, 0)
@@ -1023,9 +1204,23 @@ function SB:RefreshFlips()
     if idea then
       SetRowItem(r, idea.id)
       r.idea = idea
-      r.sub:SetText(Paint("Buy " .. ShortMoney(idea.buy), "buy") .. "  " .. Paint("Sell " .. ShortMoney(idea.sell), "sell"))
+      if idea.data then
+        -- A flip from the latest snapshot: how much to pay and for how many,
+        -- then relist (or sell to a vendor). Risks show as a small grey note.
+        r.sub:SetText(Paint("Buy up to " .. ShortMoney(idea.buy) .. " (" .. Count(idea.units) .. ")", "buy"))
+        if idea.kind == "vendor" then
+          r.sub2:SetText(Paint("Sell to vendor", "muted"))
+        else
+          r.sub2:SetText(Paint("Relist " .. ShortMoney(idea.relist), "sell"))
+        end
+        r.right2:SetText(RiskShort(idea.risk))
+      else
+        -- An idea from the price history: buy under Target Buy, sell at the sell target.
+        r.sub:SetText(Paint("Buy at " .. ShortMoney(idea.buy), "buy"))
+        r.sub2:SetText(Paint("Sell at " .. ShortMoney(idea.sell), "sell"))
+        r.right2:SetText("~" .. Count(idea.sold) .. "/day")
+      end
       r.right:SetText(Paint("+" .. ShortMoney(idea.profit), "pos"))
-      r.right2:SetText("~" .. Count(idea.sold) .. "/day")
       SetStar(r.star.tex, ns.IsWatched(idea.id))
       r:Show()
     else
@@ -1222,7 +1417,8 @@ local function OnInsertLink(text)
   if id then
     box:SetText("")
     box:ClearFocus()
-    SB:AddFromText("item:" .. id)
+    -- The whole link: a version with its own prices is watched as that version.
+    SB:AddFromText(text)
   end
 end
 
@@ -1286,6 +1482,20 @@ end
 -- Slash commands: /fah watch, /fah unwatch, /fah watchlist, /fah sidebar
 ---------------------------------------------------------------------------
 local baseSlash = ns.HandleSlash
+local SLASH_FLIPS = 10   -- /fah flips prints this many
+
+-- One chat line for a flip idea.
+local function FlipLine(x)
+  if x.data then
+    local risk = (type(x.risk) == "table" and #x.risk > 0) and (" (risk: " .. table.concat(x.risk, ", ") .. ")") or ""
+    local what = (x.kind == "vendor") and "sell to vendor" or ("relist " .. Money(x.relist))
+    return ItemName(x.id) .. ": buy up to " .. Money(x.buy) .. " (" .. Count(x.units) .. "), " .. what
+      .. ", +" .. Money(x.profit) .. risk
+  end
+  return ItemName(x.id) .. ": buy " .. Money(x.buy) .. ", sell " .. Money(x.sell)
+    .. ", +" .. Money(x.profit) .. " each, ~" .. Count(x.sold) .. "/day"
+end
+ns.FlipLine = FlipLine
 
 local function WatchCommand(rest, remove)
   if rest == "" then
@@ -1355,7 +1565,7 @@ function ns.HandleSlash(msg)
     ns.SetSidebar(not SidebarWanted())
     Print("the auction house sidebar is now " .. (SidebarWanted() and "on" or "off") .. ".")
   elseif cmd == "flips" or cmd == "ideas" then
-    local ideas, why = ns.FlipIdeas(MAX_FLIPS)
+    local ideas, why = ns.FlipIdeas(SLASH_FLIPS)
     if #ideas == 0 then
       if why == "nodata" then
         Print("no price data yet. Type /fah to see how to get it.")
@@ -1368,10 +1578,9 @@ function ns.HandleSlash(msg)
       end
       return
     end
-    Print("flip ideas (buy, sell, profit each after the 5% cut):")
+    Print("flip ideas (profits are after the 5% auction cut):")
     for i, x in ipairs(ideas) do
-      Print("  " .. i .. ". " .. ItemName(x.id) .. ": " .. Money(x.buy) .. " -> " .. Money(x.sell)
-        .. ", +" .. Money(x.profit) .. ", ~" .. Count(x.sold) .. "/day")
+      Print("  " .. i .. ". " .. FlipLine(x))
     end
   else
     if cmd == "help" or cmd == "?" then

@@ -1662,6 +1662,44 @@ const loadHistorical = async (id) => {
 /* Unknown names: the collector writes "" (older files "Item 12345") when
    Blizzard has not given an item's name. Give each one a readable, searchable
    name so nothing downstream meets an empty string. */
+/* Greens whose versions sell for different prices ("of the Bear", "of the
+   Owl"): the item's own row lumps every version together, so its cheapest
+   listing can be one version and its market another. A margin or a profit
+   worked out from that row mixes them, so those ids stay out of every margin
+   list and scan, and their page points at the versions instead. */
+let wowVersioned = new Set();
+function wowIndexVersions() {
+  wowVersioned = new Set();
+  for (const m of mapping) if (m && m.base != null && String(m.base) !== String(m.id)) wowVersioned.add(String(m.base));
+}
+function wowIsLumped(id) { return wowVersioned.has(String(id)); }
+function wowVersionsOf(id) {
+  const out = mapping.filter(m => m && m.base != null && String(m.base) === String(id) && String(m.id) !== String(id));
+  const px = m => (latest?.data?.[String(m.id)]?.low || 0);
+  return out.sort((a, b) => (px(b) > 0) - (px(a) > 0) || px(a) - px(b) || String(a.name).localeCompare(String(b.name)));
+}
+/* "Ridge Cleaver" and "of the Bear" for a version, so a narrow header can
+   keep the part that says which version it is; null for anything else. */
+function wowSplitVersionName(m) {
+  if (!m || m.base == null || String(m.base) === String(m.id)) return null;
+  const b = mapping.find(x => String(x.id) === String(m.base));
+  const full = String(m.name || '');
+  const bn = b && typeof b.name === 'string' ? b.name : '';
+  if (bn && full.startsWith(bn + ' ') && full.length > bn.length + 1) return [bn, full.slice(bn.length + 1)];
+  const k = full.search(/ (of |\(version )/);
+  return k > 0 ? [full.slice(0, k), full.slice(k + 1)] : null;
+}
+function wowSetNameParts(el, m) {
+  if (!el) return;
+  const parts = wowSplitVersionName(m);
+  el.classList.toggle('wow-vname', !!parts);
+  if (!parts) { el.textContent = m.name; return; }
+  el.textContent = '';
+  const a = document.createElement('span'); a.className = 'wow-vbase'; a.textContent = parts[0];
+  const b = document.createElement('span'); b.className = 'wow-vsfx'; b.textContent = parts[1];
+  el.appendChild(a); el.appendChild(document.createTextNode(' ')); el.appendChild(b);
+}
+
 function wowFixNames(list) {
   if (!Array.isArray(list)) return [];
   const out = list.filter(m => m && m.id != null);
@@ -1854,7 +1892,37 @@ function updateCalculator() {
   }
 }
 
+/* The side module for a green whose versions sell for different prices: no
+   Potential Profit or Analyst Rating (they would mix versions), the versions
+   to pick from instead. */
+function renderVersionPicker(item) {
+  const vers = wowVersionsOf(item.id);
+  const shown = vers.slice(0, 12);
+  const esc = (t) => String(t).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const rows = shown.map(v => {
+    const l = latest?.data?.[String(v.id)];
+    const price = l && l.low > 0 ? moneyFull(l.low) : 'none listed';
+    const qc = { POOR: '#9D9D9D', COMMON: '#FFFFFF', UNCOMMON: '#1EFF00', RARE: '#0070DD', EPIC: '#A335EE' }[String(v.quality || '').toUpperCase()] || '#1EFF00';
+    return `<button type="button" class="wow-vpick" data-id="${esc(v.id)}"><span class="wow-vpick-nm" style="color:${qc}">${esc(v.name)}</span>` +
+      `<span class="wow-vpick-px">${esc(price)}</span></button>`;
+  }).join('');
+  $("#sideModule").innerHTML = `
+    <div class="wow-versions">
+      <div class="calc-headline-label">Pick a version</div>
+      <p class="wow-versions-note">This green comes in versions that sell for different prices, so a profit worked out from
+        all of them together would mix them. Pick a version for its own prices and advice:</p>
+      <div class="wow-vpick-list">${rows || '<span class="wow-versions-note">No version is listed right now.</span>'}</div>
+      ${vers.length > shown.length ? `<p class="wow-versions-note">${vers.length - shown.length} more versions in Browse (the grid button by the search box).</p>` : ''}
+    </div>
+    <div id="ratingGauge" class="rg-wrap rg-side" hidden></div>`;
+  $("#sideModule").querySelectorAll('.wow-vpick').forEach(b => b.addEventListener('click', () => {
+    const m = mapping.find(x => String(x.id) === String(b.dataset.id));
+    if (m) { setItem._userPicked = false; setItem(m); }
+  }));
+}
+
 function restoreCalculator(itemLimit, recBuy, recSell) {
+  if (selected && wowIsLumped(selected.id)) { renderVersionPicker(selected); return; }
   /* Some OSRS items (potions, food, seeds, raw materials, etc.) have no GE
      buy limit at all — the mapping returns null/undefined for `.limit`. We
      used to fall back to 1, which made the calculator default to a single-
@@ -3099,7 +3167,7 @@ if (window.ResizeObserver) {
    so we per-item fetch a bounded pool (top vol + top price), throttled & cached. */
 function getScanCandidates() {
   const active = membersOn ? mapping : mapping.filter(m => !m.members);
-  const noOver = active.filter(m => !overMaxFallback(String(m.id)));
+  const noOver = active.filter(m => !overMaxFallback(String(m.id)) && !wowIsLumped(m.id));
   const byVol = [...noOver].sort((a, b) => (volumes?.data?.[String(b.id)] || 0) - (volumes?.data?.[String(a.id)] || 0)).slice(0, SCAN_VOL_POOL);
   const byPrice = [...noOver].sort((a, b) => (latest?.data?.[String(b.id)]?.high || 0) - (latest?.data?.[String(a.id)]?.high || 0)).slice(0, SCAN_PRICE_POOL);
   const map = {};
@@ -4333,7 +4401,7 @@ function renderWatchlist() {
        a flipper can capture right now. The 24h volume-weighted averages compress
        the true spread and were hiding genuinely-spread items (e.g. uncut diamond)
        while surfacing misleading near-zero margins. Require recent trades both sides. */
-    if (node && node.high > 0 && node.low > 0 && node.high > node.low
+    if (node && node.high > 0 && node.low > 0 && node.high > node.low && !wowIsLumped(id)
         && p24 && (p24.highPriceVolume || 0) > 0 && (p24.lowPriceVolume || 0) > 0) {
       const sell = node.high, buy = node.low;
       const margin = sell - buy - calculateTax(sell, item.id);
@@ -4371,7 +4439,7 @@ function renderWatchlist() {
            movers to high-volume names means a -5% on Coal or Adamantite bar
            is a real dip-buy candidate, not one whale liquidating a niche. */
         const vol = (p24.highPriceVolume || 0) + (p24.lowPriceVolume || 0);
-        if (curMid >= 100 && vol >= LOW_VOL_THRESHOLD && Math.abs(pct) >= 3) movers.push({ item, pct });
+        if (curMid >= 100 && vol >= LOW_VOL_THRESHOLD && Math.abs(pct) >= 3 && !wowIsLumped(id)) movers.push({ item, pct });
       }
     }
   });
@@ -5903,6 +5971,14 @@ function renderTargetBoxes() {
   $("#sellPrice").innerHTML = `<div class="price-label"><span class="pl-t">${sellLbl}</span> <span class="live-val">Market: ${fmtGp(liveSellRaw)}${ageSpan(liveSellTime, 'sell')}</span></div><div class="price-val">${step('sell', -1)}<span class="pv-num ${pvFit(fmtGp(recommendedSell))}">${fmtGp(recommendedSell)}</span>${step('sell', 1)}</div>`;
   wireTargetPriceSteppers();
   fitPriceNums();
+  /* A green whose versions sell for different prices: its targets would mix
+     versions (see renderVersionPicker), so the boxes say so instead. */
+  if (selected && wowIsLumped(selected.id)) {
+    ['#buyPrice', '#sellPrice'].forEach(sel => {
+      const v = document.querySelector(sel + ' .price-val');
+      if (v) v.innerHTML = '<span class="pv-num wow-pv-mixed">Depends on the version</span>';
+    });
+  }
   /* Re-sync the flip card's Buy @ / Sell @ highlight: it only lights while the
      card's item is the one on the chart, and that can change under it (opening
      the card's item, or ↻ Next landing on the one already shown) without any
@@ -6379,6 +6455,7 @@ function ratingWhyHtml(gBuy, gSell, tf) {
 
 function renderRatingGauge(item, mountEl, opts = {}) {
   if (!mountEl) return;
+  if (item && wowIsLumped(item.id)) { mountEl.hidden = true; mountEl.innerHTML = ''; return; }
   const isSel = item && selected && String(item.id) === String(selected.id);
   let gBuy = opts.gBuy, gSell = opts.gSell;
   if (gBuy === undefined || gSell === undefined) {
@@ -9508,7 +9585,8 @@ function drawChartBase(series) {
   }
 
   const activePrice = activePriceBox === 'buy' ? recommendedBuy : recommendedSell;
-  if (activePrice != null) {
+  /* No target line for a green whose versions differ: it would mix them. */
+  if (activePrice != null && !(selected && wowIsLumped(selected.id))) {
     const py = ypx(activePrice, vmin, vmax, y0, h_price);
     if (py >= y0 && py <= y0 + h_price) {
       const col = activePriceBox === 'buy' ? buyColor : sellColor;
@@ -10331,13 +10409,16 @@ async function setItem(m, opts = {}) {
   /* Tab favicon mirrors the selected item — so when you have a bunch of
      PocketGE tabs open you can tell at a glance which item is which. */
   updateFavicon(iconURL);
-  $("#tickerName").textContent = m.name;
+  wowSetNameParts($("#tickerName"), m);
   /* OSRS wiki uses the item name with the first letter capitalized and
      spaces replaced by underscores (e.g. "Gilded scimitar" -> Gilded_scimitar).
      encodeURIComponent handles apostrophes etc.; underscores are unreserved
      so they pass through untouched. */
   const wikiSlug = (m.name.charAt(0).toUpperCase() + m.name.slice(1)).replace(/ /g, '_');
-  const wikiURL = `https://www.wowhead.com/classic/item=${m.id}`;
+  /* A green's version (id = item id * 1000 + n) links to its item with the
+     version's bonus ids, so Wowhead shows that exact version. */
+  const wikiBonus = m.base != null ? String(m.variant || '').split(':').filter(p => /^\d+$/.test(p)).join(':') : '';
+  const wikiURL = `https://www.wowhead.com/classic/item=${m.base != null ? m.base : m.id}` + (wikiBonus ? `?bonus=${wikiBonus}` : '');
   $("#tickerHeaderIconLink").href = wikiURL;
   $("#tickerNameLink").href = wikiURL;
   /* Names the destination on hover, so the glyph beside the title doesn't
@@ -10348,7 +10429,7 @@ async function setItem(m, opts = {}) {
   /* Combined search control (landscape only, shown via CSS): the current item
      name overlays the otherwise-cramped search box, and the ↗ opens its wiki —
      so the item appears once, and the search stays usable. */
-  $("#sbarItem").textContent = m.name;
+  wowSetNameParts($("#sbarItem"), m);
   $("#sbarWiki").href = wikiURL;
   updateFavoriteBtn();
   renderWatchlist();
@@ -10447,6 +10528,7 @@ setItem._userPicked = false;
 
   try {
     mapping = wowFixNames(await loadMapping());
+    wowIndexVersions();
     window._wowIconById = {};
     for (const m of mapping) if (m.icon) window._wowIconById[m.id] = m.icon;
     latest = await loadLatest();
@@ -10454,6 +10536,9 @@ setItem._userPicked = false;
     try { past24h = await load24h(); } catch (e) {}
     try { volumes = await loadVolumes(); } catch (e) {}
     try { wowScaleSales(await loadStatus()); } catch (e) {}
+    /* browse.js (Browse and Flip Finder) builds its item index once these are in. */
+    window.__wowDataReady = true;
+    try { document.dispatchEvent(new Event('wow:data')); } catch (e) {}
     /* Before the first render: renderWatchlist asks for any favorite's
        high/low it does not have, so restoring after it re-downloaded every
        favorite on every page load. */
@@ -10489,7 +10574,11 @@ setItem._userPicked = false;
     qInput.addEventListener("input", () => {
       const q = qInput.value.trim().toLowerCase();
       if (!q) { showRecents(); return; }
-      const list = mapping.filter(x => x.name.toLowerCase().includes(q) && (membersOn || !x.members)).slice(0, 40);
+      /* Every item first, then versions of greens (one entry each, sorted
+         right after their item), so versions never crowd items out of the
+         40 places. Typing a version's suffix ("of the bear") still finds it. */
+      const hits = mapping.filter(x => x.name.toLowerCase().includes(q) && (membersOn || !x.members));
+      const list = hits.filter(x => x.base == null).concat(hits.filter(x => x.base != null)).slice(0, 40);
       sb.innerHTML = list.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${x.name} icon">${x.name}</div>`).join("");
       sb.style.display = list.length ? "block" : "none";
     });
@@ -10714,6 +10803,7 @@ setItem._userPicked = false;
       latest = await loadLatest();
       lastLiveFetchAt = Math.floor(Date.now() / 1000);
       updateFootFresh();
+      try { document.dispatchEvent(new Event('wow:latest')); } catch (e) {}
       /* Was: dayHiLoCache = {}; scanStatus.fived = 'idle'; runFiveDayScan() —
          a full ~100-item re-download on every 5-minute tick, in every tab,
          hidden or not, for hourly candles that had not changed. Now only

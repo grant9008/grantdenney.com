@@ -67,16 +67,231 @@ function ns.SoldText(item)
 end
 
 -- Unknown item names: "" (new data files) or "Item 12345" (older ones).
+-- A version with no known name looks like "Item 123 (version 2)" or " (version 2)".
 local function unknownName(nm)
-  return type(nm) ~= "string" or nm == "" or smatch(nm, "^Item %d+$") ~= nil
+  if type(nm) ~= "string" or nm == "" or smatch(nm, "^Item %d+$") ~= nil then return true end
+  return smatch(nm, "^%s*%(version %d+%)$") ~= nil or smatch(nm, "^Item %d+ %(version %d+%)$") ~= nil
 end
 ns.IsUnknownName = unknownName
 
+-- Split on a single plain character, keeping empty fields.
+local function split(s, sep)
+  local out, n, start = {}, 0, 1
+  while true do
+    local i = sfind(s, sep, start, true)
+    n = n + 1
+    if not i then
+      out[n] = ssub(s, start)
+      return out, n
+    end
+    out[n] = ssub(s, start, i - 1)
+    start = i + 1
+  end
+end
+
+---------------------------------------------------------------------------
+-- Versions of an item (random suffix gear like "of the Bear")
+---------------------------------------------------------------------------
+-- Data.lua's variants table: [itemID] = "key=vid,key=vid". A key is the
+-- version's bonus ids, lowest first, joined with ":" (maybe followed by
+-- "m<type>=<value>" modifier parts). A vid (itemID * 1000 + n) has its own
+-- item line, like an item. The plain item id keeps meaning "all versions".
+-- Older data files have no variants: every item is then one plain item.
+local variantData
+
+local function variants()
+  if variantData then return variantData end
+  local vd = { byItem = {}, baseOf = {} }
+  variantData = vd
+  local raw = db.variants
+  if type(raw) ~= "table" then return vd end
+  for k, s in pairs(raw) do
+    local base = tonumber(k)
+    if base and type(s) == "string" then
+      local list = {}
+      for entry in string.gmatch(s, "[^,]+") do
+        local key, v = smatch(entry, "^%s*(.-)=(%d+)%s*$")
+        local vid = tonumber(v)
+        -- A vid is itemID * 1000 + 1..999; anything else is not a version.
+        if key and key ~= "" and vid and vid > base * 1000 and vid < base * 1000 + 1000 then
+          local bonus, mods, nmods, ok = {}, {}, 0, true
+          for tok in string.gmatch(key, "[^:]+") do
+            local mt, mv = smatch(tok, "^m(%-?%d+)=(%-?%d+)$")
+            if mt then
+              mods[tonumber(mt)] = tonumber(mv)
+              nmods = nmods + 1
+            elseif smatch(tok, "^%d+$") then
+              bonus[#bonus + 1] = tonumber(tok)
+            else
+              ok = false
+            end
+          end
+          if ok then
+            table.sort(bonus)
+            list[#list + 1] = { key = key, vid = vid, bonus = tconcat(bonus, ":"), mods = mods, nmods = nmods }
+            vd.baseOf[vid] = base
+          end
+        end
+      end
+      if #list > 0 then vd.byItem[base] = list end
+    end
+  end
+  return vd
+end
+
+-- The item id behind a version id (itself for a plain item id).
+function ns.BaseItemID(id)
+  local n = tonumber(id)
+  if not n then return nil end
+  return variants().baseOf[n] or n
+end
+
+-- True for a version id (a vid from the variants table).
+function ns.IsVariant(id)
+  local n = tonumber(id)
+  return n ~= nil and variants().baseOf[n] ~= nil
+end
+
+-- True when the data has separate prices for versions of this item.
+function ns.HasVariants(id)
+  local n = tonumber(id)
+  return n ~= nil and variants().byItem[n] ~= nil
+end
+
+-- The version number of a vid (the "N" in "(version N)"), or nil.
+function ns.VariantNumber(id)
+  local n = tonumber(id)
+  local base = n and variants().baseOf[n]
+  if not base then return nil end
+  return n - base * 1000
+end
+
+-- How many versions have their own prices.
+function ns.VariantCount()
+  local c = 0
+  for _ in pairs(variants().baseOf) do c = c + 1 end
+  return c
+end
+
+-- The fields of an item link after "item:" (strings, empty ones kept), or nil.
+local function linkFields(link)
+  if type(link) ~= "string" or isSecret(link) then return nil end
+  local body = smatch(link, "item:([%-%d:]*)")
+  if not body or body == "" then return nil end
+  return split(body, ":")
+end
+
+local function wholeNumber(s)
+  local v = tonumber(s)
+  if v and v == floor(v) then return v end
+  return nil
+end
+
+-- The bonus ids (lowest first) and modifiers ({ [type] = value }) of an item
+-- link, or nil when it is not an item link. Link fields after "item:":
+-- id, enchant, 4 gems, suffix, unique, level, spec, modifier mask, context,
+-- number of bonus ids, the bonus ids, number of modifiers, type:value pairs.
+-- Anything odd (cut short, not numbers, silly counts) is skipped.
+function ns.LinkBonus(link)
+  local f, n = linkFields(link)
+  if not f then return nil end
+  local bonus, mods = {}, {}
+  local nb = wholeNumber(f[13]) or 0
+  if nb < 0 or nb > 40 or 13 + nb > n then nb = 0 end
+  for k = 1, nb do
+    local v = wholeNumber(f[13 + k])
+    if v and v > 0 then bonus[#bonus + 1] = v end
+  end
+  local i = 14 + nb
+  local nm = wholeNumber(f[i]) or 0
+  if nm > 0 and nm <= 40 and i + 2 * nm <= n then
+    for k = 1, nm do
+      local t, v = wholeNumber(f[i + 2 * k - 1]), wholeNumber(f[i + 2 * k])
+      if t and v then mods[t] = v end
+    end
+  end
+  table.sort(bonus)
+  return bonus, mods
+end
+
+-- The variant key of a link: its bonus ids, lowest first, joined with ":"
+-- ("" for none), as the collector writes it.
+function ns.VariantKey(link)
+  local bonus = ns.LinkBonus(link)
+  if not bonus then return "" end
+  return tconcat(bonus, ":")
+end
+
+-- The vid whose prices fit an item link, or nil when the data has no prices
+-- for that version. The most exact match wins (modifier parts count).
+function ns.FindVariant(itemID, link)
+  local id = tonumber(itemID)
+  local list = id and variants().byItem[id]
+  if not list then return nil end
+  local bonus, mods = ns.LinkBonus(link)
+  if not bonus then return nil end
+  local key = tconcat(bonus, ":")
+  local best, bestN
+  for _, e in ipairs(list) do
+    if e.bonus == key and (key ~= "" or e.nmods > 0) then
+      local ok = true
+      for t, v in pairs(e.mods) do
+        if mods[t] ~= v then ok = false break end
+      end
+      if ok and (not bestN or e.nmods > bestN) then best, bestN = e.vid, e.nmods end
+    end
+  end
+  if best and type(db.items[best]) == "string" then return best end
+  return nil
+end
+
+-- The vid of an item's version whose name (in the data, like "Ridge Cleaver
+-- of the Bear") is `name`, or nil. Versions named "(version N)" never match.
+function ns.VersionByName(itemID, name)
+  local id = tonumber(itemID)
+  local list = id and variants().byItem[id]
+  if not list or type(name) ~= "string" or isSecret(name) or name == "" then return nil end
+  for _, e in ipairs(list) do
+    if type(db.items[e.vid]) == "string" and ns.ItemName(e.vid) == name then return e.vid end
+  end
+  return nil
+end
+
+-- An "item:..." link string for a vid, carrying that version's bonus ids and
+-- modifiers (so the game's tooltip shows that version), or nil.
+function ns.VariantLink(vid)
+  local n = tonumber(vid)
+  local base = n and variants().baseOf[n]
+  if not base then return nil end
+  for _, e in ipairs(variants().byItem[base] or {}) do
+    if e.vid == n then
+      local bonus = {}
+      for tok in string.gmatch(e.bonus, "[^:]+") do bonus[#bonus + 1] = tok end
+      local parts = { "item:" .. base, "", "", "", "", "", "", "", "", "", "", "", tostring(#bonus) }
+      for _, b in ipairs(bonus) do parts[#parts + 1] = b end
+      local mods = {}
+      for t, v in pairs(e.mods) do mods[#mods + 1] = t .. ":" .. v end
+      table.sort(mods)
+      parts[#parts + 1] = tostring(#mods)
+      for _, m in ipairs(mods) do parts[#parts + 1] = m end
+      return tconcat(parts, ":")
+    end
+  end
+  return nil
+end
+
 -- The game's own name for an item, or nil when it has not loaded it (asking
--- also makes the game load it, so a later call usually has it).
+-- also makes the game load it, so a later call usually has it). A version
+-- gets the item's name plus "(version N)".
 local function gameName(id)
   local function good(ok, n)
     return ok and type(n) == "string" and not isSecret(n) and not unknownName(n)
+  end
+  local base = variants().baseOf[id]
+  if base then
+    local n = gameName(base)
+    if n then return n .. " (version " .. (id - base * 1000) .. ")" end
+    return nil
   end
   local CI = _G.C_Item
   if type(CI) == "table" then
@@ -121,21 +336,6 @@ end
 
 function ns.Colorize(text, c)
   return "|c" .. ns.Hex(c) .. tostring(text) .. "|r"
-end
-
--- Split on a single plain character, keeping empty fields.
-local function split(s, sep)
-  local out, n, start = {}, 0, 1
-  while true do
-    local i = sfind(s, sep, start, true)
-    n = n + 1
-    if not i then
-      out[n] = ssub(s, start)
-      return out, n
-    end
-    out[n] = ssub(s, start, i - 1)
-    start = i + 1
-  end
 end
 
 local function trim(s)
@@ -198,6 +398,12 @@ function ns.GetItem(itemID)
     -- How many separate listings make up today's prices (nil in older files).
     auctions = tonumber(f[10]),
   }
+  -- A version of an item (random suffix gear): base is the item's own id.
+  local base = variants().baseOf[id]
+  if base then
+    item.base = base
+    item.variant = true
+  end
   local nm = f[1] or ""
   if unknownName(nm) then
     item.unnamed = true
@@ -217,7 +423,11 @@ function ns.ItemName(itemID)
   local it = ns.GetItem(id)
   local nm = it and it.name
   if not unknownName(nm) then return nm end
-  return gameName(id) or ("Item " .. id)
+  local n = gameName(id)
+  if n then return n end
+  local base = variants().baseOf[id]
+  if base then return "Item " .. base .. " (version " .. (id - base * 1000) .. ")" end
+  return "Item " .. id
 end
 
 -- Series ------------------------------------------------------------------
@@ -474,22 +684,29 @@ function ns.FindItemIDs(name)
   return out
 end
 
+-- How many items the data has prices for (versions of an item not counted).
 local itemCount
 function ns.ItemCount()
   if not itemCount then
     itemCount = 0
-    for _ in pairs(db.items) do itemCount = itemCount + 1 end
+    local baseOf = variants().baseOf
+    for id in pairs(db.items) do
+      if not baseOf[tonumber(id) or -1] then itemCount = itemCount + 1 end
+    end
   end
   return itemCount
 end
 
--- Accepts an item link, an item id or an item name. Returns an id we have data for.
+-- Accepts an item link, an item id or an item name. Returns an id we have data
+-- for: a link to a version with its own prices gives that version's id.
 function ns.ResolveItem(text)
   if type(text) == "number" then return ns.GetItem(text) and text or nil end
   if type(text) ~= "string" then return nil end
   local linked = smatch(text, "item:(%d+)")
   if linked then
     local id = tonumber(linked)
+    local vid = ns.FindVariant(id, text)
+    if vid then return vid end
     return ns.GetItem(id) and id or nil
   end
   local t = trim(text)
@@ -507,6 +724,62 @@ function ns.ResolveItem(text)
     if ns.GetItem(id) then return id end
   end
   return ns.FindItemID(t)
+end
+
+-- Lowest and highest cheapest price over the last 7 days of hourly prices,
+-- and how many hourly prices that was. Only the count while there are fewer
+-- than 6 (too few to call it a week's range).
+ns.WEEK_MIN_POINTS = 6
+function ns.WeekRange(itemID)
+  local s = ns.GetSeries(itemID, "1W")
+  if not s then return nil, nil, 0 end
+  local lo, hi, n = nil, nil, 0
+  for i = 1, s.n do
+    local c = s.cheap[i]
+    if c then
+      n = n + 1
+      if not lo or c < lo then lo = c end
+      if not hi or c > hi then hi = c end
+    end
+  end
+  if n < ns.WEEK_MIN_POINTS then return nil, nil, n end
+  return lo, hi, n
+end
+
+-- Flip ideas the price collector worked out from one snapshot (Data.lua's
+-- flips list, best first). Each: id (an item or a version), kind ("gap": buy
+-- the cheap listings and relist under the next one; "vendor": listings under
+-- what a vendor pays), buyMax (highest unit price to pay), units, cost,
+-- relist (unit price, 0 for vendor flips), profit (after the 5% cut, or vs
+-- the vendor), roi (profit per 1000 copper spent) and risk (a list of words:
+-- thin, slow, spike, suffix). Older data files have none: an empty list.
+local flipList
+function ns.DataFlips()
+  if flipList then return flipList end
+  flipList = {}
+  local raw = db.flips
+  if type(raw) ~= "table" then return flipList end
+  for i = 1, #raw do
+    local s = raw[i]
+    if type(s) == "string" then
+      local f = split(s, "|")
+      local id, kind = wholeNumber(f[1]), f[2]
+      local buyMax, units = wholeNumber(f[3]), wholeNumber(f[4])
+      local cost, relist, profit = wholeNumber(f[5]), wholeNumber(f[6]) or 0, wholeNumber(f[7])
+      if id and id > 0 and (kind == "vendor" or (kind == "gap" and relist > 0)) and buyMax and buyMax > 0
+        and units and units > 0 and profit and profit > 0 then
+        local risk = {}
+        for w in string.gmatch(f[9] or "", "[^,%s]+") do risk[#risk + 1] = slower(w) end
+        flipList[#flipList + 1] = {
+          id = id, kind = kind, buyMax = buyMax, units = units,
+          cost = (cost and cost > 0) and cost or buyMax * units,
+          relist = (kind == "gap") and relist or 0,
+          profit = profit, roi = wholeNumber(f[8]) or 0, risk = risk,
+        }
+      end
+    end
+  end
+  return flipList
 end
 
 ---------------------------------------------------------------------------
@@ -632,6 +905,8 @@ local function loadSettings()
     if S[k] == nil or type(S[k]) ~= type(v) then S[k] = v end
   end
   S.chartTF = ns.NormalizeTF(S.chartTF) or "1D"
+  -- Which target line the chart shows: "buy", "sell" or none (the default).
+  if S.chartLine ~= "buy" and S.chartLine ~= "sell" then S.chartLine = nil end
   _G.ForeverAH_Settings = S
   ns.settingsLoaded = true
 end
@@ -695,6 +970,17 @@ local function tooltipItemID(tt, data)
   return nil
 end
 
+-- The item link the tooltip shows (it carries the version's bonus ids), or nil.
+local function tooltipLink(tt, data)
+  local l = type(data) == "table" and data.hyperlink or nil
+  if l ~= nil and not isSecret(l) and type(l) == "string" then return l end
+  if type(tt.GetItem) == "function" then
+    local ok, _, link = pcall(tt.GetItem, tt)
+    if ok and link ~= nil and not isSecret(link) and type(link) == "string" then return link end
+  end
+  return nil
+end
+
 -- Stack size of the item under the mouse. Only bag and equipped items have
 -- one we can read; everything else counts as 1.
 local function stackCount(tt, data)
@@ -747,6 +1033,22 @@ function ns.LinkHasSuffix(link)
   return false
 end
 
+-- The id whose prices fit an item link, and what those prices cover:
+--   vid, "version"   the data has prices for this exact version
+--   id, "all"        versions of this item differ and these prices mix them
+--                    (the data lists versions, or the link names one the
+--                    data does not have, or an older data file)
+--   id, nil          a plain item
+function ns.PriceIDForLink(itemID, link)
+  local id = tonumber(itemID)
+  if not id then return nil end
+  local vid = ns.FindVariant(id, link)
+  if vid then return vid, "version" end
+  local bonus = ns.LinkBonus(link)
+  if ns.HasVariants(id) or ns.LinkHasSuffix(link) or (bonus and #bonus > 0) then return id, "all" end
+  return id, nil
+end
+
 -- The bag or equipped location of the tooltip's item, when it has one.
 local function tooltipLocation(tt, data)
   local CI = _G.C_Item
@@ -786,22 +1088,69 @@ local function mightBeTradeable(tt, data, id)
 end
 ns.MightBeTradeable = mightBeTradeable
 
+-- The live cheapest listing the open auction house showed for an id (AH.lua).
+local function liveFor(id)
+  if type(ns.LiveCheapest) ~= "function" then return nil end
+  local ok, p, own = pcall(ns.LiveCheapest, id)
+  if ok and type(p) == "number" and p > 0 then return p, own == true end
+  return nil
+end
+
+-- "This stack (20)" lines: what the stack brings at auction (Sell now, after
+-- the 5% cut) and from a vendor, then a plain verdict in green or red.
+local function addStackLines(tt, item, count, unitNow)
+  local C = ns.COLORS
+  local mu, tx = C.muted, C.text
+  local vendor = tonumber(item.vendor) or 0
+  if not unitNow and vendor <= 0 then return end
+  local label = count > 1 and ("This stack (" .. count .. ")") or "This item"
+  local auction = unitNow and floor(unitNow * count * ns.AH_CUT) or nil
+  local vend = vendor * count
+  if auction then
+    tt:AddDoubleLine(label .. " at auction, after 5% cut", ns.MoneyIcons(auction), tx[1], tx[2], tx[3], 1, 1, 1)
+  end
+  if vendor > 0 then
+    tt:AddDoubleLine(label .. " at a vendor", ns.MoneyIcons(vend), tx[1], tx[2], tx[3], 1, 1, 1)
+  else
+    tt:AddDoubleLine(label .. " at a vendor", "will not buy it", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+  end
+  if not auction then return end
+  local pos, neg = C.pos, C.neg
+  if vendor <= 0 then
+    tt:AddLine("Auction it: a vendor will not buy it", pos[1], pos[2], pos[3])
+  elseif auction > vend then
+    tt:AddLine("Auction it: " .. ns.MoneyIcons(auction - vend) .. " more than a vendor pays", pos[1], pos[2], pos[3])
+  elseif auction == vend then
+    tt:AddLine("Vendor it: a vendor pays the same", neg[1], neg[2], neg[3])
+  else
+    tt:AddLine("Vendor it: a vendor pays " .. ns.MoneyIcons(vend - auction) .. " more", neg[1], neg[2], neg[3])
+  end
+end
+ns.AddStackLines = addStackLines
+
 -- Adds our lines. Returns true when anything was added.
--- opts (optional): noData = false hides the "no recent listings" line,
--- suffix = true adds a note that the price covers every version of the item.
+-- itemID may be a version's id (vid). opts (optional): noData = false hides
+-- the "no recent listings" line; version = "version" says the prices are for
+-- this version only, version = "all" (or suffix = true) that they cover every
+-- version of the item. Then Market and Cheapest still show (they are what
+-- the data saw), but Sell now and Best price say "depends on the version"
+-- and only the vendor's price is offered for the stack: a price for selling
+-- would come from other versions' listings.
 function ns.AddTooltipLines(tt, itemID, count, opts)
   local S = ns.settings
   if not S.tooltip then return false end
   if (tonumber(db.updated) or 0) <= 0 then return false end
   local C = ns.COLORS
   local mu, tx, se = C.muted, C.text, C.sell
+  opts = type(opts) == "table" and opts or {}
   local item = ns.GetItem(itemID)
   if not item then
-    if type(opts) == "table" and opts.noData == false then return false end
+    if opts.noData == false then return false end
     tt:AddLine("Forever AH: no recent listings", mu[1], mu[2], mu[3])
     return true
   end
-  count = tonumber(count) or 1
+  count = floor(tonumber(count) or 1)
+  if count < 1 then count = 1 end
   local mult, tag = 1, ""
   if count > 1 and shiftDown() then
     mult = count
@@ -839,14 +1188,40 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     else
       tt:AddDoubleLine("Cheapest", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
-    -- On the first day the 7-day average is just today's market price.
-    local a = money(item.avg7)
-    if a and ns.DailyPoints(item.id) >= 2 then
-      tt:AddDoubleLine("7-day avg" .. tag, a, tx[1], tx[2], tx[3], 1, 1, 1)
+    -- The week's range of cheapest prices, once there are 6 hourly prices.
+    local lo, hi = ns.WeekRange(item.id)
+    if lo then
+      tt:AddDoubleLine("7-day low" .. tag, money(lo), tx[1], tx[2], tx[3], 1, 1, 1)
+      tt:AddDoubleLine("7-day high" .. tag, money(hi), tx[1], tx[2], tx[3], 1, 1, 1)
+    end
+    -- Sell now: 1 copper under the cheapest listing (the live one when the
+    -- auction house showed it). Best price: the sell target from the history.
+    local mixed = opts.version == "all" or opts.suffix == true
+    local live, own = liveFor(item.id)
+    local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
+    local nowP = P and P.now
+    if mixed then
+      tt:AddDoubleLine("Sell now", "depends on the version", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+    elseif nowP then
+      tt:AddDoubleLine((P.live and "Sell now (live)" or "Sell now") .. tag, money(nowP), tx[1], tx[2], tx[3], 1, 1, 1)
+    else
+      local why = (P and P.nowWhy == "unreliable") and "price not reliable" or "none listed"
+      tt:AddDoubleLine("Sell now", why, tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+    end
+    if mixed then
+      tt:AddDoubleLine("Best price", "depends on the version", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
+    elseif P and P.best then
+      tt:AddDoubleLine("Best price" .. tag, money(P.best), tx[1], tx[2], tx[3], 1, 1, 1)
+    else
+      local why = (P and P.bestWhy == "unreliable") and "price not reliable" or "needs more history"
+      tt:AddDoubleLine("Best price", why, tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
     tt:AddLine("Listed " .. ns.Num(item.listed) .. ", " .. ns.SoldText(item), mu[1], mu[2], mu[3])
+    addStackLines(tt, item, count, nowP)
   end
-  if type(opts) == "table" and opts.suffix then
+  if opts.version == "version" then
+    tt:AddLine("Prices for this version only", mu[1], mu[2], mu[3])
+  elseif opts.version == "all" or opts.suffix then
     tt:AddLine("Price covers all versions of this item", mu[1], mu[2], mu[3])
   end
   if age > ns.STALE_SECONDS then
@@ -875,17 +1250,19 @@ local function onTooltipData(tt, data)
   if not id then return end
   if guarded then done[tt] = id end
   local opts = {}
-  if not ns.GetItem(id) then
+  local link = tooltipLink(tt, data)
+  local pid, cover = ns.PriceIDForLink(id, link)
+  pid = pid or id
+  if not ns.GetItem(pid) then
     -- No data: only worth a line for items that could be on the auction house.
     -- Comparison tooltips show what you wear, which is nearly always soulbound.
     local ok, name = pcall(tt.GetName, tt)
     local shopping = ok and type(name) == "string" and sfind(name, "ShoppingTooltip", 1, true) ~= nil
     opts.noData = not shopping and mightBeTradeable(tt, data, id)
-  elseif type(tt.GetItem) == "function" then
-    local ok, _, link = pcall(tt.GetItem, tt)
-    opts.suffix = ok and ns.LinkHasSuffix(link)
+  else
+    opts.version = cover
   end
-  ns.AddTooltipLines(tt, id, stackCount(tt, data), opts)
+  ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
 end
 
 -- OnTooltipSetItem script hook (fallback for clients without TooltipDataProcessor).
@@ -896,8 +1273,10 @@ local function onTooltipSetItem(tt)
   local id = tooltipItemID(tt, nil)
   if not id then return end
   if guarded then done[tt] = id end
-  local opts = { noData = ns.GetItem(id) ~= nil or mightBeTradeable(tt, nil, id) }
-  if ns.AddTooltipLines(tt, id, 1, opts) and type(tt.Show) == "function" then tt:Show() end
+  local pid, cover = ns.PriceIDForLink(id, tooltipLink(tt, nil))
+  pid = pid or id
+  local opts = { noData = ns.GetItem(pid) ~= nil or mightBeTradeable(tt, nil, id), version = cover }
+  if ns.AddTooltipLines(tt, pid, 1, opts) and type(tt.Show) == "function" then tt:Show() end
 end
 
 ns.OnTooltipData = function(tt, data)
@@ -1013,6 +1392,10 @@ local function printStatus()
   end
   P(sformat("prices for %s items from the %s (%s, %s), updated %s%s.",
     ns.Num(ns.ItemCount()), ns.HouseLabel(), region, ruleset, ns.AgeText(age), when))
+  local versions = ns.VariantCount()
+  if versions > 0 then
+    P(sformat("%s versions of gear (like \"of the Bear\") have their own prices.", ns.Num(versions)))
+  end
   if age > ns.STALE_SECONDS then
     P(sformat("Prices are %dh old: run Update-WoW-Prices.bat, then /reload.", floor(age / 3600)))
   end

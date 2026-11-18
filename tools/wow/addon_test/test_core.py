@@ -607,18 +607,30 @@ def test_tooltip(G, ns):
     bag_info = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
 
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    eq(got, [("Forever AH", "2h ago"), ("Market", "47c"), ("Cheapest", "45c"), ("7-day avg", "46c"),
-             ("Listed 900, ~120 sold/day",)], "full tooltip, known item")
+    # 7-day low/high: cheapest over the 27 hourly prices (40c, 52c). Sell now: 1c under the
+    # cheapest (44c). Best price: the 1D sell target. This stack of 20: 44c x 20 after
+    # the 5% cut = 8s 36c, a vendor pays 13c x 20 = 2s 60c.
+    eq(got, [("Forever AH", "2h ago"), ("Market", "47c"), ("Cheapest", "45c"), ("7-day low", "40c"), ("7-day high", "52c"),
+             ("Sell now", "44c"), ("Best price", "52c"), ("Listed 900, ~120 sold/day",),
+             ("This stack (20) at auction, after 5% cut", "8s 36c"), ("This stack (20) at a vendor", "2s 60c"),
+             ("Auction it: 5s 76c more than a vendor pays",)], "full tooltip, known item")
+    sp = rec_model.sell_prices(py_recommend(ns, 2589, "1D"), None, False, 13)
+    eq((sp["now"], sp["best"]), (44, 52), "Sell now and Best price match the Python model")
+    verdict = tt.lines[len(tt.lines)]
+    eq((round(verdict.r, 2), round(verdict.g, 2), round(verdict.b, 2)), (0.25, 0.8, 0.45), "auction verdict is green")
     hdr = tt.lines[1]
     eq((round(hdr.r, 3), round(hdr.g, 3), round(hdr.b, 3)), (0.22, 0.74, 0.97), "header in the sell colour")
 
     M.ShowItem(tt, 2589, bag_info, False)     # same show fires again without a clear
-    eq(len(tt.lines), 5, "no duplicate lines on a second post call")
+    eq(len(tt.lines), 11, "no duplicate lines on a second post call")
 
     M.shift = True
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
     eq(got, [("Forever AH", "2h ago"), ("Market (x20)", "9s 40c"), ("Cheapest (x20)", "9s"),
-             ("7-day avg (x20)", "9s 20c"), ("Listed 900, ~120 sold/day",)], "Shift shows stack values")
+             ("7-day low (x20)", "8s"), ("7-day high (x20)", "10s 40c"), ("Sell now (x20)", "8s 80c"),
+             ("Best price (x20)", "10s 40c"), ("Listed 900, ~120 sold/day",),
+             ("This stack (20) at auction, after 5% cut", "8s 36c"), ("This stack (20) at a vendor", "2s 60c"),
+             ("Auction it: 5s 76c more than a vendor pays",)], "Shift shows stack values")
     got = lines_of(M.ShowItem(tt, 2589, None))
     eq(got[1], ("Market", "47c"), "Shift without a stack shows unit price")
     M.shift = False
@@ -650,14 +662,18 @@ def test_tooltip(G, ns):
     got = lines_of(M.ShowItem(tt, 2589, None))
     eq(got[-1], ("Price covers all versions of this item",), "suffix link gets the versions note")
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
-    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 5, "plain link: no versions note")
+    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 11, "plain link: no versions note")
+    tt.itemLink = "|cff1eff00|Hitem:2589::::::::60:::1:1:12718:1:28:6874:::::|h[Linen Cloth of the Bear]|h|r"
+    eq(lines_of(M.ShowItem(tt, 2589, None))[-1], ("Price covers all versions of this item",),
+       "bonus ids with no versions in the data: the versions note")
     tt.itemLink = None
     eq(ns.LinkHasSuffix("item:9789:0:0:0:0:0:-1034:0"), True, "negative suffix id counts")
     eq(ns.LinkHasSuffix("item:9789:0:0:0:0:0:0:0"), False, "zero suffix id")
 
     got = lines_of(M.ShowItem(tt, 99001, None))
     eq(got, [("Forever AH", "2h ago"), ("Market", "none listed"), ("Cheapest", "none listed"),
-             ("Listed 0, ~1 sold/day",)], "item with nothing listed")
+             ("Sell now", "none listed"), ("Best price", "needs more history"), ("Listed 0, ~1 sold/day",),
+             ("This item at a vendor", "7c")], "item with nothing listed: only what a vendor pays")
 
     got = lines_of(M.ShowItem(tt, 13468, None))
     eq(got[1], ("Market", "350g"), "big price in tooltip")
@@ -676,7 +692,7 @@ def test_tooltip(G, ns):
     eq(got[-1], ("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "stale warning line")
     M.now = UPDATED + 2 * 3600 + 100
 
-    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 5, "comparison tooltip gets lines")
+    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 11, "comparison tooltip gets lines")
     eq(len(M.ShowItem(G.EmbeddedItemTooltip, 2589, None)), 0, "other tooltips are skipped")
     tt.forbidden = True
     eq(len(M.ShowItem(tt, 2589, None)), 0, "forbidden tooltip is skipped")
@@ -686,7 +702,7 @@ def test_tooltip(G, ns):
     ns.settings.tooltip = False
     eq(len(M.ShowItem(tt, 2589, None)), 0, "tooltip setting off")
     ns.settings.tooltip = True
-    eq(len(M.ShowItem(tt, 2589, None)), 5, "tooltip setting back on")
+    eq(len(M.ShowItem(tt, 2589, None)), 11, "tooltip setting back on")
     eq(ns.lastError, None, "no tooltip errors")
 
 
@@ -802,10 +818,10 @@ def test_fallback_hooks():
     eq(lines_of(tt.lines)[:2], [("Forever AH", "1h ago"), ("Market", "47c")], "fallback adds lines")
     eq(tt.shown, 1, "fallback resizes the tooltip with Show")
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 5, "fallback no duplicates")
+    eq(len(tt.lines), 11, "fallback no duplicates")
     tt.Clear(tt)
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 5, "fallback adds again after a clear")
+    eq(len(tt.lines), 11, "fallback adds again after a clear")
     eq(ns.lastError, None, "no fallback errors")
 
 
@@ -1014,7 +1030,7 @@ def test_sales_hours():
         want_per, want_early = rec_model.sold_per_day(120, hours)
         eq((per, early), (want_per, want_early), "salesHours %d: SoldPerDay matches the model" % hours)
         got = lines_of(M.ShowItem(G.GameTooltip, 2589, None))
-        eq(got[-1], ("Listed 900, " + linen,), "salesHours %d: tooltip sold line" % hours)
+        eq([g for g in got if g[0].startswith("Listed")], [("Listed 900, " + linen,)], "salesHours %d: tooltip sold line" % hours)
         # Runecloth sold 2 in the hours measured: thin over a full day, not when scaled from 6 hours
         notes = lua_list(ns.Recommend(14047, "1D").notes)
         eq("Thin market" in notes, rune_thin, "salesHours %d: Runecloth thin market note" % hours)
@@ -1032,17 +1048,281 @@ def test_sales_hours():
 
 
 def test_daily_points():
-    print("7-day average waits for two days of prices")
+    print("7-day low and high wait for 6 hourly prices")
     L, G, ns = new_env(fixture_lua())
     M = G.MOCK
     M.now = UPDATED + 100
     eq((ns.DailyPoints(2589), ns.DailyPoints(13468), ns.DailyPoints(4306), ns.DailyPoints(424242)), (10, 1, 0, 0),
        "DailyPoints")
     eq(ns.stats.series, 0, "DailyPoints does not unpack the series")
-    left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, 2589, None))]
-    check("7-day avg" in left, "10 days: 7-day avg shown", left)
-    left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, 7228, None))]
-    check("7-day avg" not in left, "1 day: 7-day avg hidden (it equals the market price)", left)
+    for iid, cheap in ((2589, LINEN_HC), (13468, LOTUS_HC), (14047, RUNE_HC), (7228, ICE_HC)):
+        lo, hi, n = ns.WeekRange(iid)
+        wl, wh = rec_model.week_range([v or None for v in cheap])
+        eq((lo, hi, n), (wl, wh, len([v for v in cheap if v])), "WeekRange %d matches the model" % iid)
+        left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, iid, None))]
+        eq(("7-day low" in left, "7-day high" in left), (wl is not None, wl is not None),
+           "%d: 7-day low and high shown only with 6 or more hourly prices" % iid)
+        check("7-day avg" not in left, "%d: no 7-day avg line any more" % iid, left)
+    eq(ns.WeekRange(424242), (None, None, 0), "WeekRange of an unknown item")
+    # 6 prices is enough, 5 is not
+    items = dict(ITEMS)
+    items[9401] = "Six|100|110|5|5|0|0|%s|%s" % (enc_series([None, 100, 101, 99, 120, 98, 97], [110] * 7, [1] * 7),
+                                                enc_series([100], [110], [5]))
+    items[9402] = "Five|100|110|5|5|0|0|%s|%s" % (enc_series([None, None, 101, 99, 120, 98, 97], [110] * 7, [1] * 7),
+                                                 enc_series([100], [110], [5]))
+    L2, G2, ns2 = new_env(fixture_lua(items))
+    eq(ns2.WeekRange(9401), (97, 120, 6), "6 hourly prices: low and high")
+    eq(ns2.WeekRange(9402), (None, None, 5), "5 hourly prices: not yet")
+
+
+# ---------------------------------------------------------------------------
+# Versions of gear (variants, vids) and the collector's flips (hand-made data)
+# ---------------------------------------------------------------------------
+CLOAK = 9860
+CLOAK_ITEMS = dict(ITEMS)
+CLOAK_ITEMS.update({
+    CLOAK: "Archer's Cloak|9000|14000|22|3|14000|2382|%s|22" % series24(9000, 14000),
+    9860001: "Archer's Cloak of the Bear|14000|15000|6|1|15000|2382|%s|6" % series24(14000, 15000),
+    9860002: "|9000|9500|5|1|9500|2382|%s|5" % series24(9000, 9500),          # no name in the data
+    9860003: "Archer's Cloak of the Eagle|22000|23000|7|1|23000|2382|%s|7" % series24(22000, 23000),
+})
+# 12719:12722 is a version with two bonus ids; 12730:m28=6874 one where a modifier matters
+CLOAK_VARIANTS = {CLOAK: "12718=9860001,12719:12722=9860002,12730:m28=6874=9860003",
+                  9861: 5, "junk": "1=2", 9862: "=,abc=1,=5,12=9862"}
+FLIPS = [
+    "9860001|gap|12000|2|24000|15500|5450|227|thin,Suffix",
+    "2589|vendor|9|40|360|0|160|444|",
+    "14047|gap|70|5|350|98|115|328| slow , spike ",
+    "13468|bogus|1|1|1|1|1|1|",          # unknown kind: skipped
+    "7228|gap|900|1|900|0|50|55|",        # a gap flip with no relist price: skipped
+    "4306|vendor|0|5|0|0|20|1|",          # buy price 0: skipped
+    "4306|vendor|20|0|0|0|20|1|",         # no units: skipped
+    "4306|vendor|20|3|0|0|-5|1|",         # no profit: skipped
+    "garbage",
+    "4306|vendor|20|3|0|0|15|250|",       # cost 0 is worked out: 60
+]
+
+
+def lua_value(v):
+    return lua_str(v) if isinstance(v, str) else str(v)
+
+
+def versions_lua(items=None, variants=None, flips=None):
+    """The fixture with the variants and flips tables the collector writes before items."""
+    src = fixture_lua(items if items is not None else CLOAK_ITEMS)
+    extra = ""
+    if variants is not None:
+        extra += "  variants = {\n" + "".join(
+            "    [%s] = %s,\n" % (lua_str(k) if isinstance(k, str) else k, lua_value(v)) for k, v in variants.items()) + "  },\n"
+    if flips is not None:
+        extra += "  flips = {\n" + "".join("    %s,\n" % lua_str(f) for f in flips) + "  },\n"
+    return src.replace("  items = {", extra + "  items = {", 1)
+
+
+def link(bonus, mods="1:28:6874", iid=CLOAK):
+    """A link as the modern client writes one: item:id:enchant:4 gems:suffix:unique:
+    level:spec:modifierMask:context:numBonus:bonus...:numModifiers:type:value..."""
+    b = (str(len(bonus)) + ":" + ":".join(str(x) for x in bonus)) if bonus else ""
+    return "|cff1eff00|Hitem:%d::::::::34:::1:%s:%s:::::|h[Archer's Cloak]|h|r" % (iid, b, mods)
+
+
+def test_versions():
+    print("gear versions: bonus ids in links, variants, vids")
+    L, G, ns = new_env(versions_lua(variants=CLOAK_VARIANTS, flips=FLIPS))
+    M = G.MOCK
+    M.now = UPDATED + 100
+    eq(ns.lastError, None, "odd entries in the variants table do not break loading")
+    eq((ns.HasVariants(CLOAK), ns.HasVariants(2589), ns.HasVariants(9860001)), (True, False, False), "HasVariants")
+    eq((ns.IsVariant(9860002), ns.IsVariant(CLOAK), ns.IsVariant(9862)), (True, False, False), "IsVariant")
+    eq((ns.BaseItemID(9860003), ns.BaseItemID(2589), ns.BaseItemID(None)), (CLOAK, 2589, None), "BaseItemID")
+    eq((ns.VariantNumber(9860002), ns.VariantNumber(CLOAK)), (2, None), "VariantNumber")
+    eq(ns.VariantCount(), 3, "VariantCount: the junk entries are skipped")
+    eq(ns.ItemCount(), len(ITEMS) + 1, "ItemCount counts the cloak once")
+    eq(ns.GetItem(9860001).base, CLOAK, "GetItem(vid).base")
+    eq(ns.GetItem(2589).base, None, "GetItem(item).base is nil")
+    # bonus ids and modifiers read from real-looking links
+    cases = [
+        (link([12718]), [12718], {28: 6874}),
+        (link([12722, 12719]), [12719, 12722], {28: 6874}),
+        (link([12730], ""), [12730], {}),
+        (link([]), [], {28: 6874}),          # no bonus ids: the next field counts the modifiers
+        ("|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r", [], {}),
+        ("item:9860:0:0:0:0:0:0:0:34:0:0:1:1:12718:2:28:6874:9:5", [12718], {28: 6874, 9: 5}),
+        ("|Hitem:9860::::::::34:::1:5:12718|h[cut short]|h", [], {}),
+        ("|Hitem:9860::::::::34:::1:999:1:2:3|h[silly count]|h", [], {2: 3}),
+        ("|Hitem:9860::::::::34:::1:2:abc:12718|h[junk]|h", [], {}),   # the link ends at the junk
+        ("|Hitem:9860::::::-1034::34:::::::|h[old suffix]|h", [], {}),
+    ]
+    for ln, want_b, want_m in cases:
+        r = ns.LinkBonus(ln)
+        bonus, mods = (r[0], r[1]) if isinstance(r, tuple) else (r, None)
+        eq((lua_list(bonus), {int(k): int(v) for k, v in mods.items()} if mods is not None else None),
+           (want_b, want_m), "LinkBonus %r" % ln)
+        eq(ns.VariantKey(ln), ":".join(str(x) for x in want_b), "VariantKey %r" % ln)
+    for bad in ("not a link", "", "item:", None, 12345):
+        eq(ns.LinkBonus(bad), None, "LinkBonus(%r) is nil" % (bad,))
+        eq(ns.VariantKey(bad), "", "VariantKey(%r) is empty" % (bad,))
+    # finding the version
+    eq(ns.FindVariant(CLOAK, link([12718])), 9860001, "FindVariant: one bonus id")
+    eq(ns.FindVariant(CLOAK, link([12722, 12719])), 9860002, "FindVariant: two bonus ids in any order")
+    eq(ns.FindVariant(CLOAK, link([12730])), 9860003, "FindVariant: a key with a modifier, link has it")
+    eq(ns.FindVariant(CLOAK, link([12730], "1:28:1")), None, "FindVariant: the modifier differs")
+    eq(ns.FindVariant(CLOAK, link([12730], "")), None, "FindVariant: the modifier is missing")
+    eq(ns.FindVariant(CLOAK, link([55555])), None, "FindVariant: an unknown version")
+    eq(ns.FindVariant(CLOAK, link([])), None, "FindVariant: no bonus ids")
+    eq(ns.FindVariant(2589, link([12718], iid=2589)), None, "FindVariant: an item without versions")
+    eq(ns.ResolveItem(link([12718])), 9860001, "ResolveItem: a version's link")
+    eq(ns.ResolveItem(link([55555])), CLOAK, "ResolveItem: an unknown version's link gives the item")
+    eq(ns.PriceIDForLink(CLOAK, link([12718])), (9860001, "version"), "PriceIDForLink: version")
+    eq(ns.PriceIDForLink(CLOAK, link([55555])), (CLOAK, "all"), "PriceIDForLink: unknown version")
+    eq(ns.PriceIDForLink(CLOAK, link([])), (CLOAK, "all"), "PriceIDForLink: plain copy of an item with versions")
+    eq(ns.PriceIDForLink(2589, "|Hitem:2589::::::::60:::::|h[x]|h"), (2589, None), "PriceIDForLink: plain item")
+    eq(ns.PriceIDForLink(2589, "|Hitem:2589::::::1034::60:::::|h[x]|h"), (2589, "all"), "PriceIDForLink: old suffix link")
+    for vid, key in ((9860001, [12718]), (9860002, [12719, 12722]), (9860003, [12730])):
+        vl = ns.VariantLink(vid)
+        r = ns.LinkBonus(vl)
+        eq(lua_list(r[0]), key, "VariantLink(%d) carries its bonus ids" % vid)
+        eq(ns.FindVariant(CLOAK, vl), vid, "VariantLink(%d) finds it again" % vid)
+    eq(ns.VariantLink(CLOAK), None, "no VariantLink for a plain item")
+    # names
+    eq(ns.ItemName(9860001), "Archer's Cloak of the Bear", "a version's name from the data")
+    eq(ns.ItemName(9860002), "Item 9860 (version 2)", "a version with no name and no game name")
+    eq(ns.FindItemID("archer's cloak of the eagle"), 9860003, "a version can be found by its name")
+    eq(ns.FindItemID("Archer's Cloak"), CLOAK, "the item by its own name")
+    G.C_Item = G.loadstring("return { GetItemNameByID = function(id) if id == 9860 then return \"Archer's Cloak\" end end }")()
+    eq(ns.ItemName(9860002), "Archer's Cloak (version 2)", "a version with no name gets the game's name and its number")
+    eq(ns.GetItem(9860002).name, "Archer's Cloak (version 2)", "and GetItem's name too")
+    G.C_Item = None
+    # tooltips
+    tt = G.GameTooltip
+    tt.itemLink = link([12718])
+    got = lines_of(M.ShowItem(tt, CLOAK, None))
+    eq(got[1], ("Market", "1g 50s"), "version tooltip: that version's market price")
+    eq(got[-1], ("Prices for this version only",), "version tooltip: says so")
+    tt.itemLink = link([55555])
+    got = lines_of(M.ShowItem(tt, CLOAK, None))
+    eq((got[1], got[-1]), (("Market", "1g 40s"), ("Price covers all versions of this item",)),
+       "unknown version: the whole item's prices, covering all versions")
+    tt.itemLink = link([])
+    eq(lines_of(M.ShowItem(tt, CLOAK, None))[-1], ("Price covers all versions of this item",), "plain copy: all versions")
+    tt.itemLink = None
+    eq(lines_of(M.ShowItem(tt, CLOAK, None))[-1], ("Price covers all versions of this item",), "no link: all versions")
+    eq(ns.lastError, None, "no tooltip errors")
+    # an older data file: no variants table
+    L2, G2, ns2 = new_env(versions_lua())
+    eq((ns2.HasVariants(CLOAK), ns2.VariantCount(), ns2.FindVariant(CLOAK, link([12718]))), (False, 0, None),
+       "older file: no versions")
+    eq(ns2.ItemCount(), len(CLOAK_ITEMS), "older file: every line is an item")
+    eq(ns2.PriceIDForLink(CLOAK, link([12718])), (CLOAK, "all"), "older file: a version link covers all versions")
+    eq(len(ns2.DataFlips()), 0, "older file: no collector flips")
+    # a variants table that is not a table at all
+    L3, G3, ns3 = new_env(fixture_lua().replace("  items = {", "  variants = 5,\n  flips = \"x\",\n  items = {", 1))
+    eq((ns3.VariantCount(), len(ns3.DataFlips()), ns3.lastError), (0, 0, None), "variants and flips of the wrong type are ignored")
+
+
+def test_data_flips():
+    print("the collector's flips (Data.lua flips)")
+    L, G, ns = new_env(versions_lua(variants=CLOAK_VARIANTS, flips=FLIPS))
+    df = ns.DataFlips()
+    got = [(df[i].id, df[i].kind, df[i].buyMax, df[i].units, df[i].cost, df[i].relist, df[i].profit, df[i].roi,
+            lua_list(df[i].risk)) for i in range(1, len(df) + 1)]
+    eq(got, [(9860001, "gap", 12000, 2, 24000, 15500, 5450, 227, ["thin", "suffix"]),
+             (2589, "vendor", 9, 40, 360, 0, 160, 444, []),
+             (14047, "gap", 70, 5, 350, 98, 115, 328, ["slow", "spike"]),
+             (4306, "vendor", 20, 3, 60, 0, 15, 250, [])],
+       "DataFlips keeps the valid flips in order, skips the broken ones, reads the risks")
+    check(G.rawequal(ns.DataFlips(), df), "DataFlips is read once")
+
+
+def test_sell_prices():
+    print("Sell now and Best price (ns.SellPrices)")
+    L, G, ns = new_env(fixture_lua(NEW_ITEMS))
+    L2, G2, ns2 = new_env(fixture_lua(RULE_ITEMS))
+    for env, items in ((ns, NEW_ITEMS), (ns2, RULE_ITEMS)):
+        for iid in sorted(items):
+            for tf in ("1D", "1W", "1M"):
+                for live, own in ((None, False), (1200, False), (1200, True), (16000, False), (1, False)):
+                    item = env.GetItem(iid)
+                    py = rec_model.sell_prices(py_recommend(env, iid, tf, live), live, own, item.vendor)
+                    r = env.SellPrices(iid, tf, live, own)
+                    got = {k: r[k] for k in ("now", "best", "nowWhy", "bestWhy", "live", "own", "nowVendor", "bestVendor")}
+                    want = {k: py[k] for k in got}
+                    eq(got, want, "SellPrices %d %s live=%s own=%s" % (iid, tf, live, own))
+    eq(ns.SellPrices(424242, "1D"), None, "SellPrices of an unknown item")
+    # hand-checked cases
+    r = ns2.SellPrices(9001, "1D")
+    eq((r.now, r.best), (9999, 12000), "flat market: Sell now 1c under 1g, Best price the 1g 20s sell target")
+    r = ns2.SellPrices(9001, "1D", 16000)
+    eq((r.now, r.best), (15999, 15999), "live 1g 60s: Best price never under a normal cheapest listing")
+    r = ns2.SellPrices(9001, "1D", 16000, True)
+    eq((r.now, r.best), (16000, 16000), "your own cheapest listing is matched")
+    r = ns2.SellPrices(9001, "1D", 50000)
+    eq((r.now, r.best), (49999, 12000), "cheapest far above history: Best price is the sell target")
+    r = ns2.SellPrices(9003, "1D")
+    eq((r.now, r.best, r.bestWhy), (9999, None, "history"), "too little history: Sell now only")
+    r = ns2.SellPrices(9008, "1D")
+    eq((r.now, r.best, r.bestWhy, r.nowVendor), (9999, None, "history", True), "a vendor pays more: flagged")
+    r = ns.SellPrices(9101, "1D")
+    eq((r.now, r.bestWhy), (999, "unreliable"), "2 listings: Sell now, no Best price")
+    r = ns.SellPrices(9104, "1D")
+    eq((r.now, r.nowWhy, r.best), (None, "unreliable", None), "a few units far above the vendor price: neither")
+    r = ns.SellPrices(9106, "1D")
+    eq((r.now, r.nowWhy), (None, "none"), "nothing listed: no Sell now")
+
+
+def test_stack_verdicts():
+    print("This stack: auction against vendor")
+    items = dict(ITEMS)
+    items.update({
+        9501: "Vendor Pays More|4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200),
+        9502: "No Vendor|1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100),
+        9503: "Even|21|22|50|20|22|19|%s|20" % series24(21, 22),
+        9504: "Nothing Now|0|0|0|20|0|25|%s|0" % series24(30, 32),
+        9505: "Junk|1|1|5|20|1|0|%s|5" % series24(1, 1),
+    })
+    L, G, ns = new_env(fixture_lua(items))
+    M = G.MOCK
+    M.now = UPDATED + 100
+    M.bag["0:1"] = G.loadstring("return { stackCount = 20 }")()
+    bag = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
+    tt = G.GameTooltip
+
+    def stack(iid):
+        return [ln for ln in lines_of(M.ShowItem(tt, iid, bag)) if ln[0].startswith(("This stack", "Auction it", "Vendor it"))]
+    # 3999 x 20 after the cut = 75,981c; a vendor pays 5000 x 20 = 100,000c: 24,019c more
+    eq(stack(9501), [("This stack (20) at auction, after 5% cut", "7g 59s 81c"), ("This stack (20) at a vendor", "10g"),
+                     ("Vendor it: a vendor pays 2g 40s 19c more",)], "a vendor pays more: vendor it")
+    eq((round(tt.lines[len(tt.lines)].r, 2), round(tt.lines[len(tt.lines)].g, 2)), (0.9, 0.33), "vendor verdict is red")
+    eq(stack(9502), [("This stack (20) at auction, after 5% cut", "1g 89s 81c"), ("This stack (20) at a vendor", "will not buy it"),
+                     ("Auction it: a vendor will not buy it",)], "no vendor price: auction it")
+    eq(stack(9504), [("This stack (20) at a vendor", "5s")], "nothing listed: only what a vendor pays")
+    eq(stack(9505), [], "1c listing and no vendor price: no stack lines")
+    got = [ln for ln in lines_of(M.ShowItem(tt, 9503, None)) if ln[0].startswith(("This item", "Vendor it", "Auction it"))]
+    eq(got, [("This item at auction, after 5% cut", "19c"), ("This item at a vendor", "19c"), ("Vendor it: a vendor pays the same",)],
+       "one item, equal prices: vendor it (no waiting)")
+    for iid in sorted(items):
+        it = ns.GetItem(iid)
+        sp = rec_model.sell_prices(py_recommend(ns, iid, "1D"), None, False, it.vendor)
+        auction, vend, verdict = rec_model.stack_values(sp["now"], 20, it.vendor)
+        lines = stack(iid)
+        if auction is None and it.vendor <= 0:
+            eq(lines, [], "stack %d: no lines" % iid)
+            continue
+        word = {"auction": "Auction it", "novendor": "Auction it", "same": "Vendor it", "vendor": "Vendor it", None: None}[verdict]
+        eq(lines[-1][0].split(":")[0] if word else None, word, "stack %d: verdict matches the model" % iid)
+    ns.settings.compact = True
+    eq(stack(9501), [], "compact tooltips have no stack lines")
+    ns.settings.compact = False
+
+
+def test_chart_line_setting():
+    print("chartLine setting")
+    for saved, want in (("buy", "buy"), ("sell", "sell"), ("both", None), (5, None), (None, None)):
+        L, G, ns = new_env(fixture_lua())
+        src = "return { chartLine = %s }" % (lua_str(saved) if isinstance(saved, str) else ("nil" if saved is None else saved))
+        G.ForeverAH_Settings = G.loadstring(src)()
+        G.MOCK.FireEvent("ADDON_LOADED", "ForeverAH")
+        eq(ns.settings.chartLine, want, "saved chartLine %r" % (saved,))
 
 
 def main():
@@ -1062,6 +1342,11 @@ def main():
     test_new_fields()
     test_sales_hours()
     test_daily_points()
+    test_versions()
+    test_data_flips()
+    test_sell_prices()
+    test_stack_verdicts()
+    test_chart_line_setting()
     test_localdata()
     print()
     if FAILS:
