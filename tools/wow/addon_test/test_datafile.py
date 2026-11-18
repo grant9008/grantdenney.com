@@ -21,13 +21,18 @@ What it does:
      flips are picked: the best 60 plus extra deals and cheap flips) against
      flips.json, every flip's usual price (any kind) against its own 7-day
      history (the median, 0 with under 4 hours of it), and the new
-     mapping.json fields,
+     mapping.json fields; simulated data (sim_fetch.py) also has
+     sim_sales.json, the true sales of a market with a seller who pulls and
+     reposts: every hour's sold must be what the buyers really bought (and a
+     snapshot can show), never a pulled stack,
   4. builds a second, hand-made data set with awkward cases (quotes,
      backslashes, "|" and newlines in names, gaps, sold-only hours, prices at
      the gold cap, items just inside and just outside the 7-day window) and
      runs the same checks on it,
   5. unit tests for the collector: market value (deep and thin markets,
-     fractions of a copper), the sold estimate safety rules, salesHours,
+     fractions of a copper), the sold estimate safety rules, the sold floor
+     (a listing gone while a cheaper one of the same item, or version, from
+     the last snapshot stayed up was pulled, not bought), salesHours,
      unknown item names and their retries, Blizzard's data time, the
      changed=true/false signal for the workflow, the size guard (versions
      first), snapshot flips (a 1c troll, a silly high listing, a deep cheap
@@ -40,13 +45,15 @@ What it does:
      suffix table and the item details backfill,
   6. runs the real collector (fetch_ah.main) on hand-made snapshots through a
      fake Blizzard API (no network): first snapshot, no change, an older
-     snapshot, a normal hour, a long gap, a collapsed auction count (held
+     snapshot, a normal hour (with a listing pulled and listed again
+     cheaper: not a sale), a long gap, a collapsed auction count (held
      back, then downloaded again), a commodities download that fails twice
      (held, then used without sales), three snapshots in one hour (only the
      measured minutes count), unknown names that get a name later, and the
      upgrade from the first real snapshot's files,
   7. runs it again with suffix gear: versions vs the item lumped together,
-     sold per version, idle versions, the registry rebuilt from hist files,
+     sold per version (other versions never set a version's sold floor),
+     idle versions, the registry rebuilt from hist files,
      the upgrade from format 2 state, and an older copy refusing format 3,
   8. runs it over six hours of a steady market and then cheap listings:
      deals for a blue, an epic and a green version (with their flags), and
@@ -730,6 +737,37 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
     return got_ids, lua_items, decode
 
 
+def sim_sales_checks(data_dir):
+    """sim_fetch.py's seller who pulls and reposts (sim_sales.json, only in simulated data):
+    hour by hour the collector's sold must be exactly what the buyers really bought and the
+    collector can see (a stack that got smaller, a whole one that had LONG or VERY_LONG left),
+    never the units the seller pulled. Returns None when the data has no sim_sales.json."""
+    truth = load_json(os.path.join(data_dir, "sim_sales.json"))
+    if truth is None:
+        return None
+    h = load_json(os.path.join(data_dir, "hist", "%d.json" % truth["item"]))
+    check(h is not None, f"simulated sales: no hist file for {truth['item']}")
+    sold = {p[0]: p[4] for p in h["h"]}
+    rows = truth["hours"]          # [hour, bought, seen, pulled, pulled with LONG or VERY_LONG left]
+    bad = [(r, sold.get(r[0])) for r in rows if sold.get(r[0]) != r[2]]
+    check(rows and not bad, f"simulated sales: sold is not what the buyers bought in {len(bad)} hours "
+                            f"([hour, bought, seen, pulled, pulled long], sold): {bad[:3]}")
+    check(all(r[1] >= r[2] for r in rows), "simulated sales: more seen than bought")
+    pulls = [r for r in rows if r[4] > 0]
+    check(len(pulls) >= 10, f"simulated sales: the seller pulled a LONG or VERY_LONG stack in only {len(pulls)} hours")
+    return len(rows), sum(r[2] for r in rows), sum(r[4] for r in rows), len(pulls), truth.get("name", "")
+
+
+def sim_sales_report(data_dir):
+    got = sim_sales_checks(data_dir)
+    if got is None:
+        print("  simulated sales: no sim_sales.json (not simulated data, or made by an older sim_fetch.py), skipped")
+        return
+    n, seen, pulled, hours, name = got
+    print(f"  simulated sales: {name}, {n} hours, sold = the {seen} units buyers bought that a snapshot shows; "
+          f"the {pulled} units pulled in {hours} hours while a cheaper one stayed up never count")
+
+
 # -- hand-made edge cases -----------------------------------------------------
 def edge_case_dir(tmp):
     hour = 1794934800                    # a whole hour (2026-11-17 17:00 UTC)
@@ -986,6 +1024,56 @@ def sold_tests():
     check(py_decode(line_body(line))["sold24"] == 6, "sold24 = measured hours only")
     line = fetch_ah.addon_item_line(1, {"name": "X", "sell": 1}, h, 10, 10, 5, hour)
     check(py_decode(line_body(line))["sold24"] == 13, "sold24 without a measured set counts every hour")
+
+
+def sold_floor_tests():
+    """A gone LONG/VERY_LONG auction counts only when it is priced at or under the floor: the
+    cheapest of the previous snapshot's auctions of the same item (the same version, for a
+    version) that are still listed, whole or partly bought. Buyers take the cheapest first."""
+    es = fetch_ah.estimate_sold
+    # the audit's cases: a 10 @1s LONG and b 5 @90c
+    prev = {"a": [1, 10, 100, "LONG"], "b": [1, 5, 90, "LONG"]}
+    check(es(prev, {"b": [1, 5, 90, "LONG"]}) == {}, "a gone while the cheaper b stayed up: pulled, not sold")
+    check(es(prev, {"b": [1, 3, 90, "LONG"]}) == {1: 2}, "b partly bought (a shrink) is still the floor: only its 2")
+    check(es(prev, {}) == {1: 15}, "both gone: no floor, both count")
+    tie = {"a": [1, 10, 90, "LONG"], "b": [1, 5, 90, "LONG"]}
+    check(es(tie, {"b": [1, 5, 90, "LONG"]}) == {1: 10}, "a tie at the floor counts")
+    # two versions never set each other's floor: an Eagle at 5s is gone while a Monkey at 50c stays
+    prev = {"e": [1, 1, 500, "LONG", 1001], "m": [1, 1, 50, "LONG", 1002]}
+    now = {"m": [1, 1, 50, "LONG", 1002]}
+    check(es(prev, now) == {1: 1} and es(prev, now, by_variant=True) == {1001: 1},
+          f"versions never veto each other ({es(prev, now)}, {es(prev, now, by_variant=True)})")
+    # ... and a cheaper Eagle that stayed up does
+    prev["e2"] = [1, 1, 300, "LONG", 1001]
+    now["e2"] = [1, 1, 300, "LONG", 1001]
+    check(es(prev, now) == {} and es(prev, now, by_variant=True) == {}, "the same version: the 3s Eagle sets the floor")
+    # a version and the plain item never set each other's floor either
+    prev = {"p": [1, 1, 10, "LONG"], "p2": [1, 1, 20, "LONG"], "v": [1, 1, 500, "LONG", 1001]}
+    check(es(prev, {"p": [1, 1, 10, "LONG"]}) == {1: 1}, "the plain 10c item vetoes the plain 20c one, not the version")
+    # a commodity: the cheapest stack partly bought, dearer stacks pulled and one listed again cheaper
+    prev = {"1": [2, 20, 180, "LONG"], "2": [2, 20, 175, "VERY_LONG"], "3": [2, 10, 190, "VERY_LONG"],
+            "4": [2, 50, 175, "VERY_LONG"], "5": [3, 7, 60, "LONG"]}
+    now = {"2": [2, 5, 175, "VERY_LONG"], "4": [2, 50, 175, "VERY_LONG"], "9": [2, 30, 174, "VERY_LONG"]}
+    check(es(prev, now) == {2: 15, 3: 7}, f"commodity: only the shrink, not the pulled stacks ({es(prev, now)})")
+    # single items (quantity 1, no versions): a dearer one gone while a cheaper one stayed up
+    prev = {"1": [4, 1, 5000, "LONG"], "2": [4, 1, 4000, "VERY_LONG"], "3": [4, 1, 3000, "LONG"],
+            "4": [4, 1, 4000, "LONG"]}
+    now = {"2": [4, 1, 4000, "VERY_LONG"]}
+    check(es(prev, now) == {4: 2}, f"single items: the 30s and the tied 40s one count, not the 50s one ({es(prev, now)})")
+    # the floor comes from any listing still up, whatever its time left; SHORT and MEDIUM gone never count
+    prev = {"1": [5, 1, 100, "SHORT"], "2": [5, 4, 300, "LONG"], "3": [5, 2, 50, "MEDIUM"], "4": [5, 3, 90, "LONG"]}
+    check(es(prev, {"1": [5, 1, 100, "SHORT"]}) == {5: 3}, "a SHORT listing still up sets the floor too")
+    check(es(prev, {}) == {5: 7}, "nothing still up (an empty floor): every LONG one counts, never SHORT or MEDIUM")
+    # a new listing (a repost) never sets the floor: only the previous snapshot's auctions do
+    check(es({"1": [6, 2, 100, "LONG"]}, {"2": [6, 2, 1, "VERY_LONG"]}) == {6: 2}, "a new cheaper listing is no floor")
+    # another item never sets the floor
+    check(es({"1": [7, 2, 100, "LONG"], "2": [8, 2, 1, "LONG"]}, {"2": [8, 2, 1, "LONG"]}) == {7: 2}, "per item")
+    # an older snapshot without vids (the upgrade run): a listing still up takes its vid from
+    # the new snapshot, so a gone one (its version unknown) is only held against plain listings
+    prev = {"b": [1, 1, 15000, "LONG"], "e": [1, 1, 9000, "LONG"]}
+    check(es(prev, {"e": [1, 1, 9000, "LONG", 1002]}) == {1: 1}, "upgrade: a cheaper version still up is no floor")
+    check(es(prev, {"e": [1, 1, 9000, "LONG"]}) == {}, "upgrade: a cheaper plain listing still up is a floor")
+    check(es(prev, {"e": [1, 1, 9000, "LONG", 1002]}, by_variant=True) == {}, "upgrade: no version sales yet")
 
 
 def name_and_time_tests():
@@ -1615,6 +1703,7 @@ def size_vid_tests():
 def unit_tests():
     market_tests()
     sold_tests()
+    sold_floor_tests()
     name_and_time_tests()
     size_tests()
     flip_tests()
@@ -1769,21 +1858,28 @@ def pipeline_tests():
             check(open(os.path.join(out, "status.json"), "rb").read() == before, "unchanged runs write nothing")
 
             # 3. a normal hour: LONG auctions gone = sold, SHORT gone = expired, a stack shrank
+            #    (buyers take the cheapest first, here and below). A seller pulled the 5.2g
+            #    Thin Thing while the cheaper ones stayed up and listed it again at 4.9999g:
+            #    not a sale
             for aid in (1, 2, 3, 11, 12, 41):
                 del fb.auctions[aid]
             fb.auctions[4]["quantity"] = 2
             fb.auctions[4]["buyout"] = 49 * 2
+            del fb.auctions[63]
+            fb.auctions[64] = {"id": 64, "item": {"id": THIN}, "quantity": 1, "time_left": "VERY_LONG", "buyout": 49999}
             check(run(T0 + 60 * M) == "changed=true", "new data: changed=true")
             st = status()
             check(st["soldSkipped"] is None and st["gapMinutes"] == 60 and st["salesHours"] == 1
                   and not st["firstSnapshot"], f"hour 2 status {st!r}")
             check(hist(LINEN)["h"][-1][4] == 18 and hist(AXE)["h"][-1][4] == 1, "sold: 15 + 3 linen, 1 axe")
+            check(hist(THIN)["h"][-1][3:5] == [3, 0], f"pulled and listed again: not sold {hist(THIN)['h'][-1]}")
             check(line(LINEN)["sold24"] == 18, "sold24 after one measured hour")
             check(fb.lookups[UNNAMED] == 3, "unknown item not retried after 1 hour")
             run_checks(out, "pipeline run 3", quiet=True)
 
-            # 4. a 150 minute gap: vanished auctions are not counted as sold
-            for aid in (5, 6):
+            # 4. a 150 minute gap: vanished auctions are not counted as sold (the last 2 linen
+            #    at 49c went first, then the 50c and 51c stacks)
+            for aid in (4, 5, 6):
                 del fb.auctions[aid]
             check(run(T0 + 210 * M) == "changed=true", "after a gap: changed=true")
             st = status()
@@ -1803,7 +1899,7 @@ def pipeline_tests():
                   "collapsed count: nothing is published from it")
             sj = load_json(os.path.join(out, "state.json"))
             check(sj.get("held") and "fell" in sj["held"]["reason"] and sj["dataTime"] == T0 + 210 * M
-                  and len(sj["snap"]) == 220, f"collapsed count: held, the old snapshot kept ({sj.get('held')!r})")
+                  and len(sj["snap"]) == 219, f"collapsed count: held, the old snapshot kept ({sj.get('held')!r})")
             # the next run downloads the same data again, complete this time: a normal hour
             fb.commodities.update(saved_com)
             check(run(T0 + 270 * M, 20 * M) == "changed=true", "complete download on the next run")
@@ -2119,8 +2215,11 @@ def variant_pipeline_tests():
             run_checks(out, "versions upgrade from format 2", quiet=True)
             # an hour later a Bear sells: 1 hour of version sales next to 2 measured hours for
             # everything else, so its sold24 is scaled to those 2 hours (the site and the addon
-            # divide by salesHours): 2, not 1 (which would read as half the real rate)
+            # divide by salesHours): 2, not 1 (which would read as half the real rate). The
+            # cheaper Eagle and odd ones that stayed up are other versions: never a Bear's floor.
+            # The 5.4g Bear was pulled while cheaper Bears stayed up: not a sale
             del fb.auctions[2000]
+            del fb.auctions[2004]
             run(T0 + 120 * M)
             sj = js("state.json")
             check(js("status.json")["salesHours"] == 2 and sj["versionsFrom"]["hour"] == U, "second run after the upgrade")
@@ -2306,13 +2405,15 @@ def main():
     print("ForeverAH_Data.lua check")
     ok = True
     for name, fn in (("generated data", lambda: run_checks(data_dir, os.path.relpath(data_dir, REPO), current=None)),
+                     ("simulated sales", lambda: sim_sales_report(data_dir)),
                      ("edge cases", edge_cases), ("unit tests", unit_tests), ("pipeline", pipeline_tests),
                      ("versions", variant_pipeline_tests), ("deals", deal_pipeline_tests)):
         try:
             fn()
             if name == "unit tests":
-                print("  unit tests: market value, sold estimate safety, salesHours, names, data time, size guard, "
-                      "flips, deals, addon flip picks, versions, suffix names, item details")
+                print("  unit tests: market value, sold estimate safety, the sold floor (pulled and reposted "
+                      "listings), salesHours, names, data time, size guard, flips, deals, addon flip picks, "
+                      "versions, suffix names, item details")
         except Fail as e:
             ok = False
             print(f"  FAIL ({name}): {e}")
