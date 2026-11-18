@@ -986,6 +986,8 @@ function Frame:SetScript(name, fn)
   if not scriptsFor(self)[name] then apiError(self._otype .. ':SetScript(): Unknown script "' .. tostring(name) .. '"') end
   if fn ~= nil and type(fn) ~= "function" then apiError("SetScript: handler must be a function") end
   self._scripts[name] = fn
+  -- Like the game: SetScript also drops the hooks HookScript added to it.
+  self._hooks[name] = nil
 end
 function Frame:GetScript(name) return self._scripts[name] end
 function Frame:HasScript(name) return scriptsFor(self)[name] ~= nil end
@@ -1518,10 +1520,15 @@ function M.slash(text)
 end
 SlashCmdList = {}
 
+-- A click from the player is a hardware event while it runs (M.hw); timers,
+-- events, OnUpdate, menu callbacks and Lua calls to :Click() are not.
 function M.click(btn, mouse)
   if not isRegion(btn) then M.err("harness", "click on a non-button"); return false end
   if not btn:IsVisible() then M.err("harness", "clicked a button that is not visible: " .. tostring(btn)); return false end
+  local prev = M.hw
+  M.hw = { button = btn, deletes = 0 }
   btn:Click(mouse)
+  M.hw = prev
   return true
 end
 function M.enter(f) M.fireScript(f, "OnEnter", true) end
@@ -1706,7 +1713,7 @@ function C_Container.GetContainerItemInfo(bag, slot)
   local s = M.bags[bag] and M.bags[bag][slot]
   if not s then return nil end
   local it = M["items"][s.itemID]
-  return { iconFileID = it and it.icon or 134400, stackCount = s.count, isLocked = s.locked == true, quality = it and it.quality or 1,
+  return { iconFileID = it and it.icon or 134400, stackCount = s.count, isLocked = s.locked == true or (M.held ~= nil and M.held.bag == bag and M.held.slot == slot), quality = it and it.quality or 1,
            isReadable = false, hasLoot = false, hyperlink = M.SlotLink(s), isFiltered = false,
            hasNoValue = not it or (it.vendor or 0) == 0, itemID = s.itemID, isBound = s.bound == true }
 end
@@ -1738,7 +1745,8 @@ function C_Container.PickupContainerItem(bag, slot)
   local here = M.bags[bag] and M.bags[bag][slot]
   local held = M.held
   if not held then
-    if here then M.held = { bag = bag, slot = slot } end
+    -- M.pickupRefused: the game will not pick it up (the cursor stays empty).
+    if here and not here.locked and not M.pickupRefused then M.held = { bag = bag, slot = slot } end
     return
   end
   M.held = nil
@@ -1774,12 +1782,45 @@ function C_Container.UseContainerItem(bag, slot)
 end
 function CursorHasItem() return M.held ~= nil or M.cursorItem ~= nil end
 function GetCursorInfo()
-  if M.held then local s = M.bags[M.held.bag][M.held.slot]; return "item", s and s.itemID end
+  if M.held then local s = M.bags[M.held.bag][M.held.slot]; return "item", s and s.itemID, s and M.SlotLink(s) end
   if M.cursorItem then return "item", M.cursorItem.itemID end
 end
 function ClearCursor() M.held = nil; M.cursorItem = nil end
+-- DeleteCursorItem needs a hardware event and destroys one item per event:
+-- ForeverAH may call it only inside a player click on the drop box's Drop it
+-- button, once. deleteMode: "ok" (destroyed: the slot locks, then empties
+-- after deleteDelay seconds, the server's round trip), "blocked" (the game
+-- refuses, the item stays on the cursor), "refused" (the cursor is cleared
+-- but the server keeps the item).
+M.destroyed, M.deleteMode, M.dropButtonName, M.deleteDelay = {}, "ok", "ForeverAHBagConfirmDrop", 0.2
 function DeleteCursorItem()
-  M.violations[#M.violations + 1] = "DeleteCursorItem (destroys an item without the game asking)"
+  local hw = M.hw
+  if not hw then
+    M.violations[#M.violations + 1] = "DeleteCursorItem outside a click (the game blocks it)"
+    return
+  end
+  local bname = hw.button and hw.button:GetName()
+  if bname ~= M.dropButtonName then
+    M.violations[#M.violations + 1] = "DeleteCursorItem from a click on " .. tostring(bname) .. ", not the drop box's Drop it"
+    return
+  end
+  hw.deletes = hw.deletes + 1
+  if hw.deletes > 1 then
+    M.violations[#M.violations + 1] = "DeleteCursorItem twice in one click (the game allows one)"
+    return
+  end
+  if M.deleteMode == "blocked" then return end
+  local held = M.held
+  if not held then return end
+  M.held = nil
+  local s = M.bags[held.bag] and M.bags[held.bag][held.slot]
+  if not s or M.deleteMode == "refused" then return end
+  s.locked = true
+  M.destroyed[#M.destroyed + 1] = { bag = held.bag, slot = held.slot, itemID = s.itemID, count = s.count }
+  C_Timer.After(M.deleteDelay or 0.2, function()
+    if M.bags[held.bag][held.slot] == s then M.bags[held.bag][held.slot] = nil end
+    bagChanged(held.bag)
+  end)
 end
 function UnitLevel(unit) return M.level end
 C_QuestLog = {}
@@ -1814,16 +1855,18 @@ for i = 1, NUM_CONTAINER_FRAMES do
     b:SetPoint("TOPLEFT", f, "TOPLEFT", 8 + ((k - 1) % 4) * 41, -30 - math.floor((k - 1) / 4) * 34)
   end
 end
--- How many bag windows to open (1 = the backpack); columns of 3 from the bottom right.
+-- One bag window (1 = the backpack), in columns of 3 from the bottom right.
+local function openBagWindow(i)
+  local f = _G["ContainerFrame" .. i]
+  f:SetID(i - 1)
+  f:ClearAllPoints()
+  local col, row = math.floor((i - 1) / 3), (i - 1) % 3
+  f:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -20 - col * 190, 100 + row * 180)
+  f:Show()
+end
+-- How many bag windows to open (1 = the backpack).
 function M.OpenBags(n)
-  for i = 1, (n or 5) do
-    local f = _G["ContainerFrame" .. i]
-    f:SetID(i - 1)
-    f:ClearAllPoints()
-    local col, row = math.floor((i - 1) / 3), (i - 1) % 3
-    f:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -20 - col * 190, 100 + row * 180)
-    f:Show()
-  end
+  for i = 1, (n or 5) do openBagWindow(i) end
 end
 function M.CloseBags()
   for i = 1, NUM_CONTAINER_FRAMES do _G["ContainerFrame" .. i]:Hide() end
@@ -1841,6 +1884,12 @@ function ToggleAllBags()
   elseif ContainerFrame1:IsShown() then M.CloseBags() else M.OpenBags(5) end
 end
 function ToggleBackpack() ToggleAllBags() end
+-- One bag (the bag bar's buttons): that bag's window, or ElvUI's one window.
+function ToggleBag(id)
+  if M.elvBags then ToggleAllBags() return end
+  local f = _G["ContainerFrame" .. ((id or 0) + 1)]
+  if f:IsShown() then f:Hide() else openBagWindow((id or 0) + 1) end
+end
 function OpenAllBags() if M.elvBags then ElvUI_ContainerFrame:Show() else M.OpenBags(5) end end
 function CloseAllBags() if M.elvBags then ElvUI_ContainerFrame:Hide() else M.CloseBags() end end
 -- ElvUI's bags: one window (ElvUI_ContainerFrame, under ElvUI's own scaled
@@ -1980,6 +2029,118 @@ function M.InstallElvUIBagsReal(o)
   M.elvBags = true
   return f
 end
+
+-- The game's own bag functions, shaped like Blizzard's ContainerFrame.lua:
+-- they open and close ContainerFrameN only; a bag addon post-hooks them to
+-- open its own window. Replaces the shortcuts above, so call it before the
+-- addon loads (World before_addon).
+function M.InstallBlizzardBags()
+  local function frameFor(id)
+    for i = 1, NUM_CONTAINER_FRAMES do
+      local cf = _G["ContainerFrame" .. i]
+      if cf:IsShown() and cf:GetID() == id then return cf end
+    end
+  end
+  function IsBagOpen(id) return frameFor(id) ~= nil end
+  function UpdateContainerFrameAnchors()
+    local k = 0
+    for i = 1, NUM_CONTAINER_FRAMES do
+      local cf = _G["ContainerFrame" .. i]
+      if cf:IsShown() then
+        cf:ClearAllPoints()
+        cf:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -20 - math.floor(k / 3) * 190, 100 + (k % 3) * 180)
+        k = k + 1
+      end
+    end
+  end
+  function OpenBag(id)
+    if IsBagOpen(id) then return end
+    for i = 1, NUM_CONTAINER_FRAMES do
+      local cf = _G["ContainerFrame" .. i]
+      if not cf:IsShown() then cf:SetID(id); cf:Show(); UpdateContainerFrameAnchors(); return end
+    end
+  end
+  function CloseBag(id)
+    local cf = frameFor(id)
+    if cf then cf:Hide(); UpdateContainerFrameAnchors() end
+  end
+  function OpenBackpack() OpenBag(0) end
+  function CloseBackpack() CloseBag(0) end
+  function ToggleBag(id) if IsBagOpen(id) then CloseBag(id) else OpenBag(id) end end
+  function ToggleBackpack() if IsBagOpen(0) then CloseBackpack() else OpenBackpack() end end
+  function ToggleAllBags()
+    local open = 0
+    for id = 0, 4 do if IsBagOpen(id) then open = open + 1 end end
+    for id = 0, 4 do if open == 5 then CloseBag(id) else OpenBag(id) end end
+  end
+  function OpenAllBags(frame) for id = 0, 4 do OpenBag(id) end end
+  function CloseAllBags(frame) for id = 0, 4 do CloseBag(id) end end
+end
+
+-- ElvUI the addon (v16.01), loaded before ForeverAH as in the game: the
+-- engine table _G.ElvUI (ElvUI[1] is E) and its Bags module. B:Initialize
+-- runs when you log in (o.buildOn: a later event instead). It builds the bag
+-- window (M.InstallElvUIBagsReal, o.window), parks the game's bags the way
+-- B:DisableBlizzard does (OnShow/OnHide set to nil, which drops HookScript
+-- hooks; no position, SetPoint turned into ClearAllPoints) and post-hooks
+-- the game's bag functions to open and close its own window (Bags.lua
+-- 3918-3922). B:OpenBags and B:CloseAllBags are also what ElvUI calls by
+-- itself (at a vendor, the auction house, a trade). Use with
+-- M.InstallBlizzardBags.
+function M.InstallElvUIAddon(o)
+  o = o or {}
+  local B = {}
+  local E = { modules = { Bags = B } }
+  function E:GetModule(name, silent)
+    local m = self.modules[name]
+    if not m and not silent then error("Cannot find a module named " .. tostring(name), 2) end
+    return m
+  end
+  ElvUI = { E, {}, {}, {}, {} }
+  function B:OpenBags()
+    local f = B.BagFrame
+    if not f or f:IsShown() then return end
+    f:Show()
+  end
+  function B:CloseAllBags()
+    local f = B.BagFrame
+    if not f or not f:IsShown() then return true end
+    f:Hide()
+  end
+  local function toggleAll()
+    if IsBagOpen(0) then B:OpenBags() else B:CloseAllBags() end
+  end
+  function B:Initialize()
+    local f = M.InstallElvUIBagsReal(o.window)
+    M.elvBags = false   -- the game's own functions do not know ElvUI: ElvUI hooks them
+    B.BagFrame = f
+    -- Container_OnHide: closing the window closes the game's bags too.
+    f:SetScript("OnHide", function() CloseBackpack(); for i = 1, 4 do CloseBag(i) end end)
+    for i = 1, NUM_CONTAINER_FRAMES do
+      local cf = _G["ContainerFrame" .. i]
+      cf:SetScript("OnShow", nil)
+      cf:SetScript("OnHide", nil)
+      cf:UnregisterAllEvents()
+      cf:ClearAllPoints()
+      hooksecurefunc(cf, "SetPoint", cf.ClearAllPoints)
+    end
+    hooksecurefunc("ToggleBag", function() if f:IsShown() then B:CloseAllBags() else B:OpenBags() end end)
+    hooksecurefunc("ToggleBackpack", toggleAll)
+    hooksecurefunc("ToggleAllBags", toggleAll)
+    hooksecurefunc("CloseAllBags", function() B:CloseAllBags() end)
+    hooksecurefunc("OpenAllBags", function(frame) if frame then B:OpenBags() end end)
+    M.elvBuilt = true
+  end
+  local ace = CreateFrame("Frame")
+  ace:RegisterEvent(o.buildOn or "PLAYER_LOGIN")
+  ace:SetScript("OnEvent", function(self) self:UnregisterAllEvents(); B:Initialize() end)
+  return E, B
+end
+
+-- Console variables the addon may read.
+M.cvars = { scriptErrors = "0" }
+C_CVar = {}
+function C_CVar.GetCVar(name) return M.cvars[name] end
 
 C_GameRules = { IsHardcoreActive = function() return M.hardcore end }
 C_AddOns = {}
@@ -2597,7 +2758,7 @@ end)
 class World:
     def __init__(self, ref, items_json, client="modern", data_src=None, now=None, saved=None,
                  faction="Alliance", screen=None, auctionator=False, bare_coin=False, ah_width=800,
-                 set_owner_clears=True, copper_values=True, gold=MOCK_GOLD):
+                 set_owner_clears=True, copper_values=True, gold=MOCK_GOLD, before_addon=None):
         self.ref = ref
         self.items_json = items_json
         self.lua = lua51.LuaRuntime(unpack_returned_tuples=True)
@@ -2626,6 +2787,8 @@ class World:
         else:
             self.loader(BLIZZ_LEGACY_LUA, "@Interface/AddOns/Blizzard_AuctionUI/Mock.lua")
         M._sandbox()
+        if before_addon:   # e.g. ElvUI, which loads before ForeverAH
+            before_addon(self)
         if auctionator:   # loads before ForeverAH (alphabetical), its ADDON_LOADED fires before ours
             self.loader(ATR_LUA, "@Interface/AddOns/Auctionator/Mock.lua")
             M.loaded["Auctionator"] = True
@@ -2828,8 +2991,9 @@ class Scenario:
     def eq(self, got, want, msg):
         return self.check(got == want, "%s: got %r, want %r" % (msg, got, want))
 
-    def clean(self, w, label="end"):
-        """No Lua errors anywhere, no swallowed addon errors, no forbidden calls, no long dashes."""
+    def clean(self, w, label="end", ok_chat=()):
+        """No Lua errors anywhere, no swallowed addon errors, no forbidden calls, no long dashes.
+        ok_chat: chat lines containing one of these may say "error" (a diagnostic naming none)."""
         errs = w.errors()
         self.check(not errs, "%s: no Lua errors (%s)" % (label, "; ".join(e.splitlines()[0] for e in errs[:5])))
         if errs and self.verbose:
@@ -2843,11 +3007,14 @@ class Scenario:
         cp = ns.ChartPanel
         if cp is not None:
             self.check(cp.lastError is None, "%s: ChartPanel.lastError is nil (%s)" % (label, cp.lastError))
+        bp = ns.BagPanel
+        if bp is not None:
+            self.check(bp.lastError is None, "%s: BagPanel.lastError is nil (%s)" % (label, bp.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
         self.check(not d, "%s: no long dash in any visible text (%s)" % (label, d[:2]))
-        bad = [c for c in w.chat() if "error" in c.lower()]
+        bad = [c for c in w.chat() if "error" in c.lower() and not any(o in c for o in ok_chat)]
         self.check(not bad, "%s: no error messages in chat (%s)" % (label, bad[:2]))
 
 
@@ -3426,6 +3593,12 @@ def sc_static(sc, ref, items):
                 calls = re.findall(r"\b" + api + r"\s*\(", code)
                 sc.check(not calls, "%s never calls %s" % (fname, api))
             sc.check('SetScript("OnTooltipSetItem"' not in code, "%s does not replace tooltip scripts" % fname)
+            # Items are destroyed only from the drop box's Drop it (Bags.lua, once).
+            n_del = len(re.findall(r"\bDeleteCursorItem\b", code))
+            sc.eq(n_del, 1 if fname == "Bags.lua" else 0, "%s: DeleteCursorItem appears %s" % (
+                fname, "once (the drop box)" if fname == "Bags.lua" else "nowhere"))
+            for api in ("DeleteItem", "ConfirmDeleteItem", "RunScript"):
+                sc.check(not re.search(r"\b" + api + r"\b", code), "%s never uses %s" % (fname, api))
 
 
 def sc_load(sc, ref, items):
@@ -7996,6 +8169,7 @@ def sc_bag_cleanup(sc, ref, items):
     sc.check(any(t.endswith("/fah bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
                  for t in helpout), "bags: help lists /fah bags")
     sc.check(any("/fah watch" in t for t in helpout), "bags: help still has the sidebar commands")
+    sc.check(any("/fah bagcheck : what the bag cleanup sees" in t for t in helpout), "bags: help lists /fah bagcheck")
 
     # Tab beside the open bags.
     BP = ns.BagPanel
@@ -8042,23 +8216,39 @@ def sc_bag_cleanup(sc, ref, items):
     if len(rows) >= 4:
         r = rows[3]
         e = r.entry
+        # Below Rare and not a quest item: the drop box asks. Anything else
+        # (a Rare priced item can be the cheapest in real data) is picked up,
+        # so the game's own check applies.
+        droppable = int(e.quality) <= 2 and not e.questItem
         M.enter(r)
         lines = [strip_codes(l or "") for l, _ in w.all_lines(tt)]
         sc.check("Worth the least in your bags" in lines, "bags hover: our heading (%s)" % lines)
-        sc.check(any(l.startswith("Click: pick it up") for l in lines), "bags hover: says what a click does")
+        if droppable:
+            sc.check("Click: drop it (asks first)" in lines, "bags hover: says a click asks before dropping (%s)" % lines)
+        else:
+            sc.check(any(l.startswith("Click: pick it up") for l in lines), "bags hover: says a click picks it up (%s)" % lines)
         btn = g["ContainerFrame%dItem%d" % (e.bag + 1, 17 - e.slot)]
         sc.check(BP.glow.IsShown(BP.glow) and BP.glow._points[1][2] is not None and w.same(BP.glow._points[1][2], btn),
                  "bags hover: the bag slot is outlined")
         M.leave(r)
         sc.check(not BP.glow.IsShown(BP.glow), "bags hover: outline goes on leave")
-        # Click away from a vendor: picks it up, never uses it.
+        # Click away from a vendor: asks first (or picks a Rare item up), never uses it.
+        n_pick = len(M.pickups)
         mark = w.chat_mark()
         M.click(r, "LeftButton")
-        p = M.pickups[len(M.pickups)]
-        sc.eq((p[1], p[2]), (e.bag, e.slot), "bags click: picks the item up")
+        C = g.ForeverAHBagConfirm
+        if droppable:
+            sc.check(C.IsVisible(C), "bags click: opens the drop box")
+            sc.eq(len(M.pickups), n_pick, "bags click: nothing picked up while it asks")
+            M.click(g.ForeverAHBagConfirmCancel)
+            sc.check(not C.IsShown(C) and BP.confirm is None, "bags click: Cancel closes the drop box")
+        else:
+            p = M.pickups[len(M.pickups)]
+            sc.eq((p[1], p[2]), (e.bag, e.slot), "bags click: picks the item up")
+            sc.check(any("Click the ground to destroy it (the game asks first)" in c for c in w.chat(mark)), "bags click: says how to destroy")
+            w.lua.execute("ClearCursor()")
         sc.eq(len(M.used), 0, "bags click: never uses an item away from a vendor")
-        sc.check(any("Click the ground to destroy it (the game asks first)" in c for c in w.chat(mark)), "bags click: says how to destroy")
-        w.lua.execute("ClearCursor()")
+        sc.eq(len(M.destroyed), 0, "bags click: nothing destroyed")
     # Merge row.
     if len(rows) >= 1:
         M.click(rows[0], "LeftButton")
@@ -8330,6 +8520,893 @@ def sc_bag_tab_header(sc, ref, items):
     sc.clean(w2, "narrow")
 
 
+# ---------------------------------------------------------------------------
+# Bag cleanup: dropping a stack (asks first), and how the button keeps up with
+# the bags (hooks, unreadable positions, /fah bagcheck)
+# ---------------------------------------------------------------------------
+def bag_rows(BP):
+    return [BP.rows[i] for i in range(1, len(BP.rows) + 1) if BP.rows[i].IsShown(BP.rows[i])]
+
+
+def bag_row_for(BP, iid):
+    for r in bag_rows(BP):
+        if r.entry is not None and r.entry.id == iid:
+            return r
+    return None
+
+
+LINK_TEXT = re.compile(r"[|]H[^|]*[|]h(.*?)[|]h")
+
+
+def plain(s):
+    """Chat or tooltip text without colour codes, item links as their [Name]."""
+    return LINK_TEXT.sub(lambda m: m.group(1), strip_codes(s or ""))
+
+
+def destroyed_list(M):
+    return [(M.destroyed[i].bag, M.destroyed[i].slot, M.destroyed[i].itemID, M.destroyed[i].count)
+            for i in range(1, len(M.destroyed) + 1)]
+
+
+def violations(w):
+    return [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
+
+
+def sc_bag_drop(sc, ref, items):
+    """Drop with confirmation: a click on a WORTH THE LEAST row (or Drop cheapest,
+    or the menu) only opens the drop box, which names the stack and its worth and
+    outlines the slot; Drop it, inside that click, checks the stack again, picks
+    it up and calls DeleteCursorItem once; chat confirms. Drop it ignores clicks
+    that come too soon (a double-click, a burst) and asks again when the stack
+    is now worth more than the box said. Rare and better items and quest items
+    are only picked up (the game's own check). The mock only lets
+    DeleteCursorItem through inside a player click on Drop it, once."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    bag_add_item(w, 900401, "Linen Scrap", 1, 4, classID=7, maxStack=20)
+    bag_add_item(w, 900402, "Broken Fang", 0, 20, classID=15)
+    bag_add_item(w, 900403, "Glinting Band", 3, 5, classID=4, maxStack=1)
+    bag_add_item(w, 900405, "Spider Leg", 1, 9, classID=7, maxStack=20)
+    w.put_bag(0, 1, 900401, 3)   # 12c
+    w.put_bag(0, 2, 900402, 1)   # 20c, grey
+    w.put_bag(0, 3, 900403, 1)   # 5c, Rare: never one-click
+    w.put_bag(0, 4, 900405, 2)   # 18c
+    BP = ns.BagPanel
+    M.OpenBags(1)
+    w.settle(0.2)
+    M.click(BP.tab)
+    w.settle(0.1)
+    F, C = g.ForeverAHBagPanel, g.ForeverAHBagConfirm
+    sc.check(F.IsVisible(F), "drop: panel open")
+    sc.eq([r.entry.id for r in bag_rows(BP) if r.kind == "drop"], [900403, 900401, 900405, 900402], "drop: cheapest first")
+    db = BP.dropButton
+    sc.check(db.IsVisible(db) and db.text._text == "Drop cheapest", "drop: Drop cheapest shows away from a vendor")
+    sc.check(not BP.sellButton.IsShown(BP.sellButton), "drop: no Sell junk away from a vendor")
+    sc.check(not C.IsShown(C), "drop: the drop box starts closed")
+
+    tt = g.GameTooltip
+    r = bag_row_for(BP, 900401)
+    M.enter(r)
+    lines = [plain(l) for l, _ in w.all_lines(tt)]
+    sc.check("Click: drop it (asks first)" in lines, "drop hover: says a click asks first (%s)" % lines)
+    M.leave(r)
+    rb = bag_row_for(BP, 900403)
+    M.enter(rb)
+    lines = [plain(l) for l, _ in w.all_lines(tt)]
+    sc.check(any(l.startswith("Click: pick it up") for l in lines), "drop hover: a Rare item is only picked up")
+    M.leave(rb)
+    # The help on WORTH THE LEAST says what a click does, away from a vendor
+    # and at one (checked against what a click does below).
+    M.enter(BP.dropHelp)
+    help_txt = " ".join(plain(l) for l, _ in w.all_lines(tt))
+    M.leave(BP.dropHelp)
+    sc.check("At a vendor, a click sells the stack if the vendor buys it" in help_txt
+             and "Otherwise a click on a row (or Drop cheapest) asks before it drops" in help_txt
+             and "Rare and better items and quest items are only picked up" in help_txt,
+             "drop help: says what a click does, at a vendor and away (%s)" % help_txt)
+
+    # A click asks; nothing moves yet.
+    n_pick = len(M.pickups)
+    M.click(r)
+    sc.check(C.IsVisible(C), "drop: a click on a row opens the drop box")
+    sc.eq((C.head._text, C.name._text, C.worth._text, C.note._text),
+          ("Drop this for good?", "Linen Scrap x3", "Worth 12c at a vendor.", "There is no undo."), "drop box texts")
+    sc.eq((g.ForeverAHBagConfirmDrop.text._text, g.ForeverAHBagConfirmCancel.text._text), ("Drop it", "Cancel"),
+          "drop box buttons")
+    sc.eq(len(M.pickups), n_pick, "drop: asking picks nothing up")
+    sc.check(not w.lua.eval("CursorHasItem()"), "drop: cursor empty while it asks")
+    btn = g["ContainerFrame1Item%d" % (17 - 1)]
+    sc.check(BP.glow.IsShown(BP.glow) and w.same(BP.glow._points[1][2], btn), "drop: the bag slot is outlined while it asks")
+    M.leave(r)
+    sc.check(BP.glow.IsShown(BP.glow), "drop: the outline stays while it asks")
+    sc.check(F.GetHeight(F) >= 120 - 1e-6, "drop: the panel is tall enough for the box (%s)" % F.GetHeight(F))
+    sc.eq(C.GetFrameStrata(C), F.GetFrameStrata(F), "drop: the box is on the panel's layer")
+    sc.check(C.GetFrameLevel(C) > max(BP.rows[i].GetFrameLevel(BP.rows[i]) for i in range(1, len(BP.rows) + 1)),
+             "drop: the box is drawn over the rows")
+    # The second click of a double-click lands on Drop it: ignored.
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.eq(len(M.destroyed), 0, "drop: a double-click never drops")
+    sc.check(C.IsVisible(C), "drop: box still asks after the double-click")
+    M.click(g.ForeverAHBagConfirmCancel)
+    sc.check(not C.IsShown(C) and BP.confirm is None, "drop: Cancel closes it")
+    sc.check(not BP.glow.IsShown(BP.glow), "drop: outline goes with Cancel")
+    sc.eq((len(M.destroyed), len(M.pickups)), (0, n_pick), "drop: Cancel drops and moves nothing")
+
+    # Ask again. Drop it sits over rows 2 and 3 of the list, so the second
+    # click of a double-click on such a row lands on it: a slow double-click
+    # (the OS counts up to 0.5 s) never drops, nor does a burst of clicks
+    # (every click that comes too soon starts the wait again).
+    M.click(r)
+    w.settle(0.45)
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.check(len(M.destroyed) == 0 and C.IsShown(C), "drop: a slow double-click (0.45 s apart) never drops")
+    w.settle(0.3)
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.check(len(M.destroyed) == 0 and C.IsShown(C),
+             "drop: a burst of clicks never drops (0.75 s after the box opened, 0.3 s after the last click)")
+    # Wait, Drop it.
+    w.settle(0.6)
+    mark = w.chat_mark()
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.eq(destroyed_list(M), [(0, 1, 900401, 3)], "drop: Drop it destroys exactly that stack")
+    sc.eq([(M.pickups[i][1], M.pickups[i][2]) for i in range(n_pick + 1, len(M.pickups) + 1)], [(0, 1)],
+          "drop: one pickup, of that slot, in the same click")
+    sc.check(not w.lua.eval("CursorHasItem()") and not C.IsShown(C), "drop: cursor empty and box closed after")
+    w.settle(1.0)
+    txt = [plain(x) for x in w.chat(mark)]
+    sc.check(any(t.endswith("dropped [Linen Scrap] x3 (worth 12c).") for t in txt), "drop: chat says what went (%s)" % txt)
+    sc.check(M.bags[0][1] is None and bag_row_for(BP, 900401) is None, "drop: gone from the bag and the list")
+
+    # Drop cheapest: skips the Rare band, names the next. A double-click on it never drops.
+    M.click(db)
+    sc.eq(C.name._text, "Spider Leg x2", "drop cheapest: names the cheapest stack it may drop")
+    M.click(g.ForeverAHBagConfirmDrop)
+    sc.check(len(M.destroyed) == 1 and C.IsShown(C), "drop cheapest: a double-click does not drop")
+    w.settle(0.6)
+    M.click(g.ForeverAHBagConfirmDrop)
+    w.settle(1.0)
+    sc.eq(destroyed_list(M)[-1], (0, 4, 900405, 2), "drop cheapest: dropped it")
+
+    def ask(iid):
+        rr = bag_row_for(BP, iid)
+        M.click(rr)
+        w.settle(0.6)
+        return rr
+
+    def no_drop(label, n_destroyed, must):
+        mark = w.chat_mark()
+        M.click(g.ForeverAHBagConfirmDrop)
+        w.settle(0.6)
+        sc.eq(len(M.destroyed), n_destroyed, label + ": nothing destroyed")
+        txt = [plain(x) for x in w.chat(mark)]
+        sc.check(any(must in t for t in txt), "%s: chat says so (%s)" % (label, txt))
+
+    nd = len(M.destroyed)
+    # Changed between the box and Drop it (no event in between).
+    ask(900402)
+    M.bags[0][2].count = 2
+    no_drop("drop changed count", nd, "moved or changed, so nothing was dropped")
+    M.bags[0][2].count = 1
+    M.fire("BAG_UPDATE", 0)
+    w.settle(0.5)
+    ask(900402)
+    M.bags[0][2].locked = True
+    no_drop("drop locked", nd, "moved or changed, so nothing was dropped")
+    M.bags[0][2].locked = None
+    M.fire("BAG_UPDATE", 0)
+    w.settle(0.5)
+    # Same item and count with another random suffix: not the stack it asked about.
+    ask(900402)
+    M.bags[0][2].suffix = "777"
+    no_drop("drop suffix swap", nd, "moved or changed, so nothing was dropped")
+    M.bags[0][2].suffix = None
+    M.fire("BAG_UPDATE", 0)
+    w.settle(0.5)
+    # Moved, with the bag events: the box closes by itself.
+    ask(900402)
+    mark = w.chat_mark()
+    M.bags[0][9] = M.bags[0][2]
+    M.bags[0][2] = None
+    M.fire("BAG_UPDATE", 0)
+    M.fire("BAG_UPDATE_DELAYED")
+    w.settle(0.6)
+    sc.check(not C.IsShown(C) and BP.confirm is None, "drop: the box closes when its stack moves")
+    sc.check(any("moved or changed" in t for t in [plain(x) for x in w.chat(mark)]), "drop moved: chat says so")
+    sc.eq(len(M.destroyed), nd, "drop moved: nothing destroyed")
+    # Kept meanwhile: the fresh check at Drop it leaves it.
+    ask(900402)
+    w.slash("/fah keep Broken Fang")
+    w.settle(0.5)
+    if sc.check(C.IsShown(C), "drop kept: box still open to test"):
+        no_drop("drop kept", nd, "is not on the list any more, so nothing was dropped")
+    w.slash("/fah keep Broken Fang")
+    w.settle(0.5)
+    # Something on the cursor already: left alone.
+    ask(900402)
+    M.cursorItem = w.to_lua({"itemID": 4306, "count": 1})
+    n_pick = len(M.pickups)
+    no_drop("drop cursor busy", nd, "put down the item on your cursor first")
+    sc.check(M.cursorItem is not None and len(M.pickups) == n_pick, "drop cursor busy: leaves your cursor alone")
+    w.lua.execute("ClearCursor()")
+    # The game refuses the delete: the item stays on the cursor.
+    M.deleteMode = "blocked"
+    ask(900402)
+    no_drop("drop blocked", nd, "It is on your cursor")
+    sc.check(M.held is not None and M.held.slot == 9, "drop blocked: left on the cursor")
+    w.lua.execute("ClearCursor()")
+    M.deleteMode = "ok"
+    # The game will not pick it up: nothing is deleted (the cursor holds
+    # nothing to delete), and chat says why instead of waiting for the slot.
+    M.pickupRefused = True
+    ask(900402)
+    no_drop("drop pickup refused", nd, "could not pick up [Broken Fang]. Nothing was dropped.")
+    sc.check(not w.lua.eval("CursorHasItem()") and M.bags[0][9] is not None, "drop pickup refused: cursor empty, still in the bag")
+    M.pickupRefused = None
+    # The server keeps it.
+    M.deleteMode = "refused"
+    w.settle(0.5)
+    ask(900402)
+    mark = w.chat_mark()
+    M.click(g.ForeverAHBagConfirmDrop)
+    w.settle(1.5)
+    txt = [plain(x) for x in w.chat(mark)]
+    sc.check(any(t.endswith("[Broken Fang] is still in your bags: the game did not destroy it.") for t in txt),
+             "drop refused: says so (%s)" % txt)
+    sc.check(M.bags[0][9] is not None, "drop refused: still in the bag")
+    M.deleteMode = "ok"
+    # Rare: a click only picks it up (the game asks to type DELETE), and chat
+    # says how to finish (this is the first pick-up, so the hint shows).
+    mark = w.chat_mark()
+    M.click(bag_row_for(BP, 900403))
+    sc.check(not C.IsShown(C), "drop rare: no drop box")
+    sc.eq((M.pickups[len(M.pickups)][1], M.pickups[len(M.pickups)][2]), (0, 3), "drop rare: picked up")
+    txt = [plain(x) for x in w.chat(mark)]
+    sc.check(any("Click the ground to destroy it (the game asks first)" in t for t in txt),
+             "drop rare: chat says how to destroy it (%s)" % txt)
+    w.lua.execute("ClearCursor()")
+    w.settle(0.5)
+    # The menu: Drop it (asks first) for a stack it may drop, never for the Rare one.
+    install_menu_mock(w)
+    M.click(bag_row_for(BP, 900402), "RightButton")
+    texts = menu_texts(w)
+    sc.check("Drop it (asks first)" in texts and "Pick it up" in texts, "drop menu: asks-first entry (%s)" % texts)
+    menu_pick(w, "Drop it (asks first)")
+    sc.check(C.IsShown(C) and C.name._text == "Broken Fang", "drop menu: opens the drop box")
+    M.click(g.ForeverAHBagConfirmCancel)
+    M.click(bag_row_for(BP, 900403), "RightButton")
+    sc.check("Drop it (asks first)" not in menu_texts(w), "drop menu: none for a Rare item")
+    # Escape closes the box.
+    ask(900402)
+    M.pressEscape()
+    sc.check(not C.IsShown(C) and BP.confirm is None, "drop: Escape closes the box")
+    # Closing the bags closes the box.
+    ask(900402)
+    M.CloseBags()
+    w.settle(0.2)
+    sc.check(not C.IsVisible(C) and BP.confirm is None, "drop: closing the bags closes the box")
+    M.OpenBags(1)
+    w.settle(0.3)
+    sc.check(F.IsVisible(F) and not C.IsShown(C), "drop: reopening shows the list, not the box")
+    # The menu still open when the bags close: picking Drop it (asks first)
+    # then does nothing, so reopening shows the list, not a box waiting with
+    # Drop it over the rows.
+    M.click(bag_row_for(BP, 900402), "RightButton")
+    M.CloseBags()
+    w.settle(0.3)
+    sc.check(menu_pick(w, "Drop it (asks first)"), "drop menu after the bags closed: the entry was there")
+    sc.check(BP.confirm is None and not C.IsShown(C), "drop menu after the bags closed: nothing asks")
+    w.settle(1.0)
+    M.OpenBags(1)
+    w.settle(0.3)
+    sc.check(F.IsVisible(F) and not C.IsShown(C) and BP.confirm is None,
+             "drop menu after the bags closed: reopening shows the list, not the box")
+    # At a vendor: Sell junk instead of Drop cheapest, and a click on a row
+    # sells it, a Rare one too (as the help says).
+    M.OpenMerchant()
+    w.settle(0.5)
+    sc.check(not BP.dropButton.IsShown(BP.dropButton) and BP.sellButton.IsShown(BP.sellButton),
+             "drop vendor: Sell junk, no Drop cheapest")
+    n_used = len(M.used)
+    M.click(bag_row_for(BP, 900403))
+    w.settle(0.5)
+    sc.check(not C.IsShown(C) and len(M.used) == n_used + 1 and 900403 in [M.sold[i] for i in range(1, len(M.sold) + 1)],
+             "drop vendor: a click on a row sells it, no drop box")
+    M.CloseMerchant()
+    w.settle(0.5)
+    sc.eq(len(M.destroyed), nd, "drop: nothing else was destroyed")
+    sc.clean(w, "drop")
+
+    # The mock guard itself: a Drop it that is not a player click is blocked.
+    w2 = World(ref, items)
+    bag_add_item(w2, 900401, "Linen Scrap", 1, 4, classID=7, maxStack=20)
+    w2.put_bag(0, 1, 900401, 3)
+    w2.M.OpenBags(1)
+    w2.settle(0.2)
+    w2.M.click(w2.ns.BagPanel.tab)
+    w2.settle(0.1)
+    w2.M.click(bag_row_for(w2.ns.BagPanel, 900401))
+    w2.settle(0.6)
+    w2.lua.execute("ForeverAHBagConfirmDrop:Click()")
+    v = violations(w2)
+    sc.check(any("outside a click" in x for x in v), "mock: Drop it clicked from code is blocked (%s)" % v)
+    sc.check(len(w2.M.destroyed) == 0 and w2.M.held is not None, "mock: nothing destroyed, item left on the cursor")
+
+    # A quest item the auction house trades stays on the list (valued like any
+    # other) but is never dropped in one click; at a vendor, a stack a vendor
+    # will not buy still opens the drop box.
+    priced = [i for i in other_items(ref, items, 80, avoid=SIDEBAR_WATCH)
+              if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0]
+    if not sc.check(len(priced) >= 2, "drop: two priced items to test with"):
+        return
+    q, nv = priced[0], priced[1]
+    w3 = World(ref, items)
+    M3, g3 = w3.M, w3.g
+    M3["items"][q].classID = 12
+    M3["items"][q].quality = 1
+    M3["items"][nv].quality = 1
+    M3["items"][nv].vendor = 0
+    w3.put_bag(0, 1, q, 1)
+    w3.put_bag(0, 2, nv, 1)
+    BP3 = w3.ns.BagPanel
+    M3.OpenBags(1)
+    w3.settle(0.2)
+    M3.click(BP3.tab)
+    w3.settle(0.1)
+    rq = bag_row_for(BP3, q)
+    C3 = g3.ForeverAHBagConfirm
+    if sc.check(rq is not None and rq.kind == "drop", "drop quest: a quest item the AH trades is on the list"):
+        sc.check(rq.entry.questItem is True, "drop quest: marked a quest item")
+        M3.enter(rq)
+        lines = [plain(l) for l, _ in w3.all_lines(g3.GameTooltip)]
+        sc.check(any(l.startswith("Click: pick it up") for l in lines), "drop quest: hover says it is picked up")
+        M3.leave(rq)
+        M3.click(rq)
+        sc.check(not C3.IsShown(C3), "drop quest: no drop box")
+        sc.eq((M3.pickups[len(M3.pickups)][1], M3.pickups[len(M3.pickups)][2]), (0, 1), "drop quest: picked up")
+        w3.lua.execute("ClearCursor()")
+        w3.settle(0.5)
+    M3.OpenMerchant()
+    w3.settle(0.5)
+    rn = bag_row_for(BP3, nv)
+    if sc.check(rn is not None and (rn.entry.vendor or 0) == 0, "drop vendor: a stack no vendor buys is listed"):
+        n_used = len(M3.used)
+        M3.click(rn)
+        sc.check(C3.IsShown(C3) and len(M3.used) == n_used, "drop vendor: its click opens the drop box, sells nothing")
+        # The name in its link fills in later (the item part stays): still the same stack.
+        M3["items"][nv].name = M3["items"][nv].name + " Fresh"
+        w3.settle(0.6)
+        M3.click(g3.ForeverAHBagConfirmDrop)
+        w3.settle(1.0)
+        sc.eq([d[2] for d in destroyed_list(M3)], [nv], "drop vendor: Drop it drops it")
+    M3.CloseMerchant()
+    w3.settle(0.5)
+    sc.clean(w3, "drop quest/vendor")
+
+    # A short list: the panel grows to fit the box, stays that tall when the
+    # list is laid out again while the box asks, and shrinks back after Cancel.
+    w4 = World(ref, items)
+    M4, g4 = w4.M, w4.g
+    bag_add_item(w4, 900401, "Linen Scrap", 1, 4, classID=7, maxStack=20)
+    bag_add_item(w4, 6948, "Hearthstone", 1, 0, classID=15)
+    w4.put_bag(0, 1, 900401, 3)
+    BP4 = w4.ns.BagPanel
+    M4.OpenBags(1)
+    w4.settle(0.2)
+    M4.click(BP4.tab)
+    w4.settle(0.1)
+    F4, C4 = g4.ForeverAHBagPanel, g4.ForeverAHBagConfirm
+    short = BP4.layoutH
+    sc.check(short is not None and short < 120 and abs(F4.GetHeight(F4) - short) < 1e-6,
+             "drop short list: the list is shorter than the box (%s)" % short)
+    M4.click(bag_row_for(BP4, 900401))
+    sc.check(C4.IsShown(C4) and F4.GetHeight(F4) >= 120 - 1e-6, "drop short list: the panel grows to fit the box")
+    # Something else lands in the bags (no row of its own): the list is laid out again.
+    free_before = BP4.sub._text
+    w4.put_bag(1, 1, 6948, 1)
+    M4.fire("BAG_UPDATE", 1)
+    M4.fire("BAG_UPDATE_DELAYED")
+    w4.settle(0.5)
+    sc.check(BP4.sub._text != free_before and BP4.layoutH == short, "drop short list: laid out again (%s, %s)" % (
+        BP4.sub._text, BP4.layoutH))
+    sc.check(C4.IsShown(C4) and F4.GetHeight(F4) >= 120 - 1e-6,
+             "drop short list: still tall enough for the box after that (%s)" % F4.GetHeight(F4))
+    M4.click(g4.ForeverAHBagConfirmCancel)
+    sc.check(not C4.IsShown(C4) and abs(F4.GetHeight(F4) - short) < 1e-6,
+             "drop short list: back to the list's height after Cancel (%s)" % F4.GetHeight(F4))
+    # A slow server: the slot stays locked for 1.2 s after Drop it. Chat waits
+    # for the slot and says dropped, once (never "still in your bags").
+    M4.deleteDelay = 1.2
+    M4.click(bag_row_for(BP4, 900401))
+    w4.settle(0.6)
+    mark = w4.chat_mark()
+    M4.click(g4.ForeverAHBagConfirmDrop)
+    w4.settle(0.6)
+    sc.check(M4.bags[0][1] is not None and M4.bags[0][1].locked is True, "drop slow server: the slot is still locked after 0.6 s")
+    w4.settle(2.4)
+    txt = [plain(x) for x in w4.chat(mark)]
+    sc.eq(destroyed_list(M4), [(0, 1, 900401, 3)], "drop slow server: dropped")
+    sc.check(len([t for t in txt if t.endswith("dropped [Linen Scrap] x3 (worth 12c).")]) == 1
+             and not any("still in your bags" in t for t in txt),
+             "drop slow server: chat waits for the slot and says dropped once (%s)" % txt)
+    M4.deleteDelay = 0.2
+    sc.clean(w4, "drop short list")
+
+    # The worth goes up while the box asks: Drop it then shows the new worth
+    # and asks again instead of dropping. In game that is a live auction price
+    # coming in (at the auction house the bags are open too). First the vendor
+    # price goes up, which tests that check in Drop it however auction prices
+    # are read; then a live listing comes in for an item valued at auction.
+    def worth_text(e):
+        if e.source == "auction":
+            return "Worth %s%s at auction now." % ("about " if e.unsure else "", money_text(e.value))
+        return "Worth %s at a vendor." % money_text(e.value)
+
+    w5 = World(ref, items)
+    M5, g5, ns5 = w5.M, w5.g, w5.ns
+    hi = None
+    for iid in priced:
+        M5["items"][iid].quality = 1
+        M5["items"][iid].classID = 7
+        w5.put_bag(0, 2, iid, 1)
+        s5 = ns5.BagScan()
+        if len(s5.drop) == 1 and s5.drop[1].source == "auction":
+            hi = iid
+            break
+        M5.bags[0][2] = None
+    bag_add_item(w5, 900406, "Gold Dust", 1, 4, classID=7, maxStack=20)
+    w5.put_bag(0, 1, 900406, 3)   # 12c at a vendor
+    w5.open_ah_modern()
+    BP5 = ns5.BagPanel
+    M5.OpenBags(1)
+    w5.settle(0.2)
+    M5.click(BP5.tab)
+    w5.settle(0.1)
+    C5, yes5 = g5.ForeverAHBagConfirm, g5.ForeverAHBagConfirmDrop
+    M5.click(bag_row_for(BP5, 900406))
+    sc.eq(C5.worth._text, "Worth 12c at a vendor.", "drop worth: the box says what it is worth")
+    M5["items"][900406].vendor = 500
+    w5.settle(0.6)
+    mark = w5.chat_mark()
+    M5.click(yes5)
+    sc.eq(len(M5.destroyed), 0, "drop worth: nothing dropped while it is worth more than the box said")
+    sc.check(C5.IsShown(C5) and C5.worth._text == "Worth 15s at a vendor.", "drop worth: the box shows the new worth (%s)" % C5.worth._text)
+    txt = [plain(x) for x in w5.chat(mark)]
+    sc.check(any(t.endswith("[Gold Dust] x3 is worth 15s at a vendor now. Nothing was dropped: check the box again.") for t in txt),
+             "drop worth: chat says why (%s)" % txt)
+    # Asked again, so the wait starts again too; then Drop it drops it.
+    M5.click(yes5)
+    sc.eq(len(M5.destroyed), 0, "drop worth: a click right after it asks again does nothing")
+    w5.settle(0.6)
+    mark = w5.chat_mark()
+    M5.click(yes5)
+    w5.settle(1.0)
+    sc.eq(destroyed_list(M5), [(0, 1, 900406, 3)], "drop worth: Drop it on the new worth drops it")
+    txt = [plain(x) for x in w5.chat(mark)]
+    sc.check(any(t.endswith("dropped [Gold Dust] x3 (worth 15s).") for t in txt),
+             "drop worth: chat names the worth it was dropped at (%s)" % txt)
+    # A live listing far above the usual price comes in while the box asks.
+    # Whether that raises the stack's worth depends on how auction prices are
+    # read; either way Drop it never destroys it for more than the box said.
+    r5 = bag_row_for(BP5, hi) if hi is not None else None
+    if sc.check(r5 is not None, "drop worth live: an item valued at its auction price to test with"):
+        old = (r5.entry.value, r5.entry.source)
+        M5.click(r5)
+        sc.eq(C5.worth._text, worth_text(r5.entry), "drop worth live: the box says what it is worth")
+        w5.set_commodity_results(hi, [(ref.items[hi]["cheapest"] * 3 + 100, 5, False)])
+        M5.fire("COMMODITY_SEARCH_RESULTS_UPDATED", hi)
+        w5.settle(0.6)
+        s5 = ns5.BagScan()
+        new = next((s5.drop[i] for i in range(1, len(s5.drop) + 1) if s5.drop[i].id == hi), None)
+        n5 = len(M5.destroyed)
+        mark = w5.chat_mark()
+        M5.click(yes5)
+        w5.settle(1.0)
+        txt = [plain(x) for x in w5.chat(mark)]
+        if new is not None and (new.value > old[0] or new.source != old[1]):
+            sc.check(len(M5.destroyed) == n5 and C5.IsShown(C5) and C5.worth._text == worth_text(new)
+                     and any(" is worth %s " % money_text(new.value) in t for t in txt),
+                     "drop worth live: worth more now (%s to %s), so it asks again (%s, %s)" % (
+                         old[0], new.value, C5.worth._text, txt))
+        else:
+            sc.check(len(M5.destroyed) == n5 + 1, "drop worth live: worth no more than the box said, so it drops (%s)" % txt)
+    w5.close_ah_modern()
+    w5.settle(0.5)
+    sc.clean(w5, "drop worth")
+
+
+def sc_bag_drop_elvui(sc, ref, items):
+    """The drop box with ElvUI's bags: the ElvUI slot is outlined while it asks,
+    Drop it destroys the stack."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    elv = M.InstallElvUIBags(0.8)
+    bag_add_item(w, 900302, "Coyote Meat", 1, 4, classID=7)
+    w.put_bag(2, 5, 900302, 3)
+    BP = ns.BagPanel
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    M.click(BP.tab)
+    w.settle(0.1)
+    r = bag_row_for(BP, 900302)
+    M.click(r)
+    sc.check(w.same(BP.glow._points[1][2], elv.Bags[2][5]), "elvui drop: ElvUI's slot outlined while it asks")
+    w.settle(0.6)
+    M.click(g.ForeverAHBagConfirmDrop)
+    w.settle(1.0)
+    sc.eq(destroyed_list(M), [(2, 5, 900302, 3)], "elvui drop: dropped")
+    sc.check(M.bags[2][5] is None, "elvui drop: gone from the bag")
+    sc.clean(w, "elvui drop")
+
+
+def elvui_world(ref, items, build_on=None, window=None):
+    """The game's own bag functions and ElvUI the addon, loaded before ForeverAH,
+    at the player's UI scale."""
+    def setup(w):
+        w.M.InstallBlizzardBags()
+        o = {}
+        if build_on:
+            o["buildOn"] = build_on
+        if window:
+            o["window"] = window
+        w.M.InstallElvUIAddon(w.to_lua(o))
+    return World(ref, items, screen=(768 * 16 / 9, 768, 0.62), before_addon=setup)
+
+
+def tab_on(w, BP, frame):
+    """The button is shown and hangs on frame."""
+    tab = BP.tab
+    if not BP.built or not tab.IsVisible(tab):
+        return False
+    p = tab._points[1]
+    return p is not None and w.same(p[2], frame)
+
+
+def sc_bag_elvui_hooks(sc, ref, items):
+    """How the button learns that bags opened or closed, with ElvUI v16.01 as it
+    runs in the game: ElvUI builds its window at login (before our login
+    handler), clears the scripts of the game's bag windows (which drops our
+    script hooks), hooks the game's bag functions, and also opens its window by
+    itself. Every way in shows the button, every way out hides it."""
+    w = elvui_world(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    BP = ns.BagPanel
+    st = BP.stats
+    elv = g.ElvUI_ContainerFrame
+    B = w.lua.eval("ElvUI[1]:GetModule('Bags')")
+    sc.check(M.elvBuilt is True and elv is not None, "elvui hooks: ElvUI built its bag window at login")
+    sc.check(st.elv.OpenBags is True and st.elv.CloseAllBags is True, "elvui hooks: ElvUI's OpenBags and CloseAllBags hooked")
+    sc.check(all(st.toggles[fn] is True for fn in ("ToggleBag", "ToggleBackpack", "ToggleAllBags", "OpenAllBags",
+                                                    "CloseAllBags", "OpenBackpack", "CloseBackpack")),
+             "elvui hooks: every bag function of the game hooked")
+    cf1 = g.ContainerFrame1
+    sc.check(cf1._hooks.OnShow is None and cf1._scripts.OnShow is None,
+             "elvui hooks: ElvUI cleared the game's bag scripts, and our script hooks with them")
+    n_hooks = M.hookCount
+    M.fire("PLAYER_ENTERING_WORLD", False, True)
+    w.settle(0.2)
+    sc.eq(M.hookCount, n_hooks, "elvui hooks: entering the world again hooks nothing twice")
+
+    def opened(label):
+        w.settle(0.2)
+        sc.check(elv.IsVisible(elv) and tab_on(w, BP, elv), "%s: the button shows on ElvUI's window" % label)
+        sc.check(BP.inHeader is True and BP.tab.GetFrameStrata(BP.tab) == "HIGH",
+                 "%s: in the window's header, on its layer" % label)
+        sc.check(BP.lastError is None, "%s: no error (%s)" % (label, BP.lastError))
+
+    def closed(label):
+        w.settle(0.2)
+        sc.check(not elv.IsShown(elv) and not BP.tab.IsShown(BP.tab), "%s: closed, the button goes" % label)
+
+    w.lua.execute("ToggleAllBags()")
+    opened("B key")
+    sc.check(cf1.IsShown(cf1) and cf1.GetNumPoints(cf1) == 0, "B key: the game's backpack is open but parked (no position)")
+    w.lua.execute("ToggleAllBags()")
+    closed("B key again")
+    w.lua.execute("ElvUI[1]:GetModule('Bags'):OpenBags()")
+    opened("ElvUI opens by itself (vendor, auction house)")
+    w.lua.execute("ElvUI[1]:GetModule('Bags'):CloseAllBags()")
+    closed("ElvUI closes by itself")
+    w.lua.execute("ToggleBackpack()")
+    opened("ToggleBackpack")
+    w.lua.execute("ToggleBackpack()")
+    closed("ToggleBackpack again")
+    w.lua.execute("ToggleBag(0)")
+    opened("ToggleBag (the bag bar)")
+    w.lua.execute("ToggleBag(0)")
+    closed("ToggleBag again")
+    w.lua.execute("OpenAllBags(true)")
+    opened("OpenAllBags")
+    w.lua.execute("CloseAllBags()")
+    closed("CloseAllBags")
+    w.lua.execute("ToggleAllBags()")
+    opened("B key before Escape")
+    sc.eq(M.pressEscape(), "ElvUI_ContainerFrame", "Escape: closes ElvUI's window")
+    closed("Escape")
+    # Shown straight from code (no bag function, no ElvUI module call).
+    w.lua.execute("ElvUI_ContainerFrame:Show()")
+    opened("window shown from code")
+    w.lua.execute("ElvUI_ContainerFrame:Hide()")
+    closed("window hidden from code")
+    sc.check(BP.lastError is None, "elvui hooks: no error (%s)" % BP.lastError)
+    sc.clean(w, "elvui hooks")
+
+    # ElvUI builds its window late (after login and entering the world) and
+    # first opens it by itself: only the module hook can tell.
+    w2 = elvui_world(ref, items, build_on="BAG_UPDATE_DELAYED")
+    BP2 = w2.ns.BagPanel
+    sc.check(w2.g.ElvUI_ContainerFrame is None, "late: no ElvUI window at login")
+    sc.check(BP2.stats.elv.OpenBags is True, "late: ElvUI's module hooked at login anyway")
+    w2.M.fire("BAG_UPDATE_DELAYED")
+    w2.settle(0.2)
+    elv2 = w2.g.ElvUI_ContainerFrame
+    sc.check(elv2 is not None and not elv2.IsShown(elv2), "late: ElvUI built its window")
+    w2.lua.execute("ElvUI[1]:GetModule('Bags'):OpenBags()")
+    w2.settle(0.5)
+    sc.check(tab_on(w2, BP2, elv2), "late: ElvUI opening its window by itself shows the button")
+    w2.lua.execute("ElvUI[1]:GetModule('Bags'):CloseAllBags()")
+    w2.settle(0.2)
+    sc.check(not BP2.tab.IsShown(BP2.tab), "late: and closing it hides the button")
+    sc.clean(w2, "late elvui")
+
+    # The game's bags with their scripts cleared by another addon: the Show and
+    # Hide hooks still see them open and close.
+    w3 = World(ref, items)
+    M3, g3 = w3.M, w3.g
+    BP3 = w3.ns.BagPanel
+    w3.lua.execute('ContainerFrame1:SetScript("OnShow", nil); ContainerFrame1:SetScript("OnHide", nil)')
+    sc.check(g3.ContainerFrame1._hooks.OnShow is None, "cleared scripts: our script hooks are gone")
+    asked = BP3.stats.asked
+    M3.OpenBags(1)
+    w3.settle(0.2)
+    sc.check(BP3.built and tab_on(w3, BP3, g3.ContainerFrame1), "cleared scripts: the button still shows with the backpack")
+    sc.check(BP3.stats.asked > asked, "cleared scripts: the update was asked for")
+    M3.CloseBags()
+    w3.settle(0.2)
+    sc.check(not BP3.tab.IsShown(BP3.tab), "cleared scripts: and goes when it closes")
+    # A bag function that appears after login is hooked the next time we look.
+    sc.check(BP3.stats.toggles.OpenBackpack is None, "late function: OpenBackpack is not there at first")
+    w3.lua.execute("function OpenBackpack() MOCK.OpenBags(1) end")
+    M3.fire("PLAYER_ENTERING_WORLD", False, True)
+    sc.check(BP3.stats.toggles.OpenBackpack is True, "late function: hooked on entering the world")
+    w3.lua.execute('ContainerFrame1.Show = nil')   # only the function hook is left to tell
+    asked = BP3.stats.asked
+    w3.lua.execute("OpenBackpack()")
+    w3.settle(0.2)
+    sc.check(BP3.stats.asked > asked and tab_on(w3, BP3, g3.ContainerFrame1), "late function: opening through it shows the button")
+    M3.CloseBags()
+    w3.settle(0.2)
+    sc.clean(w3, "cleared scripts")
+
+
+SECRET = -987654.25
+
+
+def secret_rect(w, name):
+    """A frame whose position comes back as secret values (the mock's issecretvalue knows them)."""
+    w.lua.execute("""
+        local S = %r
+        issecretvalue = function(v) return v == S end
+        local f = %s
+        f.GetLeft = function() return S end
+        f.GetBottom = function() return S end
+        f.GetRight = function() return S end
+        f.GetTop = function() return S end
+        f.GetRect = function() return S, S, S, S end
+    """ % (SECRET, name))
+
+
+def sc_bag_window_unreadable(sc, ref, items):
+    """A bag addon's window counts as open when it is shown, even when its
+    position cannot be read: no position (GetLeft nil) or secret values. The
+    button still shows: in the header when the window's rectangle can be read,
+    else hung off the window's bottom left corner. The game's own bag windows
+    still need a position (bag addons park them shown with none)."""
+    w = World(ref, items, screen=(768 * 16 / 9, 768, 0.62))
+    M, ns, g = w.M, w.ns, w.g
+    elv = M.InstallElvUIBagsReal()
+    bag_add_item(w, 900302, "Coyote Meat", 1, 4, classID=7)
+    w.put_bag(2, 5, 900302, 3)
+    BP = ns.BagPanel
+    w.lua.execute("ElvUI_ContainerFrame.GetLeft = function() return nil end")
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(tab_on(w, BP, elv), "no GetLeft: the button shows on ElvUI's window")
+    sc.check(BP.inHeader is True and BP.tab._points[1][1] == "TOPLEFT", "no GetLeft: still in the header (its rectangle reads)")
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(not BP.tab.IsShown(BP.tab), "no GetLeft: closing hides it")
+
+    secret_rect(w, "ElvUI_ContainerFrame")
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    tab = BP.tab
+    sc.check(tab_on(w, BP, elv), "secret position: the button shows on ElvUI's window")
+    p = tab._points[1]
+    sc.check(not BP.inHeader and p[1] == "BOTTOMRIGHT" and p[3] == "BOTTOMLEFT" and p[4] == -4 and p[5] == 0,
+             "secret position: hung off the window's bottom left corner, no numbers needed (%s)" % (list(p.values()) if p else p,))
+    sc.eq(tab.GetFrameStrata(tab), "HIGH", "secret position: on the window's layer")
+    tr, er = w.rect(tab), w.rect(elv)
+    sc.check(tr is not None and abs(tr[2] - (er[0] - 4 * tab.GetEffectiveScale(tab))) < 1e-6,
+             "secret position: the button's right edge 4 left of the window")
+    M.click(tab)
+    w.settle(0.1)
+    F = g.ForeverAHBagPanel
+    pf = F._points[1]
+    sc.check(F.IsVisible(F) and w.same(pf[2], elv) and pf[1] == "BOTTOMRIGHT", "secret position: the panel opens beside it")
+    out = [plain(x) for x in w.slash("/fah bagcheck")]
+    sc.check(any("1. ElvUI bags: open yes, secret position" in t for t in out), "secret position: bagcheck says so (%s)" % out[:3])
+    sc.check(BP.lastError is None, "secret position: no error (%s)" % BP.lastError)
+    w.lua.execute("issecretvalue = function() return false end")
+    sc.clean(w, "unreadable window", ok_chat=BAGCHECK_LINES)
+
+    # The game's own bag window, shown with no position (parked): never used.
+    w2 = World(ref, items)
+    w2.lua.execute("ContainerFrame1:SetID(0); ContainerFrame1:ClearAllPoints(); ContainerFrame1:Show()")
+    w2.settle(0.2)
+    BP2 = w2.ns.BagPanel
+    sc.check(not BP2.built or not BP2.tab.IsShown(BP2.tab), "parked game bags: no button")
+    sc.eq(BP2.stats.result, "no bag window open", "parked game bags: the update says why")
+    sc.clean(w2, "parked game bags")
+
+
+# /fah bagcheck lines that name errors only to say there are none, or that
+# the game hides them: not error messages (Scenario.clean ok_chat).
+BAGCHECK_LINES = ("7. last error: none", "9. Lua errors on screen: ")
+
+
+def bagcheck(sc, w, label, cmd="/fah bagcheck"):
+    """Runs /fah bagcheck; checks its form; returns {number: text} and all lines."""
+    out = [plain(x) for x in w.slash(cmd)]
+    body = [t.split("Forever AH: ", 1)[-1] for t in out]
+    sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
+    sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18e", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    num = {}
+    for t in body:
+        m = re.match(r"^(\d+)\. (.*)$", t)
+        if m:
+            num[int(m.group(1))] = m.group(2)
+    sc.eq(sorted(num), list(range(1, 11)), "%s: lines 1 to 10" % label)
+    return num, body
+
+
+def sc_bag_check(sc, ref, items):
+    """/fah bagcheck (also /fah bags check): what the bag cleanup sees, in plain
+    short lines for one screenshot, with the counters behind it; the button
+    flashes gold on top for 10 seconds, then gets its layer and colour back."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    BP = ns.BagPanel
+    bag_add_item(w, 900303, "Brittle Bone", 0, 3, classID=15)
+    w.put_bag(0, 1, 900303, 2)
+    n, body = bagcheck(sc, w, "bagcheck closed")
+    sc.eq(n.get(1), "ElvUI bags: not found (ElvUI is not loaded)", "bagcheck closed: no ElvUI")
+    sc.eq(n.get(2), "game bag windows open: none", "bagcheck closed: no bag window")
+    sc.eq(n.get(3), "windows the button uses: none (open your bags, then type /fah bagcheck again)", "bagcheck closed: none used")
+    sc.eq(n.get(4), "key hooks: ToggleBag yes, ToggleBackpack yes, ToggleAllBags yes, OpenAllBags yes, CloseAllBags yes, "
+          "OpenBackpack no, CloseBackpack no, ElvUI not loaded", "bagcheck closed: hooks")
+    sc.check((n.get(5) or "").endswith("last: no bag window open"), "bagcheck closed: last update (%s)" % n.get(5))
+    sc.eq(n.get(6), "button: not made yet", "bagcheck closed: no button yet")
+    sc.eq(n.get(7), "last error: none", "bagcheck closed: no error")
+    sc.eq(n.get(8), "scan: 79 of 80 slots free, 1 to clear, 1 cheap stack", "bagcheck closed: the scan")
+    sc.eq(n.get(9), "Lua errors on screen: off", "bagcheck closed: Lua errors off")
+    sc.eq(n.get(10), "button update now: no bag window open", "bagcheck closed: update now")
+    sc.eq(body[-1], "Open your bags, then type /fah bagcheck again and take a screenshot.", "bagcheck closed: what to do")
+    M.cvars.scriptErrors = "1"
+    n, _ = bagcheck(sc, w, "bags check alias", "/fah bags check")
+    sc.eq(n.get(9), "Lua errors on screen: on", "bags check alias: Lua errors on")
+
+    # The game's backpack open.
+    M.OpenBags(1)
+    w.settle(0.2)
+    st = BP.stats
+    sc.check(st.asked >= 1 and st.ran >= 1, "bagcheck: updates asked %d, run %d" % (st.asked, st.ran))
+    sc.eq(st.result, "button shown", "bagcheck: the last update showed the button")
+    tab = BP.tab
+    closed_bg = list(tab.bg._color.values())
+    n, body = bagcheck(sc, w, "bagcheck open")
+    sc.eq(n.get(2), "game bag windows open: ContainerFrame1 85% from left, 13% up, 180x170 px", "bagcheck open: the backpack")
+    sc.eq(n.get(3), "windows the button uses: ContainerFrame1", "bagcheck open: hangs on the backpack")
+    sc.check((n.get(5) or "").startswith("button updates asked ") and (n.get(5) or "").endswith("last: button shown"),
+             "bagcheck open: counters (%s)" % n.get(5))
+    sc.check(re.match(r"^button: shown yes, on screen yes, \d+% from left, 13% up, 170x20 px, MEDIUM level \d+, "
+                      r"hangs on ContainerFrame1$", n.get(6) or "") is not None, "bagcheck open: the button (%s)" % n.get(6))
+    sc.eq(n.get(10), "button update now: button shown", "bagcheck open: update now")
+    sc.eq(body[-1], "The Bag cleanup button flashes gold for 10 seconds. Take a screenshot of your whole screen.",
+          "bagcheck open: flash line")
+    sc.eq(tab.GetFrameStrata(tab), "TOOLTIP", "flash: the button comes to the front")
+    c = list(tab.bg._color.values())
+    sc.check(c != closed_bg and c[3] == 1, "flash: the button turns gold (%s)" % c)
+    w.settle(10.5)
+    sc.eq(tab.GetFrameStrata(tab), "MEDIUM", "flash: its layer comes back after 10 seconds")
+    sc.eq(list(tab.bg._color.values()), closed_bg, "flash: its colour comes back after 10 seconds")
+    # With the panel open (the tab hides beside the game's bags).
+    M.click(tab)
+    w.settle(0.1)
+    n, body = bagcheck(sc, w, "bagcheck panel")
+    sc.eq(n.get(10), "button update now: panel shown", "bagcheck panel: update now")
+    sc.eq(body[-1], "The cleanup panel is open beside your bags. Take a screenshot of your whole screen.", "bagcheck panel: last line")
+    M.click(BP.closeButton)
+    w.settle(0.1)
+    # No place to hang the button: hidden, and the counters say why.
+    w.lua.execute("ContainerFrame1.GetBottom = function() return nil end")
+    BP.UpdateSoon(BP)
+    w.settle(0.1)
+    sc.eq(st.result, "button made, no place for it", "no place: the update says why")
+    sc.check(not tab.IsShown(tab), "no place: the button is hidden, not left where it was")
+    w.lua.execute("ContainerFrame1.GetBottom = nil")
+    BP.UpdateSoon(BP)
+    w.settle(0.1)
+    sc.check(tab.IsVisible(tab) and st.result == "button shown", "no place: back once the bag has a position")
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "bagcheck", ok_chat=BAGCHECK_LINES)
+
+    # ElvUI as it runs in the game, open and closed.
+    we = elvui_world(ref, items)
+    we.lua.execute("ToggleAllBags()")
+    we.settle(0.2)
+    n, body = bagcheck(sc, we, "bagcheck elvui")
+    sc.check(re.match(r"^ElvUI bags: open yes, \d+% from left, \d+% up, \d+x\d+ px, HIGH, hooked yes$", n.get(1) or "") is not None,
+             "bagcheck elvui: ElvUI's window (%s)" % n.get(1))
+    sc.eq(n.get(2), "game bag windows open: ContainerFrame1 no position, ContainerFrame2 no position, "
+          "ContainerFrame3 no position, ContainerFrame4 no position and 1 more", "bagcheck elvui: the game's bags, parked")
+    sc.eq(n.get(3), "windows the button uses: ElvUI_ContainerFrame", "bagcheck elvui: hangs on ElvUI's window")
+    sc.check((n.get(4) or "").endswith("OpenBackpack yes, CloseBackpack yes, ElvUI yes"), "bagcheck elvui: hooks (%s)" % n.get(4))
+    sc.check((n.get(6) or "").endswith("hangs on ElvUI_ContainerFrame (in its header)"), "bagcheck elvui: button (%s)" % n.get(6))
+    we.settle(10.5)
+    we.lua.execute("ToggleAllBags()")
+    we.settle(0.2)
+    n, _ = bagcheck(sc, we, "bagcheck elvui closed")
+    sc.check((n.get(1) or "").startswith("ElvUI bags: open no, "), "bagcheck elvui closed: says closed (%s)" % n.get(1))
+    sc.clean(we, "bagcheck elvui", ok_chat=BAGCHECK_LINES)
+
+    # The tab cannot be made the first time: the next update makes it, and the
+    # problem is said once in chat and kept for /fah bagcheck.
+    wf = World(ref, items)
+    wf.lua.execute("""
+        local orig = CreateFrame
+        local failed = false
+        CreateFrame = function(t, name, ...)
+            if name == "ForeverAHBagPanel" and not failed then failed = true; error("no frames today") end
+            return orig(t, name, ...)
+        end
+    """)
+    BPf = wf.ns.BagPanel
+    mark = wf.chat_mark()
+    wf.M.OpenBags(1)
+    wf.settle(0.2)
+    sc.check(not BPf.built and BPf.stats.result == "could not make the button", "build fails: not made, and it says so")
+    sc.check("no frames today" in str(BPf.lastError), "build fails: the error is kept (%s)" % BPf.lastError)
+    wf.M.CloseBags()
+    wf.settle(0.2)
+    wf.M.OpenBags(1)
+    wf.settle(0.2)
+    sc.check(BPf.built and BPf.tab.IsVisible(BPf.tab), "build fails once: the next update makes the button")
+    said = [plain(x) for x in wf.chat(mark)]
+    sc.eq(len([t for t in said if "/fah bagcheck" in t]), 1, "build fails: said once in chat (%s)" % said)
+    n, _ = bagcheck(sc, wf, "bagcheck after a failure")
+    sc.check("no frames today" in (n.get(7) or ""), "bagcheck after a failure: line 7 has the error (%s)" % n.get(7))
+
+    # /fah bags when the scan breaks: one line saying so, not silence.
+    ws = World(ref, items)
+    ws.ns.BagScan = ws.lua.eval("function() error('scan broke') end")
+    out = [plain(x) for x in ws.slash("/fah bags")]
+    sc.check(len(out) == 1 and "bag scan error: " in out[0] and "scan broke" in out[0], "bags scan error: said in chat (%s)" % out)
+    n, _ = bagcheck(sc, ws, "bagcheck scan error")
+    sc.check((n.get(8) or "").startswith("scan error: ") and "scan broke" in n.get(8), "bagcheck: line 8 has the scan error (%s)" % n.get(8))
+
+    # Without Bags.lua, the command is unknown (so that line alone says Bags.lua did not load).
+    saved = TOC_FILES[:]
+    try:
+        TOC_FILES.remove("Bags.lua")
+        wn = World(ref, items)
+    finally:
+        TOC_FILES[:] = saved
+    out = [plain(x) for x in wn.slash("/fah bagcheck")]
+    sc.check(any(t.endswith("unknown command. Type /fah help for the list.") for t in out), "no Bags.lua: unknown command (%s)" % out)
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -8388,6 +9465,11 @@ SCENARIOS = [
     ("bag-cleanup-elvui", sc_bag_cleanup_elvui),
     ("bag-cleanup-parked", sc_bag_cleanup_parked),
     ("bag-tab-header", sc_bag_tab_header),
+    ("bag-drop", sc_bag_drop),
+    ("bag-drop-elvui", sc_bag_drop_elvui),
+    ("bag-elvui-hooks", sc_bag_elvui_hooks),
+    ("bag-window-unreadable", sc_bag_window_unreadable),
+    ("bag-check", sc_bag_check),
 ]
 
 

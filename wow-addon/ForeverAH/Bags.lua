@@ -8,10 +8,16 @@ local ADDON_NAME, ns = ...
 --   Worth the least : everything else, cheapest stack first, valued at the
 --                     better of what a vendor pays and what it sells for at
 --                     auction right now (after the 5% cut)
--- It shows as a small tab beside your open bags (a slim panel when you click
--- it), and in chat with /fah bags. Nothing is destroyed or sold on its own:
--- clicking a row picks the item up (click the ground and the game asks before
--- destroying it), and only at an open vendor does a click sell it.
+-- It shows as a Bag cleanup button on your open bags (in the header of
+-- ElvUI's bag window when there is room, else a tab beside the bags) that
+-- opens a slim panel, and in chat with /fah bags. Nothing is destroyed or
+-- sold on its own. At an open vendor a click on a row sells the stack when
+-- the vendor buys it. Otherwise a click on a row (or Drop cheapest) only
+-- asks, naming the stack and what it is worth; Drop it in that box checks the
+-- stack and its worth again and destroys that one stack (the game allows one
+-- per click). Rare and better items and quest items are only picked up, so
+-- the game's own check (type DELETE, quest warning) applies. /fah bagcheck
+-- says what the cleanup sees.
 
 ns = ns or {}
 
@@ -36,6 +42,11 @@ local MAX_DROP = 8
 local SLASH_DROP = 5        -- /fah bags prints this many
 local SELL_BATCH = 12       -- junk sold per click (the vendor's buyback holds 12)
 local OUTGROWN = 15         -- food, potions and the like this many levels under you are fair game
+local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes you type DELETE for Rare and up)
+local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
+                            -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
+local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
+local BAGS_BUILD = "2026-11-18e"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -464,7 +475,8 @@ end
 --   free, slots   free and total slots in your normal bags
 --   drop          stacks worth the least first: { bag, slot, id, link, name,
 --                 count, quality, icon, value, vendor (each), auction (each,
---                 after the cut, or nil), source "vendor"/"auction", unsure, junk }
+--                 after the cut, or nil), source "vendor"/"auction", unsure, junk,
+--                 questItem (a quest item the auction house trades) }
 --   quest         old quest items: the same fields plus why ("done"/"none") and sure
 --   merge         { id, name, icon, quality, stacks, frees, from, to } (from/to
 --                 are slot entries; nil when no two stacks fit in one)
@@ -528,6 +540,10 @@ function ns.BagScan()
           local isQuest = classID == CLASS_QUEST or bind == BIND_QUEST
           local qi = SlotQuest(bag, slot)
           if qi and (Num(qi.questID) or 0) > 0 then isQuest = true end
+          -- Even when the auction house trades it, a quest item is never
+          -- dropped in one click: the game's own delete check warns when a
+          -- quest needs it.
+          e.questItem = isQuest
           -- A quest item the auction house trades (a turn-in people buy)
           -- is valued like any other item.
           if isQuest and not bound and HasAuctionData(PriceID(id, link)) then isQuest = false end
@@ -610,7 +626,7 @@ function ns.BagScan()
 end
 
 ---------------------------------------------------------------------------
--- Acting on a row: pick up, sell, merge (always from a click)
+-- Acting on a row: pick up, sell, merge, drop (always from a click)
 ---------------------------------------------------------------------------
 local function CursorHasItem()
   local f = _G.CursorHasItem
@@ -651,7 +667,70 @@ local function ItemText(e)
   return n
 end
 
-local BP = { rows = {}, built = false, merchant = false, hinted = false }
+-- Stacks the drop box may destroy: below Rare and not a quest item, the same
+-- ones the game itself confirms with a plain Yes/No.
+local function CanDrop(e)
+  return type(e) == "table" and (Num(e.quality) or 1) <= DROP_MAX_QUALITY and e.questItem ~= true
+end
+
+local function Now()
+  local f = _G.GetTime
+  if type(f) ~= "function" then return nil end
+  local ok, t = pcall(f)
+  return ok and Num(t) or nil
+end
+
+-- The cursor holds this item.
+local function CursorHolds(e)
+  local f = _G.GetCursorInfo
+  if type(f) ~= "function" then return CursorHasItem() end
+  local ok, kind, id = pcall(f)
+  return ok and kind == "item" and Num(id) == e.id
+end
+
+-- The item part of a link ("item:2589:0:..."), without the name and colour,
+-- which can fill in later while the item stays the same.
+local function LinkKey(link)
+  link = Str(link)
+  if not link then return nil end
+  return smatch(link, "|H(item:[^|]+)|h") or link
+end
+
+-- The slot still holds exactly the stack the drop box names (same item, count
+-- and link, so a random-suffix swap counts as a change) and nothing moves it.
+local function SameStack(t)
+  local info = SlotInfo(t.bag, t.slot)
+  if not info or info.isLocked == true or Num(info.itemID) ~= t.id
+    or (Num(info.stackCount) or 1) ~= t.count then return false end
+  local a, b = LinkKey(t.link), LinkKey(info.hyperlink)
+  return not (a and b and a ~= b)
+end
+
+-- The stack read again right now, and still on the list (not kept, not a
+-- tool, no quest asks for it, not food near your level). nil and why not
+-- ("changed" or "unlisted") otherwise.
+local function LiveDrop(t)
+  if not SameStack(t) then return nil, "changed" end
+  for _, e in ipairs(ns.BagScan().drop) do
+    if e.bag == t.bag and e.slot == t.slot then
+      if e.id == t.id and e.count == t.count and CanDrop(e) then return e end
+      return nil, "unlisted"
+    end
+  end
+  return nil, "unlisted"
+end
+
+local function WorthText(e)
+  if e.source == "auction" then
+    return "Worth " .. (e.unsure and "about " or "") .. ChatMoney(e.value) .. " at auction now."
+  end
+  return "Worth " .. ChatMoney(e.value) .. " at a vendor."
+end
+
+local BP = { rows = {}, built = false, merchant = false, hinted = false,
+  -- For /fah bagcheck: updates asked for and run, how the last one ended, and
+  -- which hooks took.
+  stats = { asked = 0, ran = 0, result = "never ran", toggles = {}, elv = {} } }
 ns.BagPanel = BP
 
 local function Pickup(e)
@@ -727,6 +806,13 @@ end
 -- frame.Bags[bagID][slotID].
 local ADDON_BAG_FRAMES = { "ElvUI_ContainerFrame" }
 
+local function IsAddonWindow(f)
+  for _, name in ipairs(ADDON_BAG_FRAMES) do
+    if f ~= nil and _G[name] == f then return true end
+  end
+  return false
+end
+
 local function BagFrames()
   local out = {}
   for _, name in ipairs(ADDON_BAG_FRAMES) do
@@ -743,15 +829,20 @@ local function BagFrames()
   return out
 end
 
--- Open bag windows that are on screen. A window with no position (bag
--- addons park the game's bags that way) does not count.
+-- Open bag windows. A bag addon's window above counts when it is shown, even
+-- when its position cannot be read (none yet, or a secret value). The game's
+-- own bags count only with a position: bag addons park them shown with none.
 local function OpenBagFrames()
   local out = {}
   for _, f in ipairs(BagFrames()) do
     local ok, vis = pcall(f.IsVisible, f)
     if ok and vis then
-      local okL, l = pcall(f.GetLeft, f)
-      if okL and Num(l) then out[#out + 1] = f end
+      if IsAddonWindow(f) then
+        out[#out + 1] = f
+      else
+        local okL, l = pcall(f.GetLeft, f)
+        if okL and Num(l) then out[#out + 1] = f end
+      end
     end
   end
   return out
@@ -915,6 +1006,8 @@ local function RowTooltip(row)
     end
     if AtMerchant(BP) and e.vendor > 0 then
       tt:AddLine("Click: sell it to this vendor", mu[1], mu[2], mu[3])
+    elseif CanDrop(e) then
+      tt:AddLine("Click: drop it (asks first)", mu[1], mu[2], mu[3])
     else
       tt:AddLine("Click: pick it up, then click the ground to destroy it (the game asks first)", mu[1], mu[2], mu[3], true)
     end
@@ -927,7 +1020,8 @@ end
 
 local function RowLeave(row)
   HideTip(row)
-  BP:Glow(nil)
+  -- While the drop box asks, its slot stays outlined.
+  if not BP.confirm then BP:Glow(nil) end
 end
 
 local function OpenMenu(row)
@@ -943,6 +1037,9 @@ local function OpenMenu(row)
         Print("will not suggest " .. name .. " again. /fah keep " .. name .. " undoes it.")
         BP:Refresh()
       end)
+      if row.kind == "drop" and CanDrop(e) then
+        root:CreateButton("Drop it (asks first)", function() if StillThere(e) then BP:AskDrop(e) end end)
+      end
       root:CreateButton("Pick it up", function() if StillThere(e) then Pickup(e) end end)
       if AtMerchant(BP) and (e.vendor or 0) > 0 then
         root:CreateButton("Sell to this vendor", function() if StillThere(e) then Sell(e) end end)
@@ -979,7 +1076,12 @@ local function RowClick(row, button)
     -- The bags changed since the list was drawn.
   elseif kind == "drop" and AtMerchant(BP) and (e.vendor or 0) > 0 then
     Sell(e)
+  elseif kind == "drop" and CanDrop(e) then
+    -- Only asks: the drop box names the stack, Drop it there destroys it.
+    BP:AskDrop(e)
+    return
   else
+    -- Rare and better, and quest items: the game's own check applies.
     Pickup(e)
   end
   BP:RefreshSoon()
@@ -1096,7 +1198,8 @@ function BP:Build()
   dropHelp:SetAllPoints(self.dropTitle)
   dropHelp:EnableMouse(true)
   SimpleTip(dropHelp, "Worth the least",
-    "Every stack in your bags, cheapest first: the better of what a vendor pays and what it sells for at auction now (after the 5% cut). Drop or sell from the top to lose the least. Your hearthstone, tools, reagents, ammo, keys, and food or potions near your level are never listed.")
+    "Every stack in your bags, cheapest first: the better of what a vendor pays and what it sells for at auction now (after the 5% cut). Drop or sell from the top to lose the least. At a vendor, a click sells the stack if the vendor buys it (you can buy it back). Otherwise a click on a row (or Drop cheapest) asks before it drops; Rare and better items and quest items are only picked up, so the game asks. Your hearthstone, tools, reagents, ammo, keys, and food or potions near your level are never listed.")
+  self.dropHelp = dropHelp
   self.empty = NewFS(F, "GameFontHighlightSmall")
   SetFSColor(self.empty, "muted")
   self.note = NewFS(F, "GameFontHighlightSmall")
@@ -1108,6 +1211,62 @@ function BP:Build()
   SimpleTip(sell, "Sell junk", "Sells your grey items to this vendor (12 at a time; you can buy them back from the vendor).")
   sell:Hide()
   self.sellButton = sell
+
+  local dropB = TextButton(F, "Drop cheapest", W - 2 * PAD, 20)
+  dropB:SetScript("OnClick", function() BP:Refresh() BP:AskDrop(BP:Cheapest()) end)
+  SimpleTip(dropB, "Drop cheapest", "Asks first: shows the stack that goes and what it is worth.")
+  dropB:Hide()
+  self.dropButton = dropB
+
+  -- The drop box: covers the panel while it asks, so nothing else in the
+  -- list can be clicked. Our own frame, not a StaticPopup: those are shared
+  -- with the game, and its delete popups would hide ours.
+  local c = CreateFrame("Frame", "ForeverAHBagConfirm", F)
+  c:SetAllPoints(F)
+  c:SetFrameLevel(min(10000, (F:GetFrameLevel() or 0) + 20))
+  c:EnableMouse(true)
+  local cbg = NewTex(c, "BACKGROUND", 2)
+  cbg:SetAllPoints(c)
+  local bgc = Col("bg")
+  cbg:SetColorTexture(bgc[1], bgc[2], bgc[3], 1)
+  c.head = NewFS(c, "GameFontNormal")
+  c.head:SetPoint("TOPLEFT", c, "TOPLEFT", PAD, -8)
+  c.head:SetText("Drop this for good?")
+  SetFSColor(c.head, "buy")
+  c.icon = NewTex(c, "ARTWORK", 0)
+  c.icon:SetSize(20, 20)
+  c.icon:SetPoint("TOPLEFT", c, "TOPLEFT", PAD, -30)
+  c.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+  c.name = NewFS(c, "GameFontHighlight")
+  c.name:SetPoint("LEFT", c.icon, "RIGHT", 6, 0)
+  c.name:SetPoint("RIGHT", c, "RIGHT", -PAD, 0)
+  c.worth = NewFS(c, "GameFontHighlightSmall")
+  c.worth:SetPoint("TOPLEFT", c.icon, "BOTTOMLEFT", 0, -6)
+  c.worth:SetPoint("RIGHT", c, "RIGHT", -PAD, 0)
+  c.note = NewFS(c, "GameFontHighlightSmall")
+  c.note:SetPoint("TOPLEFT", c.worth, "BOTTOMLEFT", 0, -3)
+  c.note:SetText("There is no undo.")
+  SetFSColor(c.note, "muted")
+  local half = floor((W - 2 * PAD - 6) / 2)
+  local yes = TextButton(c, "Drop it", half, 20, "ForeverAHBagConfirmDrop")
+  yes:SetPoint("TOPLEFT", c.note, "BOTTOMLEFT", 0, -8)
+  SetFSColor(yes.text, "neg")
+  yes:SetScript("OnClick", function() BP:DoDrop() end)
+  local no = TextButton(c, "Cancel", half, 20, "ForeverAHBagConfirmCancel")
+  no:SetPoint("LEFT", yes, "RIGHT", 6, 0)
+  no:SetScript("OnClick", function() BP:CloseConfirm() end)
+  c.yes, c.no = yes, no
+  -- Escape, Cancel, or the panel or the bags closing: nothing is dropped.
+  c:SetScript("OnHide", function() BP:CloseConfirm() end)
+  c:Hide()
+  self.confirmFrame = c
+  F:HookScript("OnHide", function() BP:CloseConfirm() end)
+  local special = _G.UISpecialFrames
+  if type(special) == "table" then
+    local listed = false
+    for _, n in ipairs(special) do if n == "ForeverAHBagConfirm" then listed = true end end
+    if not listed then special[#special + 1] = "ForeverAHBagConfirm" end
+  end
 
   -- The way in: a button in the header of ElvUI's bag window, or a tab beside
   -- the game's bags. A thin gold edge makes it stand out from the dark buttons
@@ -1220,27 +1379,51 @@ local function HeaderSpot(f, k)
   return left - l, top - t, w
 end
 
+local function Strata(f)
+  if type(f.GetFrameStrata) ~= "function" then return nil end
+  local ok, s = pcall(f.GetFrameStrata, f)
+  return ok and Str(s) or nil
+end
+
 -- ElvUI's bag window: in its header, with the panel beside the window's top.
 -- The game's bags: to the left of the leftmost open bag, level with the lowest.
+-- A bag addon's window whose position cannot be read: hung off its bottom
+-- left corner, which needs no numbers.
 function BP:Place()
   if not self.built then return false end
   local UI = _G.UIParent
-  local uiScale = (UI.GetEffectiveScale and UI:GetEffectiveScale()) or 1
+  local uiScale = (UI.GetEffectiveScale and Num(UI:GetEffectiveScale())) or 1
   local frames = OpenBagFrames()
   local left, bottom, strata, leftFrame, leftBottom
   for _, f in ipairs(frames) do
-    local l, b = f:GetLeft(), f:GetBottom()
-    if Num(l) and Num(b) then
-      local s = ((f.GetEffectiveScale and f:GetEffectiveScale()) or 1) / uiScale
+    local okL, l = pcall(f.GetLeft, f)
+    local okB, b = pcall(f.GetBottom, f)
+    l, b = okL and Num(l) or nil, okB and Num(b) or nil
+    if l and b then
+      local es
+      if type(f.GetEffectiveScale) == "function" then
+        local okS, v = pcall(f.GetEffectiveScale, f)
+        es = okS and Num(v) or nil
+      end
+      local s = (es or 1) / uiScale
       l, b = l * s, b * s
       if not left or l < left then
         left, leftFrame, leftBottom = l, f, b
-        strata = f.GetFrameStrata and f:GetFrameStrata() or nil
+        strata = Strata(f)
       end
       if not bottom or b < bottom then bottom = b end
     end
   end
-  if not left then return false end
+  local blind = false
+  if not left then
+    for _, f in ipairs(frames) do
+      if IsAddonWindow(f) then
+        leftFrame, blind, strata = f, true, Strata(f)
+        break
+      end
+    end
+    if not leftFrame then return false end
+  end
   local tab, F = self.tab, self.frame
   local hx, hy, hw
   if #frames == 1 then
@@ -1268,9 +1451,10 @@ function BP:Place()
     tab:SetSize(TAB_W, TAB_H)
     if tab.SetClampedToScreen then tab:SetClampedToScreen(true) end
     for _, o in ipairs({ F, tab }) do
-      if leftBottom <= bottom + 0.5 then
-        -- One bag window (the combined bags) or the leftmost is also the
-        -- lowest: hang off it, so the panel follows when it moves or resizes.
+      if blind or leftBottom <= bottom + 0.5 then
+        -- One bag window (the combined bags), the leftmost is also the
+        -- lowest, or its position cannot be read: hang off it, so the panel
+        -- follows when it moves or resizes.
         o:SetPoint("BOTTOMRIGHT", leftFrame, "BOTTOMLEFT", -4, 0)
       else
         o:SetPoint("BOTTOMRIGHT", UI, "BOTTOMLEFT", left - 4, bottom)
@@ -1358,7 +1542,18 @@ function BP:Layout(scan)
   else
     sell:Hide()
   end
-  F:SetHeight(-y + PAD)
+  -- Away from a vendor: Drop cheapest (it asks first).
+  local drop = self.dropButton
+  if not AtMerchant(self) and self:Cheapest(scan) then
+    drop:ClearAllPoints()
+    drop:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, y - 4)
+    drop:Show()
+    y = y - FOOTER_H
+  else
+    drop:Hide()
+  end
+  self.layoutH = -y + PAD
+  F:SetHeight(self.confirm and max(self.layoutH, CONFIRM_H) or self.layoutH)
 end
 
 function BP:Refresh()
@@ -1375,7 +1570,134 @@ function BP:Refresh()
   self.clear = clear
   self.sub:SetText(sformat("%d of %d slots free", scan.free, scan.slots))
   if scan.free <= 2 then SetFSColor(self.sub, "neg") else SetFSColor(self.sub, "muted") end
+  if self.confirm and not SameStack(self.confirm) then
+    local text = ItemText(self.confirm)
+    self:CloseConfirm()
+    Print(text .. " moved or changed, so nothing was dropped.")
+  end
   if self.frame:IsShown() then self:Layout(scan) end
+end
+
+---------------------------------------------------------------------------
+-- Dropping: the drop box asks, Drop it destroys that one stack
+---------------------------------------------------------------------------
+-- The cheapest stack on the list that the drop box may destroy (a cheaper
+-- Rare item is skipped, so the box names what actually goes).
+function BP:Cheapest(scan)
+  scan = scan or self.scan
+  if type(scan) ~= "table" or type(scan.drop) ~= "table" then return nil end
+  for _, e in ipairs(scan.drop) do
+    if CanDrop(e) then return e end
+  end
+  return nil
+end
+
+function BP:CloseConfirm()
+  self.confirm = nil
+  local c = self.confirmFrame
+  if c and c:IsShown() then c:Hide() end
+  self:Glow(nil)
+  if self.layoutH and self.frame then self.frame:SetHeight(self.layoutH) end
+end
+
+function BP:AskDrop(e)
+  local c, F = self.confirmFrame, self.frame
+  -- Only over the open panel: a menu entry picked after the bags closed does
+  -- nothing, so reopening them shows the list, not a box waiting for a click.
+  if not self.built or not (F and F:IsVisible()) or not CanDrop(e) or not StillThere(e) then return end
+  self.confirm = { bag = e.bag, slot = e.slot, id = e.id, count = e.count, link = e.link, name = e.name,
+                   value = e.value, source = e.source, unsure = e.unsure }
+  self.confirmAt = Now()
+  c.icon:SetTexture(e.icon or QUESTION)
+  local name = e.name or ("Item " .. tostring(e.id))
+  if e.count > 1 then name = name .. " x" .. e.count end
+  c.name:SetText(name)
+  c.name:SetTextColor(QualityRGB(e.quality))
+  c.worth:SetText(WorthText(e))
+  SetFSColor(c.worth, (e.value or 0) >= 10000 and "neg" or "text")
+  -- Over the list, whatever layer the panel was moved to.
+  local strata = Strata(F)
+  if strata then pcall(c.SetFrameStrata, c, strata) end
+  pcall(c.SetFrameLevel, c, min(10000, (F:GetFrameLevel() or 0) + 20))
+  F:SetHeight(max(self.layoutH or 0, CONFIRM_H))
+  c:Show()
+  self:Glow(SlotButton(e.bag, e.slot))
+end
+
+-- Drop it: runs inside that click. DeleteCursorItem needs the click itself
+-- and destroys one item per click, so it is never called from a timer, an
+-- event or a slash command.
+function BP:DoDrop()
+  local t = self.confirm
+  if not t then return end
+  local now = Now()
+  if now and self.confirmAt and now - self.confirmAt < DROP_GUARD then
+    -- Too soon: part of a double-click or a burst of clicks. Each early click
+    -- starts the wait again, so only a click on its own drops.
+    self.confirmAt = now
+    return
+  end
+  local text = ItemText(t)
+  self:CloseConfirm()
+  if CursorHasItem() then
+    Print("put down the item on your cursor first. Nothing was dropped.")
+    return
+  end
+  local e, why = LiveDrop(t)
+  if not e then
+    if why == "unlisted" then
+      Print(text .. " is not on the list any more, so nothing was dropped.")
+    else
+      Print(text .. " moved or changed, so nothing was dropped.")
+    end
+    self:RefreshSoon()
+    return
+  end
+  -- Worth more now than the box said (a live auction price came in while it
+  -- asked), or valued another way: show the new worth and ask again.
+  if (e.value or 0) > (t.value or 0) or e.source ~= t.source then
+    self:AskDrop(e)
+    Print(text .. " is worth " .. ChatMoney(e.value) .. (e.source == "auction" and " at auction" or " at a vendor")
+      .. " now. Nothing was dropped: check the box again.")
+    return
+  end
+  local pick = ContainerFn("PickupContainerItem")
+  if not pick or not pcall(pick, e.bag, e.slot) or not CursorHolds(e) then
+    if CursorHasItem() then ClearCursor() end
+    Print("could not pick up " .. text .. ". Nothing was dropped.")
+    return
+  end
+  local del = _G.DeleteCursorItem
+  if type(del) == "function" then pcall(del) end
+  if CursorHasItem() then
+    -- The game said no: leave it on the cursor so it can be finished by hand.
+    Print("the game did not let Forever AH drop " .. text .. ". It is on your cursor: click the ground to destroy it (the game asks first), or a bag slot to put it back.")
+    return
+  end
+  local p = { bag = e.bag, slot = e.slot, id = e.id, count = e.count, text = text, value = e.value, tries = 0 }
+  self.pendingDrop = p
+  After(0.5, function() BP:CheckDrop(p) end)
+end
+
+-- The server has the last word: say what happened once the slot settles
+-- (while it stays locked, look again, up to 3 more seconds).
+function BP:CheckDrop(p)
+  if type(p) ~= "table" or p.said then return end
+  local info = SlotInfo(p.bag, p.slot)
+  local same = info ~= nil and Num(info.itemID) == p.id and (Num(info.stackCount) or 1) == p.count
+  if same and info.isLocked == true and p.tries < 6 then
+    p.tries = p.tries + 1
+    After(0.5, function() BP:CheckDrop(p) end)
+    return
+  end
+  p.said = true
+  if self.pendingDrop == p then self.pendingDrop = nil end
+  if same then
+    Print(p.text .. " is still in your bags: the game did not destroy it.")
+  else
+    Print("dropped " .. p.text .. " (worth " .. ChatMoney(p.value) .. ").")
+  end
+  self:RefreshSoon()
 end
 
 local function PanelWanted()
@@ -1384,17 +1706,29 @@ local function PanelWanted()
 end
 
 -- Show the tab or the panel while bags are open; hide both when they close.
+-- stats.result says how the last update ended (for /fah bagcheck).
 function BP:Update()
+  local st = self.stats
+  st.ran = st.ran + 1
   if #OpenBagFrames() == 0 then
     if self.built then
       self.frame:Hide()
       self.tab:Hide()
       self.glow:Hide()
     end
+    st.result = "no bag window open"
     return
   end
+  st.result = "could not make the button"
   if not self:Build() then return end
-  self:Place()
+  if not self:Place() then
+    -- Nothing to hang it on: hidden, not left where it was.
+    self.frame:Hide()
+    self.tab:Hide()
+    st.result = "button made, no place for it"
+    return
+  end
+  st.result = "could not fill in the list"
   local open = PanelWanted()
   if open then self.frame:Show() else self.frame:Hide() end
   -- In ElvUI's header the button stays, as the way to close the list too.
@@ -1406,6 +1740,7 @@ function BP:Update()
     self.tab.bg:SetColorTexture(c[1] + 0.05, c[2] + 0.05, c[3] + 0.06, 1)
   end
   self:Refresh()
+  st.result = open and "panel shown" or "button shown"
 end
 
 function BP:Visible()
@@ -1418,11 +1753,12 @@ function BP:Fail(err)
   self.lastError = err
   if self.failSaid then return end
   self.failSaid = true
-  Print("the bag cleanup hit a problem (" .. tostring(err) .. "). /fah bags still lists what to clear.")
+  Print("the bag cleanup hit a problem (" .. tostring(err) .. "). /fah bags still lists what to clear, /fah bagcheck says more.")
 end
 
 local updateToken, refreshToken = 0, 0
 function BP:UpdateSoon()
+  self.stats.asked = self.stats.asked + 1
   updateToken = updateToken + 1
   local tok = updateToken
   After(0, function()
@@ -1448,38 +1784,84 @@ end
 function ns.SetBagPanel(on)
   local st = S()
   if st then st.bagPanel = on and true or false end
-  BP:Update()
+  local ok, err = pcall(BP.Update, BP)
+  if not ok then BP:Fail(err) end
 end
 
-local hooked = setmetatable({}, { __mode = "k" })
+-- How the tab learns that bags opened or closed. Every hook is a post-hook
+-- (nothing of the game's or ElvUI's is replaced); all but the anchor hook
+-- only ask for an update on the next frame.
+local hooked = setmetatable({}, { __mode = "k" })      -- bag window -> OnShow/OnHide script hooks took
+local hookedShow = setmetatable({}, { __mode = "k" })  -- bag window -> { Show = ok, Hide = ok } method hooks
+-- The game's bag functions (keys, the bag bar, other addons call them).
+local TOGGLES = { "ToggleBag", "ToggleBackpack", "ToggleAllBags", "OpenAllBags", "CloseAllBags", "OpenBackpack", "CloseBackpack" }
+
+local function Soon() BP:UpdateSoon() end
+
+-- Opening or closing bags by key, button or a bag addon also looks for a bag
+-- window made after we last looked (ElvUI builds its own once you log in).
+local function Toggled()
+  local ok, err = pcall(BP.HookBagFrames)
+  if not ok then BP:Fail(err) end
+  BP:UpdateSoon()
+end
+
+-- ElvUI also opens and closes its bags by itself (at a vendor, the auction
+-- house, a trade) without the game's bag functions: post-hook its two.
+local function HookElvUI(hsf)
+  local hk = BP.stats.elv
+  if hk.OpenBags and hk.CloseAllBags then return end
+  local eng = _G.ElvUI
+  local E = type(eng) == "table" and eng[1] or nil
+  if type(E) ~= "table" then return end
+  local B
+  if type(E.GetModule) == "function" then
+    local ok, m = pcall(E.GetModule, E, "Bags", true)
+    if ok and type(m) == "table" then B = m end
+  end
+  if not B then return end
+  for _, fn in ipairs({ "OpenBags", "CloseAllBags" }) do
+    if not hk[fn] and type(B[fn]) == "function" then
+      hk[fn] = pcall(hsf, B, fn, Toggled)
+    end
+  end
+end
+
 local function HookBagFrames()
+  local hsf = type(_G.hooksecurefunc) == "function" and _G.hooksecurefunc or nil
   for _, f in ipairs(BagFrames()) do
     if not hooked[f] and type(f.HookScript) == "function" then
-      local ok = pcall(f.HookScript, f, "OnShow", function() BP:UpdateSoon() end)
-      local ok2 = pcall(f.HookScript, f, "OnHide", function() BP:UpdateSoon() end)
+      local ok = pcall(f.HookScript, f, "OnShow", Soon)
+      local ok2 = pcall(f.HookScript, f, "OnHide", Soon)
       pcall(f.HookScript, f, "OnDragStop", function() if BP:Visible() then BP:UpdateSoon() end end)
       hooked[f] = ok and ok2
     end
-  end
-  if type(_G.hooksecurefunc) ~= "function" then return end
-  if not BP.hookedAnchors and type(_G.UpdateContainerFrameAnchors) == "function" then
-    BP.hookedAnchors = pcall(_G.hooksecurefunc, "UpdateContainerFrameAnchors", function()
-      if BP:Visible() then BP:Place() end
-    end)
-  end
-  -- Opening or closing bags by key or button: catches a bag window that
-  -- was made after we looked (ElvUI builds its own once you log in).
-  if not BP.hookedToggles then
-    BP.hookedToggles = true
-    for _, fn in ipairs({ "ToggleBackpack", "ToggleAllBags", "OpenAllBags", "CloseAllBags", "OpenBackpack", "CloseBackpack" }) do
-      if type(_G[fn]) == "function" then
-        pcall(_G.hooksecurefunc, fn, function()
-          BP.HookBagFrames()
-          BP:UpdateSoon()
-        end)
-      end
+    -- Hooks on the frame's Show and Hide stay when a bag addon clears its
+    -- scripts (and our script hooks with them, as ElvUI does to the game's
+    -- bags).
+    local h = hookedShow[f]
+    if hsf and not (h and h.Show and h.Hide) then
+      h = h or {}
+      hookedShow[f] = h
+      if not h.Show then h.Show = pcall(hsf, f, "Show", Soon) end
+      if not h.Hide then h.Hide = pcall(hsf, f, "Hide", Soon) end
     end
   end
+  if not hsf then return end
+  if not BP.hookedAnchors and type(_G.UpdateContainerFrameAnchors) == "function" then
+    BP.hookedAnchors = pcall(hsf, "UpdateContainerFrameAnchors", function()
+      if BP:Visible() then pcall(BP.Place, BP) end
+    end)
+  end
+  -- Each hook is tried until it takes: a function another addon makes
+  -- later is still hooked, and none is hooked twice.
+  local tg = BP.stats.toggles
+  for _, fn in ipairs(TOGGLES) do
+    if not tg[fn] and type(_G[fn]) == "function" then
+      tg[fn] = pcall(hsf, fn, Toggled)
+    end
+  end
+  HookElvUI(hsf)
 end
 BP.HookBagFrames = HookBagFrames
 pcall(HookBagFrames)
@@ -1495,6 +1877,8 @@ end
 
 local function Changed() BP:RefreshSoon() end
 
+-- By login ElvUI has built its bag window and set up its bag module: both
+-- get hooked here (and again on entering the world, in case either is late).
 local handlers = {
   PLAYER_LOGIN = function() HookBagFrames() BP:UpdateSoon() end,
   PLAYER_ENTERING_WORLD = function() HookBagFrames() end,
@@ -1525,7 +1909,7 @@ if type(_G.CreateFrame) == "function" then
 end
 
 ---------------------------------------------------------------------------
--- Slash commands: /fah bags, /fah keep
+-- Slash commands: /fah bags, /fah keep, /fah bagcheck
 ---------------------------------------------------------------------------
 local function ListText(list, limit, fn)
   local parts = {}
@@ -1570,6 +1954,156 @@ local function Report()
   return s
 end
 ns.BagReport = Report
+
+---------------------------------------------------------------------------
+-- /fah bagcheck: what the bag cleanup sees, in one screenshot
+---------------------------------------------------------------------------
+local function YN(v) return v and "yes" or "no" end
+
+local function FrameName(f)
+  if type(f) ~= "table" or type(f.GetName) ~= "function" then return "nothing" end
+  local ok, n = pcall(f.GetName, f)
+  return ok and Str(n) or "a frame with no name"
+end
+
+-- Where a frame is: how far across and up the screen its bottom left corner
+-- sits, and its size in screen pixels.
+local function Where(f)
+  if type(f) ~= "table" or type(f.GetRect) ~= "function" then return "no position" end
+  local ok, l, b, w, h = pcall(f.GetRect, f)
+  if not ok then return "no position" end
+  if IsSecret(l) or IsSecret(b) or IsSecret(w) or IsSecret(h) then return "secret position" end
+  l, b, w, h = Num(l), Num(b), Num(w), Num(h)
+  if not (l and b and w and h) then return "no position" end
+  local UI = _G.UIParent
+  local okS, s = pcall(f.GetEffectiveScale, f)
+  s = okS and Num(s) or 1
+  local us = Num(UI:GetEffectiveScale()) or 1
+  local sw, sh = (Num(UI:GetWidth()) or 0) * us, (Num(UI:GetHeight()) or 0) * us
+  if sw <= 0 or sh <= 0 then return "no position" end
+  local px = 1
+  if type(_G.GetPhysicalScreenSize) == "function" then
+    local okP, _, ph = pcall(_G.GetPhysicalScreenSize)
+    if okP and Num(ph) and ph > 0 then px = ph / 768 end
+  end
+  return sformat("%d%% from left, %d%% up, %dx%d px", floor(l * s / sw * 100 + 0.5), floor(b * s / sh * 100 + 0.5),
+    floor(w * s * px + 0.5), floor(h * s * px + 0.5))
+end
+
+local function SecretNote(f)
+  if type(_G.issecretvalue) ~= "function" or type(f) ~= "table" or type(f.HasSecretValues) ~= "function" then return "" end
+  local ok, r = pcall(f.HasSecretValues, f)
+  if ok and r == true then return ", secret values yes" end
+  return ""
+end
+
+local function ScriptErrors()
+  local CV = _G.C_CVar
+  local f = (type(CV) == "table" and type(CV.GetCVar) == "function") and CV.GetCVar or _G.GetCVar
+  if type(f) ~= "function" then return "unknown" end
+  local ok, v = pcall(f, "scriptErrors")
+  if not ok or v == nil then return "unknown" end
+  return (tostring(v) == "1") and "on" or "off"
+end
+
+-- The button turns gold and comes to the front for a while, so it can be
+-- found on a screenshot. Its layer and colour come back after.
+function BP:Flash(sec)
+  local tab = self.tab
+  if not tab then return end
+  local strata = Strata(tab)
+  pcall(tab.SetFrameStrata, tab, "TOOLTIP")
+  local g = Col("buy")
+  tab.bg:SetColorTexture(g[1], g[2], g[3], 1)
+  self.flashToken = (self.flashToken or 0) + 1
+  local tok = self.flashToken
+  After(sec, function()
+    if BP.flashToken ~= tok then return end
+    if strata then pcall(tab.SetFrameStrata, tab, strata) end
+    BP:UpdateSoon()
+  end)
+end
+
+local function BagCheck()
+  local st = BP.stats
+  Print("bag check, Bags.lua " .. BAGS_BUILD)
+  -- 1. ElvUI's bag window
+  local elv = _G.ElvUI_ContainerFrame
+  if type(elv) == "table" and type(elv.IsVisible) == "function" then
+    local okV, vis = pcall(elv.IsVisible, elv)
+    local hs = hookedShow[elv]
+    Print(sformat("1. ElvUI bags: open %s, %s, %s, hooked %s%s", YN(okV and vis), Where(elv), Strata(elv) or "no layer",
+      YN(hooked[elv] or (hs and hs.Show and hs.Hide)), SecretNote(elv)))
+  else
+    Print("1. ElvUI bags: not found" .. (type(_G.ElvUI) == "table" and "" or " (ElvUI is not loaded)"))
+  end
+  -- 2. The game's own bag windows that are shown
+  local shown = {}
+  for _, f in ipairs(BagFrames()) do
+    if not IsAddonWindow(f) then
+      local ok, vis = pcall(f.IsVisible, f)
+      if ok and vis then shown[#shown + 1] = FrameName(f) .. " " .. Where(f) end
+    end
+  end
+  local more = #shown > 4 and sformat(" and %d more", #shown - 4) or ""
+  while #shown > 4 do shown[#shown] = nil end
+  Print("2. game bag windows open: " .. (#shown > 0 and tconcat(shown, ", ") .. more or "none"))
+  -- 3. What the button hangs on
+  local names = {}
+  for _, f in ipairs(OpenBagFrames()) do names[#names + 1] = FrameName(f) end
+  Print("3. windows the button uses: " .. (#names > 0 and tconcat(names, ", ")
+    or "none (open your bags, then type /fah bagcheck again)"))
+  -- 4. Hooks
+  local parts = {}
+  for _, fn in ipairs(TOGGLES) do
+    local v = st.toggles[fn]
+    parts[#parts + 1] = fn .. " " .. (v == true and "yes" or (v == false and "failed" or "no"))
+  end
+  local elvHook = "not loaded"
+  if type(_G.ElvUI) == "table" then elvHook = YN(st.elv.OpenBags and st.elv.CloseAllBags) end
+  parts[#parts + 1] = "ElvUI " .. elvHook
+  Print("4. key hooks: " .. tconcat(parts, ", "))
+  -- 5. Updates
+  Print(sformat("5. button updates asked %d, run %d, last: %s", st.asked, st.ran, st.result))
+  -- 6. The button
+  local tab = BP.tab
+  if not BP.built or type(tab) ~= "table" then
+    Print("6. button: not made yet")
+  else
+    local okP, _, rel = pcall(tab.GetPoint, tab, 1)
+    local okL, level = pcall(tab.GetFrameLevel, tab)
+    Print(sformat("6. button: shown %s, on screen %s, %s, %s level %s, hangs on %s%s%s", YN(tab:IsShown()), YN(tab:IsVisible()),
+      Where(tab), Strata(tab) or "no layer", tostring(okL and Num(level) or "?"), okP and rel and FrameName(rel) or "nothing",
+      BP.inHeader and " (in its header)" or "", SecretNote(tab)))
+  end
+  -- 7. The last problem
+  Print("7. last error: " .. (BP.lastError ~= nil and tostring(BP.lastError) or "none"))
+  -- 8. The scan
+  local okS, s = pcall(ns.BagScan)
+  if okS and type(s) == "table" then
+    Print(sformat("8. scan: %d of %d slots free, %d to clear, %d cheap stack%s", s.free, s.slots,
+      #s.merge + #s.quest + #s.junk, #s.drop, #s.drop == 1 and "" or "s"))
+  else
+    Print("8. scan error: " .. tostring(s))
+  end
+  -- 9. Whether the game shows Lua errors
+  Print("9. Lua errors on screen: " .. ScriptErrors())
+  -- 10. One update now
+  local okU, err = pcall(BP.Update, BP)
+  if not okU then BP:Fail(err) end
+  Print("10. button update now: " .. (okU and st.result or ("error: " .. tostring(err))))
+  if BP.built and BP.tab:IsShown() then
+    BP:Flash(10)
+    Print("The Bag cleanup button flashes gold for 10 seconds. Take a screenshot of your whole screen.")
+  elseif BP.built and BP.frame:IsShown() then
+    Print("The cleanup panel is open beside your bags. Take a screenshot of your whole screen.")
+  elseif #OpenBagFrames() == 0 then
+    Print("Open your bags, then type /fah bagcheck again and take a screenshot.")
+  else
+    Print("The Bag cleanup button did not show. Take a screenshot of these lines.")
+  end
+end
+ns.BagCheck = BagCheck
 
 local function KeepCommand(rest)
   local keep = KeepList()
@@ -1628,8 +2162,14 @@ function ns.HandleSlash(msg)
   local cmd, rest = m:match("^(%S*)%s*(.-)$")
   cmd = (cmd or ""):lower()
   rest = rest or ""
-  if cmd == "bags" or cmd == "bag" or cmd == "cleanup" or cmd == "clean" then
-    Report()
+  local bagsCmd = cmd == "bags" or cmd == "bag" or cmd == "cleanup" or cmd == "clean"
+  if cmd == "bagcheck" or (bagsCmd and rest:lower() == "check") then
+    BagCheck()
+    return
+  elseif bagsCmd then
+    -- Said in chat when the scan breaks, instead of printing nothing.
+    local ok, err = pcall(Report)
+    if not ok then Print("bag scan error: " .. tostring(err)) end
     return
   elseif cmd == "keep" then
     KeepCommand(rest)
@@ -1639,5 +2179,6 @@ function ns.HandleSlash(msg)
   if cmd == "help" or cmd == "?" then
     Print("/fah bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
     Print("/fah keep Item Name : never suggest dropping an item (again to undo; no name lists them)")
+    Print("/fah bagcheck : what the bag cleanup sees (type it with your bags open if the Bag cleanup button is missing)")
   end
 end
