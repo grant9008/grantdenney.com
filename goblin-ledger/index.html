@@ -16,11 +16,22 @@
 
   Any photo size works: each image scales to its column and keeps its own
   shape. Optional, for a load without a jump: set the width/height on the
-  matching <img> below to the new photo's pixel size. The alt text already
-  describes the real screenshots.
+  matching <img> below to the new photo's pixel size. The alt text describes
+  the real screenshots, not these placeholders: when the photos land, check
+  each alt text against its photo (bags.png assumes the panel away from a
+  vendor, with Drop cheapest; at a vendor it shows Sell junk instead). Do
+  not send the link while placeholders are still in place.
 
   Links that only work after the rename step: prices/ (the price website,
   moved from /wow/) and the GoblinLedger.zip release download.
+
+  Check against the final friend build before sending the link:
+  - Install-Goblin-Ledger.bat: the page says it asks for the game folder
+    when it cannot find it, and that the zip and unzipped folder can be
+    deleted after installing (so the price updater must live outside that
+    folder). Re-read Install and "Removing it" against the final .bat files.
+  - Questie: Bag cleanup reads your own quest log today. Say it also checks
+    Questie's quest database only once that is in the addon and tested.
 -->
 <html lang="en">
 <head>
@@ -239,7 +250,9 @@ h1 {
 /* ---- sections ---- */
 .section { padding: 64px 0; border-bottom: 1px solid var(--hair); }
 @media (min-width: 920px) { .section { padding: 88px 0; } }
-.section[id] { scroll-margin-top: 64px; }
+/* Clear the sticky top bar (60px + border) when a link jumps here,
+   including Skip to content. */
+main, .section[id] { scroll-margin-top: 64px; }
 .eyebrow {
   display: inline-block; margin: 0 0 10px; padding-left: 10px; border-left: 3px solid var(--accent-2);
   color: var(--structural); font-size: 12.5px; font-weight: 700; letter-spacing: 0.8px; line-height: 1.3;
@@ -350,10 +363,10 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 }
 </style>
 </head>
-<body>
+<body id="top">
 <a class="skip" href="#main">Skip to content</a>
 
-<header class="top" id="top">
+<header class="top">
   <div class="wrap top-in">
     <a class="brand" href="#top">
       <svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
@@ -448,16 +461,17 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <p>Bags full again? A gold <b>Bag cleanup</b> button sits on your bag window, on the game's own bags or on ElvUI's. Click it to see:</p>
         <ul class="ticks">
           <li><b>Worth the least</b>: your stacks, cheapest first, at the better of the vendor price and the auction price</li>
-          <li><b>Old quest items</b> you no longer need. With Questie installed, it also checks Questie's quest database.</li>
+          <li><b>Old quest items</b>: quest items no quest in your log asks for, and items that start a quest you already finished</li>
           <li><b>Merge stacks</b>: partial stacks that fit in one slot</li>
           <li><b>Sell junk</b>: at a vendor, sells your grey items for you</li>
+          <li><b>Sell a stack</b>: at a vendor, click a stack under Worth the least to sell it right away (you can buy it back from the vendor)</li>
           <li><b>Drop cheapest</b>: asks first, naming the stack and what it is worth</li>
         </ul>
         <p class="note">Nothing is sold or destroyed without your click, and Rare or better items always go through the game's own check. Your hearthstone, tools, reagents, ammo and keys never show up on the list.</p>
       </div>
       <figure class="shot mid">
         <img src="img/bags.png" width="800" height="600" loading="lazy" decoding="async"
-             alt="Screenshot of the bag window with the gold Bag cleanup button and its panel: stacks to merge, old quest items and the stacks worth the least, with Sell junk and Drop cheapest buttons.">
+             alt="Screenshot of the bag window with the gold Bag cleanup button and its panel: stacks to merge, old quest items and the stacks worth the least, with the Drop cheapest button.">
       </figure>
     </div>
 
@@ -488,7 +502,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           <li><b>Flip Finder</b> with deals on greens, blues and epics</li>
           <li><b>Favorites</b> lists for the items you care about</li>
         </ul>
-        <p class="note">Prices come from Blizzard's auction house data for the Alliance PvP auction house, refreshed about every hour.</p>
+        <p class="note">Prices come from Blizzard's auction house data for the Alliance auction house on the US PvP realms, refreshed about every hour.</p>
       </div>
       <figure class="shot">
         <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async"
@@ -508,11 +522,21 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
     <ol class="steps">
       <li>
         <h3>Download the zip</h3>
-        <p>Grab <b>GoblinLedger.zip</b>. If your browser asks whether to keep the file, choose <span class="ui">Keep</span>.</p>
         <p><a class="btn btn-gold btn-sm" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
           Download GoblinLedger.zip
         </a></p>
+        <p><b>Your browser may check with you first.</b> The file is new, so not many people have downloaded it yet. You may see:</p>
+        <div class="warns">
+          <div class="warn ss">
+            <p class="wt">Edge: "GoblinLedger.zip isn't commonly downloaded"</p>
+            <p>Point at the download, click the three dots <span class="ui">...</span> and choose <span class="ui">Keep</span>. In the box that opens, click <span class="ui">Show more</span>, then <span class="ui">Keep anyway</span>.</p>
+          </div>
+          <div class="warn of">
+            <p class="wt">Chrome: asks if you want to keep the file</p>
+            <p>Choose <span class="ui">Keep</span>.</p>
+          </div>
+        </div>
       </li>
 
       <li>
@@ -529,13 +553,14 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 
       <li>
         <h3>Run the installer</h3>
-        <p>Double-click <b>Install-Goblin-Ledger.bat</b>. A black window opens and does the rest:</p>
+        <p>Double-click <b>Install-Goblin-Ledger.bat</b>. A black window opens and sets everything up:</p>
         <ul class="ticks">
           <li>finds WoW Forever in <code>C:\Program Files (x86)\World of Warcraft\_forever_</code>, or asks you where it is if your game is somewhere else</li>
           <li>copies the addon into <code>Interface\AddOns\GoblinLedger</code></li>
           <li>downloads the latest prices</li>
-          <li>adds a hidden Windows task called <b>Goblin Ledger Prices</b> that refreshes the prices every 30 minutes while you are logged in to Windows</li>
+          <li>adds a Windows task called <b>Goblin Ledger Prices</b> that quietly refreshes the prices every 30 minutes while you are logged in to Windows (no window pops up, and Uninstall-Goblin-Ledger.bat removes it)</li>
         </ul>
+        <p>If it asks whether to update prices automatically, press <span class="ui">Y</span>.</p>
         <p><b>Windows may warn you first.</b> It does that for files from the internet that are not from a big-name publisher. You may see one or both of these:</p>
         <div class="warns">
           <div class="warn ss">
@@ -548,13 +573,14 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           </div>
         </div>
         <p class="note">Rather skip the warnings? Before you unzip, right-click GoblinLedger.zip, choose Properties, tick <b>Unblock</b> at the bottom and click OK. Curious what the installer does? It is plain text: right-click it and choose Edit (on Windows 11, Show more options first) to read every line in Notepad.</p>
-        <p class="note">Game in another folder? In the Battle.net app, click the gear next to Play and choose Show in Explorer. Open the <code>_forever_</code> folder, click the address bar at the top, copy the path and paste it into the installer.</p>
+        <p class="note">Game in another folder? In the Battle.net app, click the gear next to Play and choose Show in Explorer. Go into the <code>_forever_</code> folder if you are not already in it. Click the address bar at the top and press Ctrl+C. Then click the installer window, press Ctrl+V (or right-click) and press Enter.</p>
       </li>
 
       <li>
         <h3>Start the game</h3>
         <p>Start WoW Forever. Was it already open? Close it fully and start it again: the game only notices a new addon when it starts.</p>
-        <p>Hover something you could sell, like cloth or ore. See the Goblin Ledger lines? You are done. Type <code>/gl</code> for the list of commands.</p>
+        <p>Hover something you could sell, like cloth or ore. See the Goblin Ledger lines? You are done. Type <code>/gl help</code> for the list of commands.</p>
+        <p class="note">You can delete the zip and the unzipped folder now. Need the installer or the uninstaller again later? Just download the zip again.</p>
       </li>
     </ol>
   </div>
@@ -573,8 +599,8 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <p>Prices load when you log in. Type /reload to pick up fresh ones without logging out.</p>
       </div>
       <div class="card">
-        <p class="k"><code>/gl</code></p>
-        <p>Help: shows every command in one list.</p>
+        <p class="k"><code>/gl help</code></p>
+        <p>Shows every command in one list.</p>
       </div>
       <div class="card">
         <p class="k"><code>/gl bags</code></p>
@@ -627,7 +653,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
       </div>
       <div class="card">
         <h3>Removing it</h3>
-        <p>Double-click <b>Uninstall-Goblin-Ledger.bat</b>, in the folder you unzipped. It removes the addon and the Goblin Ledger Prices task.</p>
+        <p>Double-click <b>Uninstall-Goblin-Ledger.bat</b>, in the folder you unzipped. Deleted that folder? Download the zip again and unzip it. If it asks you to confirm, press <span class="ui">Y</span>. It removes the addon and the Goblin Ledger Prices task.</p>
         <p class="note">By hand: delete the <code>GoblinLedger</code> folder from your game's <code>Interface\AddOns</code> folder, then delete the Goblin Ledger Prices task in Task Scheduler.</p>
       </div>
     </div>
@@ -644,13 +670,13 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
     <div class="faq">
       <div class="card">
         <h3>Which realms does it cover?</h3>
-        <p>Alliance on the PvP realms. That is the one auction house the prices come from today.</p>
-        <p>It installs on any character, but on Horde, PvE or Hardcore your auction house is a different market, so the prices will not match yours. On Horde and Hardcore the tooltip leaves out the Auction it / Vendor it advice for that reason.</p>
+        <p>Alliance on the US (North America) PvP realms. That is the one auction house the prices come from today.</p>
+        <p>It installs on any character, but on Horde, PvE, Hardcore or another region your auction house is a different market, so the prices will not match yours. On Horde and Hardcore the tooltip leaves out the Auction it / Vendor it advice for that reason.</p>
       </div>
 
       <div class="card">
         <h3>Is it safe?</h3>
-        <p>Yes. The addon only shows information. It never buys, bids, posts, cancels or deletes anything without your click: the price buttons just fill in the price box, and dropping an item always asks first.</p>
+        <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Suggested buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
         <p>The installer is a plain text file you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and adds one Windows task that keeps that file fresh. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
       </div>
 
@@ -664,7 +690,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <ul class="ticks">
           <li><b>ElvUI</b>: yes. The Bag cleanup button shows up in ElvUI's bag window.</li>
           <li><b>Auctionator</b>: yes. The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab.</li>
-          <li><b>Questie</b>: yes. Bag cleanup checks Questie's quest database to spot old quest items.</li>
+          <li><b>Questie</b>: yes, they run side by side. Bag cleanup reads your own quest log to spot old quest items.</li>
         </ul>
         <p>Another bag addon that hides the game's bags? Type <code>/gl bags</code> to get the cleanup list in chat.</p>
       </div>
@@ -688,7 +714,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           <li>The addon says there is no price data yet? Run <b>Install-Goblin-Ledger.bat</b> again, then type <code>/reload</code>.</li>
           <li>The installer said Windows would not let it copy into the game folder? Right-click <b>Install-Goblin-Ledger.bat</b> and choose <b>Run as administrator</b>.</li>
         </ol>
-        <p class="note">Some items never show a price: soulbound and quest items cannot go on the auction house, and items nobody has listed lately say so in the tooltip.</p>
+        <p class="note">Soulbound and most quest items cannot go on the auction house, so they show no price, or a price without the Auction it / Vendor it call. Items nobody has listed lately say "no recent listings".</p>
         <p class="note">Still stuck? Send a screenshot of the installer window to whoever sent you this page.</p>
       </div>
     </div>
