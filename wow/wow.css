@@ -4,5 +4,12 @@
   color: var(--text-muted, #8A8274); text-align: center; }
 #wowDataStatus { font-weight: 700; }
 #wowDataStatus.stale { color: var(--negative, #e05555); }
+#wowHistoryStatus[hidden] { display: none; }
 /* WoW prices carry unit letters ("16s 82c"), so keep each one on one line. */
 .wl-item-price, .ins-val, .ins-price, .fc-pval, .live-val, .pv-num, #tickerLivePrice, .res-profit { white-space: nowrap; }
+/* Thin listings: a small muted chip when only 1 or 2 auctions sit behind a price. */
+.wow-thin-tag { display: inline-flex; align-items: center; flex: 0 0 auto; padding: 1px 6px; border-radius: 4px;
+  border: 1px solid var(--border-light, #3C352B); color: var(--text-muted, #8A8274);
+  font-size: 10px; font-weight: 700; line-height: 1.4; white-space: nowrap; cursor: help; }
+.fc-main .wow-thin-tag { margin-top: 3px; }
+.wow-thin-note { grid-column: 1 / -1; margin: 6px 0 2px; font-size: 11px; line-height: 1.4; color: var(--text-muted, #8A8274); }

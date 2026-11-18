@@ -1,21 +1,22 @@
 """
-Hourly WoW Forever auction-house collector for grantdenney.com/wow.
+WoW Forever auction-house collector for grantdenney.com/wow.
 
 Pulls one auction house from Blizzard's API (namespace dynamic-forever-<region>)
 and writes files shaped exactly like the OSRS Wiki price API, so the PocketGE
 app on /wow/ can read them with almost no changes:
 
-  mapping.json   items: id, name, icon, vendor price ("highalch"), quality
-  latest.json    {data: {id: {high, highTime, low, lowTime}}}
+  mapping.json   items: id, name ("" when Blizzard has no name for it yet),
+                 icon, vendor price ("highalch"), quality
+  latest.json    {data: {id: {high, highTime, low, lowTime, n}}}
                  low  = cheapest buyout per unit (what you can buy at right now)
-                 high = market value: mean of the cheapest 15-30% of units,
-                        outliers cut (TSM DBMarket style), i.e. where it resells
+                 high = market value (see market_value), i.e. where it resells
+                 n    = how many separate auctions are listed right now
   24h.json       {data: {id: {avgHighPrice, highPriceVolume, avgLowPrice, lowPriceVolume}}}
   volumes.json   {timestamp, data: {id: estimated units sold in 24h}}
   hist/<id>.json {h: [[t, low, high, listed, sold], ...] hourly, last 35 days,
                   d: [[t, low, high, listed, sold], ...] daily, kept forever}
   houses.json    every house the API lists, with auction counts (for checking IDs)
-  status.json    when this ran and what it saw
+  status.json    when Blizzard made the data, when this ran and what it saw
   ForeverAH_Data.lua
                  the same prices packed for the Forever AH in-game addon
                  (wow-addon/ForeverAH). Addons cannot use the internet, so
@@ -23,10 +24,25 @@ app on /wow/ can read them with almost no changes:
                  folder as Data.lua. Format: see write_addon_data below.
 
 "Sold" is an estimate. The API only shows what is listed, never sales. An
-auction that was listed with hours left and is gone an hour later was most
-likely bought (it could also have been cancelled), and a stack whose quantity
-went down sold the difference. Auctions that were about to expire anyway are
-not counted. That is the same idea TSM and Saddlebag use.
+auction that was listed with hours left and is gone at the next snapshot was
+most likely bought (it could also have been cancelled), and a stack whose
+quantity went down sold the difference. Auctions that were about to expire
+anyway are not counted. That is the same idea TSM and Saddlebag use. The
+estimate is skipped (and that time does not count as measured) when the
+previous snapshot is too old, because then vanished auctions say nothing
+reliable about sales.
+
+A download that looks incomplete (a list failed, or the auction count fell
+sharply) is not published at all: the next run downloads it again. Only when
+the next download looks the same is it used, and then neither it nor the
+comparison after it gets a sales estimate.
+
+status.json salesHours (also in the addon file) is how many hours of sales
+the last 24 hourly slots' estimates cover, from the minutes each comparison
+really spans (salesMinutes), so readers can scale sold24 up to a full day.
+
+Times: "updated" everywhere is when Blizzard made the snapshot (the
+Last-Modified header), "fetched" is when this script ran.
 
 Prices are in copper (1g = 10000c), like the game.
 
@@ -35,16 +51,22 @@ Credentials: BNET_CLIENT_ID / BNET_CLIENT_SECRET env vars, or the file
 Setup-WoW-Key.bat writes.
 
 Usage: python fetch_ah.py <output dir>
+In GitHub Actions it writes changed=true or changed=false to $GITHUB_OUTPUT,
+so the workflow only publishes when Blizzard had new data (or when a held back
+download has to be remembered: then only state.json changed).
 """
 import base64
 import concurrent.futures as cf
+import email.utils
 import json
 import os
+import re
 import sys
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import timezone
 
 REGION = os.environ.get("WOW_REGION", "us").lower()
 HOUSE = int(os.environ.get("WOW_HOUSE", "110"))   # Alliance AH, PvP ruleset (see houses.json)
@@ -54,6 +76,14 @@ DYN = f"dynamic-forever-{REGION}"
 STATIC_NS = [f"static-forever-{REGION}", f"static-classic1x-{REGION}", f"static-classic-{REGION}"]
 HOURLY_KEEP = 35 * 24
 SOLD_TIME_LEFT = {"LONG", "VERY_LONG"}   # gone before it could have expired => count as sold
+SOLD_MAX_GAP = 90 * 60     # older previous snapshot: vanished auctions may just have expired
+SOLD_MAX_DROP = 0.30       # auction count fell more than this: probably an incomplete download
+SOLD_DROP_MIN = 100        # per-endpoint drop check only for endpoints this big
+THIN_UNITS = 10            # fewer units listed than this: market value is the second cheapest unit
+UNKNOWN_RETRY_SECS = 6 * 3600   # look an unnamed item up again at most this often
+UNKNOWN_RETRY_MAX = 300         # and at most this many of them per run
+LOOKUP_THREADS = 12
+UNKNOWN_NAME = re.compile(r"^Item \d+$")   # placeholder names written by older versions
 ADDON_FILE = "ForeverAH_Data.lua"
 ADDON_HEADER = "-- ForeverAH price data. Generated by grantdenney.com/wow. Do not edit."
 ADDON_HOURS = 168    # hourly points in the addon file (1 week)
@@ -66,7 +96,7 @@ ADDON_HARD_MAX = 90 * 1024 * 1024   # never write more (GitHub refuses files ove
 RULESET_NAMES = {1: "PvP"}
 
 
-# ── HTTP ─────────────────────────────────────────────────────────────────────
+# -- HTTP ---------------------------------------------------------------------
 def creds():
     cid, sec = os.environ.get("BNET_CLIENT_ID"), os.environ.get("BNET_CLIENT_SECRET")
     if cid and sec:
@@ -118,6 +148,39 @@ def api(path, ns, tries=4):
             raise
 
 
+def header(hdr, name):
+    """A response header, whatever its capitalisation."""
+    low = name.lower()
+    for k, v in (hdr or {}).items():
+        if str(k).lower() == low:
+            return v
+    return ""
+
+
+def parse_http_date(s):
+    """'Tue, 17 Nov 2026 22:25:03 GMT' -> epoch seconds, or None if it is not a date."""
+    if not s:
+        return None
+    try:
+        dt = email.utils.parsedate_to_datetime(str(s))
+    except (TypeError, ValueError, IndexError, OverflowError):
+        return None
+    if dt is None:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return int(dt.timestamp())
+
+
+def tell_workflow(changed):
+    """GitHub Actions: changed=true/false for the publish step. Does nothing elsewhere."""
+    path = os.environ.get("GITHUB_OUTPUT")
+    if not path:
+        return
+    with open(path, "a", encoding="utf-8") as fh:
+        fh.write("changed=%s\n" % ("true" if changed else "false"))
+
+
 def load(path, default):
     try:
         with open(path, encoding="utf-8") as fh:
@@ -134,20 +197,67 @@ def save(path, obj):
     os.replace(tmp, path)
 
 
-# ── pricing ──────────────────────────────────────────────────────────────────
+# -- pricing ------------------------------------------------------------------
+def copper(v):
+    """A computed price -> whole copper, rounded half up, never below 1c."""
+    return max(1, int(v + 0.5))
+
+
+def _trim(units):
+    """Drops units more than 1.5 standard deviations from the quantity
+    weighted mean (a lone cheap or silly listing at either end). Keeps order."""
+    n = sum(q for _, q in units)
+    mean = sum(p * q for p, q in units) / n
+    sd = (sum(q * (p - mean) ** 2 for p, q in units) / n) ** 0.5
+    if sd > 0:
+        kept = [(p, q) for p, q in units if abs(p - mean) <= 1.5 * sd]
+        if kept:
+            return kept, mean
+    return list(units), mean
+
+
+def _nth(units, k):
+    """The price of the k-th unit (0 = the cheapest) of sorted (price, qty)."""
+    acc = 0
+    for p, q in units:
+        acc += q
+        if k < acc:
+            return p
+    return units[-1][0]
+
+
 def market_value(units):
-    """units: sorted list of (unit_price, qty). TSM-DBMarket-like:
+    """units: list of (unit_price, qty) sorted by price. Prices may have
+    fractions of a copper (a stack of 200 for 80c is 0.4c each); they are only
+    rounded at the end, and the result is never below 1c.
+
+    Deep markets (THIN_UNITS units or more), TSM-DBMarket-like:
       1. always take the cheapest 15% of units (at least the cheapest 1),
       2. keep going up to 30% while the price does not jump more than 20%
          over the previous listing,
       3. drop units more than 1.5 standard deviations from the mean of that
          sample (this removes a lone cheap or silly listing at either end),
       4. return the quantity-weighted mean of what is left.
-    One troll listing at 1c in front of a deep stack no longer drags the
-    market value down to 1c."""
+    One troll listing at 1c in front of a deep stack does not drag the market
+    value down to 1c.
+
+    Thin markets (fewer than THIN_UNITS units): step 1 would be just the
+    single cheapest unit, so instead the market value is the middle one of
+    the cheapest 3 units, that is the second cheapest unit (with only 2 units
+    the cheaper one, with 1 that one). It is always a price someone really
+    listed at, it stays with the cheap end of the list where buyers actually
+    buy, and pricier listings further up can never pull it up. One cheap or
+    silly listing among 3 or more cannot set it alone. At 9 units it is the
+    same few cheapest units the deep rule looks at from 10 units, so one sale
+    at the boundary does not make it jump. With only 1 or 2 listings the
+    auctions count (latest.json "n", the addon's auctions field) tells the
+    site and the addon how thin it is. Nothing is hidden here."""
+    units = [(float(p), int(q)) for p, q in units if q > 0]
     total = sum(q for _, q in units)
     if total <= 0:
         return 0
+    if total < THIN_UNITS:
+        return copper(_nth(units, (min(3, total) - 1) // 2))
     lower = max(1, int(round(total * 0.15)))
     upper = max(lower, int(round(total * 0.30)))
     picked, n, prev = [], 0, None
@@ -160,21 +270,160 @@ def market_value(units):
         picked.append((p, take))
         n += take
         prev = p
-    mean = sum(p * q for p, q in picked) / n
-    var = sum(q * (p - mean) ** 2 for p, q in picked) / n
-    sd = var ** 0.5
-    if sd > 0:
-        kept = [(p, q) for p, q in picked if abs(p - mean) <= 1.5 * sd]
-    else:
-        kept = picked
+    kept, mean = _trim(picked)
     c = sum(q for _, q in kept)
     if not c:
-        return int(round(mean))
-    return int(round(sum(p * q for p, q in kept) / c))
+        return copper(mean)
+    return copper(sum(p * q for p, q in kept) / c)
 
 
-# ── item metadata ────────────────────────────────────────────────────────────
+def aggregate(auctions):
+    """Raw API auctions -> (per, snap).
+    per:  item id -> list of (unit price, qty), one entry per auction. The unit
+          price keeps fractions of a copper; an auction with a buyout is never
+          dropped, however cheap per unit.
+    snap: auction id -> [item, qty, unit (whole copper, for reference), time left]
+    Bid-only auctions (no buyout) are skipped: no price anyone can act on."""
+    per, snap = {}, {}
+    for a in auctions:
+        it = a.get("item") or {}
+        iid = it.get("id")
+        try:
+            q = a.get("quantity")
+            q = 1 if q is None else int(q)      # no quantity field = a single item
+        except (TypeError, ValueError):
+            continue
+        if not iid or q <= 0:
+            continue
+        unit = a.get("unit_price")
+        if not unit:
+            bo = a.get("buyout")
+            if not bo:
+                continue
+            unit = bo / q
+        unit = float(unit)
+        if unit <= 0:
+            continue
+        per.setdefault(iid, []).append((unit, q))
+        aid = a.get("id")
+        if aid is not None:
+            snap[str(aid)] = [iid, q, copper(unit), a.get("time_left", "")]
+    return per, snap
+
+
+# -- estimated sales ----------------------------------------------------------
+def estimate_sold(prev, snap):
+    """Units that most likely sold between two snapshots, per item id."""
+    sold = {}
+    for aid, (iid, q, unit, tl) in prev.items():
+        cur = snap.get(aid)
+        if cur is None:
+            if tl in SOLD_TIME_LEFT:
+                sold[iid] = sold.get(iid, 0) + q
+        elif cur[1] < q:
+            sold[iid] = sold.get(iid, 0) + (q - cur[1])
+    return sold
+
+
+def incomplete_download(prev, snap, endpoints=None, prev_endpoints=None, failed=()):
+    """Why this download looks incomplete next to the previous snapshot, or None.
+    A list that did not download only counts when it had auctions last time
+    (or last time is not known): a list that is always empty, or always
+    fails, loses nothing."""
+    for name in failed:
+        if prev_endpoints is None or int(prev_endpoints.get(name) or 0) > 0:
+            return f"the {name} list did not download"
+    if prev and len(snap) < (1 - SOLD_MAX_DROP) * len(prev):
+        drop = int(round(100 * (1 - len(snap) / len(prev))))
+        return f"the auction count fell {drop}% since the previous snapshot (probably an incomplete download)"
+    for name, n in (endpoints or {}).items():
+        p = int((prev_endpoints or {}).get(name) or 0)
+        if p >= SOLD_DROP_MIN and n < (1 - SOLD_MAX_DROP) * p:
+            drop = int(round(100 * (1 - n / p)))
+            return f"the {name} count fell {drop}% since the previous snapshot (probably an incomplete download)"
+    return None
+
+
+def sold_check(prev, snap, prev_time, data_time, endpoints=None, prev_endpoints=None, failed=()):
+    """Whether this snapshot can be compared with the previous one for sales.
+    Returns (reason it cannot or None, minutes since the previous snapshot or None)."""
+    if not prev:
+        return "first snapshot, nothing to compare with yet", None
+    if not prev_time:
+        return "the previous snapshot has no time", None
+    gap = data_time - prev_time
+    gap_min = int(round(gap / 60))
+    if gap > SOLD_MAX_GAP:
+        return (f"the previous snapshot is {gap_min} minutes older (more than {SOLD_MAX_GAP // 60}), "
+                "so sales cannot be told apart from expired auctions"), gap_min
+    return incomplete_download(prev, snap, endpoints, prev_endpoints, failed), gap_min
+
+
+def measured_secs(state):
+    """state.json "measured": {hour slot: seconds of sales measured in it}. A
+    slot with two snapshots adds both comparisons up. Older files kept a plain
+    list of hour slots: each of those counts as one hour."""
+    m = state.get("measured") if isinstance(state, dict) else None
+    if isinstance(m, dict):
+        return {int(k): max(0, int(v or 0)) for k, v in m.items()}
+    return {int(t): 3600 for t in (m or [])}
+
+
+def sales_seconds(measured, hour):
+    """Seconds of measured sales in the 24 hourly slots ending at `hour`.
+    `measured` is {slot: seconds}, or a set of slots (one hour each)."""
+    lo = hour - 23 * 3600
+    pairs = measured.items() if isinstance(measured, dict) else ((t, 3600) for t in set(measured))
+    return sum(int(s) for t, s in pairs if lo <= t <= hour and (hour - t) % 3600 == 0)
+
+
+def sales_hours(measured, hour):
+    """How many hours of sales the sold estimates of the last 24 hourly slots
+    cover, rounded to whole hours (0..24). The site and the addon scale
+    sold24 by 24 / salesHours, so this counts the minutes the comparisons
+    really cover: a slot with a 2 minute comparison is not a full hour."""
+    return max(0, min(24, int(sales_seconds(measured, hour) / 3600 + 0.5)))
+
+
+# -- item metadata ------------------------------------------------------------
+def is_unknown(meta):
+    """No usable name: never looked up, lookup failed, or an old 'Item 123' placeholder."""
+    if not meta or meta.get("unknown"):
+        return True
+    name = str(meta.get("name") or "")
+    return not name or bool(UNKNOWN_NAME.match(name))
+
+
+def item_name(meta):
+    """The name to publish: "" when Blizzard has none for the item yet."""
+    return "" if is_unknown(meta) else str(meta["name"])
+
+
+def unknown_entry(tried):
+    return {"name": "", "icon": "", "quality": "COMMON", "sell": 0, "buy": 0, "cls": "", "sub": "",
+            "lvl": 0, "stack": 0, "unknown": True, "tried": int(tried)}
+
+
+def _meta(iid, item, icon):
+    return {
+        "name": str(item.get("name") or ""),
+        "icon": icon,
+        "quality": ((item.get("quality") or {}).get("type") or "COMMON"),
+        "sell": int(item.get("sell_price") or 0),
+        "buy": int(item.get("purchase_price") or 0),
+        "cls": ((item.get("item_class") or {}).get("name") or ""),
+        "sub": ((item.get("item_subclass") or {}).get("name") or ""),
+        "lvl": int(item.get("required_level") or 0),
+        "stack": int(item.get("max_count") or 0),
+    }
+
+
 def fetch_item(iid):
+    """Looks the item up in each static namespace in turn. The first one that
+    has a name wins. If one knows the item but has no name for it, its other
+    details are kept and the item stays unknown (it is retried later).
+    Returns (iid, meta or None)."""
+    partial = None
     for ns in STATIC_NS:
         try:
             item, _ = api(f"/data/wow/item/{iid}", ns)
@@ -190,24 +439,60 @@ def fetch_item(iid):
                     icon = a.get("value", "")
         except Exception:
             pass
-        return iid, {
-            "name": item.get("name") or f"Item {iid}",
-            "icon": icon,
-            "quality": ((item.get("quality") or {}).get("type") or "COMMON"),
-            "sell": int(item.get("sell_price") or 0),
-            "buy": int(item.get("purchase_price") or 0),
-            "cls": ((item.get("item_class") or {}).get("name") or ""),
-            "sub": ((item.get("item_subclass") or {}).get("name") or ""),
-            "lvl": int(item.get("required_level") or 0),
-            "stack": int(item.get("max_count") or 0),
-        }
+        meta = _meta(iid, item, icon)
+        if meta["name"] and not UNKNOWN_NAME.match(meta["name"]):
+            return iid, meta
+        if partial is None:
+            partial = meta
+    if partial is not None:
+        partial["name"] = ""
+        partial["unknown"] = True
+        return iid, partial
     return iid, None
 
 
-# ── in-game addon data file (ForeverAH_Data.lua) ─────────────────────────────
+def refresh_items(items, listed_ids, now, fetch=None, retry_max=UNKNOWN_RETRY_MAX, threads=LOOKUP_THREADS):
+    """Looks up items seen for the first time, and retries items that still
+    have no name (each at most every UNKNOWN_RETRY_SECS, at most `retry_max` per
+    run, the ones listed right now and the longest waiting first). Changes
+    `items` in place. Unknown items keep a "" name and their prices are still
+    published. Returns (new looked up, retried, names found on retry)."""
+    fetch = fetch or fetch_item
+    for m in items.values():            # older files cached "Item 123" placeholders
+        if is_unknown(m):
+            m["name"] = ""
+            m["unknown"] = True
+    listed = set(str(i) for i in listed_ids)
+    new = sorted(int(s) for s in listed if s not in items)
+    due = [s for s, m in items.items() if m.get("unknown") and now - int(m.get("tried") or 0) >= UNKNOWN_RETRY_SECS]
+    due.sort(key=lambda s: (s not in listed, int(items[s].get("tried") or 0), int(s)))
+    due = [int(s) for s in due[:max(0, int(retry_max))]]
+    todo = new + due
+    found = 0
+    if not todo:
+        return 0, 0, 0
+    retried = set(due)
+    with cf.ThreadPoolExecutor(max(1, threads)) as ex:
+        for iid, meta in ex.map(fetch, todo):
+            sid = str(iid)
+            if meta and not is_unknown(meta):
+                items[sid] = meta
+                if iid in retried:
+                    found += 1
+                continue
+            entry = dict(items.get(sid) or unknown_entry(now))
+            if meta:                    # Blizzard knows it but has no name: keep the details
+                entry.update(meta)
+            entry.update({"name": "", "unknown": True, "tried": int(now)})
+            items[sid] = entry
+    return len(new), len(due), found
+
+
+# -- in-game addon data file (ForeverAH_Data.lua) -----------------------------
 # One Lua string per item, fields split on "|":
-#   name | cheapest now | market now | units listed now | est. sold last 24h |
-#   avg7 (mean daily market, last 7 days) | vendor sell | H | D
+#   name ("" = unknown) | cheapest now | market now | units listed now |
+#   est. sold last 24h (measured hours only) | avg7 (mean daily market, last
+#   7 days) | vendor sell | H | D | auctions now (separate listings)
 # H (hourly, <= 168 points) and D (daily, <= 400 points) are each
 #   "cheapest;market;sold", comma-separated tokens, right-aligned so the last
 #   token is hourEnd (H) or dayEnd (D) and the k-th from the end is k steps
@@ -311,10 +596,13 @@ def _addon_series(points, end, step, count, bridge=0):
     return ",".join(cheap) + ";" + ",".join(mkt) + ";" + ",".join(sold)
 
 
-def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS):
+def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auctions=0, measured=None):
     """One `[id] = "...",` line for ForeverAH_Data.items, or None when the item
     had no listing and no estimated sale in the last 7 days. `days` is how many
-    daily points to keep (fewer only when the file would be too big)."""
+    daily points to keep (fewer only when the file would be too big).
+    `auctions` is how many separate auctions are listed now. `measured` is the
+    set of hours with a measured sold estimate (None = every hour); sold24
+    only adds up those hours."""
     hstart = hour - (ADDON_HOURS - 1) * 3600
     recent = False
     sold24 = 0
@@ -325,7 +613,7 @@ def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS):
             continue
         if p[1] > 0 or p[3] > 0 or p[4] > 0:
             recent = True
-        if p[0] > hour - 86400:
+        if p[0] > hour - 86400 and (measured is None or p[0] in measured):
             sold24 += int(p[4])
     if not recent:
         return None
@@ -334,11 +622,10 @@ def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS):
     avg7 = int(sum(week) / len(week) + 0.5) if week else 0
     hs = _addon_series(h["h"], hour, 3600, ADDON_HOURS, ADDON_BRIDGE_H)
     ds = _addon_series(h["d"], day_end, 86400, max(1, min(int(days), ADDON_DAYS)), ADDON_BRIDGE_D)
-    meta = meta or {}
-    name = str(meta.get("name") or f"Item {iid}").replace("|", "/")
+    name = item_name(meta).replace("|", "/")
     lo, hi = min(int(lo), ADDON_PRICE_CAP), min(int(hi), ADDON_PRICE_CAP)
     body = "|".join((name, str(lo), str(hi), str(int(listed)), str(sold24), str(avg7),
-                     str(int(meta.get("sell") or 0)), hs, ds))
+                     str(int((meta or {}).get("sell") or 0)), hs, ds, str(max(0, int(auctions or 0)))))
     return f"    [{int(iid)}] = {lua_str(body)},\n"
 
 
@@ -380,14 +667,18 @@ def fit_addon_lines(lines, rebuild, limit=ADDON_SOFT_MAX):
     return total, shortened
 
 
-def write_addon_data(out, lines, now, hour, house_name):
-    """lines: {item id: line from addon_item_line}. Written atomically."""
+def write_addon_data(out, lines, updated, hour, house_name, fetched=None, sales_hours=0):
+    """lines: {item id: line from addon_item_line}. Written atomically.
+    updated = when Blizzard made the snapshot, fetched = when this ran,
+    sales_hours = how many of the last 24 hours have a measured sold estimate."""
     path = os.path.join(out, ADDON_FILE)
     tmp = path + ".tmp"
     head = (f"{ADDON_HEADER}\n"
             "ForeverAH_Data = {\n"
             "  v = 1,\n"
-            f"  updated = {int(now)},\n"
+            f"  updated = {int(updated)},\n"
+            f"  fetched = {int(updated if fetched is None else fetched)},\n"
+            f"  salesHours = {max(0, min(24, int(sales_hours or 0)))},\n"
             f"  region = {lua_str(REGION)}, house = {HOUSE}, houseName = {lua_str(house_name)}, "
             f"ruleset = {lua_str(RULESET_NAMES.get(RULESET, f'Ruleset {RULESET}'))},\n"
             f"  hourEnd = {int(hour)},\n"
@@ -401,79 +692,125 @@ def write_addon_data(out, lines, now, hour, house_name):
     return os.path.getsize(path)
 
 
-def main():
+# -- the run ------------------------------------------------------------------
+def _state_time(state):
+    """When Blizzard made the previous snapshot (older state files only have the header text)."""
+    t = state.get("dataTime") or parse_http_date(state.get("modified"))
+    return int(t) if t else (int(state["at"]) if state.get("at") else None)
+
+
+def _state_hour(state):
+    """The hourly slot the previous snapshot went into."""
+    if state.get("hour"):
+        return int(state["hour"])
+    if state.get("at"):                  # older versions used the run time's hour
+        return int(state["at"]) - int(state["at"]) % 3600
+    return None
+
+
+DATA_FORMAT = 2   # state.json layout; raise it when the layout changes
+
+
+def main(out=None):
     global TOKEN
-    out = sys.argv[1] if len(sys.argv) > 1 else "wowdata"
+    if out is None:
+        out = sys.argv[1] if len(sys.argv) > 1 else "wowdata"
     os.makedirs(out, exist_ok=True)
     TOKEN = get_token()
     now = int(time.time())
-    hour = now - now % 3600
     state = load(os.path.join(out, "state.json"), {})
+    # Two writers share this history (the GitHub job and the user's PC). If an
+    # older copy of this script ever runs on data a newer one wrote, it stops
+    # instead of mixing state formats.
+    if int(state.get("format") or 1) > DATA_FORMAT:
+        sys.exit("wow-data was written by a newer fetch_ah.py (state format %s); update this copy "
+                 "(on the PC: run Setup-PC-Collector.bat)." % state.get("format"))
 
     # every house, so the IDs can be checked against what the game shows
     idx, _ = api(f"/data/wow/ruleset/{RULESET}/auctions/", DYN)
     houses = [{"id": h.get("id"), "name": h.get("name")} for h in (idx or {}).get("auctions", [])]
-    save(os.path.join(out, "houses.json"), {"region": REGION, "ruleset": RULESET,
-                                            "using": HOUSE, "houses": houses})
 
     data, hdr = api(f"/data/wow/ruleset/{RULESET}/auctions/{HOUSE}", DYN)
     if data is None:
         sys.exit(f"House {HOUSE} not found in {DYN}")
-    modified = hdr.get("Last-Modified") or hdr.get("last-modified") or ""
+    modified = str(header(hdr, "Last-Modified") or "")
     if modified and modified == state.get("modified"):
         print("Blizzard has not refreshed this house since the last run:", modified)
+        tell_workflow(False)
         return
+    prev = state.get("snap") or {}
+    prev_time = _state_time(state)
+    data_time = parse_http_date(modified)
+    if data_time is None:
+        print(f"no usable Last-Modified time ({modified!r}), using the run time")
+        data_time = now
+    data_time = min(int(data_time), now)
+    if prev and prev_time and data_time <= prev_time:
+        print(f"Blizzard sent a snapshot that is not newer than the last one ({modified}), nothing to do")
+        tell_workflow(False)
+        return
+    save(os.path.join(out, "houses.json"), {"region": REGION, "ruleset": RULESET,
+                                            "using": HOUSE, "houses": houses})
+
     auctions = list(data.get("auctions") or [])
+    endpoints = {"auctions": len(auctions), "commodities": 0}
+    failed = []
     try:
         com, _ = api(f"/data/wow/ruleset/{RULESET}/auctions/{HOUSE}/commodities", DYN)
-        auctions += list((com or {}).get("auctions") or [])
+        com_list = list((com or {}).get("auctions") or [])
+        endpoints["commodities"] = len(com_list)
+        auctions += com_list
     except Exception as e:
         print("commodities endpoint skipped:", e)
+        failed.append("commodities")
 
-    # aggregate the snapshot
-    per = {}        # item id -> list of (unit price, qty)
-    snap = {}       # auction id -> [item, qty, unit, time_left]
-    for a in auctions:
-        it = a.get("item") or {}
-        iid = it.get("id")
-        q = int(a.get("quantity") or 1)
-        if not iid or q <= 0:
-            continue
-        unit = a.get("unit_price")
-        if unit is None:
-            bo = a.get("buyout")
-            if not bo:
-                continue          # bid-only: no price anyone can act on
-            unit = bo / q
-        unit = int(round(unit))
-        if unit <= 0:
-            continue
-        per.setdefault(iid, []).append((unit, q))
-        snap[str(a.get("id"))] = [iid, q, unit, a.get("time_left", "")]
+    per, snap = aggregate(auctions)
 
-    # estimated sales since the previous snapshot
-    sold = {}
-    prev = state.get("snap") or {}
-    if prev:
-        for aid, (iid, q, unit, tl) in prev.items():
-            cur = snap.get(aid)
-            if cur is None:
-                if tl in SOLD_TIME_LEFT:
-                    sold[iid] = sold.get(iid, 0) + q
-            elif cur[1] < q:
-                sold[iid] = sold.get(iid, 0) + (q - cur[1])
+    # A download that looks incomplete (a list failed, or far fewer auctions
+    # than last time) is held back: nothing is published from it and the
+    # previous snapshot stays the one the next run compares with. Only
+    # state.json changes, so the next run (15 to 30 minutes later) knows it
+    # downloads again. When that download looks the same, the drop is real
+    # and it is used, but without a sales estimate for it or for the next
+    # comparison (sales of anything missing from it would be invisible).
+    short = incomplete_download(prev, snap, endpoints, state.get("endpoints"), failed)
+    if short and not state.get("held"):
+        state["held"] = {"modified": modified, "auctions": len(snap), "reason": short, "at": now}
+        save(os.path.join(out, "state.json"), state)
+        print(f"NOT published: {short}. The next run downloads it again, "
+              "and uses it if that download looks the same.")
+        tell_workflow(True)     # only state.json changed, so the next run remembers this
+        return
+    state.pop("held", None)
 
-    # item metadata (cached; only new ids cost requests)
+    # the hourly slot: Blizzard's data hour, never before the previous slot
+    hour = data_time - data_time % 3600
+    last_hour = _state_hour(state)
+    if prev and last_hour and hour < last_hour:
+        hour = last_hour
+
+    # estimated sales since the previous snapshot, only when that comparison means something
+    skipped, gap_min = sold_check(prev, snap, prev_time, data_time, endpoints, state.get("endpoints"), failed)
+    if short:
+        skipped = f"{short}; the download after it looked the same, so it is used, but its sales are not counted"
+    elif not skipped and state.get("incompleteBase"):
+        skipped = "the previous snapshot looked incomplete, so sales are counted again from the next snapshot"
+    sold = {} if skipped else estimate_sold(prev, snap)
+    if skipped:
+        print("sold estimate skipped:", skipped)
+    measured = measured_secs(state)
+    if not skipped:
+        measured[hour] = measured.get(hour, 0) + max(0, int(data_time - prev_time))
+    measured = {t: s for t, s in measured.items() if hour - HOURLY_KEEP * 3600 < t <= hour}
+    sales_h = sales_hours(measured, hour)
+    sales_min = int(sales_seconds(measured, hour) / 60 + 0.5)
+
+    # item metadata (cached; new ids and a few unnamed ones cost requests)
     items = load(os.path.join(out, "items.json"), {})
-    missing = [i for i in per if str(i) not in items]
-    if missing:
-        print(f"looking up {len(missing)} new items")
-        with cf.ThreadPoolExecutor(12) as ex:
-            for iid, meta in ex.map(fetch_item, missing):
-                items[str(iid)] = meta or {"name": f"Item {iid}", "icon": "", "quality": "COMMON",
-                                           "sell": 0, "buy": 0, "cls": "", "sub": "", "lvl": 0, "stack": 0,
-                                           "unknown": True}
-        save(os.path.join(out, "items.json"), items)
+    n_new, n_retry, n_found = refresh_items(items, per.keys(), now)
+    if n_new or n_retry:
+        print(f"looked up {n_new} new items, retried {n_retry} unnamed items ({n_found} names found)")
+    save(os.path.join(out, "items.json"), items)
 
     # history
     hist_dir = os.path.join(out, "hist")
@@ -490,7 +827,8 @@ def main():
         iid = int(sid)
         units = sorted(per.get(iid, []))
         listed = sum(q for _, q in units)
-        lo = units[0][0] if units else 0
+        nauc = len(units)
+        lo = copper(units[0][0]) if units else 0
         hi = market_value(units) if units else 0
         s = int(sold.get(iid, 0))
         path = os.path.join(hist_dir, sid + ".json")
@@ -499,6 +837,8 @@ def main():
             continue
         pt = [hour, lo, hi, listed, s]
         if h["h"] and h["h"][-1][0] == hour:
+            # a second snapshot in the same hour: newest prices, sales add up
+            pt[4] += int(h["h"][-1][4] or 0)
             h["h"][-1] = pt
         else:
             h["h"].append(pt)
@@ -517,10 +857,11 @@ def main():
         else:
             h["d"].append(dpt)
         try:   # the addon file must never stop the site's own files being written
-            line = addon_item_line(iid, items.get(sid), h, lo, hi, listed, hour)
+            line = addon_item_line(iid, items.get(sid), h, lo, hi, listed, hour,
+                                   auctions=nauc, measured=measured)
             if line:
                 addon[iid] = line
-                addon_now[iid] = (lo, hi, listed)
+                addon_now[iid] = (lo, hi, listed, nauc)
         except Exception as e:
             addon_errors.append(f"{sid}: {e!r}")
         if not units and all(p[3] == 0 for p in h["h"][-72:]) and not any(p[4] for p in h["h"][-72:]):
@@ -530,15 +871,15 @@ def main():
         save(path, h)
 
         if units:
-            latest[sid] = {"high": hi, "highTime": now, "low": lo, "lowTime": now}
+            latest[sid] = {"high": hi, "highTime": data_time, "low": lo, "lowTime": data_time, "n": nauc}
         else:
             # nothing listed right now: show the last seen prices, with their real age
             last = next((p for p in reversed(h["h"]) if p[1] > 0), None)
             if last:
-                latest[sid] = {"high": last[2], "highTime": last[0], "low": last[1], "lowTime": last[0]}
+                latest[sid] = {"high": last[2], "highTime": last[0], "low": last[1], "lowTime": last[0], "n": 0}
         win = [p for p in h["h"] if p[0] > hour - 86400]
         wp = [p for p in win if p[1] > 0]
-        sold24 = sum(p[4] for p in win)
+        sold24 = sum(p[4] for p in win if p[0] in measured)
         if wp:
             day[sid] = {"avgHighPrice": int(sum(p[2] for p in wp) / len(wp)),
                         "highPriceVolume": sold24 - sold24 // 2,
@@ -551,24 +892,32 @@ def main():
     for sid, m in items.items():
         if sid not in latest:
             continue
-        mapping.append({"id": int(sid), "name": m["name"], "examine": m.get("sub") or m.get("cls") or "",
-                        "members": True, "value": m["sell"], "lowalch": m["sell"], "highalch": m["sell"],
-                        "limit": None, "icon": m["icon"], "quality": m["quality"],
+        mapping.append({"id": int(sid), "name": item_name(m), "examine": m.get("sub") or m.get("cls") or "",
+                        "members": True, "value": m.get("sell", 0), "lowalch": m.get("sell", 0),
+                        "highalch": m.get("sell", 0), "limit": None, "icon": m.get("icon", ""),
+                        "quality": m.get("quality", "COMMON"),
                         "cls": m.get("cls", ""), "sub": m.get("sub", ""), "lvl": m.get("lvl", 0)})
-    mapping.sort(key=lambda x: x["name"])
+    mapping.sort(key=lambda x: (x["name"] == "", x["name"], x["id"]))   # unnamed items last
 
     save(os.path.join(out, "mapping.json"), mapping)
     save(os.path.join(out, "latest.json"), {"data": latest})
     save(os.path.join(out, "24h.json"), {"data": day, "timestamp": hour})
-    save(os.path.join(out, "volumes.json"), {"timestamp": now * 1000, "data": vols})
+    save(os.path.join(out, "volumes.json"), {"timestamp": data_time * 1000, "data": vols})
     save(os.path.join(out, "status.json"), {
-        "updated": now, "blizzardModified": modified, "region": REGION, "house": HOUSE,
-        "auctions": len(auctions), "items": len(latest), "soldUnitsThisHour": sum(sold.values()),
-        "firstSnapshot": not prev})
-    state.update({"modified": modified, "snap": snap, "at": now})
+        "updated": data_time, "fetched": now, "blizzardModified": modified, "region": REGION, "house": HOUSE,
+        "auctions": len(auctions), "auctionsPerEndpoint": endpoints, "items": len(latest),
+        "soldUnitsThisHour": sum(sold.values()), "firstSnapshot": not prev,
+        "salesHours": sales_h, "salesMinutes": sales_min, "gapMinutes": gap_min, "soldSkipped": skipped,
+        "unnamedItems": sum(1 for sid in latest if is_unknown(items.get(sid)))})
+    state.update({"format": DATA_FORMAT, "modified": modified, "dataTime": data_time, "hour": hour, "snap": snap, "at": now,
+                  "measured": {str(t): s for t, s in sorted(measured.items())}, "endpoints": endpoints})
+    if short:
+        state["incompleteBase"] = True      # the next comparison is not measured
+    else:
+        state.pop("incompleteBase", None)
     save(os.path.join(out, "state.json"), state)
     print(f"house {HOUSE}: {len(auctions)} auctions, {len(latest)} items, "
-          f"~{sum(sold.values())} units sold since last snapshot")
+          f"~{sum(sold.values())} units sold since last snapshot, {sales_h} of the last 24 hours measured")
 
     # in-game addon file
     if addon_errors:
@@ -581,8 +930,9 @@ def main():
             hh = load(os.path.join(hist_dir, f"{iid}.json"), None)
             if not hh:
                 return None
-            lo_, hi_, listed_ = addon_now[iid]
-            return addon_item_line(iid, items.get(str(iid)), hh, lo_, hi_, listed_, hour, days)
+            lo_, hi_, listed_, nauc_ = addon_now[iid]
+            return addon_item_line(iid, items.get(str(iid)), hh, lo_, hi_, listed_, hour, days,
+                                   auctions=nauc_, measured=measured)
         est, shortened = fit_addon_lines(addon, rebuild)
         if shortened:
             print(f"{ADDON_FILE}: shortened the daily history of {shortened} quiet items to keep it small")
@@ -590,10 +940,11 @@ def main():
             # a file this big would make the push fail and stop the site updating too
             print(f"{ADDON_FILE} NOT written: {est / 1048576:.0f} MB is too big, the previous file is kept")
         else:
-            size = write_addon_data(out, addon, now, hour, str(hname))
+            size = write_addon_data(out, addon, data_time, hour, str(hname), fetched=now, sales_hours=sales_h)
             print(f"{ADDON_FILE}: {len(addon)} items, {size / 1024:.0f} KB ({size} bytes)")
     except Exception as e:
         print(f"{ADDON_FILE} NOT written: {e!r}")
+    tell_workflow(True)
 
 
 if __name__ == "__main__":

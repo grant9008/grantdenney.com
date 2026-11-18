@@ -315,6 +315,11 @@ function M.MakeStubNS(opts)
     [4] = { name = "Empty Window Item", base = 100, kind = "empty" },
     [5] = { name = "Expensive Item", base = 1534567, kind = "wave" },
     [6] = { name = "Gear Item", base = 123456, kind = "wave", commodity = false },
+    [7] = { name = "Squire's Shirt", base = 900, kind = "wave" },
+    [8] = { name = "Squire's Shirt", base = 950, kind = "wave" },
+    [9] = { name = "New Item", base = 700, kind = "nohist" },
+    [10] = { name = "Tiny Range Item", base = 1500000, kind = "tiny" },
+    [11] = { name = "Thin Item", base = 800, kind = "thin" },
   }
   M.fixtures = items
   if opts.nodata then
@@ -348,6 +353,10 @@ function M.MakeStubNS(opts)
       local c, m
       if it.kind == "flat" then
         c, m = it.base, it.base
+      elseif it.kind == "tiny" then
+        -- over 100g, all within 45 copper
+        c = it.base + (k % 5) * 10
+        m = c + 5
       elseif it.kind == "empty" then
         c, m = false, false
       else
@@ -366,20 +375,41 @@ function M.MakeStubNS(opts)
     local it = ns.GetItem(id)
     if not it then return nil end
     local b = it.cheapest
-    local flat = items[id].kind == "flat"
+    local kind = items[id].kind
+    if kind == "nohist" or kind == "thin" then
+      -- Recommend.lua's no-advice shape: no targets, a Hold, and a note saying why
+      return { buy = 0, sell = 0, listAt = 0, margin = 0, marginPct = 0, verdict = "Hold", score = 0, pos = 0.5,
+               lo = b, hi = b, cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24,
+               history = kind ~= "nohist", advice = false,
+               notes = { kind == "nohist" and "Not enough price history yet" or "Only 2 listings: price may not be reliable" } }
+    end
+    local flat = kind == "flat"
     local buy = flat and b or floor(b * 0.95)
     local listAt = flat and b or (b + floor(b * 0.03) + 7) -- odd copper on purpose
+    if kind == "tiny" then buy, listAt = b, b + 20 end
     local margin = floor(listAt * 0.95) - buy
     return { buy = buy, sell = listAt, listAt = listAt, margin = margin, marginPct = buy > 0 and margin / buy or 0,
              verdict = flat and "Hold" or "Buy", score = flat and 0 or 40, pos = 0.3, lo = b * 0.9, hi = b * 1.1,
-             cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24,
+             cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24, history = true, advice = true,
              notes = flat and { "Spread does not beat the 5% AH cut" } or {} }
   end
+  -- name -> ids, lowest first (Core.lua's index: a name can belong to several items)
   local names = {}
-  for id, it in pairs(items) do names[it.name:lower()] = id end
+  for id, it in pairs(items) do
+    local key = it.name:lower()
+    names[key] = names[key] or {}
+    table.insert(names[key], id)
+  end
+  for _, list in pairs(names) do table.sort(list) end
   function ns.FindItemID(name)
     if type(name) ~= "string" then return nil end
-    return names[name:lower()]
+    local list = names[name:lower()]
+    return list and list[1] or nil
+  end
+  function ns.FindItemIDs(name)
+    local out = {}
+    for i, id in ipairs(type(name) == "string" and names[name:lower()] or {}) do out[i] = id end
+    return out
   end
   function ns.MoneyText(c)
     c = floor(c + 0.5)
@@ -619,11 +649,69 @@ check(C.verdict:GetText() == "" and not C.meter:IsShown(), "empty footer")
 section("chart: one point")
 ns.ShowChart(1, "slash")
 check(C.lastError == nil, "no error: " .. tostring(C.lastError))
-check(C.view.n == 1 and C.pools.dot.used == 2, "two dots for one point")
-check(C.pools.trend.used == 0 and C.pools.ring.used == 0, "no trend or rings for one point")
-check(C.pools.xlab.used == 1, "one x label")
-local _, _, _, dx = C.pools.dot.items[1]:GetPoint(1)
-check(math.abs(dx - C.plotW / 2) < 0.01, "single point centred")
+check(C.view == nil and C.pools.dot.used == 0, "no near-empty plot for one point")
+check(C.msg:IsShown() and C.msg:GetText() == "Collecting price history. This chart fills in as hourly prices arrive (1 so far).",
+  "collecting message: " .. tostring(C.msg:GetText()))
+check(C.pools.trend.used == 0 and C.pools.ring.used == 0 and C.pools.ylab.used == 0 and C.pools.xlab.used == 0,
+  "no marks or axis labels")
+check(C.name:GetText() == "One Point Item" and C.buyBox.value:GetText() ~= "", "header and boxes still filled in")
+M.cursorX = 300
+M.fireScript(C.plot, "OnEnter"); M.fireScript(C.plot, "OnUpdate", 0.01)
+check(C.lastError == nil and not GameTooltip._shown and C.hoverIdx == nil, "hovering a one-point chart shows nothing")
+M.fireScript(C.plot, "OnLeave")
+C:HoverAt(1); C:HoverAt(0)
+check(not GameTooltip._shown, "HoverAt without a plot does nothing")
+ns.SetChartTF("1M")
+check(C.msg:GetText() == "Collecting price history. This chart fills in as daily prices arrive (1 so far).",
+  "daily wording on 1M: " .. tostring(C.msg:GetText()))
+ns.SetChartTF("1D")
+
+section("chart: not enough history")
+ns.ShowChart(9, "slash")
+check(C.lastError == nil, "no error: " .. tostring(C.lastError))
+check(C.buyBox.value:GetText() == "Needs more history" and C.listBox.value:GetText() == "Needs more history",
+  "boxes say Needs more history: " .. tostring(C.buyBox.value:GetText()))
+check(C.buyBox.value._color[1] == ns.COLORS.muted[1] and C.listBox.value._color[1] == ns.COLORS.muted[1], "in grey")
+check(C.verdict:GetText() == "No advice yet" and C.verdict._color[1] == ns.COLORS.muted[1], "grey verdict, no colour")
+check(not C.meter:IsShown(), "no verdict meter")
+check((C.margin:GetText() or "") == "", "no green margin")
+check(C.pools.tag.used == 0 and C.pools.dash.used == 0, "no dashed target lines")
+check((C.notes:GetText() or ""):find("Not enough price history yet", 1, true), "note says why: " .. tostring(C.notes:GetText()))
+check(C.pools.dot.used > 0, "the prices are still plotted")
+ns.ShowChart(11, "slash")
+check(C.buyBox.value:GetText() == "Price not reliable" and C.verdict:GetText() == "No advice yet", "thin listings: Price not reliable")
+check((C.notes:GetText() or ""):find("Only 2 listings", 1, true), "thin note")
+ns.ShowChart(2589, "slash")
+check(C.buyBox.value._color[1] == 1 and C.buyBox.value:GetText() == ns.MoneyText(ns.Recommend(2589, "1D").buy),
+  "a normal item gets white targets again")
+check(C.meter:IsShown() and C.verdict:GetText() == "Buy", "and its verdict")
+
+section("chart: sales still being measured")
+ns.SoldPerDay = function(item) return nil, true end
+ns.ShowChart(14047, "slash")
+check((C.volume:GetText() or ""):find("sales: measuring", 1, true) == 1, "measuring: " .. tostring(C.volume:GetText()))
+ns.SoldPerDay = function(item) return 480, true end
+ns.ShowChart(2589, "slash")
+check((C.volume:GetText() or ""):find("~480 sold/day (early estimate)", 1, true) == 1, "early estimate: " .. tostring(C.volume:GetText()))
+ns.SoldPerDay = nil
+ns.ShowChart(14047, "slash")
+check((C.volume:GetText() or ""):find("~120 sold/day", 1, true) == 1, "without SoldPerDay: sold24")
+
+section("chart: over 100g with a range under 1 silver")
+for _, tf in ipairs({ "1D", "1W", "1Y" }) do
+  ns.SetChartTF(tf)
+  ns.ShowChart(10, "slash")
+  check(C.lastError == nil, "no error " .. tf .. ": " .. tostring(C.lastError))
+  local yl4 = M.Texts(C.pools.ylab)
+  check(#yl4 >= 2 and distinct(yl4), "at least two different y labels on " .. tf .. ": " .. table.concat(yl4, ", "))
+  local inside = true
+  for i = 1, C.pools.dot.used do
+    local _, _, _, x, y = C.pools.dot.items[i]:GetPoint(1)
+    if x < -0.01 or x > C.plotW + 0.01 or y < 0 or y > C.plotH then inside = false end
+  end
+  check(inside, "dots inside the plot on " .. tf)
+end
+ns.SetChartTF("1D")
 
 section("chart: all prices equal")
 for _, tf in ipairs({ "1D", "1Y" }) do
@@ -830,6 +918,27 @@ M.browseResults = { { itemKey = { itemID = 2589 } } }
 M.Fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED"); M.Fire("AUCTION_HOUSE_BROWSE_RESULTS_ADDED"); M.RunTimers()
 check(ns.ChartItem() == 14047, "later refresh events do not switch the item")
 
+section("modern AH: a name two items share")
+ahf:SendBrowseQuery("Squire's Shirt")
+M.RunTimers()
+check(ns.ChartItem() == 7, "shows the lowest id at once")
+check(AHS.pendingSearch == "squire's shirt" and type(AHS.pendingIDs) == "table" and AHS.pendingIDs[7] and AHS.pendingIDs[8],
+  "keeps waiting for the results to say which one is listed")
+M.browseResults = { { itemKey = { itemID = 2589 } }, { itemKey = { itemID = 8 } } }
+M.Fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+M.RunTimers()
+check(ns.ChartItem() == 8, "the one in the results is shown")
+check(AHS.pendingSearch == nil and AHS.pendingIDs == nil, "search consumed")
+ahf:SendBrowseQuery("squire's shirt")
+M.RunTimers()
+M.browseResults = { { itemKey = { itemID = 2589 } }, { itemKey = { itemID = 14047 } } }
+M.Fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+M.RunTimers()
+check(ns.ChartItem() == 7, "results with neither shirt do not switch to another item")
+ahf:SendBrowseQuery("Runecloth")
+M.RunTimers()
+check(ns.ChartItem() == 14047 and AHS.pendingSearch == nil and AHS.pendingIDs == nil, "a one-item name needs no results")
+
 section("modern AH: selecting results")
 ahf:SelectBrowseResult({ itemKey = { itemID = 12363 }, minPrice = 780000 })
 check(ns.ChartItem() == 12363, "commodity row")
@@ -884,6 +993,29 @@ check(not cUse:IsShown(), "no button without price advice")
 check(ns.ChartItem() == 999 and (C.msg:GetText() or ""):find("No recent listings", 1, true), "chart says no listings")
 M.fireScript(cUse, "OnClick")
 check(csf.PriceInput.amount == 100, "clicking without advice leaves Blizzard's price alone")
+
+section("modern AH: no advice yet, Use List At only follows a live listing")
+ahf:SetPostItem({ itemID = 9, commodity = true })
+M.RunTimers()
+check(not cUse:IsShown(), "too little history and no live listing: no button")
+AHS.StoreLive(9, 650, false)
+M.RunTimers()
+check(cUse:IsShown() and cUse:GetText() == "Use List At: " .. ns.MoneyText(649), "1 copper under the live listing: " .. tostring(cUse:GetText()))
+check((cUse.tipBody or ""):find("not enough price history", 1, true) ~= nil, "tooltip says why: " .. tostring(cUse.tipBody))
+M.fireScript(cUse, "OnClick")
+check(csf.PriceInput.amount == 649, "fills that price")
+AHS.StoreLive(9, 650, true)
+M.RunTimers()
+check(cUse:GetText() == "Use List At: " .. ns.MoneyText(650), "your own listing is matched, not undercut")
+AHS.StoreLive(9, nil)
+M.RunTimers()
+check(not cUse:IsShown(), "live listing gone: no button again")
+ahf:SetPostItem({ itemID = 11, commodity = true })
+AHS.StoreLive(11, 800, false)
+M.RunTimers()
+check(cUse:IsShown() and (cUse.tipBody or ""):find("may not be reliable", 1, true) ~= nil, "thin listings: follows the live listing, says why")
+AHS.StoreLive(11, nil)
+M.RunTimers()
 
 section("modern AH: Chart button and close X")
 M.fireScript(toggle, "OnClick")

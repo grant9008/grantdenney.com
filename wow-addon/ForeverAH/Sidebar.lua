@@ -33,6 +33,10 @@ local VOL_CAP = 200          -- a day's flip is capped at this many units
 local MIN_SOLD = 60          -- est. sold per day for a confident idea
 local MIN_SOLD_RELAX = 15    -- fallback when too few items pass the stricter bar
 local MIN_MARGIN_PCT = 0.03  -- at least 3% profit on the buy price after the cut
+local MIN_SALES_HOURS = 3    -- sales measured over fewer hours than this are too rough
+local MIN_AUCTIONS = 3       -- prices behind fewer separate listings are not trusted
+local VENDOR_FAR = 200       -- nor a market price over 200x what a vendor pays
+local VENDOR_FAR_UNITS = 10  -- ... with fewer units than this listed (dust sells far above vendor)
 local HIDE_SECONDS = 24 * 3600
 
 -- Starter watchlist: the same staples as grantdenney.com/wow's default favorites.
@@ -150,29 +154,56 @@ local function HasData()
   return type(db) == "table" and (tonumber(db.updated) or 0) > 0 and type(db.items) == "table" and next(db.items) ~= nil
 end
 
+-- "" and "Item 12345" are what the data says when it has no name for an item.
+local function KnownName(n)
+  return type(n) == "string" and n ~= "" and not IsSecret(n) and n:match("^Item %d+$") == nil
+end
+
 local function GameItemName(id)
   local CI = _G.C_Item
   if type(CI) == "table" then
     if type(CI.GetItemNameByID) == "function" then
       local ok, n = pcall(CI.GetItemNameByID, id)
-      if ok and type(n) == "string" and n ~= "" then return n end
+      if ok and KnownName(n) then return n end
     end
     if type(CI.GetItemInfo) == "function" then
       local ok, n = pcall(CI.GetItemInfo, id)
-      if ok and type(n) == "string" and n ~= "" then return n end
+      if ok and KnownName(n) then return n end
     end
   end
   if type(_G.GetItemInfo) == "function" then
     local ok, n = pcall(_G.GetItemInfo, id)
-    if ok and type(n) == "string" and n ~= "" then return n end
+    if ok and KnownName(n) then return n end
   end
   return nil
 end
 
+-- The data's name, else the game's name, else "Item 12345".
 local function ItemName(id)
+  if type(ns.ItemName) == "function" then
+    local ok, n = pcall(ns.ItemName, id)
+    if ok and type(n) == "string" and n ~= "" then return n end
+  end
   local it = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
-  if it and type(it.name) == "string" and it.name ~= "" then return it.name end
+  if it and KnownName(it.name) then return it.name end
   return GameItemName(id) or ("Item " .. tostring(id))
+end
+
+local function SalesHours()
+  if type(ns.SalesHours) == "function" then
+    local ok, h = pcall(ns.SalesHours)
+    if ok and Num(h) then return h end
+  end
+  return 24
+end
+
+-- Estimated sales per day (nil while sales are still being measured).
+local function SoldPerDay(it)
+  if type(ns.SoldPerDay) == "function" then
+    local ok, per, early = pcall(ns.SoldPerDay, it)
+    if ok then return per, early end
+  end
+  return Num(it and it.sold24) or 0, false
 end
 
 local function ItemIcon(id)
@@ -365,8 +396,12 @@ local function Candidates()
   for id in pairs(db.items) do
     local n = tonumber(id)
     local it = n and ns.GetItem(n)
-    if it and it.cheapest > 0 and it.market > 0 and it.sold24 >= MIN_SOLD_RELAX and it.listed >= 2 then
-      cand[#cand + 1] = { id = n, q = it.market * min(it.sold24, VOL_CAP) }
+    local sold = it and SoldPerDay(it)
+    local auctions = it and tonumber(it.auctions)
+    if it and sold and it.cheapest > 0 and it.market > 0 and sold >= MIN_SOLD_RELAX and it.listed >= 2
+      and not (auctions and auctions < MIN_AUCTIONS)
+      and not ((it.vendor or 0) > 0 and it.market > VENDOR_FAR * it.vendor and it.listed < VENDOR_FAR_UNITS) then
+      cand[#cand + 1] = { id = n, q = it.market * min(sold, VOL_CAP) }
     end
   end
   sort(cand, function(a, b)
@@ -380,21 +415,32 @@ local function Candidates()
 end
 
 -- The full pass: price advice for each candidate. Returns up to `limit` ideas,
--- best first: { id, buy, sell, profit, perDay, sold, verdict, rec }.
+-- best first: { id, buy, sell, profit, perDay, sold, early, verdict, rec },
+-- and, when there are none, why: "nodata", "history" (prices or sales are
+-- still being collected), "nosales" (nothing sells enough yet) or "none".
 function ns.FlipIdeas(limit)
   limit = limit or MAX_FLIPS
-  if not HasData() then return {} end
+  if not HasData() then return {}, "nodata" end
+  -- Sales from the first hour or two, scaled up to a day, are too rough to rank by.
+  if SalesHours() < MIN_SALES_HOURS then return {}, "history" end
+  local cands = Candidates()
+  if #cands == 0 then return {}, "nosales" end
   local hidden = HiddenIdeas()
   local strict, loose = {}, {}
-  for _, id in ipairs(Candidates()) do
+  local tried, noHistory = 0, 0
+  for _, id in ipairs(cands) do
     if not hidden[id] then
+      tried = tried + 1
       local r = Advice(id, FLIP_TF)
-      if r and r.history and (r.margin or 0) > 0 and (r.buy or 0) > 0 and (r.marginPct or 0) >= MIN_MARGIN_PCT
+      if r and not r.history then noHistory = noHistory + 1 end
+      if r and r.history and r.advice ~= false and (r.margin or 0) > 0 and (r.buy or 0) > 0
+        and (r.marginPct or 0) >= MIN_MARGIN_PCT
         and not r.far and not r.vendorBetter and r.verdict ~= "Sell" and r.verdict ~= "Strong Sell" then
-        local sold = r.sold24 or 0
+        local sold = Num(r.soldPerDay) or 0
         local idea = {
           id = id, buy = r.buy, sell = r.sell, profit = r.margin,
-          perDay = r.margin * min(sold, VOL_CAP), sold = sold, verdict = r.verdict, rec = r,
+          perDay = r.margin * min(sold, VOL_CAP), sold = sold, early = r.soldEarly == true,
+          verdict = r.verdict, rec = r,
         }
         if sold >= MIN_SOLD then strict[#strict + 1] = idea else loose[#loose + 1] = idea end
       end
@@ -416,8 +462,21 @@ function ns.FlipIdeas(limit)
     x.thin = true
     out[#out + 1] = x
   end
-  return out
+  if #out > 0 then return out end
+  -- Every item that trades enough is still waiting for price history.
+  if tried > 0 and noHistory == tried then return out, "history" end
+  return out, "none"
 end
+
+-- What the flip area says when there are no ideas (why from ns.FlipIdeas).
+local FLIP_MESSAGES = {
+  nodata = "No price data yet. Run Update-WoW-Prices.bat, then /reload.",
+  history = "Collecting price history. Flip ideas show up after a few hourly price updates.",
+  -- Sales are measured between hourly snapshots, so a new data set has none yet.
+  nosales = "Collecting sales history. Flip ideas show up after a few hourly price updates.",
+  none = "No good flips right now. Prices are steady; check back after the next update.",
+}
+ns.FLIP_MESSAGES = FLIP_MESSAGES
 
 ---------------------------------------------------------------------------
 -- Searching the game's auction house
@@ -442,6 +501,9 @@ function ns.SearchAH(id)
   local name = ItemName(id)
   local F, kind = AHFrame()
   if not F then return false end
+  -- Tell AH.lua which item this is, so a name two items share (Squire's
+  -- Shirt) keeps this one on the chart, not the one with the lowest id.
+  if type(ns.AH_ExpectItem) == "function" then pcall(ns.AH_ExpectItem, id) end
   if kind == "modern" then
     local mode = _G.AuctionHouseFrameDisplayMode
     if type(F.SetDisplayMode) == "function" and type(mode) == "table" and mode.Buy then
@@ -583,6 +645,9 @@ local function RowTooltip(row)
     tt:AddDoubleLine("Sell at", Money(idea.sell), 0.8, 0.8, 0.8, 1, 1, 1)
     tt:AddDoubleLine("Profit each, after the 5% cut", Paint("+" .. Money(idea.profit), "pos"), 0.8, 0.8, 0.8)
     tt:AddDoubleLine("Sells per day (estimate)", "~" .. Count(idea.sold), 0.8, 0.8, 0.8, 1, 1, 1)
+    if idea.early then
+      tt:AddLine("Early estimate: sales measured for less than a day so far, scaled up to a full day.", 0.6, 0.6, 0.6, true)
+    end
     if idea.thin then tt:AddLine("Slower seller: may take a while to sell.", 0.6, 0.6, 0.6, true) end
   end
   tt:AddLine(" ")
@@ -949,7 +1014,7 @@ end
 -- rows (a star clicked, item names arriving) reuses them.
 function SB:RefreshFlips()
   if self.flipsDirty or not self.ideas then
-    self.ideas = HasData() and ns.FlipIdeas(MAX_FLIPS) or {}
+    self.ideas, self.flipWhy = ns.FlipIdeas(MAX_FLIPS)
     self.flipsDirty = false
   end
   local ideas = self.ideas
@@ -969,14 +1034,8 @@ function SB:RefreshFlips()
     end
   end
   if #ideas == 0 then
-    if not HasData() then
-      self.flipMsg:SetText("No price data yet. Run Update-WoW-Prices.bat, then /reload.")
-    elseif #Candidates() == 0 then
-      -- Sales are measured between hourly snapshots, so a new data set has none yet.
-      self.flipMsg:SetText("Collecting sales history. Flip ideas show up after a few hourly price updates.")
-    else
-      self.flipMsg:SetText("No good flips right now. Prices are steady; check back after the next update.")
-    end
+    local why = (not HasData()) and "nodata" or self.flipWhy
+    self.flipMsg:SetText(FLIP_MESSAGES[why] or FLIP_MESSAGES.none)
     self.flipMsg:Show()
   else
     self.flipMsg:Hide()
@@ -1026,7 +1085,7 @@ function SB:RefreshWatch()
       end
       -- Edge colour: gold when the cheapest listing is a buy, blue when it is a sell.
       local rec = it and Advice(id, tf)
-      local v = rec and rec.history and rec.verdict
+      local v = rec and rec.history and rec.advice ~= false and rec.verdict
       if v == "Strong Buy" or v == "Buy" then
         local c = Col("buy")
         r.accent:SetColorTexture(c[1], c[2], c[3], v == "Strong Buy" and 1 or 0.6)
@@ -1296,11 +1355,13 @@ function ns.HandleSlash(msg)
     ns.SetSidebar(not SidebarWanted())
     Print("the auction house sidebar is now " .. (SidebarWanted() and "on" or "off") .. ".")
   elseif cmd == "flips" or cmd == "ideas" then
-    local ideas = ns.FlipIdeas(MAX_FLIPS)
+    local ideas, why = ns.FlipIdeas(MAX_FLIPS)
     if #ideas == 0 then
-      if not HasData() then
+      if why == "nodata" then
         Print("no price data yet. Type /fah to see how to get it.")
-      elseif #Candidates() == 0 then
+      elseif why == "history" then
+        Print(FLIP_MESSAGES.history)
+      elseif why == "nosales" then
         Print("still collecting sales history: flip ideas show up after a few hourly price updates.")
       else
         Print("no good flips right now.")

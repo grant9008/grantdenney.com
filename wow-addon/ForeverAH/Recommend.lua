@@ -12,6 +12,17 @@ local ADDON_NAME, ns = ...
 --           prices (a range under 10% of the typical price counts as flat)
 -- When the chosen window has fewer than 4 prices, the next longer one is used.
 -- "Sold" numbers are estimates, so this is advice, not a promise.
+--
+-- No advice at all (advice = false: buy, sell, listAt and margin are 0, the
+-- verdict is Hold) when the price cannot be trusted yet:
+--   * too little history (fewer than 4 prices even in the longest window)
+--   * only 1 or 2 separate listings behind today's prices
+--   * a market price over 200x what a vendor pays, with fewer than 10 units
+--     listed (one player's silly listing). With 10 or more units listed it is
+--     a real price: enchanting dust vendors for 1 copper and sells for silver.
+-- Even then postAt says what the Use List At button would fill (1 copper
+-- under the cheapest listing, or today's List At rule when only the history
+-- is short) and vendorBetter still warns when a vendor pays more than that.
 
 ns = ns or {}
 
@@ -22,6 +33,9 @@ local AH_CUT = 0.95    -- the auction house keeps 5% of the sale
 local MIN_POINTS = 4   -- fewer prices than this in a window is not enough history
 local MIN_RANGE = 0.10 -- a window range under 10% of the median price is a flat market
 local FAR = 2          -- a cheapest listing over 2x the window's 90th percentile market is not normal
+local MIN_AUCTIONS = 3 -- fewer separate listings than this is too thin to trust
+local VENDOR_FAR = 200 -- a market price over 200x the vendor price is not trusted
+local VENDOR_FAR_UNITS = 10 -- ... when fewer units than this are listed
 local CHAIN = { "1D", "5D", "1W", "1M", "1Y" }
 
 -- Percentile of an ascending sorted list, interpolated between the two
@@ -113,6 +127,17 @@ function ns.Recommend(itemID, tf, liveCheapest)
   local mktNow = tonumber(item.market) or 0
   local sold24 = tonumber(item.sold24) or 0
   local vendor = tonumber(item.vendor) or 0
+  -- Sales per day (scaled up while only part of a day is measured; nil
+  -- while nothing is measured yet).
+  local perDay, soldEarly = sold24, false
+  if type(ns.SoldPerDay) == "function" then perDay, soldEarly = ns.SoldPerDay(item) end
+  -- Prices behind only 1 or 2 listings, or a few units far above what a
+  -- vendor pays, may be one player's guess: no advice for those.
+  local auctions = tonumber(item.auctions)
+  local thinListings = auctions ~= nil and auctions >= 1 and auctions < MIN_AUCTIONS
+  local listed = tonumber(item.listed) or 0
+  local vendorFar = vendor > 0 and mktNow > VENDOR_FAR * vendor and listed < VENDOR_FAR_UNITS
+  local advice = history and not thinListings and not vendorFar
 
   -- Window low and high of the cheapest prices.
   local lo, hi = cheaps[1], cheaps[#cheaps]
@@ -155,15 +180,32 @@ function ns.Recommend(itemID, tf, liveCheapest)
   -- Never post under a normal-priced cheapest listing: it would sell for less than needed.
   if cheapNow > 1 and not far and listAt < cheapNow - 1 then listAt = cheapNow - 1 end
 
+  -- The same rule from today's prices alone, kept even when there is no
+  -- advice: with only the history short, today's market price is still
+  -- fine, so the Use List At button never posts far under it (AH.lua).
+  local followFloor = listAt
+
+  -- Prices that cannot be trusted yet give no targets at all.
+  if not advice then buy, sell, listAt = 0, 0, 0 end
+
+  -- What a player would post at: the List At price. With no advice it is
+  -- what the Use List At button fills: 1 copper under the cheapest listing,
+  -- or today's List At rule when only the history is short.
+  local postAt = listAt
+  if not advice then
+    postAt = (cheapNow > 1) and (cheapNow - 1) or 0
+    if not thinListings and not vendorFar and followFloor > postAt then postAt = followFloor end
+  end
+
   local margin = floor(sell * AH_CUT) - buy
   local marginPct = (buy > 0) and (margin / buy) or 0
 
   -- Where the cheapest price sits in the window's range of cheapest prices
   -- (0 = at the low, 1 = at the high). A narrow range is widened to 10% of the
   -- median around its middle, so a small wiggle reads as Hold, not as an extreme.
-  -- With nothing listed, or too little history, it counts as the middle.
+  -- With nothing listed, or no advice, it counts as the middle.
   local pos = 0.5
-  if cheapNow > 0 and history then
+  if cheapNow > 0 and advice then
     local plo, phi = lo, hi
     local median = percentile(cheaps, 0.50) or cheapNow
     local want = MIN_RANGE * median
@@ -181,16 +223,23 @@ function ns.Recommend(itemID, tf, liveCheapest)
   if margin <= 0 then score = max(-24, min(24, score)) end
   local verdict = verdictFor(score)
 
-  local vendorBetter = vendor > 0 and listAt > 0 and floor(listAt * AH_CUT) <= vendor
+  -- A vendor pays more than the auction house would after its 5% cut, at
+  -- the price a player would post at (also when there is no advice).
+  local vendorBetter = vendor > 0 and postAt > 0 and floor(postAt * AH_CUT) <= vendor
 
   local notes = {}
-  if sold24 < 3 then notes[#notes + 1] = "Thin market" end
+  -- While sales are still being measured there is no sales number to judge.
+  if perDay ~= nil and perDay < 3 then notes[#notes + 1] = "Thin market" end
   if cheapNow == 0 then notes[#notes + 1] = "No listings right now" end
   if not history then
     notes[#notes + 1] = "Not enough price history yet"
   elseif used ~= asked then
     notes[#notes + 1] = "Too few prices in " .. asked .. ": advice uses " .. used
   end
+  if thinListings then
+    notes[#notes + 1] = "Only " .. auctions .. (auctions == 1 and " listing" or " listings") .. ": price may not be reliable"
+  end
+  if vendorFar then notes[#notes + 1] = "Listed far above what a vendor pays: price may not be reliable" end
   if far then notes[#notes + 1] = "Cheapest now is far above recent prices" end
   if history and cheapNow > 0 and cheapNow < buy and margin > 0 then
     notes[#notes + 1] = "Cheapest is below the buy target: buy it"
@@ -202,6 +251,8 @@ function ns.Recommend(itemID, tf, liveCheapest)
     buy = buy,
     sell = sell,
     listAt = listAt,
+    postAt = postAt,               -- what a player would post at (0 = nothing to undercut)
+    followFloor = followFloor,     -- the List At rule from today's prices, even with no advice
     margin = margin,
     marginPct = marginPct,
     verdict = verdict,
@@ -212,11 +263,18 @@ function ns.Recommend(itemID, tf, liveCheapest)
     cheapestNow = cheapNow,
     marketNow = mktNow,
     sold24 = sold24,
+    soldPerDay = perDay,           -- nil while sales are still being measured
+    salesMeasuring = perDay == nil,
+    soldEarly = soldEarly and true or false,
     notes = notes,
     tf = used,
     askedTF = asked,
     points = s and s.n or 0,
     history = history,
+    advice = advice,
+    auctions = auctions,
+    thinListings = thinListings,
+    vendorFar = vendorFar,
     far = far,
     live = live ~= nil,
     vendorBetter = vendorBetter,

@@ -169,19 +169,56 @@ local function HasData()
   return type(db.items) == "table" and next(db.items) ~= nil
 end
 
+-- "" and "Item 12345" are what the data says when it has no name for an item.
+local function KnownName(n)
+  return type(n) == "string" and n ~= "" and not IsSecret(n) and n:match("^Item %d+$") == nil
+end
+
 local function GameItemName(id)
+  if type(ns.GameItemName) == "function" then
+    local ok, n = pcall(ns.GameItemName, id)
+    if ok and KnownName(n) then return n end
+  end
   local CI = _G.C_Item
   if type(CI) == "table" then
     if type(CI.GetItemNameByID) == "function" then
       local ok, n = pcall(CI.GetItemNameByID, id)
-      if ok and type(n) == "string" and n ~= "" then return n end
+      if ok and KnownName(n) then return n end
     end
     if type(CI.GetItemInfo) == "function" then
       local ok, n = pcall(CI.GetItemInfo, id)
-      if ok and type(n) == "string" and n ~= "" then return n end
+      if ok and KnownName(n) then return n end
     end
   end
   return nil
+end
+
+-- The data's name, else the game's, else "Item 12345".
+local function DisplayName(id, item)
+  local nm = type(item) == "table" and item.name or nil
+  if KnownName(nm) then return nm end
+  return GameItemName(id) or ("Item " .. tostring(id))
+end
+
+-- Why there are no buy and sell targets, or nil when there are.
+local function NoAdviceText(rec)
+  if type(rec) ~= "table" then return nil end
+  if rec.history == false then return "Needs more history" end
+  if rec.advice == false then return "Price not reliable" end
+  return nil
+end
+
+-- "~120 sold/day", with "(early estimate)" while only part of a day is
+-- measured, or "sales: measuring" before any sales are measured.
+local function SoldText(item)
+  if type(ns.SoldPerDay) == "function" then
+    local ok, per, early = pcall(ns.SoldPerDay, item)
+    if ok then
+      if per == nil then return "sales: measuring" end
+      return "~" .. Commas(per) .. " sold/day" .. (early and " (early estimate)" or "")
+    end
+  end
+  return "~" .. Commas(item and item.sold24) .. " sold/day"
 end
 
 local function ItemIcon(id)
@@ -779,8 +816,14 @@ function Chart:SetBoxes(item, rec)
   end
   local cheapNow = rec and rec.cheapestNow or (item and item.cheapest)
   local mktNow = rec and rec.marketNow or (item and item.market)
-  self.buyBox.value:SetText(rec and money(rec.buy) or "-")
-  self.listBox.value:SetText(rec and money(rec.listAt) or "-")
+  -- Too little history (or a price that may be one player's guess): say so
+  -- in grey instead of showing targets worked out from a snapshot or two.
+  local why = NoAdviceText(rec)
+  local valueColor = why and Col("muted") or { 1, 1, 1 }
+  SetFSColor(self.buyBox.value, valueColor)
+  SetFSColor(self.listBox.value, valueColor)
+  self.buyBox.value:SetText(why or (rec and money(rec.buy)) or "-")
+  self.listBox.value:SetText(why or (rec and money(rec.listAt)) or "-")
   if item then
     local liveTag = (rec and rec.live) and " (live)" or ""
     self.buyBox.sub:SetText("Cheapest: " .. (((Num(cheapNow) or 0) > 0) and (MoneyI(cheapNow) .. liveTag) or "none listed"))
@@ -800,6 +843,15 @@ function Chart:SetFooter(item, rec, extraNote)
     self.verdict:SetText("")
     self.meter:Hide()
     self.margin:SetText("")
+  elseif rec and NoAdviceText(rec) then
+    -- No targets yet: no verdict colour, no meter, no margin. The notes say why.
+    self.verdict:SetText("No advice yet")
+    SetFSColor(self.verdict, Col("muted"))
+    self.meter:Hide()
+    self.margin:SetText("")
+    if type(rec.notes) == "table" then
+      for _, n in ipairs(rec.notes) do notes[#notes + 1] = tostring(n) end
+    end
   elseif rec then
     local verdict = tostring(rec.verdict or "Hold")
     self.verdict:SetText(verdict)
@@ -824,8 +876,7 @@ function Chart:SetFooter(item, rec, extraNote)
     self.margin:SetText("")
   end
   if item then
-    local sold = Num(rec and rec.sold24) or Num(item.sold24) or 0
-    self.volume:SetText("~" .. Commas(sold) .. " sold/day" .. DOT .. Commas(item.listed) .. " listed")
+    self.volume:SetText(SoldText(item) .. DOT .. Commas(item.listed) .. " listed")
   else
     self.volume:SetText("")
   end
@@ -976,6 +1027,16 @@ function Chart:DrawPlot(s, rec, tf)
   local pad = span > 0 and span * 0.08 or max(1, vmax * 0.05)
   local lo, hi = max(0, vmin - pad), vmax + pad
   if hi - lo < 2 then hi = lo + 2 end
+  -- Above 100g the labels leave out the copper, so a range of under a silver
+  -- or two gets just one label. Widen the range around its middle until the
+  -- axis has at least two.
+  local ticks, labels = YTicks(lo, hi)
+  for _ = 1, 16 do
+    if #ticks >= 2 then break end
+    local mid, half = (lo + hi) / 2, max(hi - lo, 2)
+    lo, hi = max(0, mid - half), mid + half
+    ticks, labels = YTicks(lo, hi)
+  end
 
   local volH = floor(plotH * 0.20)
   local pBottom, pTop = volH + 6, plotH - 6
@@ -990,7 +1051,6 @@ function Chart:DrawPlot(s, rec, tf)
 
   -- Grid and y-axis labels
   local muted = Col("muted")
-  local ticks, labels = YTicks(lo, hi)
   for k, v in ipairs(ticks) do
     local y = Y(v)
     local g = self.pools.grid:Get()
@@ -1132,8 +1192,8 @@ function Chart:Draw(tf)
     return
   end
   local item = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
-  local gameName = GameItemName(id)
   if not item then
+    local gameName = GameItemName(id)
     local name = gameName or ("item " .. id)
     self:SetHeader(id, gameName or ("Item " .. id))
     self:SetBoxes(nil, nil)
@@ -1145,11 +1205,20 @@ function Chart:Draw(tf)
   -- The live cheapest listing (when the open AH has loaded it) beats the hourly data.
   local live = type(ns.LiveCheapest) == "function" and ns.LiveCheapest(id) or nil
   local rec = type(ns.Recommend) == "function" and ns.Recommend(id, tf, live) or nil
-  self:SetHeader(id, item.name or gameName, item, s, tf)
+  self:SetHeader(id, DisplayName(id, item), item, s, tf)
   self:SetBoxes(item, rec)
   self:SetFooter(item, rec)
-  if type(s) ~= "table" or (s.n or 0) < 1 then
-    self:ShowMessage("No price history for this timeframe yet.")
+  local n = type(s) == "table" and (Num(s.n) or 0) or 0
+  if n < 2 then
+    -- A new data set has one price per item: a chart needs at least two.
+    local daily = type(s) == "table" and (s.step or 0) >= 86400
+    local msg = "Collecting price history. This chart fills in as " .. (daily and "daily" or "hourly")
+      .. " prices arrive (" .. (n > 0 and tostring(n) or "none") .. " so far)."
+    if daily and type(ns.GetSeries) == "function" then
+      local hs = ns.GetSeries(id, "5D")
+      if type(hs) == "table" and (Num(hs.n) or 0) >= 2 then msg = msg .. "\nThe 1D, 5D and 1W charts already have hourly prices." end
+    end
+    self:ShowMessage(msg)
     return
   end
   self:DrawPlot(s, rec, tf)
@@ -1205,7 +1274,7 @@ end
 
 function Chart:HoverUpdate()
   local v = self.view
-  if not v then return end
+  if not v or (v.n or 0) < 1 then return end
   local gcp = _G.GetCursorPosition
   if type(gcp) ~= "function" then return end
   local cx = Num((gcp()))
@@ -1220,7 +1289,7 @@ end
 
 function Chart:HoverAt(idx)
   local v = self.view
-  if not v then return end
+  if not v or not idx or idx < 1 or idx > (v.n or 0) then return end
   self.hoverIdx = idx
   local s, plot = v.s, self.plot
   local x = v.X(idx)

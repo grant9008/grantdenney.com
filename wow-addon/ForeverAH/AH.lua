@@ -26,6 +26,9 @@ local AH = {
   hookedC = false,
   itemID = nil,          -- the item the chart should show
   pendingSearch = nil,   -- lower-case search text waiting for browse results
+  pendingIDs = nil,      -- set of item ids when that name belongs to several items
+  expectID = nil,        -- the item ns.SearchAH (the sidebar) is searching for
+  expectAt = 0,
   atrSellItemID = nil,
   atrSellLocation = nil,
   atrReady = false,      -- Auctionator has filled its own price for the item in its Selling tab
@@ -242,7 +245,8 @@ end
 -- Price advice for the sell buttons
 ---------------------------------------------------------------------------
 -- Returns the price to fill (already rounded for the frame) and what it is
--- based on, or nil plus a reason ("market", "suffix", "stale", "none").
+-- based on, or nil plus a reason ("market", "suffix", "stale", "history",
+-- "unreliable", "none").
 local function SellAdvice(id, isCommodity, hasSuffix)
   if not id or type(ns.Recommend) ~= "function" then return nil, "none" end
   if type(ns.MarketMismatch) == "function" and ns.MarketMismatch() then return nil, "market" end
@@ -253,13 +257,26 @@ local function SellAdvice(id, isCommodity, hasSuffix)
   local ok, rec = pcall(ns.Recommend, id, TF(), lp)
   if not ok or type(rec) ~= "table" then return nil, "none" end
   local v = Num(rec.listAt)
+  local follow = false
+  if rec.advice == false then
+    -- No List At price yet. A few units listed far above what a vendor
+    -- pays: the cheapest listing is that same silly price, so no button.
+    if rec.vendorFar then return nil, "unreliable" end
+    -- Otherwise only with a listing that is up right now: 1 copper under it.
+    if not lp or lp <= 1 then return nil, "history" end
+    v, follow = lp - 1, "cheapest"
+    -- With only the history short, today's market price is fine: never post
+    -- far under it (the same List At rule, from today's prices).
+    local floorAt = Num(rec.followFloor)
+    if not rec.thinListings and floorAt and floorAt > v then v, follow = floorAt, "market" end
+  end
   if not v or v <= 0 then return nil, "none" end
   -- The cheapest listing is your own: match it instead of undercutting yourself.
   local matched = false
   if lp and own and v == lp - 1 then v, matched = lp, true end
   local price = PriceForFrame(v, isCommodity)
   if not price then return nil, "none" end
-  return price, { live = lp, matched = matched, age = age, rec = rec }
+  return price, { live = lp, matched = matched, age = age, rec = rec, follow = follow }
 end
 AH.SellAdvice = SellAdvice
 
@@ -274,10 +291,18 @@ local function AdviceText(info, postWord)
       or "From the latest price data: the live listings have not loaded yet."
   end
   local rec = info and info.rec
-  if type(rec) == "table" then
-    if rec.far then lines[#lines + 1] = "The cheapest listing is far above recent prices, so this uses the recent sell price." end
-    if rec.vendorBetter then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
+  if info and info.follow == "market" then
+    lines[#lines + 1] = "There is not enough price history yet, so this uses the market price seen so far, not 1 copper under the cheapest listing."
+  elseif info and info.follow then
+    if type(rec) == "table" and rec.history == false then
+      lines[#lines + 1] = "There is not enough price history for a List At price yet, so this only follows the cheapest listing."
+    else
+      lines[#lines + 1] = "This item's price may not be reliable (see the chart notes), so this only follows the cheapest listing."
+    end
+  elseif type(rec) == "table" and rec.far then
+    lines[#lines + 1] = "The cheapest listing is far above recent prices, so this uses the recent sell price."
   end
+  if type(rec) == "table" and rec.vendorBetter then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
@@ -341,8 +366,48 @@ end
 -- An explicit choice (clicked a result, put an item in the sell slot).
 local function SetItemNow(id)
   pendingToken = pendingToken + 1
-  AH.pendingSearch = nil
+  AH.pendingSearch, AH.pendingIDs, AH.expectID = nil, nil, nil
   ApplyItem(id)
+end
+
+-- ns.SearchAH (the sidebar) says which item it is about to search for, so a
+-- name several items share (Squire's Shirt) keeps that item, not the lowest id.
+local EXPECT_SECONDS = 10
+local function NowSeconds()
+  if type(ns.Now) ~= "function" then return 0 end
+  local ok, t = pcall(ns.Now)
+  return ok and Num(t) or 0
+end
+
+local expectToken = 0
+function ns.AH_ExpectItem(id)
+  expectToken = expectToken + 1
+  AH.expectID = Num(tonumber(id))
+  AH.expectAt = NowSeconds()
+end
+AH.ExpectItem = ns.AH_ExpectItem
+
+-- The expected item when this search found it (and it is recent), else nil.
+local function ExpectedIn(ids)
+  local want = AH.expectID
+  if not want then return nil end
+  if NowSeconds() - (AH.expectAt or 0) > EXPECT_SECONDS then
+    AH.expectID = nil
+    return nil
+  end
+  for _, v in ipairs(ids) do
+    if v == want then
+      -- One search can reach two hooks: keep it a moment, then forget it,
+      -- so a search typed later starts fresh.
+      local tok = expectToken
+      After(1, function()
+        if tok == expectToken then AH.expectID = nil end
+      end)
+      return want
+    end
+  end
+  AH.expectID = nil -- a search for something else
+  return nil
 end
 
 -- A softer signal (search text, browse results). Waits a moment so a burst of
@@ -370,25 +435,47 @@ local function OnSearch(text)
   if not AH.open then return end
   local s = CleanSearch(text)
   if not s then return end -- empty text is a full scan, not the player searching
-  AH.pendingSearch = s:lower()
-  local id = type(ns.FindItemID) == "function" and ns.FindItemID(s) or nil
+  AH.pendingSearch, AH.pendingIDs = s:lower(), nil
+  local ids
+  if type(ns.FindItemIDs) == "function" then
+    ids = ns.FindItemIDs(s)
+  elseif type(ns.FindItemID) == "function" then
+    ids = { ns.FindItemID(s) }
+  end
+  if type(ids) ~= "table" then ids = {} end
+  local expected = ExpectedIn(ids)
+  if expected then ids = { expected } end
+  local id = ids[1]
   if id then
-    AH.pendingSearch = nil
+    if #ids > 1 then
+      -- Several items share this name (Squire's Shirt): show the first now and
+      -- let the search results say which one is actually listed.
+      AH.pendingIDs = {}
+      for _, v in ipairs(ids) do AH.pendingIDs[v] = true end
+    else
+      AH.pendingSearch = nil
+    end
     SetItemSoon(id)
   end
 end
 AH.OnSearch = OnSearch
 
 -- Pick the item to chart from a list of candidate itemIDs: an exact name match
--- for the search text first, else the first one we have prices for.
+-- for the search text first, else the first one we have prices for. When the
+-- name belongs to several items, only one of those is picked.
 local function PickFromIDs(ids)
-  local want = AH.pendingSearch
+  local want, only = AH.pendingSearch, AH.pendingIDs
   local first
   for _, id in ipairs(ids) do
     local it = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
     if it then
-      if want and type(it.name) == "string" and it.name:lower() == want then return id end
-      first = first or id
+      if only then
+        if only[id] then return id end
+      else
+        local nm = it.name
+        if want and type(nm) == "string" and nm:lower() == want then return id end
+        first = first or id
+      end
     end
   end
   return first
@@ -408,7 +495,7 @@ local function OnBrowseResults()
   end
   local pick = PickFromIDs(ids)
   if pick then
-    AH.pendingSearch = nil
+    AH.pendingSearch, AH.pendingIDs = nil, nil
     SetItemSoon(pick)
   end
 end
@@ -1008,7 +1095,7 @@ local function OnLegacyResults()
   end
   local pick = PickFromIDs(ids)
   if pick then
-    AH.pendingSearch = nil
+    AH.pendingSearch, AH.pendingIDs = nil, nil
     SetItemSoon(pick)
   end
 end
@@ -1122,7 +1209,7 @@ end
 local function OnClose()
   if not AH.open then return end
   AH.open = false
-  AH.pendingSearch = nil
+  AH.pendingSearch, AH.pendingIDs, AH.expectID = nil, nil, nil
   pendingToken = pendingToken + 1
   AH.atrSellItemID, AH.atrSellLocation, AH.atrSellSuffix, AH.atrReady = nil, nil, nil, false
   AH.legacySellID, AH.legacySellCount = nil, nil

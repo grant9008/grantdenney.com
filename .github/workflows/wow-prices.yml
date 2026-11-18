@@ -1,13 +1,20 @@
 name: WoW Forever prices
 
 # Blizzard's auction API shows what is listed right now and keeps no history,
-# so this snapshots the Alliance auction house (PvP ruleset) every hour and
-# keeps the history itself. Output goes to the separate `wow-data` branch,
-# which grantdenney.com/wow reads through raw.githubusercontent.com. Keeping
-# it off `main` means the hourly update never rebuilds the site.
+# so this snapshots the Alliance auction house (PvP ruleset) and keeps the
+# history itself. Output goes to the separate `wow-data` branch, which
+# grantdenney.com/wow reads through raw.githubusercontent.com. Keeping it off
+# `main` means the updates never rebuild the site.
+#
+# Blizzard refreshes the data about once an hour. GitHub often drops or delays
+# scheduled runs, so this checks 4 times an hour. A check where Blizzard has
+# nothing new ends quickly and publishes nothing (the script says
+# changed=false), so the extra runs are cheap. A download that looks
+# incomplete is held back: only a note in state.json is published, so the
+# next check downloads it again instead of publishing half the prices.
 on:
   schedule:
-    - cron: "11 * * * *"   # every hour at :11
+    - cron: "4,19,34,49 * * * *"   # every 15 minutes, at :04, :19, :34 and :49
   workflow_dispatch:
 
 permissions:
@@ -22,7 +29,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 25
     # Until the Battle.net key is added as repo secrets there is nothing to
-    # fetch, so the job reports "skipped" instead of failing every hour.
+    # fetch, so the job reports "skipped" instead of failing every run.
     env:
       HAS_KEY: ${{ secrets.BNET_CLIENT_ID != '' && secrets.BNET_CLIENT_SECRET != '' }}
     steps:
@@ -55,23 +62,25 @@ jobs:
           fi
 
       - name: Snapshot the auction house
+        id: snapshot
         if: env.HAS_KEY == 'true'
         env:
           BNET_CLIENT_ID: ${{ secrets.BNET_CLIENT_ID }}
           BNET_CLIENT_SECRET: ${{ secrets.BNET_CLIENT_SECRET }}
         run: python tools/wow/fetch_ah.py wowdata
 
+      - name: Nothing new from Blizzard
+        if: env.HAS_KEY == 'true' && steps.snapshot.outputs.changed != 'true'
+        run: echo "Blizzard has not refreshed the auction house since the last snapshot, so nothing was published."
+
       - name: Publish (one commit, history kept in the files not in git)
-        if: env.HAS_KEY == 'true'
+        if: env.HAS_KEY == 'true' && steps.snapshot.outputs.changed == 'true'
         run: |
           cd wowdata
-          if [ -z "$(git status --porcelain)" ]; then
-            echo "Blizzard had nothing new (or this PC already published it). Nothing to publish."
-            exit 0
-          fi
           # Only replace the snapshot this run started from: if the user's PC
-          # published a newer one meanwhile, the push is refused instead of
-          # rolling it back. Empty BASE = the branch must not exist yet.
+          # (tools/wow/addon/collect_prices.ps1) published a newer one meanwhile,
+          # the push is refused instead of rolling it back. Empty BASE = the
+          # branch must not exist yet.
           BASE=$(git rev-parse -q --verify HEAD || true)
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"

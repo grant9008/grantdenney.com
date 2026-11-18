@@ -1582,7 +1582,8 @@ async function jget(url) {
    use the Wiki's shapes, so everything downstream is unchanged:
      low  = cheapest buyout per unit right now (you can buy at this)
      high = market value, the mean of the cheapest ~15% of listed units (what
-            it resells for), and volumes are ESTIMATED units sold.
+            it resells for; under 10 units listed, the second cheapest unit), and
+            volumes are ESTIMATED units sold (see wowScaleSales).
    Local preview reads /wow/_localdata unless ?live=1 is in the URL. */
 const WOW_DATA = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !/[?&]live=1/.test(location.search))
   ? '/wow/_localdata'
@@ -1658,6 +1659,53 @@ const loadHistorical = async (id) => {
   return { [String(id)]: (f.d || []).filter(p => p[2] > 0 || p[1] > 0)
     .map(p => ({ id, timestamp: p[0] * 1000, price: p[2] || p[1], volume: p[4] || 0 })) };
 };
+/* Unknown names: the collector writes "" (older files "Item 12345") when
+   Blizzard has not given an item's name. Give each one a readable, searchable
+   name so nothing downstream meets an empty string. */
+function wowFixNames(list) {
+  if (!Array.isArray(list)) return [];
+  const out = list.filter(m => m && m.id != null);
+  for (const m of out) {
+    const nm = typeof m.name === 'string' ? m.name.trim() : '';
+    if (!nm || /^Item \d+$/.test(nm)) { m.name = 'Unknown item #' + m.id; m.unknownName = true; }
+  }
+  return out;
+}
+/* Partial-day sales: status.json salesHours says how many of the last 24
+   hours have a measured sold estimate (0 on a first snapshot or after a gap).
+   volumes.json and 24h.json add up only those hours, so scale them up to a
+   full day, the same way the in-game addon does for its "(early estimate)".
+   Older status files have no salesHours: nothing changes. */
+function wowScaleSales(st) {
+  const h = Math.floor(Number(st && st.salesHours));
+  if (!(h >= 1 && h < 24)) return;
+  const scale = v => Math.floor((Number(v) || 0) * 24 / h + 0.5);
+  if (volumes && volumes.data) {
+    for (const id of Object.keys(volumes.data)) volumes.data[id] = scale(volumes.data[id]);
+  }
+  if (past24h && past24h.data) {
+    for (const id of Object.keys(past24h.data)) {
+      const d = past24h.data[id];
+      if (!d) continue;
+      const tot = scale((d.highPriceVolume || 0) + (d.lowPriceVolume || 0));
+      d.lowPriceVolume = Math.floor(tot / 2);
+      d.highPriceVolume = tot - d.lowPriceVolume;
+    }
+  }
+}
+/* Thin listings: latest.json "n" is how many separate auctions sit behind an
+   item's price. One or two is not a market: one sale or one new listing can
+   move the price a lot. Older data has no "n"; then nothing changes. */
+function wowThinCount(id) {
+  const n = latest?.data?.[String(id)]?.n;
+  return (n === 1 || n === 2) ? n : 0;
+}
+function wowThinTag(id) {
+  const n = wowThinCount(id);
+  if (!n) return '';
+  const word = n === 1 ? '1 listing' : '2 listings';
+  return '<span class="wow-thin-tag" title="Only ' + word + ' behind this price right now, so one sale or one new listing can move it a lot.">' + word + '</span>';
+}
 
 /* Icons come with the mapping (Blizzard's render CDN); the id-only form looks
    the item up there. */
@@ -6397,6 +6445,21 @@ function renderRatingGauge(item, mountEl, opts = {}) {
       whyHtml = ratingWhyHtml(gBuy, gSell, tf);
     }
   }
+  /* WoW: with only one or two auctions behind the price, keep the call but
+     never as a strong one, and say why right under it. */
+  const thinN = item ? wowThinCount(item.id) : 0;
+  let thinNote = '';
+  if (thinN) {
+    /* Label, lit segment and needle all drop from Strong to plain Buy/Sell. */
+    strong = false;
+    if (label) label = label.replace(/^Strong /, '');
+    signed = Math.max(-0.59, Math.min(0.59, signed));
+    if (liveIdx === 4) liveIdx = 3;
+    else if (liveIdx === 0) liveIdx = 1;
+    thinNote = '<div class="wow-thin-note">Only ' + (thinN === 1 ? '1 listing' : '2 listings') +
+      ' on the auction house right now, so this price can jump with one sale or one new listing. ' +
+      'Treat this rating as a rough guide, not a sure thing.</div>';
+  }
   /* Track runs BUY (left) → SELL (right) to mirror the page layout: Target
      Buy is the left price box, Target Sell the right. signed=+1 (strong
      buy) therefore lands at 0%, signed=-1 at 100%. */
@@ -6411,6 +6474,7 @@ function renderRatingGauge(item, mountEl, opts = {}) {
   mountEl.innerHTML =
     '<div class="rg-top"><span class="rg-eyebrow">Analyst Rating</span>' +
       '<span class="pg-help" title="' + tip + '" role="button" aria-label="What does the Analyst Rating mean?">?</span>' +
+      (thinN ? wowThinTag(item.id) : '') +
       '<button type="button" class="rg-toggle calc-caret' + (collapsed ? ' closed' : '') + '" aria-expanded="' + (collapsed ? 'false' : 'true') + '" ' +
         'aria-label="' + (collapsed ? 'Expand' : 'Collapse') + ' Analyst Rating details">' + uiIcon('chev') + '</button></div>' +
     '<div class="rg-label' + (strong ? ' is-strong' : '') + '" style="color:' + hue + '">' + label + '</div>' +
@@ -6421,6 +6485,7 @@ function renderRatingGauge(item, mountEl, opts = {}) {
     '</div>' +
     '<div class="rg-scale"><span class="rg-end rg-end-buy">Buy</span>' +
       '<span class="rg-sub">' + sub + '</span><span class="rg-end rg-end-sell">Sell</span></div>' +
+    thinNote +
     whyHtml;
   mountEl.classList.toggle('is-collapsed', collapsed);
   /* Same widened target as the other two section headers. Re-wired here
@@ -6462,6 +6527,8 @@ function renderQuickFacts(m, node) {
   if (spread > 0) parts.push(cell('Spread', fmtGp(spread), '',
     'Market value minus the cheapest listing, before the AH cut. Room to work with, not profit: the 5% cut comes out of it.'));
   parts.push(cell('Vol', vol ? abbrevCount(vol) + '/day' : '—'));
+  const thinTag = wowThinTag(m.id);
+  if (thinTag) parts.push(thinTag);
   /* Limit was the third cell. Potential Profit's subline states it in full a
      few inches below — "18,000 units · 4h limit" — and unlike Vol that is
      unconditional, so this was the same fact twice on one screen every time.
@@ -6916,7 +6983,7 @@ function renderFlipCard(rec){
         <div class="fc-body">
           <img class="fc-icon" src="${itemIconUrl(rec.id)}" alt="${rec.item.name} icon" loading="lazy">
           <div class="fc-main">
-            <div class="fc-name">${rec.item.name}</div>
+            <div class="fc-name">${rec.item.name}</div>${wowThinTag(rec.id)}
             ${rec.why ? `<div class="fc-why">${rec.why}</div>` : ''}
           </div>
           <div class="fc-gauge">
@@ -8626,7 +8693,86 @@ const dotAlphaAt = (i, n) => n > 1
   ? DOT_ALPHA_OLD + (DOT_ALPHA_NEW - DOT_ALPHA_OLD) * (i / (n - 1))
   : DOT_ALPHA_NEW;
 
+/* WoW Forever: price history only starts with the first hourly snapshot, so
+   for a while a range can hold just one or two points and the chart looks
+   broken. Under WOW_MIN_POINTS the normal chart is still drawn (when there is
+   anything to draw) and a plain message is laid over its middle saying the
+   chart fills in by itself. At WOW_MIN_POINTS or more nothing changes. */
+const WOW_MIN_POINTS = 3;
 function drawChart(series) {
+  const n = series && series.labels ? series.labels.length : 0;
+  if (n >= WOW_MIN_POINTS) { drawChartBase(series); return; }
+  if (n > 0) drawChartBase(series);
+  else {
+    ctx.clearRect(0, 0, chartCssW || canvas.clientWidth, chartCssH || canvas.clientHeight);
+    const clEl = document.getElementById('chartLoading');
+    if (clEl) clEl.classList.add('hidden');
+  }
+  drawCollectingNote(n, wowChartStep(view));
+}
+/* What kind of points a timeframe is drawn from: 'daily' (the 6M, 1Y and 5Y
+   ranges read the daily history, one point a day) or 'hourly'. A daily
+   range says so, or its "(1 so far)" would sit still all day while hourly
+   snapshots keep arriving, which looks broken. */
+function wowChartStep(v) {
+  if (!currentItemSrc) return 'hourly';
+  const s = seriesForView(v, currentItemSrc, currentItemLowVol);
+  return (s === currentItemSrc.ts24h || s === currentItemSrc.hist) ? 'daily' : 'hourly';
+}
+/* Hourly points the 5D chart has (0 when it is drawn from daily points too). */
+function wowHourlyCount() {
+  if (!currentItemSrc || wowChartStep('5d') !== 'hourly') return 0;
+  return filterSeries(seriesForView('5d', currentItemSrc, currentItemLowVol), getPeriod('5d')).labels.length;
+}
+function wowCollectingParas(n, step, hourly) {
+  /* Each paragraph is a list of words; "(N so far)." stays one word so it
+     never wraps onto a line of its own. */
+  const paras = [
+    ('Collecting price history: this chart fills in as ' + (step === 'daily' ? 'daily' : 'hourly') +
+      ' prices arrive').split(' ').concat(['(' + n + ' so far).'])
+  ];
+  if (step === 'daily' && hourly >= 2) paras.push('The 1D and 5D charts already have hourly prices.'.split(' '));
+  paras.push('Nothing to scan: it updates by itself.'.split(' '));
+  return paras;
+}
+function drawCollectingNote(n, step) {
+  const W = chartCssW || canvas.clientWidth, H = chartCssH || canvas.clientHeight;
+  if (!(W > 0 && H > 0)) return;
+  const css = getComputedStyle(document.documentElement);
+  const cssVar = (k, d) => (css.getPropertyValue(k) || '').trim() || d;
+  const paras = wowCollectingParas(n, step, step === 'daily' ? wowHourlyCount() : 0);
+  const fs = W < 480 ? 12 : 13, lh = Math.round(fs * 1.5), padX = 16, padY = 12;
+  ctx.save();
+  ctx.font = '600 ' + fs + 'px BlinkMacSystemFont, sans-serif';
+  const maxW = Math.max(140, Math.min(420, W - 2 * padX - 24));
+  const lines = [];
+  for (const p of paras) {
+    let line = '';
+    for (const word of p) {
+      const t = line ? line + ' ' + word : word;
+      if (line && ctx.measureText(t).width > maxW) { lines.push(line); line = word; }
+      else line = t;
+    }
+    if (line) lines.push(line);
+  }
+  const textW = Math.max(...lines.map(l => ctx.measureText(l).width));
+  const bw = Math.min(W - 8, Math.ceil(textW + padX * 2)), bh = lines.length * lh + padY * 2;
+  const bx = Math.round((W - bw) / 2), by = Math.max(4, Math.round((H - bh) / 2));
+  ctx.globalAlpha = 0.94;
+  ctx.fillStyle = cssVar('--bg-panel', '#1B1815');
+  roundRectPath(ctx, bx, by, bw, bh, 8);
+  ctx.fill();
+  ctx.globalAlpha = 1;
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = cssVar('--border-light', '#3C352B');
+  ctx.stroke();
+  ctx.fillStyle = cssVar('--text-main', '#D9D3C7');
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  lines.forEach((l, i) => ctx.fillText(l, W / 2, by + padY + lh * i + lh / 2));
+  ctx.restore();
+}
+
+function drawChartBase(series) {
   /* Draw in the exact space the bitmap was sized for (see resizeCanvas) —
      re-measuring the DOM here can disagree with a not-yet-resynced bitmap. */
   const W = chartCssW || canvas.clientWidth, H = chartCssH || canvas.clientHeight;
@@ -10300,13 +10446,14 @@ setItem._userPicked = false;
   });
 
   try {
-    mapping = await loadMapping();
+    mapping = wowFixNames(await loadMapping());
     window._wowIconById = {};
     for (const m of mapping) if (m.icon) window._wowIconById[m.id] = m.icon;
     latest = await loadLatest();
     lastLiveFetchAt = Math.floor(Date.now() / 1000);
     try { past24h = await load24h(); } catch (e) {}
     try { volumes = await loadVolumes(); } catch (e) {}
+    try { wowScaleSales(await loadStatus()); } catch (e) {}
     /* Before the first render: renderWatchlist asks for any favorite's
        high/low it does not have, so restoring after it re-downloaded every
        favorite on every page load. */

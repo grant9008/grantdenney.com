@@ -10,10 +10,10 @@ ADDON_NAME = ADDON_NAME or "ForeverAH"
 ns = ns or {}
 
 local _G = _G
-local type, tonumber, tostring, pairs, pcall, select = type, tonumber, tostring, pairs, pcall, select
+local type, tonumber, tostring, pairs, ipairs, pcall, select = type, tonumber, tostring, pairs, ipairs, pcall, select
 local floor, max, min, abs = math.floor, math.max, math.min, math.abs
 local sfind, ssub, sbyte, slower, sformat, smatch, sgsub = string.find, string.sub, string.byte, string.lower, string.format, string.match, string.gsub
-local tconcat = table.concat
+local tconcat, tinsert = table.concat, table.insert
 
 ---------------------------------------------------------------------------
 -- Data
@@ -26,6 +26,76 @@ end
 if type(db.items) ~= "table" then db.items = {} end
 db.updated = tonumber(db.updated) or 0
 ns.db = db
+
+local function isSecret(v)
+  local f = _G.issecretvalue
+  if type(f) ~= "function" then return false end
+  local ok, r = pcall(f, v)
+  return ok and r and true or false
+end
+ns.IsSecret = isSecret
+
+-- How many of the last 24 hourly snapshots have a measured sales estimate.
+-- Older data files do not say: they count as a full day.
+function ns.SalesHours()
+  local h = tonumber(db.salesHours)
+  if not h then return 24 end
+  h = floor(h)
+  if h < 0 then return 0 end
+  if h > 24 then return 24 end
+  return h
+end
+
+-- Estimated units sold per day, scaled up to a full day when sales have only
+-- been measured for part of it. Returns nil while nothing has been measured
+-- yet (a first snapshot, or the first one after a gap), and a second value
+-- that is true when the number is an early estimate (or still measuring).
+function ns.SoldPerDay(item)
+  if type(item) ~= "table" then return 0, false end
+  local sold = tonumber(item.sold24) or 0
+  local h = ns.SalesHours()
+  if h <= 0 then return nil, true end
+  if h >= 24 then return sold, false end
+  return floor(sold * 24 / h + 0.5), true
+end
+
+-- "~120 sold/day", "~120 sold/day (early estimate)" or "sales: measuring".
+function ns.SoldText(item)
+  local per, early = ns.SoldPerDay(item)
+  if per == nil then return "sales: measuring" end
+  return "~" .. ns.Num(per) .. " sold/day" .. (early and " (early estimate)" or "")
+end
+
+-- Unknown item names: "" (new data files) or "Item 12345" (older ones).
+local function unknownName(nm)
+  return type(nm) ~= "string" or nm == "" or smatch(nm, "^Item %d+$") ~= nil
+end
+ns.IsUnknownName = unknownName
+
+-- The game's own name for an item, or nil when it has not loaded it (asking
+-- also makes the game load it, so a later call usually has it).
+local function gameName(id)
+  local function good(ok, n)
+    return ok and type(n) == "string" and not isSecret(n) and not unknownName(n)
+  end
+  local CI = _G.C_Item
+  if type(CI) == "table" then
+    if type(CI.GetItemNameByID) == "function" then
+      local ok, n = pcall(CI.GetItemNameByID, id)
+      if good(ok, n) then return n end
+    end
+    if type(CI.GetItemInfo) == "function" then
+      local ok, n = pcall(CI.GetItemInfo, id)
+      if good(ok, n) then return n end
+    end
+  end
+  if type(_G.GetItemInfo) == "function" then
+    local ok, n = pcall(_G.GetItemInfo, id)
+    if good(ok, n) then return n end
+  end
+  return nil
+end
+ns.GameItemName = gameName
 
 ns.STALE_SECONDS = 6 * 3600
 ns.AH_CUT = 0.95
@@ -93,6 +163,19 @@ end
 -- Item summary ------------------------------------------------------------
 local itemCache = {}   -- id -> item table, or false when the id is not in the data
 
+-- Items the data has no name for get the game's name the first time
+-- something reads item.name (and keep it once the game has loaded it).
+-- Until then item.name is "".
+local unnamedMeta = { __index = function(t, k)
+  if k ~= "name" then return nil end
+  local n = gameName(rawget(t, "id"))
+  if n then
+    rawset(t, "name", n)
+    return n
+  end
+  return ""
+end }
+
 function ns.GetItem(itemID)
   local id = tonumber(itemID)
   if not id then return nil end
@@ -106,17 +189,35 @@ function ns.GetItem(itemID)
   local f = split(raw, "|")
   local item = {
     id       = id,
-    name     = f[1] or "",
     cheapest = num10(f[2]),
     market   = num10(f[3]),
     listed   = num10(f[4]),
     sold24   = num10(f[5]),
     avg7     = num10(f[6]),
     vendor   = num10(f[7]),
+    -- How many separate listings make up today's prices (nil in older files).
+    auctions = tonumber(f[10]),
   }
+  local nm = f[1] or ""
+  if unknownName(nm) then
+    item.unnamed = true
+    setmetatable(item, unnamedMeta)
+  else
+    item.name = nm
+  end
   itemCache[id] = item
   ns.stats.items = ns.stats.items + 1
   return item
+end
+
+-- The name to show for an item: the data's, else the game's, else "Item 123".
+function ns.ItemName(itemID)
+  local id = tonumber(itemID)
+  if not id then return "" end
+  local it = ns.GetItem(id)
+  local nm = it and it.name
+  if not unknownName(nm) then return nm end
+  return gameName(id) or ("Item " .. id)
 end
 
 -- Series ------------------------------------------------------------------
@@ -274,26 +375,103 @@ function ns.GetSeries(itemID, tf)
   return w
 end
 
--- Name lookup -------------------------------------------------------------
-local nameIndex
+-- How many days the item's daily prices cover (read without unpacking them).
+local dayCount = {}
+function ns.DailyPoints(itemID)
+  local id = tonumber(itemID)
+  if not id then return 0 end
+  local c = dayCount[id]
+  if c then return c end
+  c = 0
+  local raw = db.items[id]
+  if type(raw) == "string" then
+    local f = split(raw, "|")
+    local parts = split(f[9] or "", ";")
+    c = max(countTokens(parts[1] or ""), countTokens(parts[2] or ""), countTokens(parts[3] or ""))
+  end
+  dayCount[id] = c
+  return c
+end
 
-function ns.FindItemID(name)
-  if type(name) ~= "string" then return nil end
-  local key = slower(trim(name))
-  if key == "" then return nil end
-  if not nameIndex then
-    nameIndex = {}
-    for id, raw in pairs(db.items) do
-      local nid = tonumber(id)
-      if nid and type(raw) == "string" then
-        local bar = sfind(raw, "|", 1, true)
-        local nm = slower(bar and ssub(raw, 1, bar - 1) or raw)
-        local prev = nameIndex[nm]
-        if not prev or nid < prev then nameIndex[nm] = nid end
+-- Name lookup -------------------------------------------------------------
+-- Lower-case name -> list of item ids, lowest first (a few names belong to
+-- more than one item, like Squire's Shirt). Built on the first lookup, not at
+-- login. Items the data has no name for are looked up by the game's name,
+-- only when a lookup finds nothing, and only for the ones not found yet.
+local nameIndex, unnamedIDs
+
+local function addName(nm, id)
+  -- Searches are trimmed, so the names are too (a few real names end in a space).
+  local key = slower(trim(nm))
+  if key == "" then return end
+  local list = nameIndex[key]
+  if not list then
+    nameIndex[key] = { id }
+    return
+  end
+  for i = 1, #list do
+    if list[i] == id then return end
+    if id < list[i] then
+      tinsert(list, i, id)
+      return
+    end
+  end
+  list[#list + 1] = id
+end
+
+local function buildNameIndex()
+  nameIndex, unnamedIDs = {}, {}
+  for id, raw in pairs(db.items) do
+    local nid = tonumber(id)
+    if nid and type(raw) == "string" then
+      local bar = sfind(raw, "|", 1, true)
+      local nm = bar and ssub(raw, 1, bar - 1) or raw
+      if unknownName(nm) then
+        unnamedIDs[#unnamedIDs + 1] = nid
+      else
+        addName(nm, nid)
       end
     end
   end
-  return nameIndex[key]
+end
+
+local function indexGameNames()
+  if #unnamedIDs == 0 then return end
+  local still = {}
+  for _, id in ipairs(unnamedIDs) do
+    local n = gameName(id)
+    if n then addName(n, id) else still[#still + 1] = id end
+  end
+  unnamedIDs = still
+end
+
+local function lookupName(name)
+  if type(name) ~= "string" or isSecret(name) then return nil end
+  local key = slower(trim(name))
+  if key == "" then return nil end
+  if not nameIndex then buildNameIndex() end
+  local list = nameIndex[key]
+  if not list then
+    indexGameNames()
+    list = nameIndex[key]
+  end
+  return list
+end
+
+-- The item id for a name (the lowest one when several items share it).
+function ns.FindItemID(name)
+  local list = lookupName(name)
+  return list and list[1] or nil
+end
+
+-- Every item id with this name, lowest first (an empty list when none).
+function ns.FindItemIDs(name)
+  local list = lookupName(name)
+  local out = {}
+  if list then
+    for i = 1, #list do out[i] = list[i] end
+  end
+  return out
 end
 
 local itemCount
@@ -321,6 +499,13 @@ function ns.ResolveItem(text)
   end
   t = sgsub(t, "^%[", "")
   t = sgsub(t, "%]$", "")
+  -- "Item 7192" is what the chart and the watchlist show for an item with no
+  -- name yet, so typing it back works the same as typing the number.
+  local placeholder = smatch(t, "^[Ii]tem (%d+)$")
+  if placeholder then
+    local id = tonumber(placeholder)
+    if ns.GetItem(id) then return id end
+  end
   return ns.FindItemID(t)
 end
 
@@ -379,14 +564,6 @@ end
 ---------------------------------------------------------------------------
 -- Data age
 ---------------------------------------------------------------------------
-local function isSecret(v)
-  local f = _G.issecretvalue
-  if type(f) ~= "function" then return false end
-  local ok, r = pcall(f, v)
-  return ok and r and true or false
-end
-ns.IsSecret = isSecret
-
 local function now()
   local gst = _G.GetServerTime
   if type(gst) == "function" then
@@ -662,11 +839,12 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     else
       tt:AddDoubleLine("Cheapest", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
+    -- On the first day the 7-day average is just today's market price.
     local a = money(item.avg7)
-    if a then
+    if a and ns.DailyPoints(item.id) >= 2 then
       tt:AddDoubleLine("7-day avg" .. tag, a, tx[1], tx[2], tx[3], 1, 1, 1)
     end
-    tt:AddLine(sformat("Listed %s, ~%s sold/day", ns.Num(item.listed), ns.Num(item.sold24)), mu[1], mu[2], mu[3])
+    tt:AddLine("Listed " .. ns.Num(item.listed) .. ", " .. ns.SoldText(item), mu[1], mu[2], mu[3])
   end
   if type(opts) == "table" and opts.suffix then
     tt:AddLine("Price covers all versions of this item", mu[1], mu[2], mu[3])

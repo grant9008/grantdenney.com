@@ -1,11 +1,15 @@
 """Independent Python model of Recommend.lua (the price advice), used by
 harness.py and test_core.py. Written from the rules, not from the Lua.
 
-recommend(item, windows, tf, live=None)
-  item     {"cheapest", "market", "sold24", "vendor"} in copper
+recommend(item, windows, tf, live=None, sales_hours=24)
+  item     {"cheapest", "market", "sold24", "vendor", "listed", "auctions"} in
+           copper; auctions (separate listings) may be missing or None = unknown;
+           listed is the units listed now
   windows  function tf -> (cheap list, market list); None = nothing listed
   tf       the timeframe asked for
   live     the cheapest listing the AH shows right now, or None
+  sales_hours  how many of the last 24 hours have a measured sales estimate
+           (the data file's salesHours; None = an older file = 24)
 """
 import math
 
@@ -14,6 +18,35 @@ AH_CUT = 0.95
 MIN_POINTS = 4
 MIN_RANGE = 0.10
 FAR = 2
+MIN_AUCTIONS = 3
+VENDOR_FAR = 200
+VENDOR_FAR_UNITS = 10     # the vendor rule only applies with fewer units listed than this
+
+
+def sales_hours_of(h):
+    """Data file salesHours -> 0..24 (None, as in older files, is a full day)."""
+    if h is None:
+        return 24
+    h = math.floor(h)
+    return max(0, min(24, h))
+
+
+def sold_per_day(sold24, sales_hours=24):
+    """(per day or None while measuring, early estimate?) like ns.SoldPerDay."""
+    h = sales_hours_of(sales_hours)
+    if h <= 0:
+        return None, True
+    if h >= 24:
+        return sold24, False
+    return math.floor(sold24 * 24 / h + 0.5), True
+
+
+def sold_text(sold24, sales_hours=24):
+    """Like ns.SoldText: "~1,234 sold/day", with "(early estimate)", or "sales: measuring"."""
+    per, early = sold_per_day(sold24, sales_hours)
+    if per is None:
+        return "sales: measuring"
+    return "~" + "{:,}".format(int(per)) + " sold/day" + (" (early estimate)" if early else "")
 
 
 def pct(sorted_vals, p):
@@ -58,7 +91,7 @@ def money_text(c):
     return "-" + out if c < 0 and parts else out
 
 
-def recommend(item, windows, tf, live=None):
+def recommend(item, windows, tf, live=None, sales_hours=24):
     asked = tf.upper() if isinstance(tf, str) else "1D"
     if asked not in CHAIN:
         asked = "1D"
@@ -76,6 +109,11 @@ def recommend(item, windows, tf, live=None):
 
     cheap_now = live if (live is not None and live > 0) else item["cheapest"]
     mkt_now, sold24, vendor = item["market"], item["sold24"], item.get("vendor", 0)
+    per_day, sold_early = sold_per_day(sold24, sales_hours)
+    auctions = item.get("auctions")
+    thin_listings = auctions is not None and 1 <= auctions < MIN_AUCTIONS
+    vendor_far = vendor > 0 and mkt_now > VENDOR_FAR * vendor and (item.get("listed") or 0) < VENDOR_FAR_UNITS
+    advice = history and not thin_listings and not vendor_far
 
     if cheaps:
         lo, hi = cheaps[0], cheaps[-1]
@@ -112,12 +150,21 @@ def recommend(item, windows, tf, live=None):
         list_at = sell
     if cheap_now > 1 and not far and list_at < cheap_now - 1:
         list_at = cheap_now - 1
+    follow_floor = list_at          # the List At rule from today's prices, kept with no advice
+    if not advice:
+        buy = sell = list_at = 0
+    # what a player would post at: List At, or with no advice what Use List At fills
+    post_at = list_at
+    if not advice:
+        post_at = cheap_now - 1 if cheap_now > 1 else 0
+        if not thin_listings and not vendor_far and follow_floor > post_at:
+            post_at = follow_floor
 
     margin = math.floor(sell * AH_CUT) - buy
     margin_pct = margin / buy if buy > 0 else 0
 
     pos = 0.5
-    if cheap_now > 0 and history:
+    if cheap_now > 0 and advice:
         plo, phi = lo, hi
         median = pct(cheaps, 0.50)
         want = MIN_RANGE * median
@@ -130,9 +177,9 @@ def recommend(item, windows, tf, live=None):
     if margin <= 0:
         score = max(-24, min(24, score))
 
-    vendor_better = vendor > 0 and list_at > 0 and math.floor(list_at * AH_CUT) <= vendor
+    vendor_better = vendor > 0 and post_at > 0 and math.floor(post_at * AH_CUT) <= vendor
     notes = []
-    if sold24 < 3:
+    if per_day is not None and per_day < 3:
         notes.append("Thin market")
     if cheap_now == 0:
         notes.append("No listings right now")
@@ -140,6 +187,10 @@ def recommend(item, windows, tf, live=None):
         notes.append("Not enough price history yet")
     elif used != asked:
         notes.append("Too few prices in %s: advice uses %s" % (asked, used))
+    if thin_listings:
+        notes.append("Only %d %s: price may not be reliable" % (auctions, "listing" if auctions == 1 else "listings"))
+    if vendor_far:
+        notes.append("Listed far above what a vendor pays: price may not be reliable")
     if far:
         notes.append("Cheapest now is far above recent prices")
     if history and 0 < cheap_now < buy and margin > 0:
@@ -148,7 +199,50 @@ def recommend(item, windows, tf, live=None):
         notes.append("Spread does not beat the 5% AH cut")
     if vendor_better:
         notes.append("A vendor pays more (%s)" % money_text(vendor))
-    return {"buy": buy, "sell": sell, "listAt": list_at, "margin": margin, "marginPct": margin_pct,
+    return {"buy": buy, "sell": sell, "listAt": list_at, "postAt": post_at, "followFloor": follow_floor,
+            "margin": margin, "marginPct": margin_pct,
             "verdict": verdict_for(score), "score": score, "pos": pos, "lo": lo, "hi": hi,
             "cheapestNow": cheap_now, "marketNow": mkt_now, "sold24": sold24, "notes": notes,
-            "tf": used, "askedTF": asked, "history": history, "far": far, "vendorBetter": vendor_better}
+            "soldPerDay": per_day, "salesMeasuring": per_day is None, "soldEarly": bool(sold_early),
+            "tf": used, "askedTF": asked, "history": history, "advice": advice,
+            "auctions": auctions, "thinListings": thin_listings, "vendorFar": vendor_far,
+            "far": far, "vendorBetter": vendor_better}
+
+
+def sell_mode(rec, live=None):
+    """How AH.lua's Use List At button gets its price: "advice" (the List At
+    price), "cheapest" (1 copper under the live listing), "market" (only the
+    history is short: today's List At rule, never far under the market price)
+    or None when it hides (no advice and no live listing, or a few units far
+    above the vendor price, where the cheapest listing is that silly price)."""
+    if rec is None:
+        return None
+    if rec.get("advice") is not False:
+        return "advice"
+    if rec.get("vendorFar"):
+        return None
+    if live is None or live <= 1:
+        return None
+    if not rec.get("thinListings") and rec.get("followFloor", 0) > live - 1:
+        return "market"
+    return "cheapest"
+
+
+def sell_price(rec, live=None, own=False):
+    """What AH.lua's Use List At button fills (before rounding for the frame),
+    or None when it hides (see sell_mode). Your own cheapest listing is
+    matched, not undercut."""
+    mode = sell_mode(rec, live)
+    if mode is None:
+        return None
+    if mode == "advice":
+        v = rec["listAt"]
+    elif mode == "market":
+        v = rec["followFloor"]
+    else:
+        v = live - 1
+    if v is None or v <= 0:
+        return None
+    if live is not None and own and v == live - 1:
+        v = live
+    return v

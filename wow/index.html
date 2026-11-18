@@ -395,7 +395,7 @@ r.setProperty('--sell-color',t.sell);r.setProperty('--sell-rgb',t.sellRgb);
            those are scoped under a .legend ancestor, which the modal has no
            reason to have. -->
       <div class="glossary-section">Chart markers</div>
-      <div class="glossary-row"><span style="display:inline-flex;gap:3px;align-items:center"><span class="legend-dash" style="background:var(--buy-color)"></span><span class="legend-dash" style="background:var(--sell-color)"></span></span><span><strong>Cheapest</strong> (your buy colour): the lowest buyout per unit in that hour's snapshot, the price you could buy at. <strong>Market</strong> (your sell colour): the average of the cheapest 15% of listed units with outliers cut, the price it realistically resells for.</span></div>
+      <div class="glossary-row"><span style="display:inline-flex;gap:3px;align-items:center"><span class="legend-dash" style="background:var(--buy-color)"></span><span class="legend-dash" style="background:var(--sell-color)"></span></span><span><strong>Cheapest</strong> (your buy colour): the lowest buyout per unit in that hour's snapshot, the price you could buy at. <strong>Market</strong> (your sell colour): the average of the cheapest 15% of listed units with outliers cut, the price it realistically resells for. With fewer than 10 units listed it is the second cheapest unit (with only 1 or 2 units, the cheapest).</span></div>
       <div class="glossary-row"><span style="display:inline-flex;gap:3px;align-items:center"><span class="legend-dot" style="background:var(--buy-color)"></span><span class="legend-dot" style="background:var(--sell-color)"></span></span><span><strong>Period Low / Period High</strong> — solid dot with a pale centre. The lowest and highest price across the whole timeframe you're viewing.</span></div>
       <div class="glossary-row"><span style="display:inline-flex;gap:3px;align-items:center"><span class="legend-ring" style="border-color:var(--buy-color)"></span><span class="legend-ring" style="border-color:var(--sell-color)"></span></span><span><strong>Recent Low / Recent High</strong> — hollow ring. The extreme within just the most recent quarter of the window, so you can tell an old peak from a fresh one.</span></div>
       <div class="glossary-row"><span class="legend-dash" style="background:rgba(244,241,232,0.85)"></span><span><strong>Trend</strong> — the smoothed mid-price line. Follows direction without the print-to-print noise.</span></div>
@@ -497,6 +497,7 @@ r.setProperty('--sell-color',t.sell);r.setProperty('--sell-rgb',t.sellRgb);
 <script src="app.js"></script>
 <footer class="site-footer wow-foot">
   <span id="wowDataStatus">Loading auction house snapshot…</span>
+  <span id="wowHistoryStatus" hidden></span>
   <span>Prices: Blizzard WoW Forever auction API, Alliance AH, PvP ruleset (US), snapshotted hourly.
   "Sold" figures are estimates from listings that disappeared, not real sales records.</span>
   <span>Fan-made, not affiliated with Blizzard Entertainment.</span>
