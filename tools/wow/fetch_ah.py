@@ -134,12 +134,12 @@ SOLD_TIME_LEFT = {"LONG", "VERY_LONG"}   # gone before it could have expired => 
 SOLD_MAX_GAP = 90 * 60     # older previous snapshot: vanished auctions may just have expired
 SOLD_MAX_DROP = 0.30       # auction count fell more than this: probably an incomplete download
 SOLD_DROP_MIN = 100        # per-endpoint drop check only for endpoints this big
-# The first hour slot measured with the sold floor (estimate_sold): 2026-11-18 23:00 UTC. Older
+# The first hour slot measured with the sold floor (estimate_sold): 2026-11-19 00:00 UTC. Older
 # copies counted pulled and reposted stacks as sales, so measured hours before it are dropped
 # from state.json "measured" (they would size flips for 7 days). It should be the whole UTC hour
 # when both collectors (GitHub and the PC) first run this rule, never later: until it comes, no
 # hour counts as measured.
-SOLD_FLOOR_FROM = 1795042800
+SOLD_FLOOR_FROM = 1795046400
 THIN_UNITS = 10            # fewer units listed than this: market value is the second cheapest unit
 UNKNOWN_RETRY_SECS = 6 * 3600   # look an unnamed item up again at most this often
 UNKNOWN_RETRY_MAX = 300         # and at most this many of them per run
