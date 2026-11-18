@@ -9,3 +9,4 @@ Recommend.lua
 Chart.lua
 AH.lua
 Sidebar.lua
+Bags.lua

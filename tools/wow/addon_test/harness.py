@@ -49,7 +49,7 @@ ITEMS_FILE = SIM_ITEMS_FILE
 SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in wow/_localdata
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
-TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua"]
+TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Forever AH",
@@ -1521,10 +1521,15 @@ function C_Item.GetItemInfo(v)
   local id = idOf(v)
   local it = id and M["items"][id]
   if not it then return nil end
-  return it.name, M.ItemLink(id), it.quality, 1, 0, it.class or "Trade Goods", "Trade Goods", 20, "",
-    it.icon, it.vendor or 0, 7, 0, 0, 0, nil, true
+  return it.name, M.ItemLink(id), it.quality, 1, it.minLevel or 0, it.class or "Trade Goods", "Trade Goods",
+    it.maxStack or 20, it.equipLoc or "", it.icon, it.vendor or 0, it.classID or 7, it.subclassID or 0, it.bind or 0, 0, nil, true
 end
-function C_Item.GetItemInfoInstant(v) local id = idOf(v); if id then return id, "Trade Goods", "Trade Goods", "", 134400, 7, 0 end end
+function C_Item.GetItemInfoInstant(v)
+  local id = idOf(v)
+  if not id then return nil end
+  local it = M["items"][id] or {}
+  return id, "Trade Goods", "Trade Goods", it.equipLoc or "", it.icon or 134400, it.classID or 7, it.subclassID or 0
+end
 function C_Item.GetItemNameByID(id) local it = M["items"][id]; return it and it.name end
 function C_Item.GetItemIconByID(id) local it = M["items"][id]; return it and it.icon or 134400 end
 function C_Item.GetItemQualityByID(id) local it = M["items"][id]; return it and it.quality end
@@ -1536,13 +1541,132 @@ function C_Container.GetContainerItemInfo(bag, slot)
   local s = M.bags[bag] and M.bags[bag][slot]
   if not s then return nil end
   local it = M["items"][s.itemID]
-  return { iconFileID = it and it.icon or 134400, stackCount = s.count, isLocked = false, quality = it and it.quality or 1,
+  return { iconFileID = it and it.icon or 134400, stackCount = s.count, isLocked = s.locked == true, quality = it and it.quality or 1,
            isReadable = false, hasLoot = false, hyperlink = M.SlotLink(s), isFiltered = false,
-           hasNoValue = false, itemID = s.itemID, isBound = false }
+           hasNoValue = not it or (it.vendor or 0) == 0, itemID = s.itemID, isBound = s.bound == true }
 end
 function C_Container.GetContainerItemLink(bag, slot) local s = M.bags[bag] and M.bags[bag][slot]; return s and M.SlotLink(s) end
-function C_Container.GetContainerNumSlots(bag) return 16 end
+function C_Container.GetContainerNumSlots(bag) return M.bagSlots[bag] or 16 end
 function GetInventoryItemCount(unit, slot) return 1 end
+
+-- Bag cleanup: free slots, quest info, the cursor, selling at a vendor.
+M.bagSlots, M.bagFamily, M.pickups, M.used, M.sold, M.money = {}, {}, {}, {}, {}, 0
+M.quests, M.questDone, M.questActive, M.level = {}, {}, {}, 60
+function C_Container.GetContainerNumFreeSlots(bag)
+  local n, used = C_Container.GetContainerNumSlots(bag), 0
+  for slot = 1, n do if M.bags[bag] and M.bags[bag][slot] then used = used + 1 end end
+  return n - used, M.bagFamily[bag] or 0
+end
+function C_Container.GetContainerItemQuestInfo(bag, slot)
+  local s = M.bags[bag] and M.bags[bag][slot]
+  if not s then return { isQuestItem = false, isActive = false } end
+  local it = M["items"][s.itemID] or {}
+  local q = it.startsQuest
+  return { isQuestItem = it.classID == 12, questID = q, isActive = q ~= nil and M.questActive[q] == true }
+end
+local function bagChanged(bag)
+  M.fire("BAG_UPDATE", bag)
+  M.fire("BAG_UPDATE_DELAYED")
+end
+function C_Container.PickupContainerItem(bag, slot)
+  M.pickups[#M.pickups + 1] = { bag, slot }
+  local here = M.bags[bag] and M.bags[bag][slot]
+  local held = M.held
+  if not held then
+    if here then M.held = { bag = bag, slot = slot } end
+    return
+  end
+  M.held = nil
+  local src = M.bags[held.bag] and M.bags[held.bag][held.slot]
+  if not src or (held.bag == bag and held.slot == slot) then return end
+  M.bags[bag] = M.bags[bag] or {}
+  if not here then
+    M.bags[bag][slot], M.bags[held.bag][held.slot] = src, nil
+  elseif here.itemID == src.itemID then
+    local maxStack = (M["items"][src.itemID] or {}).maxStack or 20
+    local moved = math.min(src.count, maxStack - here.count)
+    here.count, src.count = here.count + moved, src.count - moved
+    if src.count <= 0 then M.bags[held.bag][held.slot] = nil end
+  else
+    M.bags[bag][slot], M.bags[held.bag][held.slot] = src, here
+  end
+  bagChanged(bag)
+end
+function C_Container.UseContainerItem(bag, slot)
+  M.used[#M.used + 1] = { bag, slot }
+  if not (MerchantFrame and MerchantFrame:IsShown()) then
+    M.violations[#M.violations + 1] = "UseContainerItem away from a vendor (uses or equips the item)"
+    return
+  end
+  local s = M.bags[bag] and M.bags[bag][slot]
+  if not s then return end
+  local it = M["items"][s.itemID] or {}
+  if (it.vendor or 0) <= 0 then return end
+  M.bags[bag][slot] = nil
+  M.sold[#M.sold + 1] = s.itemID
+  M.money = M.money + it.vendor * s.count
+  bagChanged(bag)
+end
+function CursorHasItem() return M.held ~= nil or M.cursorItem ~= nil end
+function GetCursorInfo()
+  if M.held then local s = M.bags[M.held.bag][M.held.slot]; return "item", s and s.itemID end
+  if M.cursorItem then return "item", M.cursorItem.itemID end
+end
+function ClearCursor() M.held = nil; M.cursorItem = nil end
+function DeleteCursorItem()
+  M.violations[#M.violations + 1] = "DeleteCursorItem (destroys an item without the game asking)"
+end
+function UnitLevel(unit) return M.level end
+C_QuestLog = {}
+function C_QuestLog.GetNumQuestLogEntries() return #M.quests, #M.quests end
+function C_QuestLog.GetInfo(i)
+  local q = M.quests[i]
+  if not q then return nil end
+  return { title = q.title, questID = q.questID or 0, isHeader = q.isHeader == true, isCollapsed = q.isCollapsed == true }
+end
+function C_QuestLog.GetQuestObjectives(questID)
+  for _, q in ipairs(M.quests) do
+    if q.questID == questID and not q.isHeader then
+      local out = {}
+      for k, t in ipairs(q.objectives or {}) do out[k] = { text = t, type = "item", finished = false } end
+      return out
+    end
+  end
+  return {}
+end
+function C_QuestLog.IsQuestFlaggedCompleted(id) return M.questDone[id] == true end
+
+-- The game's bag windows (ContainerFrame1 is the backpack) and the vendor window.
+NUM_CONTAINER_FRAMES = 13
+for i = 1, NUM_CONTAINER_FRAMES do
+  local f = CreateFrame("Frame", "ContainerFrame" .. i, UIParent)
+  f:SetSize(180, 170)
+  f:Hide()
+  for k = 1, 16 do
+    local b = CreateFrame("Button", "ContainerFrame" .. i .. "Item" .. k, f)
+    b:SetSize(37, 37)
+    b:SetID(17 - k)
+    b:SetPoint("TOPLEFT", f, "TOPLEFT", 8 + ((k - 1) % 4) * 41, -30 - math.floor((k - 1) / 4) * 34)
+  end
+end
+-- How many bag windows to open (1 = the backpack); columns of 3 from the bottom right.
+function M.OpenBags(n)
+  for i = 1, (n or 5) do
+    local f = _G["ContainerFrame" .. i]
+    f:SetID(i - 1)
+    f:ClearAllPoints()
+    local col, row = math.floor((i - 1) / 3), (i - 1) % 3
+    f:SetPoint("BOTTOMRIGHT", UIParent, "BOTTOMRIGHT", -20 - col * 190, 100 + row * 180)
+    f:Show()
+  end
+end
+function M.CloseBags()
+  for i = 1, NUM_CONTAINER_FRAMES do _G["ContainerFrame" .. i]:Hide() end
+end
+MerchantFrame = CreateFrame("Frame", "MerchantFrame", UIParent)
+MerchantFrame:Hide()
+function M.OpenMerchant() MerchantFrame:Show(); M.fire("MERCHANT_SHOW") end
+function M.CloseMerchant() MerchantFrame:Hide(); M.fire("MERCHANT_CLOSED") end
 
 C_GameRules = { IsHardcoreActive = function() return M.hardcore end }
 C_AddOns = {}
@@ -1688,11 +1812,11 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "AUCTION_HOUSE_BROWSE_FAILURE", "COMMODITY_SEARCH_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_ADDED",
   "ITEM_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_ADDED", "ITEM_KEY_ITEM_INFO_RECEIVED", "MODIFIER_STATE_CHANGED",
   "TOOLTIP_DATA_UPDATE", "GET_ITEM_INFO_RECEIVED", "PLAYER_MONEY", "BAG_UPDATE", "AUCTION_HOUSE_POST_WARNING",
-  "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" }
+  "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED"}
 M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "AUCTION_ITEM_LIST_UPDATE", "NEW_AUCTION_UPDATE",
   "AUCTION_OWNED_LIST_UPDATE", "AUCTION_BIDDER_LIST_UPDATE", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
-  "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" }
+  "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED"}
 function M.SetClient(kind)
   M.client = kind
   M.knownEvents = {}
@@ -5902,6 +6026,321 @@ def sc_stack_verdicts(sc, ref, items):
     sc.clean(w)
 
 
+# ===========================================================================
+# Bag cleanup (Bags.lua): what to drop or sell first, old quest items, merges
+# ===========================================================================
+def bag_add_item(w, iid, name, quality=1, vendor=0, **fields):
+    """An item the mock game knows (not in the price data)."""
+    t = w.lua.table()
+    t.name, t.quality, t.icon, t.vendor = name, quality, 140000 + iid % 1000, vendor
+    t["class"] = "Miscellaneous"
+    for k, v in fields.items():
+        t[k] = v
+    w.M["items"][iid] = t
+
+
+def bag_put(w, bag, slot, iid, count=1, **flags):
+    w.put_bag(bag, slot, iid, count)
+    s = w.M.bags[bag][slot]
+    for k, v in flags.items():
+        s[k] = v
+
+
+def bag_quests(w, quests):
+    t = w.lua.table()
+    for i, q in enumerate(quests, start=1):
+        t[i] = w.to_lua(q)
+    w.M.quests = t
+
+
+def bag_auction_unit(ref, iid):
+    """Bags.lua AuctionUnit: Sell now, else the market price (rough) when none is listed."""
+    it = ref.items.get(iid)
+    if not it:
+        return None, False
+    sp = ref_sell_prices(ref, iid, "1D")
+    if sp["now"]:
+        return sp["now"], price_doubt(ref, iid)
+    if sp["nowWhy"] == "none" and it["market"] > 0:
+        return it["market"], True
+    return None, False
+
+
+def bag_value(w, ref, iid, count, bound=False):
+    vendor = int(w.M["items"][iid].vendor or 0)
+    unit, unsure = (None, False) if bound else bag_auction_unit(ref, iid)
+    a_each = math.floor(unit * 0.95) if unit else 0
+    v_total, a_total = vendor * count, a_each * count
+    return max(v_total, a_total), (unsure and a_total > v_total), ("auction" if a_total > v_total else "vendor")
+
+
+def bag_scan_lists(w):
+    s = w.ns.BagScan()
+
+    def rows(t, fields):
+        return [tuple(t[i][f] for f in fields) for i in range(1, len(t) + 1)]
+    return s, rows
+
+
+def sc_bag_cleanup(sc, ref, items):
+    """Bag cleanup: stacks worth the least first, old quest items, partial stacks
+    to merge; the tab and panel beside the open bags; nothing is used, sold or
+    destroyed without a click (and selling only at an open vendor)."""
+    priced = [i for i in other_items(ref, items, 60, avoid=SIDEBAR_WATCH)
+              if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0
+              and str(items[str(i)].get("quality", "COMMON")).upper() != "POOR"
+              and not any(c in ref.items[i]["name"] for c in "():/")]
+    if not sc.check(len(priced) >= 3, "bags: enough priced items to test with"):
+        return
+    p1, p2, p3 = priced[:3]
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    fake = [6948, 2901, 900101, 900102, 900103, 900104, 900105, 900106, 900107, 900108, 900109, 12840,
+            900110, 900111, 900112, 900113, 900114]
+    sc.check(not any(i in ref.items for i in fake if i > 900000), "bags: the made-up items have no price data")
+    bag_add_item(w, 6948, "Hearthstone", 1, 0, classID=15)
+    bag_add_item(w, 2901, "Mining Pick", 1, 40, classID=2, subclassID=14, maxStack=1)
+    bag_add_item(w, 900101, "Broken Fang", 0, 12, classID=15)
+    bag_add_item(w, 900102, "Tattered Cloth Scrap", 0, 50, classID=15, maxStack=1)
+    bag_add_item(w, 900103, "Tough Jerky", 1, 1, classID=0, minLevel=1)
+    bag_add_item(w, 900104, "Morning Glory Dew", 1, 100, classID=0, minLevel=55)
+    bag_add_item(w, 900105, "Light Feather", 1, 2, classID=5)
+    bag_add_item(w, 900106, "Dusty Journal", 1, 0, classID=12, startsQuest=501, maxStack=1)
+    bag_add_item(w, 900107, "Gnoll Paw", 1, 0, classID=12)
+    bag_add_item(w, 900108, "Murloc Fin", 1, 0, classID=12)
+    bag_add_item(w, 900109, "Old Map", 1, 0, classID=12, startsQuest=502, maxStack=1)
+    bag_add_item(w, 12840, "Minion's Scourgestone", 1, 0, classID=12)
+    bag_add_item(w, 900110, "Rough Arrow", 1, 1, classID=6, maxStack=200)
+    bag_add_item(w, 900111, "Worn Dagger", 1, 30, classID=2, subclassID=15, maxStack=1, bind=1)
+    bag_add_item(w, 900112, "Wool Bolt", 1, 20, classID=7)
+    bag_add_item(w, 900113, "Coarse Stone", 1, 3, classID=7)
+    bag_add_item(w, 900114, "Moving Thing", 1, 5, classID=15)
+    for iid in (p1, p2, p3):
+        sc.check(w.M["items"][iid] is not None, "bags: the game knows priced item %d" % iid)
+    layout = [
+        (0, 1, 6948, 1, {}), (0, 2, 2901, 1, {}), (0, 3, 900101, 3, {}), (0, 4, 900102, 1, {}),
+        (0, 5, p1, 20, {}), (0, 6, 900103, 5, {}), (0, 7, 900104, 5, {}), (0, 8, 900105, 10, {}),
+        (0, 9, 900106, 1, {}), (0, 10, 900107, 3, {}), (0, 11, 900108, 2, {}), (0, 12, 900109, 1, {}),
+        (0, 13, 12840, 4, {}), (0, 14, 900110, 200, {}), (0, 15, p2, 1, {}), (0, 16, 900111, 1, {"bound": True}),
+        (1, 1, 900112, 5, {}), (1, 2, 900112, 7, {}), (1, 3, 900113, 15, {}), (1, 4, 900113, 15, {}),
+        (1, 5, p3, 2, {}), (1, 6, 900114, 1, {"locked": True}),
+    ]
+    for bag, slot, iid, count, flags in layout:
+        bag_put(w, bag, slot, iid, count, **flags)
+    p3name = ref.items[p3]["name"]
+    bag_quests(w, [
+        {"title": "Elwynn Forest", "isHeader": True},
+        {"title": "Gnoll Hunt", "questID": 601, "objectives": ["Gnoll Paw: 3/8"]},
+        {"title": "Report to Goldshire", "questID": 602, "objectives": []},
+        {"title": "Supplies", "questID": 603, "objectives": ["2/10 " + p3name]},
+    ])
+    M.questDone[501] = True
+
+    # Expected drop list: everything but the hearthstone (no value), tools,
+    # reagents, ammo, food near your level, quest items, the locked slot and
+    # the item a quest asks for; cheapest first.
+    want = []
+    for bag, slot, iid, count, flags in layout:
+        if iid in (6948, 2901, 900104, 900105, 900106, 900107, 900108, 900109, 12840, 900110, 900114, p3):
+            continue
+        value, unsure, source = bag_value(w, ref, iid, count, bound=flags.get("bound", False))
+        junk = int(w.M["items"][iid].quality) == 0
+        name = w.M["items"][iid].name
+        want.append((value, 0 if junk else 1, name, bag, slot, iid, unsure, source))
+    want.sort()
+    s = ns.BagScan()
+    got = [(s.drop[i].bag, s.drop[i].slot, s.drop[i].id, s.drop[i].value, bool(s.drop[i].unsure), s.drop[i].source)
+           for i in range(1, len(s.drop) + 1)]
+    sc.eq(got, [(b, sl, iid, v, u, src) for v, _, _, b, sl, iid, u, src in want], "bags: worth the least, cheapest first")
+    sc.eq([(s.quest[i].id, s.quest[i].why, bool(s.quest[i].sure)) for i in range(1, len(s.quest) + 1)],
+          [(900106, "done", True), (900108, "none", False)],
+          "bags: old quest items (finished quest's journal; a fin no quest lists, unsure while a quest lists nothing)")
+    sc.eq([s.junk[i].id for i in range(1, len(s.junk) + 1)], [900101, 900102], "bags: grey junk")
+    sc.eq(len(s.merge), 1, "bags: one item can merge")
+    if len(s.merge) == 1:
+        m = s.merge[1]
+        sc.eq((m.id, m.stacks, m.frees, m["from"].slot, m.to.slot), (900112, 2, 1, 1, 2),
+              "bags: Wool Bolt 5 + 7 merge into one slot")
+    sc.eq((s.free, s.slots), (80 - len(layout), 80), "bags: free and total slots")
+    sc.check(not s.pending and not s.questPartial, "bags: everything loaded, quest log fully open")
+
+    # Food: outgrown at 60, still yours at level 10.
+    M.level = 10
+    s10 = ns.BagScan()
+    sc.check(900103 not in [s10.drop[i].id for i in range(1, len(s10.drop) + 1)], "bags: level 10 keeps the low food")
+    M.level = 60
+
+    # Chat report (bags closed).
+    out = w.slash("/fah bags")
+    txt = [strip_codes(x) for x in out]
+    sc.check(any(("bags: %d of 80 slots free." % (80 - len(layout))) in t for t in txt), "bags slash: free slots (%s)" % txt[:2])
+    sc.check(any("merge stacks" in t and "Wool Bolt" in t for t in txt), "bags slash: merge line")
+    sc.check(any("old quest items" in t and "Dusty Journal" in t and "Murloc Fin" in t for t in txt), "bags slash: quest line")
+    sc.check(any(t.endswith("junk: 2 grey items, 86c at a vendor.") for t in txt), "bags slash: junk line (%s)" % txt)
+    first = want[0]
+    sc.check(any(" 1. " in t and ("[%s]" % w.M["items"][first[5]].name) in t for t in txt), "bags slash: cheapest first (%s)" % txt)
+    sc.check(any("Open your bags" in t for t in txt), "bags slash: says to open the bags")
+    helpout = [strip_codes(x) for x in w.slash("/fah help")]
+    sc.check(any(t.endswith("/fah bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
+                 for t in helpout), "bags: help lists /fah bags")
+    sc.check(any("/fah watch" in t for t in helpout), "bags: help still has the sidebar commands")
+
+    # Tab beside the open bags.
+    BP = ns.BagPanel
+    tab, F = g.ForeverAHBagTab, None
+    sc.check(not BP.built or not BP.tab.IsShown(BP.tab), "bags: nothing shows while the bags are closed")
+    M.OpenBags(5)
+    w.settle(0.2)
+    sc.check(BP.built and BP.tab.IsVisible(BP.tab), "bags: tab shows when the bags open")
+    F = g.ForeverAHBagPanel
+    sc.check(F is not None and not F.IsShown(F), "bags: the panel starts tucked away")
+    sc.eq(strip_codes(BP.tab.text._text), "Bags: %d free, 5 to clear" % (80 - len(layout)), "bags: tab text")
+    lefts = [g["ContainerFrame%d" % i].GetLeft(g["ContainerFrame%d" % i]) for i in range(1, 6)]
+    bottoms = [g["ContainerFrame%d" % i].GetBottom(g["ContainerFrame%d" % i]) for i in range(1, 6)]
+    sc.check(abs(BP.tab.GetRight(BP.tab) - (min(lefts) - 4)) < 0.01 and abs(BP.tab.GetBottom(BP.tab) - min(bottoms)) < 0.01,
+             "bags: tab sits left of the leftmost bag, level with the lowest")
+    M.click(BP.tab)
+    w.settle(0.1)
+    sc.check(F.IsVisible(F) and not BP.tab.IsShown(BP.tab), "bags: clicking the tab opens the panel")
+    sc.check(w.g.ForeverAH_Settings.bagPanel is True, "bags: the open panel is remembered")
+    sc.check(F.GetRight(F) <= min(lefts) - 3.99, "bags: panel does not cover the bags")
+    sc.check(F.GetTop(F) <= w.g.UIParent.GetTop(w.g.UIParent) + 0.01, "bags: panel fits on screen")
+
+    def shown_rows():
+        out = []
+        for i in range(1, len(BP.rows) + 1):
+            r = BP.rows[i]
+            if r.IsShown(r):
+                out.append(r)
+        return out
+    rows = shown_rows()
+    sc.eq(len(rows), 1 + 2 + min(8, len(want)), "bags: one merge, two quest and up to 8 cheapest rows")
+    if len(rows) >= 3:
+        sc.eq((rows[0].kind, strip_codes(rows[0].name._text), rows[0].right._text), ("merge", "Wool Bolt (2 stacks)", "frees 1"),
+              "bags: merge row")
+        sc.eq([(r.kind, r.right._text) for r in rows[1:3]], [("quest", "quest done"), ("quest", "check log")], "bags: quest rows")
+        drop_rows = rows[3:]
+        sc.eq([(r.entry.id, r.right._text) for r in drop_rows],
+              [(x[5], ("~" if x[6] else "") + short_money(x[0])) for x in want[:8]], "bags: drop rows show the stack's worth")
+    sc.check(BP.mergeTitle.IsShown(BP.mergeTitle) and BP.questTitle.IsShown(BP.questTitle), "bags: section titles")
+    sc.check(not BP.sellButton.IsShown(BP.sellButton), "bags: no Sell junk button away from a vendor")
+
+    # Hover: the game's tooltip for the slot plus ours, and the slot lights up.
+    tt = g.GameTooltip
+    if len(rows) >= 4:
+        r = rows[3]
+        e = r.entry
+        M.enter(r)
+        lines = [strip_codes(l or "") for l, _ in w.all_lines(tt)]
+        sc.check("Worth the least in your bags" in lines, "bags hover: our heading (%s)" % lines)
+        sc.check(any(l.startswith("Click: pick it up") for l in lines), "bags hover: says what a click does")
+        btn = g["ContainerFrame%dItem%d" % (e.bag + 1, 17 - e.slot)]
+        sc.check(BP.glow.IsShown(BP.glow) and BP.glow._points[1][2] is not None and w.same(BP.glow._points[1][2], btn),
+                 "bags hover: the bag slot is outlined")
+        M.leave(r)
+        sc.check(not BP.glow.IsShown(BP.glow), "bags hover: outline goes on leave")
+        # Click away from a vendor: picks it up, never uses it.
+        mark = w.chat_mark()
+        M.click(r, "LeftButton")
+        p = M.pickups[len(M.pickups)]
+        sc.eq((p[1], p[2]), (e.bag, e.slot), "bags click: picks the item up")
+        sc.eq(len(M.used), 0, "bags click: never uses an item away from a vendor")
+        sc.check(any("Click the ground to destroy it (the game asks first)" in c for c in w.chat(mark)), "bags click: says how to destroy")
+        w.lua.execute("ClearCursor()")
+    # Merge row.
+    if len(rows) >= 1:
+        M.click(rows[0], "LeftButton")
+        w.settle(0.5)
+        sc.check(M.bags[1][1] is None and M.bags[1][2].count == 12, "bags merge: 5 + 7 Wool Bolt in one slot")
+        sc.check(not BP.mergeTitle.IsShown(BP.mergeTitle), "bags merge: section goes once merged")
+        sc.check(not w.lua.eval("CursorHasItem()"), "bags merge: cursor is empty after")
+    # Right-click menu: always keep.
+    install_menu_mock(w)
+    rows = shown_rows()
+    dr = [r for r in rows if r.kind == "drop"]
+    if dr:
+        kid = dr[0].entry.id
+        M.click(dr[0], "RightButton")
+        texts = menu_texts(w)
+        sc.check("Always keep (never suggest it)" in texts and "Pick it up" in texts, "bags menu: keep and pick up (%s)" % texts)
+        menu_pick(w, "Always keep (never suggest it)")
+        w.settle(0.1)
+        s2 = ns.BagScan()
+        sc.check(kid not in [s2.drop[i].id for i in range(1, len(s2.drop) + 1)], "bags menu: a kept item is no longer listed")
+        sc.check(w.g.ForeverAH_Settings.bagKeep[kid] is True, "bags menu: keep is saved")
+        w.slash("/fah keep %d" % kid)
+    # /fah keep by name, list, undo.
+    p2name = ref.items[p2]["name"]
+    out = [strip_codes(x) for x in w.slash("/fah keep " + p2name)]
+    sc.check(any(("never suggest " + p2name) in t for t in out), "bags keep: by name (%s)" % out)
+    s3 = ns.BagScan()
+    sc.check(p2 not in [s3.drop[i].id for i in range(1, len(s3.drop) + 1)], "bags keep: not listed")
+    out = [strip_codes(x) for x in w.slash("/fah keep")]
+    sc.check(any(p2name in t for t in out), "bags keep: listed (%s)" % out)
+    w.slash("/fah keep " + p2name)
+    s4 = ns.BagScan()
+    sc.check(p2 in [s4.drop[i].id for i in range(1, len(s4.drop) + 1)], "bags keep: again undoes it")
+
+    # At a vendor: Sell junk, and a click sells.
+    M.OpenMerchant()
+    w.settle(0.5)
+    sb = BP.sellButton
+    sc.check(sb.IsVisible(sb), "bags vendor: Sell junk button shows")
+    sc.eq(sb.text._text, "Sell junk (2, 86c)", "bags vendor: button says how many and for how much")
+    M.click(sb)
+    w.settle(0.5)
+    sc.eq(sorted(M.sold[i] for i in range(1, len(M.sold) + 1)), [900101, 900102], "bags vendor: the grey items are sold")
+    sc.eq(M.money, 86, "bags vendor: for what a vendor pays")
+    sc.check(not sb.IsShown(sb), "bags vendor: button goes when no junk is left")
+    rows = shown_rows()
+    dr = [r for r in rows if r.kind == "drop" and (r.entry.vendor or 0) > 0]
+    if dr:
+        e = dr[0].entry
+        n_used = len(M.used)
+        M.click(dr[0], "LeftButton")
+        w.settle(0.5)
+        sc.eq(len(M.used), n_used + 1, "bags vendor: a click on a row sells it")
+        sc.check(M.bags[e.bag][e.slot] is None, "bags vendor: sold out of the bag")
+    M.CloseMerchant()
+    w.settle(0.5)
+    # Collapsed quest log header: only sure verdicts are listed.
+    M.quests[1].isCollapsed = True
+    s5 = ns.BagScan()
+    sc.check(s5.questPartial and [s5.quest[i].id for i in range(1, len(s5.quest) + 1)] == [900106],
+             "bags: with a header closed only the finished quest's journal is listed")
+    M.fire("QUEST_LOG_UPDATE")
+    w.settle(0.5)
+    sc.check(BP.note.IsShown(BP.note) and "quest log headers are closed" in BP.note._text, "bags: panel says the quest log is partly closed")
+    # Tuck away, then bags closed.
+    M.click(BP.closeButton)
+    w.settle(0.1)
+    sc.check(not F.IsShown(F) and BP.tab.IsVisible(BP.tab), "bags: > tucks the panel back into the tab")
+    M.CloseBags()
+    w.settle(0.1)
+    sc.check(not BP.tab.IsShown(BP.tab) and not F.IsShown(F), "bags: closing the bags hides it all")
+    sc.clean(w)
+
+
+def sc_bag_cleanup_nodata(sc, ref, items):
+    """No price data and the legacy client: the bag cleanup still works from vendor prices."""
+    for client, data in (("modern", PLACEHOLDER), ("legacy", None)):
+        w = World(ref, items, client=client, data_src=data)
+        bag_add_item(w, 900201, "Cracked Bone", 0, 7, classID=15)
+        bag_add_item(w, 900202, "Spider Silk Scrap", 1, 25, classID=7)
+        w.put_bag(0, 1, 900201, 2)
+        w.put_bag(0, 2, 900202, 1)
+        s = w.ns.BagScan()
+        sc.eq([(s.drop[i].id, s.drop[i].value) for i in range(1, len(s.drop) + 1)], [(900201, 14), (900202, 25)],
+              "bags %s %s: vendor prices" % (client, "no data" if data else "data"))
+        out = [strip_codes(x) for x in w.slash("/fah bags")]
+        sc.check(any("worth the least" in t for t in out), "bags %s: slash works" % client)
+        w.M.OpenBags(1)
+        w.settle(0.2)
+        BP = w.ns.BagPanel
+        sc.check(BP.built and BP.tab.IsVisible(BP.tab), "bags %s: tab shows with the backpack" % client)
+        sc.clean(w, "bags " + client)
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -5946,6 +6385,8 @@ SCENARIOS = [
     ("collector-flips", sc_data_flips),
     ("old-data-format", sc_old_format),
     ("stack-verdicts", sc_stack_verdicts),
+    ("bag-cleanup", sc_bag_cleanup),
+    ("bag-cleanup-no-data", sc_bag_cleanup_nodata),
 ]
 
 
