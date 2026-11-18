@@ -26,7 +26,8 @@ local ADDON_NAME, ns = ...
 --
 -- ns.SellPrices (below) gives the sell screen's two buttons and the tooltip's
 -- Sell now (1 copper under the cheapest listing) and Suggested price (the sell
--- target, never under a normal-priced cheapest listing).
+-- target, never under a normal-priced cheapest listing). ns.SellVerdict (at
+-- the end) gives the tooltip's call: auction it or vendor it, and by how much.
 
 ns = ns or {}
 
@@ -346,4 +347,101 @@ function ns.SellPrices(itemID, tf, liveCheapest, own)
   out.nowVendor = vendor > 0 and out.now ~= nil and floor(out.now * AH_CUT) <= vendor
   out.bestVendor = vendor > 0 and out.best ~= nil and floor(out.best * AH_CUT) <= vendor
   return out
+end
+
+---------------------------------------------------------------------------
+-- Sell verdict: the item tooltip's "Auction it" / "Vendor it" line
+---------------------------------------------------------------------------
+-- All in whole numbers: A = what the AH nets per item after the 5% cut and
+-- B = what a vendor pays, both in 1/100 copper.
+local AUCTION_PCT = 110  -- "Auction it": the AH nets at least 110% of B ...
+local SLOW_PCT = 200     -- ... (200% when none sold in 6+ measured hours: an unsold listing loses its deposit) ...
+local MIN_GAIN = 200     -- ... and at least 2 copper more per item
+local VENDOR_PCT = 101   -- "Vendor it": the AH nets under 101% of B (a vendor is instant and needs no deposit)
+local OLD_FAR = 200      -- nothing listed now: a Suggested price over 200x the vendor price is not trusted
+local SLOW_HOURS = 6     -- sales measured for fewer hours than this: how fast it sells is unknown
+
+-- ns.SellVerdictPrice(item, P): the AH price per item (copper, before the 5%
+-- cut) the verdict judges, or nil. item = ns.GetItem(id), P = ns.SellPrices(id, ...).
+--   With listings: the List At price (postAt: 1 copper under a normal
+--   cheapest listing, a lone cheap listing under the window's usual prices
+--   is a dip and ignored), never over today's AH value, or over Sell now
+--   when a live listing sits above that value.
+--   Nothing listed now: the Suggested price (nil without one, or when it is
+--   over 200x what a vendor pays).
+--   nil when a few units sit far above the vendor price (vendorFar), and for
+--   1 copper or less. It is always a price the tooltip shows.
+function ns.SellVerdictPrice(item, P)
+  if type(item) ~= "table" or type(P) ~= "table" or type(P.rec) ~= "table" or P.rec.vendorFar then return nil end
+  local V, M = tonumber(item.vendor) or 0, tonumber(item.market) or 0
+  local U
+  if M > 0 then
+    U = tonumber(P.rec.postAt) or 0
+    local cap = max(M, tonumber(P.now) or 0)
+    if U > cap then U = cap end
+  else
+    U = tonumber(P.best)
+    if not U or (V > 0 and U > OLD_FAR * V) then return nil end
+  end
+  if U <= 1 then return nil end
+  return U
+end
+
+-- How much more hi pays than lo (whole numbers, hi >= lo > 0), rounded down
+-- so it never claims more than it is: "+26% vs vendor", "same as AH" (under
+-- 1%), "2.8x AH" (one decimal from 2x), "12x vendor", "over 100x vendor".
+function ns.BetterText(hi, lo, what)
+  if hi > lo * 100 then return "over 100x " .. what end
+  if hi >= lo * 10 then return floor(hi / lo) .. "x " .. what end
+  if hi >= lo * 2 then
+    local t = floor(hi * 10 / lo)
+    return ((t % 10 == 0) and tostring(floor(t / 10)) or (floor(t / 10) .. "." .. (t % 10))) .. "x " .. what
+  end
+  local p = floor((hi - lo) * 100 / lo)
+  if p < 1 then return "same as " .. what end
+  return "+" .. p .. "% vs " .. what
+end
+
+-- A nets at least pct% of B and at least 2 copper more.
+local function wins(A, B, pct) return A * 100 >= B * pct and A - B >= MIN_GAIN end
+
+-- ns.SellVerdict(item, P): the tooltip's call for one item, or nil (no usable
+-- AH price). { kind, unit, left, right, lc, rc } with lc / rc ns.COLORS keys:
+--   "auction"  "Auction it"     "+26% vs vendor", "6.1x vendor", "can't vendor" (no vendor price)
+--   "vendor"   "Vendor it"      "+5% vs AH", "2.8x AH" or "same as AH" (within 1%)
+--   "close"    "Close call"     "AH +9%", or "tiny gain" (10% or more, but under 2 copper more each)
+--   "maybe"    "Maybe auction"  "few listed", "none listed now", "sells slowly", "price jumped"
+-- unit is the price judged (ns.SellVerdictPrice); "maybe" has none. The call is
+-- per item: a stack's size and Shift never change it.
+function ns.SellVerdict(item, P)
+  if type(item) ~= "table" or type(P) ~= "table" or type(P.rec) ~= "table" then return nil end
+  local rec, U = P.rec, ns.SellVerdictPrice(item, P)
+  if not U then return nil end
+  local V, M = tonumber(item.vendor) or 0, tonumber(item.market) or 0
+  -- 1 or 2 listings, or none right now: an AH price that looks better is a maybe.
+  local unsure = (rec.thinListings and "few listed") or (M <= 0 and "none listed now") or nil
+  local function maybe(why) return { kind = "maybe", left = "Maybe auction", right = why, lc = "buy", rc = "muted" } end
+  if V <= 0 then
+    if unsure then return maybe(unsure) end
+    return { kind = "auction", unit = U, left = "Auction it", right = "can't vendor", lc = "pos", rc = "muted" }
+  end
+  local A, B = U * 95, V * 100
+  if wins(A, B, AUCTION_PCT) then
+    if unsure then return maybe(unsure) end
+    -- None sold in the hours measured (6 or more): the AH must pay twice what a vendor does.
+    local per = type(ns.SoldPerDay) == "function" and ns.SoldPerDay(item) or nil
+    local hours = type(ns.SalesHours) == "function" and ns.SalesHours() or 24
+    if per ~= nil and hours >= SLOW_HOURS and per < 1 and not wins(A, B, SLOW_PCT) then return maybe("sells slowly") end
+    return { kind = "auction", unit = U, left = "Auction it", right = ns.BetterText(A, B, "vendor"), lc = "pos", rc = "pos" }
+  end
+  -- The history price does not win, but today's Sell now (far above it) would.
+  local now = tonumber(P.now)
+  if rec.far and now and wins(now * 95, B, AUCTION_PCT) then return maybe("price jumped") end
+  if A * 100 < B * VENDOR_PCT then
+    return { kind = "vendor", unit = U, left = "Vendor it", right = (B > A) and ns.BetterText(B, A, "AH") or "same as AH",
+             lc = "neg", rc = "neg" }
+  end
+  local p = floor((A - B) * 100 / B)
+  return { kind = "close", unit = U, left = "Close call", right = (p < 10) and ("AH +" .. p .. "%") or "tiny gain",
+           lc = "muted", rc = "muted" }
 end

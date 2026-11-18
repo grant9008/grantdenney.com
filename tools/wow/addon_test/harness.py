@@ -854,16 +854,58 @@ function Line:GetThickness() return self._thick or 1 end
 function Line:SetHitRectThickness(t) end
 function Line:ClearAllPoints() self._start, self._end = nil, nil end
 
--- Font strings -----------------------------------------------------------------
+-- Font objects -------------------------------------------------------------------
+-- A Font (the game's named fonts and CreateFont's) has a face, size, flags and
+-- a colour. The tooltip fonts are ElvUI's (PT Sans Narrow 12, header 13), as
+-- the player has them.
 local FONTS = {}
+local Font = {}
+local FontMT = { __index = Font, __tostring = function(o) return "Font<" .. tostring(o._name) .. ">" end }
+local function newFont(name, file, size, flags, r, g, b)
+  local f = setmetatable({ _isFont = true, _name = name, _file = file, _size = size, _flags = flags or "",
+                           _color = { r or 1, g or 1, b or 1 } }, FontMT)
+  if name then _G[name] = f end
+  return f
+end
+function Font:GetName() return self._name end
+function Font:GetObjectType() return "Font" end
+function Font:IsObjectType(t) return t == "Font" end
+function Font:GetFont() return self._file, self._size, self._flags end
+function Font:SetFont(file, size, flags)
+  if type(file) ~= "string" or file == "" or not finite(size) or size <= 0 then apiError("Font:SetFont: bad arguments") end
+  self._file, self._size, self._flags = file, size, flags or ""
+  return true
+end
+function Font:CopyFontObject(src)
+  if type(src) == "string" then src = _G[src] end
+  if type(src) ~= "table" or not src._isFont then apiError("Font:CopyFontObject: not a font") end
+  self._file, self._size, self._flags = src._file, src._size, src._flags
+  self._color = { src._color[1], src._color[2], src._color[3] }
+end
+function Font:SetTextColor(r, g, b)
+  if not finite(r) or not finite(g) or not finite(b) then apiError("Font:SetTextColor: bad colour") end
+  self._color = { r, g, b }
+end
+function Font:GetTextColor() return self._color[1], self._color[2], self._color[3], 1 end
+function Font:SetShadowColor() end
+function Font:SetShadowOffset() end
+function Font:SetJustifyH() end
+function Font:SetJustifyV() end
 for _, n in ipairs({ "GameFontNormal", "GameFontNormalSmall", "GameFontNormalLarge", "GameFontHighlight",
   "GameFontHighlightSmall", "GameFontHighlightLarge", "GameFontDisable", "GameFontDisableSmall", "NumberFontNormal",
-  "GameTooltipText", "GameTooltipTextSmall", "GameFontWhite", "GameFontNormalHuge", "SystemFont_Small" }) do
-  local f = { _font = n }
-  function f:GetFont() return "Fonts\\FRIZQT__.TTF", 12, "" end
-  _G[n] = f
-  FONTS[n] = f
+  "GameTooltipTextSmall", "GameFontWhite", "GameFontNormalHuge", "SystemFont_Small" }) do
+  FONTS[n] = newFont(n, "Fonts\\FRIZQT__.TTF", 12, "")
 end
+FONTS.GameTooltipText = newFont("GameTooltipText", "Fonts\\PTSansNarrow.ttf", 12, "")
+FONTS.GameTooltipHeaderText = newFont("GameTooltipHeaderText", "Fonts\\PTSansNarrow.ttf", 13, "")
+M.fontsCreated = 0
+function CreateFont(name)
+  if name ~= nil and type(name) ~= "string" then apiError("CreateFont: bad name") end
+  M.fontsCreated = M.fontsCreated + 1
+  return newFont(name, "Fonts\\FRIZQT__.TTF", 12, "")
+end
+
+-- Font strings -----------------------------------------------------------------
 function FontString:SetText(t)
   if t ~= nil and type(t) ~= "string" and type(t) ~= "number" then apiError("FontString:SetText: bad text " .. type(t)) end
   self._text = t ~= nil and tostring(t) or nil
@@ -884,8 +926,38 @@ function FontString:SetJustifyV(j) if not JV[j] then apiError("SetJustifyV: bad 
 function FontString:SetWordWrap(v) self._wrap = v end
 function FontString:SetNonSpaceWrap(v) end
 function FontString:SetMaxLines(n) end
-function FontString:SetFontObject(f) self._font = f end
-function FontString:SetFont(path, size, flags) self._fontPath = path; return true end
+-- A tooltip line's FontString (_ttLine) is modelled closely: SetFontObject
+-- takes the Font's colour (as in the game, so a colour must be set again
+-- after it), and SetFont on one is a violation (the addon must never do it).
+function FontString:SetFontObject(f)
+  if self._ttLine then
+    if type(f) == "string" then f = _G[f] end
+    if type(f) ~= "table" or not f._isFont then apiError("FontString:SetFontObject: not a font") end
+    self._font, self._ownFont = f, nil
+    self._textColor = { f._color[1], f._color[2], f._color[3], 1 }
+    return
+  end
+  self._font = f
+end
+function FontString:GetFontObject()
+  local f = self._font
+  if type(f) == "string" then f = _G[f] end
+  return f
+end
+function FontString:GetFont()
+  if self._ownFont then return self._ownFont[1], self._ownFont[2], self._ownFont[3] end
+  local f = self:GetFontObject()
+  if type(f) == "table" and f._isFont then return f:GetFont() end
+  return "Fonts\\FRIZQT__.TTF", 12, ""
+end
+function FontString:SetFont(path, size, flags)
+  if self._ttLine then
+    M.violations[#M.violations + 1] = "SetFont on tooltip line " .. tostring(self._name)
+    self._ownFont = { path, size, flags or "" }
+  end
+  self._fontPath = path
+  return true
+end
 function FontString:SetShadowColor() end
 function FontString:SetShadowOffset() end
 function FontString:SetSpacing() end
@@ -1035,9 +1107,63 @@ function EditBox:SetFontObject(f) end
 function EditBox:SetTextInsets() end
 
 -- Tooltips ------------------------------------------------------------------------
+-- Each line has a left and a right FontString (_G[name .. "TextLeft" .. i], and
+-- GetLeftLine / GetRightLine). GameTooltipTemplate makes 8: line 1 on
+-- GameTooltipHeaderText, 2 to 8 on GameTooltipText. A line past those is made
+-- when first needed and copies the Font of the line above it. Line
+-- FontStrings are reused: clearing the tooltip never resets their Font.
+M.TT_TEMPLATE_LINES = 8
+local function newLineFS(tt, side, k, font)
+  local fs = setmetatable({ _otype = "FontString", _parent = tt, _points = {}, _shown = true, _w = 0, _h = 0,
+                            _scale = 1, _alpha = 1, _ttLine = true, _font = font,
+                            _textColor = { font._color[1], font._color[2], font._color[3], 1 } }, MTs.FontString)
+  if tt._name then
+    fs._name = tt._name .. "Text" .. side .. k
+    _G[fs._name] = fs
+  end
+  M.counts.TooltipLine = (M.counts.TooltipLine or 0) + 1
+  return fs
+end
+local function ttLine(tt, i)
+  local L, R = tt._L, tt._R
+  if not L then return nil end
+  for k = #L + 1, i do
+    local lf, rf
+    if k == 1 then
+      lf, rf = FONTS.GameTooltipHeaderText, FONTS.GameTooltipHeaderText
+    elseif k <= M.TT_TEMPLATE_LINES then
+      lf, rf = FONTS.GameTooltipText, FONTS.GameTooltipText
+    else
+      lf, rf = L[k - 1]._font, R[k - 1]._font
+    end
+    L[k], R[k] = newLineFS(tt, "Left", k, lf), newLineFS(tt, "Right", k, rf)
+  end
+  return L[i], R[i]
+end
+M.ttLine = ttLine
+function Tooltip:GetLeftLine(i) return self._L and self._L[i] end
+function Tooltip:GetRightLine(i) return self._R and self._R[i] end
+-- Font name, size and colour of each side of line i (for the checks).
+function M.lineStyle(tt, i)
+  local L, R = tt._L and tt._L[i], tt._R and tt._R[i]
+  if not L then return nil end
+  local function one(fs)
+    local f = fs:GetFontObject()
+    local _, size = fs:GetFont()
+    local c = fs._textColor
+    return { font = type(f) == "table" and f._name or tostring(f), size = size, r = c[1], g = c[2], b = c[3] }
+  end
+  return { left = one(L), right = one(R) }
+end
 function Tooltip:_Clear()
+  local n = #(self._lines or {})
   self._lines = {}
   self._blz = 0
+  if self._L then
+    for i = 1, n do
+      if self._L[i] then self._L[i]:SetText(nil); self._R[i]:SetText(nil) end
+    end
+  end
   M.fireScript(self, "OnTooltipCleared")
 end
 function Tooltip:SetOwner(owner, anchor)
@@ -1055,6 +1181,11 @@ function Tooltip:AddLine(text, r, g, b, wrap)
   local s = text ~= nil and tostring(text) or ""
   M.seeText(s)
   table.insert(self._lines, { left = s, lr = r, lg = g, lb = b })
+  local L, R = ttLine(self, #self._lines)
+  if L then
+    L:SetText(s); L:SetTextColor(r or 1, g or 0.82, b or 0)   -- no colour: the game's gold
+    R:SetText(nil)
+  end
 end
 function Tooltip:AddDoubleLine(lt, rt, lr, lg, lb, rr, rg, rb)
   checkColor("GameTooltip:AddDoubleLine", lr, lg, lb, rr, rg, rb)
@@ -1062,6 +1193,11 @@ function Tooltip:AddDoubleLine(lt, rt, lr, lg, lb, rr, rg, rb)
   local r = rt ~= nil and tostring(rt) or ""
   M.seeText(l); M.seeText(r)
   table.insert(self._lines, { left = l, right = r, lr = lr, lg = lg, lb = lb, rr = rr, rg = rg, rb = rb })
+  local L, R = ttLine(self, #self._lines)
+  if L then
+    L:SetText(l); L:SetTextColor(lr or 1, lg or 0.82, lb or 0)
+    R:SetText(r); R:SetTextColor(rr or 1, rg or 0.82, rb or 0)
+  end
 end
 function Tooltip:SetText(t, r, g, b, a, wrap) self:_Clear(); self:AddLine(t, r, g, b, wrap) end
 function Tooltip:NumLines() return #self._lines end
@@ -1109,6 +1245,8 @@ function M.TooltipData(getterName, args)
   local it = M["items"][id]
   local lines = { { type = 0, leftText = it and it.name or "Retrieving item information" } }
   if it and it.class then lines[2] = { type = 0, leftText = it.class } end
+  -- more of the game's own lines (stats, "Sell Price") when a scenario asks for them
+  for _, t in ipairs(M.extraGameLines or {}) do lines[#lines + 1] = { type = 0, leftText = t } end
   return { type = Enum.TooltipDataType and Enum.TooltipDataType.Item or 0, id = id, guid = guid,
            hyperlink = (not M.noHyperlink) and (link or M.ItemLink(id)) or nil, link = link or M.ItemLink(id), lines = lines }
 end
@@ -1185,6 +1323,8 @@ TEMPLATES.UIPanelCloseButton = function(f) end
 TEMPLATES.GameTooltipTemplate = function(f)
   if f._otype ~= "GameTooltip" then apiError("GameTooltipTemplate needs a GameTooltip") end
   f._lines, f._blz = {}, 0
+  f._L, f._R = {}, {}
+  ttLine(f, M.TT_TEMPLATE_LINES)
 end
 TEMPLATES.SearchBoxTemplate = function(f) end
 TEMPLATES.InputBoxTemplate = function(f) end
@@ -2736,30 +2876,32 @@ def average_label(ref, iid):
     return "%d-day average" % days
 
 
-def stack_lines(it, unit_now, count):
-    """The tooltip's stack lines (Core.lua addStackLines), only with a Sell now
-    price: for a stack, what it brings after the AH cut; then "Vendor it" when a
-    vendor pays as much or more."""
-    auction, vend, verdict = rec_model.stack_values(unit_now, count, it["vendor"])
-    if auction is None:
-        return []
-    out = []
-    if count > 1:
-        out.append(("This stack (%d), after AH cut" % count, money_icons(auction)))
-    if verdict == "same":
-        out.append(("Vendor it: a vendor pays the same", None))
-    elif verdict == "vendor":
-        out.append(("Vendor it: a vendor pays more", None))
-    return out
+def ref_verdict(ref, iid, tf="1D", live=None, own=False):
+    """rec_model.sell_verdict for an item: what ns.SellVerdict gives (None = no verdict)."""
+    rec = ref_recommend(ref, iid, tf, live)
+    it = ref.items[iid]
+    sp = rec_model.sell_prices(rec, live, own, it["vendor"])
+    return rec_model.sell_verdict(it, sp, rec, ref.salesHours)
 
 
-def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None, own=False, tf="1D", cover="auto"):
+# Core.lua ns.COLORS, by name; "white" is the plain 1, 1, 1 and "gold" the
+# game's colour for a line added without one.
+TT_RGB = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "text": (0.90, 0.88, 0.84), "white": (1, 1, 1),
+          "pos": (0.25, 0.80, 0.45), "neg": (0.90, 0.33, 0.33), "buy": (0.898, 0.722, 0.259), "gold": (1, 0.82, 0)}
+
+
+def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None, own=False, tf="1D", cover="auto",
+                     verdict=True, styles=False):
     """The Forever AH lines of an item tooltip. mult > 1: Shift held on a stack of
     that many (count defaults to it). cover: "version", "all", None, or "auto"
-    (plain link: "all" for an item whose versions the data lists)."""
+    (plain link: "all" for an item whose versions the data lists). verdict=False:
+    a bound item or another market (no verdict, no stack line).
+    styles=True gives (lines, [(left colour, right colour, big)]) with TT_RGB
+    names; big is True for the verdict line shown bigger (fresh data, full mode)."""
     it = ref.items.get(iid)
     if it is None:
-        return [("Forever AH: no recent listings", None)]
+        lines, st = [("Forever AH: no recent listings", None)], [("muted", None, False)]
+        return (lines, st) if styles else lines
     if count is None:
         count = mult if mult > 1 else 1
     if cover == "auto":
@@ -2769,44 +2911,126 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     def m(v):
         return money_icons(v * mult) if v > 0 else None
     out = []
+
+    def add(left, right, lc, rc, big=False):
+        out.append(((left, right), (lc, rc, big)))
     vs = vs_average(it["market"], it["avg7"])
+    # the prices mix versions that sell for different prices: nothing to sell at, no verdict
+    P = None if cover == "all" else ref_sell_prices(ref, iid, tf, live, own)
+    V = ref_verdict(ref, iid, tf, live, own) if (P is not None and verdict) else None
     if compact:
         mk = m(it["market"])
-        line = ("AH value%s: %s" % (tag, mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now"
-        out.append((line, None))
-    else:
-        out.append(("Forever AH", age_text(age)))
-        mk = m(it["market"])
-        out.append(("AH value" + tag, mk + ("  " + vs if vs else "")) if mk else ("AH value", "none listed"))
-        if m(it["avg7"]):
-            out.append((average_label(ref, iid) + tag, m(it["avg7"])))
-        if cover == "all":
-            # the prices mix versions that sell for different prices: nothing to sell at
-            P = {"now": None}
+        if V:
+            if mk:
+                add("%s: %s" % (V["left"], V["right"]), "AH%s %s" % (tag, mk) + ("  " + vs if vs else ""), V["lc"], "white")
+            else:
+                add("%s: %s" % (V["left"], V["right"]), "AH: none listed", V["lc"], "muted")
         else:
-            P = ref_sell_prices(ref, iid, tf, live, own)
+            add(("AH value%s: %s" % (tag, mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now",
+                None, "text", None)
+    else:
+        add("Forever AH", age_text(age), "sell", "muted")
+        if V:
+            add(V["left"], V["right"], V["lc"], V["rc"], V["kind"] in ("auction", "vendor") and age <= 6 * 3600)
+        mk = m(it["market"])
+        if mk:
+            add("AH value" + tag, mk + ("  " + vs if vs else ""), "text", "white")
+        else:
+            add("AH value", "none listed", "text", "muted")
+        if m(it["avg7"]):
+            add(average_label(ref, iid) + tag, m(it["avg7"]), "text", "white")
+        if P is not None:
             if P["now"] is not None:
-                out.append((("Sell now (live)" if P["live"] else "Sell now") + tag, m(P["now"])))
+                add(("Sell now (live)" if P["live"] else "Sell now") + tag, m(P["now"]), "text",
+                    "neg" if P["nowVendor"] else "white")
             if P["best"] is not None:
-                out.append(("Suggested price" + tag, m(P["best"])))
-            if P["nowWhy"] == "unreliable" or P["bestWhy"] == "unreliable":
-                out.append(("Few listed: the price may not be reliable", None))
-        out += stack_lines(it, P["now"], count)
+                add("Suggested price" + tag, m(P["best"]), "text", "neg" if P["bestVendor"] else "white")
+            if (P["nowWhy"] == "unreliable" or P["bestWhy"] == "unreliable") and not (V and V["right"] == "few listed"):
+                add("Few listed: the price may not be reliable", None, "muted", None)
+            if V and V["unit"] and count > 1 and V["kind"] in ("auction", "close"):
+                add("This stack (%d), after AH cut" % count, money_icons(rec_model.stack_after_cut(V["unit"], count)),
+                    "text", "white")
     if cover == "version":
-        out.append(("Prices for this version only", None))
+        add("Prices for this version only", None, "muted", None)
     elif cover == "all":
-        out.append(("Price covers all versions of this item", None))
+        add("Price covers all versions of this item", None, "muted", None)
     if age > 6 * 3600:
-        out.append(("Prices are %dh old: run Update-WoW-Prices.bat, then /reload" % (age // 3600), None))
+        add("Prices are %dh old: run Update-WoW-Prices.bat, then /reload" % (age // 3600), None, "muted", None)
+    lines = [x[0] for x in out]
+    return (lines, [x[1] for x in out]) if styles else lines
+
+
+def rgb_name(r, g, b):
+    for k, c in TT_RGB.items():
+        if abs(r - c[0]) < 0.006 and abs(g - c[1]) < 0.006 and abs(b - c[2]) < 0.006:
+            return k
+    return "(%.3f, %.3f, %.3f)" % (r, g, b)
+
+
+def tooltip_styles(w, tt):
+    """For each line of a tooltip: (left colour, right colour or None, left font, left size,
+    right font, right size) as the line's FontStrings have them now."""
+    out = []
+    for i in range(1, len(tt._lines) + 1):
+        s = w.M.lineStyle(tt, i)
+        if s is None:
+            out.append(None)
+            continue
+        L, R = s.left, s.right
+        has_right = tt._lines[i].right is not None
+        out.append((rgb_name(L.r, L.g, L.b), rgb_name(R.r, R.g, R.b) if has_right else None,
+                    L.font, L.size, R.font, R.size))
     return out
 
 
-def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D"):
+def tooltip_style_ok(sc, w, tt, want_styles, label, base_size=12):
+    """Our lines' final colours, and fonts: the verdict line (when big) on our
+    bigger Font (both sides, base + 3 points), every other line of the whole
+    tooltip at its normal size on the game's own Font."""
+    got = tooltip_styles(w, tt)
+    first = int(tt._blz or 0)
+    ours = got[first:]
+    sc.eq([(x[0], x[1]) if x else None for x in ours], [(lc, rc) for lc, rc, _ in want_styles],
+          "%s: line colours" % label)
+    big_rows = [i for i, x in enumerate(got) if x and (x[2].startswith("ForeverAH") or x[4].startswith("ForeverAH"))]
+    want_big = [first + i for i, (_, _, big) in enumerate(want_styles) if big]
+    sc.eq(big_rows, want_big, "%s: only the verdict line is bigger (%s)" % (label, "yes" if want_big else "none"))
+    for i in want_big:
+        x = got[i]
+        sc.check(x[2].startswith("ForeverAHBigFont") and x[4] == x[2] and x[3] == base_size + 3 and x[5] == base_size + 3,
+                 "%s: the verdict line's both sides on our Font, %d points (%s)" % (label, base_size + 3, x))
+    others = [(i + 1, x) for i, x in enumerate(got) if x and i not in want_big
+              and not ((x[2] == "GameTooltipText" and x[3] == base_size) or (i == 0 and x[2] == "GameTooltipHeaderText"))]
+    sc.eq(others, [], "%s: every other line at the normal size" % label)
+
+
+def verdict_line_ok(sc, ref, iid, lines, label, tf="1D", live=None, own=False, cover="auto", verdict=True):
+    """The verdict and the stack line against the model (wording aside, the price the
+    verdict judges and the stack's value after the cut). No verdict for prices that
+    mix versions (cover "all"; "auto": an item whose versions the data lists) or
+    with verdict=False (a bound item, another market)."""
+    if cover == "auto":
+        cover = "all" if iid in ref.variants else None
+    V = ref_verdict(ref, iid, tf, live, own) if (verdict and cover != "all") else None
+    texts = [l for l, _ in lines]
+    if V is None:
+        sc.check(not any(t in ("Auction it", "Vendor it", "Close call", "Maybe auction") for t in texts),
+                 "%s: no verdict line (%s)" % (label, texts))
+        return
+    sc.check((V["left"], V["right"]) in lines, "%s: verdict %r (%s)" % (label, (V["left"], V["right"]), lines[:3]))
+    for l, r in lines:
+        if l.startswith("This stack ("):
+            n = int(l[len("This stack ("):].split(")")[0])
+            sc.eq(parse_coins(r), display_copper(V["unit"] * n * 95 // 100), "%s: the stack at the verdict's price" % label)
+
+
+def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=False):
     """Value-level check, independent of wording: every price on the tooltip
     equals the data file (AH value, the average) or the model (Sell now,
-    Suggested price)."""
+    Suggested price, and the stack at the verdict's price after the 5% cut,
+    never multiplied by Shift)."""
     it = ref.items[iid]
-    P = ref_sell_prices(ref, iid, tf, live)
+    P = ref_sell_prices(ref, iid, tf, live, own)
     want = {"AH value": it["market"], average_label(ref, iid): it["avg7"],
             "Sell now": P["now"], "Sell now (live)": P["now"], "Suggested price": P["best"]}
     seen = set()
@@ -2816,6 +3040,14 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D"):
         if base in want and coins and parse_coins(coins) is not None:
             seen.add(base)
             sc.eq(parse_coins(coins), display_copper((want[base] or 0) * mult), "%s %s value" % (label, base))
+        elif (left or "").startswith("This stack (") and left.endswith("), after AH cut"):
+            V = ref_verdict(ref, iid, tf, live, own)
+            n = int(left[len("This stack ("):-len("), after AH cut")])
+            sc.check(V is not None and V["unit"] is not None and V["kind"] in ("auction", "close"),
+                     "%s: a stack line only under Auction it or Close call (%s)" % (label, V and V["kind"]))
+            if V and V["unit"]:
+                sc.eq(parse_coins(right), display_copper(rec_model.stack_after_cut(V["unit"], n)),
+                      "%s stack of %d at the verdict's price" % (label, n))
     if it["market"] > 0:
         sc.check("AH value" in seen, "%s: AH value shown (%s)" % (label, sorted(seen)))
     if it["avg7"] > 0:
@@ -3284,36 +3516,47 @@ def sc_tooltip(sc, ref, items):
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 0, 1)
     lines = w.lines(tt)
-    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, count=20), "2589 bag tooltip lines")
+    want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, styles=True)
+    sc.eq(lines, want, "2589 bag tooltip lines")
     tooltip_values_ok(sc, ref, R.LINEN, lines, 1, "2589")
+    verdict_line_ok(sc, ref, R.LINEN, lines, "2589")
+    tooltip_style_ok(sc, w, tt, want_st, "2589 bag")
     # Post call fires a second time without a clear: no duplicates
     for fn_i in range(1, len(w.M.postCalls[0]) + 1):
         w.M.postCalls[0][fn_i](tt, tt.processingInfo.tooltipData)
     sc.eq(w.lines(tt), lines, "2589 second post call adds nothing")
+    tooltip_style_ok(sc, w, tt, want_st, "2589 second post call")
     # Rebuild (modifier change / TOOLTIP_DATA_UPDATE): cleared and rebuilt once
     tt.RefreshData(tt)
     sc.eq(w.lines(tt), lines, "2589 rebuild gives one copy")
+    tooltip_style_ok(sc, w, tt, want_st, "2589 rebuild")
     heads = [l for l in w.all_lines(tt) if l[0] == "Forever AH"]
     sc.eq(len(heads), 1, "one Forever AH header")
     # Black Lotus by id
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, R.LOTUS)
     lines = w.lines(tt)
-    sc.eq(lines, expected_tooltip(ref, R.LOTUS, age), "13468 tooltip lines")
+    want, want_st = expected_tooltip(ref, R.LOTUS, age, styles=True)
+    sc.eq(lines, want, "13468 tooltip lines")
     tooltip_values_ok(sc, ref, R.LOTUS, lines, 1, "13468")
+    tooltip_style_ok(sc, w, tt, want_st, "13468")
     if min(ref.items[R.LOTUS]["market"], ref.items[R.LOTUS]["cheapest"]) > 1000000:
-        sc.check(all("Copper" not in (r or "") for _, r in lines[1:4]), "13468 above 100g: copper dropped")
+        sc.check(all("Copper" not in (r or "") for _, r in lines[1:5]), "13468 above 100g: copper dropped")
     # Unknown item
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, R.NO_GEAR)
     sc.eq(w.lines(tt), [("Forever AH: no recent listings", None)], "unknown item tooltip")
+    tooltip_style_ok(sc, w, tt, [("muted", None, False)], "unknown item")
     # Shift held on a stack of 20
     w.M.shift = True
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 0, 1)
     lines = w.lines(tt)
-    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, mult=20), "2589 shift x20 tooltip")
+    want, want_st = expected_tooltip(ref, R.LINEN, age, mult=20, styles=True)
+    sc.eq(lines, want, "2589 shift x20 tooltip")
     tooltip_values_ok(sc, ref, R.LINEN, lines, 20, "2589 x20")
+    verdict_line_ok(sc, ref, R.LINEN, lines, "2589 x20 (Shift changes neither the verdict nor the stack line)")
+    tooltip_style_ok(sc, w, tt, want_st, "2589 shift x20")
     # Shift held on a single item (by id): no multiplier
     tt.SetItemByID(tt, R.RUNE)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.RUNE, age), "14047 shift, count 1: unit prices")
@@ -3321,17 +3564,25 @@ def sc_tooltip(sc, ref, items):
     tt.SetBagItem(tt, 0, 1)
     w.M.shift = False
     tt.RefreshData(tt)
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, count=20), "2589 after shift released")
+    want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, styles=True)
+    sc.eq(w.lines(tt), want, "2589 after shift released")
+    tooltip_style_ok(sc, w, tt, want_st, "2589 after shift released")
     # Every item (a sample of a big file), full and compact
     ids = sample_ids(ref, SAMPLE * 4)
     for iid in ids:
         tt.SetItemByID(tt, iid)
-        sc.eq(w.lines(tt), expected_tooltip(ref, iid, age), "tooltip %d" % iid)
+        want, want_st = expected_tooltip(ref, iid, age, styles=True)
+        lines = w.lines(tt)
+        sc.eq(lines, want, "tooltip %d" % iid)
+        verdict_line_ok(sc, ref, iid, lines, "tooltip %d" % iid)
+        tooltip_style_ok(sc, w, tt, want_st, "tooltip %d" % iid)
     out = w.slash("/fah compact")
     sc.check(any("one line" in l for l in out), "/fah compact message")
     for iid in ids:
         tt.SetItemByID(tt, iid)
-        sc.eq(w.lines(tt), expected_tooltip(ref, iid, age, compact=True), "compact tooltip %d" % iid)
+        want, want_st = expected_tooltip(ref, iid, age, compact=True, styles=True)
+        sc.eq(w.lines(tt), want, "compact tooltip %d" % iid)
+        tooltip_style_ok(sc, w, tt, want_st, "compact tooltip %d" % iid)
     w.M.shift = True
     tt.SetBagItem(tt, 0, 1)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, mult=20, compact=True), "compact x20 tooltip")
@@ -3347,13 +3598,18 @@ def sc_tooltip(sc, ref, items):
     w.slash("/fah tooltip")
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "tooltip on again")
-    # Other tooltips
+    # Other tooltips: a chat link's ItemRefTooltip gets the bigger verdict too,
+    # a comparison tooltip never does
     ir = w.g.ItemRefTooltip
     ir.SetHyperlink(ir, w.M.ItemLink(R.ARCANE))
-    sc.eq(w.lines(ir), expected_tooltip(ref, R.ARCANE, age), "ItemRefTooltip from a chat link")
+    want, want_st = expected_tooltip(ref, R.ARCANE, age, styles=True)
+    sc.eq(w.lines(ir), want, "ItemRefTooltip from a chat link")
+    tooltip_style_ok(sc, w, ir, want_st, "ItemRefTooltip")
     st = w.g.ShoppingTooltip1
     st.SetItemByID(st, R.RUNE)
-    sc.eq(w.lines(st), expected_tooltip(ref, R.RUNE, age), "comparison tooltip")
+    want, want_st = expected_tooltip(ref, R.RUNE, age, styles=True)
+    sc.eq(w.lines(st), want, "comparison tooltip")
+    tooltip_style_ok(sc, w, st, [(lc, rc, False) for lc, rc, _ in want_st], "comparison tooltip (normal size)")
     ot = w.g.OtherAddonTooltip
     ot.SetItemByID(ot, R.LINEN)
     sc.eq(w.lines(ot), [], "unlisted tooltip gets nothing")
@@ -3389,11 +3645,23 @@ def sc_tooltip(sc, ref, items):
         label = "%d-day average" % min(days, 7)
         sc.check(any(a == label for a, _ in lines), "%d: a %r line (%s)" % (iid, label, lines))
         col = {"+": TT_POS, "-": TT_NEG}.get(pct_txt[0], TT_MUTED)
-        sc.check(lines[1][0] == "AH value" and (lines[1][1] or "").endswith("  |c%s%s|r" % (col, pct_txt)),
-                 "%d: AH value %s from the average, in its colour (%s)" % (iid, pct_txt, lines[1]))
+        ahv = [x for x in lines if x[0] == "AH value"]
+        sc.check(len(ahv) == 1 and (ahv[0][1] or "").endswith("  |c%s%s|r" % (col, pct_txt)),
+                 "%d: AH value %s from the average, in its colour (%s)" % (iid, pct_txt, ahv))
         sc.check(not any(a.startswith(("7-day low", "7-day high", "Cheapest", "Market", "Listed ", "Best price"))
                          for a, _ in lines), "%d: none of the old lines (%s)" % (iid, lines))
     sc.clean(w2, "average")
+
+
+def big_fontstrings(w, tt):
+    """Every line FontString of a tooltip (in use or not) on one of our Fonts: [(line, side, font, size)]."""
+    out = []
+    for i in range(1, len(tt._L) + 1):
+        s = w.M.lineStyle(tt, i)
+        for side, x in (("left", s.left), ("right", s.right)):
+            if str(x.font).startswith("ForeverAH"):
+                out.append((i, side, x.font, x.size))
+    return out
 
 
 def sc_tooltip_legacy_hooks(sc, ref, items):
@@ -3401,12 +3669,63 @@ def sc_tooltip_legacy_hooks(sc, ref, items):
     sc.eq(w.ns.tooltipMode, "script", "legacy client: OnTooltipSetItem fallback")
     tt = w.g.GameTooltip
     age = w.now - ref.updated
+    record_big_at_show(w)
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, R.LINEN)
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "legacy tooltip lines")
+    want, want_st = expected_tooltip(ref, R.LINEN, age, styles=True)
+    sc.eq(w.lines(tt), want, "legacy tooltip lines")
+    tooltip_style_ok(sc, w, tt, want_st, "legacy tooltip")
+    big_at_show_ok(sc, w, tt, want_st, "legacy")
     w.M.fireScript(tt, "OnTooltipSetItem")
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "legacy second OnTooltipSetItem adds nothing")
+    sc.eq(w.lines(tt), want, "legacy second OnTooltipSetItem adds nothing")
+    tooltip_style_ok(sc, w, tt, want_st, "legacy second OnTooltipSetItem")
+    tt.ClearLines(tt)
+    sc.eq(big_fontstrings(w, tt), [], "legacy: a clear puts the normal font back")
     sc.clean(w)
+    # Silk Cloth by link (count 1): the spec's lines, the verdict bigger before tt:Show()
+    text, items2, ids = verdict_data(ref, items)
+    r2 = RefData(text=text)
+    w2 = World(r2, items2, client="legacy", data_src=text)
+    t2 = w2.g.GameTooltip
+    silk = ids["silk"]
+    record_big_at_show(w2)
+    t2.SetOwner(t2, w2.g.UIParent, "ANCHOR_RIGHT")
+    t2.SetHyperlink(t2, w2.M.ItemLink(silk))
+    want, want_st = expected_tooltip(r2, silk, w2.now - r2.updated, styles=True)
+    lines = w2.lines(t2)
+    sc.eq(lines, want, "legacy Silk by link")
+    sc.eq(lines[1:6], [("Auction it", "+26% vs vendor"), ("AH value", money_icons(200) + "  " + vs_average(200, 199)),
+                       ("2-day average", money_icons(199)), ("Sell now", money_icons(157)), ("Suggested price", money_icons(200))],
+          "legacy Silk by link: the spec's lines")
+    tooltip_style_ok(sc, w2, t2, want_st, "legacy Silk by link")
+    big_at_show_ok(sc, w2, t2, want_st, "legacy Silk by link")
+    t2.ClearLines(t2)
+    sc.eq(big_fontstrings(w2, t2), [], "legacy Silk: a clear puts the normal font back")
+    sc.clean(w2, "legacy Silk")
+
+
+def record_big_at_show(w):
+    """Notes which lines of GameTooltip are on our bigger Font when tt:Show() is
+    called (the legacy path calls it to lay the tooltip out again)."""
+    w.M.bigAtShow = None
+    w.lua.execute("""
+      local tt = GameTooltip
+      local show = tt.Show
+      tt.Show = function(self, ...)
+        local big = {}
+        for i = 1, #self._L do
+          local s = MOCK.lineStyle(self, i)
+          if tostring(s.left.font):find("ForeverAH", 1, true) then big[#big + 1] = i end
+        end
+        MOCK.bigAtShow = big
+        return show(self, ...)
+      end""")
+
+
+def big_at_show_ok(sc, w, tt, want_st, label):
+    got = [w.M.bigAtShow[i] for i in range(1, len(w.M.bigAtShow) + 1)] if w.M.bigAtShow else None
+    want = [int(tt._blz) + 1 + k for k, (_, _, big) in enumerate(want_st) if big]
+    sc.eq(got, want, "%s: the verdict is bigger before the addon's tt:Show()" % label)
 
 
 def sc_stale(sc, ref, items):
@@ -3415,8 +3734,16 @@ def sc_stale(sc, ref, items):
     tt = w.g.GameTooltip
     tt.SetItemByID(tt, R.LINEN)
     lines = w.lines(tt)
-    sc.eq(lines, expected_tooltip(ref, R.LINEN, age), "stale tooltip lines")
+    want, want_st = expected_tooltip(ref, R.LINEN, age, styles=True)
+    sc.eq(lines, want, "stale tooltip lines")
     sc.check(lines[-1][0] == "Prices are 7h old: run Update-WoW-Prices.bat, then /reload", "stale line text")
+    sc.check(not any(big for _, _, big in want_st), "stale: the model never makes the verdict bigger")
+    tooltip_style_ok(sc, w, tt, want_st, "stale (the verdict at the normal size)")
+    for iid in sample_ids(ref, SAMPLE):
+        tt.SetItemByID(tt, iid)
+        want, want_st = expected_tooltip(ref, iid, age, styles=True)
+        sc.eq(w.lines(tt), want, "stale tooltip %d" % iid)
+        tooltip_style_ok(sc, w, tt, want_st, "stale tooltip %d" % iid)
     w.slash("/fah compact")
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, compact=True), "stale compact tooltip keeps the stale line")
@@ -7006,65 +7333,72 @@ def sc_old_format(sc, ref, items):
     sc.clean(w)
 
 
+def series24(price, mkt, sold=1):
+    """24 hourly and 5 daily prices at one level (the series fields of an item line)."""
+    return enc_series([price] * 24, [mkt] * 24, [sold] * 24) + "|" + enc_series([price] * 5, [mkt] * 5, [24 * sold] * 5)
+
+
 def sc_stack_verdicts(sc, ref, items):
-    """"This stack (N), after AH cut": what it brings at auction (Sell now, after
-    the 5% cut), green when that beats a vendor and red when not, and a red
-    "Vendor it" (also for one item) when a vendor pays as much or more."""
-    picks = [i for i in other_items(ref, items, 60, avoid=SIDEBAR_WATCH) if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0]
+    """The sell verdict on stacks: "This stack (N), after AH cut" is worth the
+    verdict's price, in white, only when the AH pays more ("Auction it") or
+    about the same ("Close call"); never for "Vendor it" or "Maybe auction".
+    Shift multiplies the prices but changes neither the verdict nor the stack
+    line. There is no "Vendor it: a vendor pays more" line any more."""
+    picks = [i for i in other_items(ref, items, 80, avoid=SIDEBAR_WATCH)
+             if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0 and i not in ref.variants]
     if not sc.check(len(picks) >= 4, "stack: enough items to test with"):
         return
     a, b_, c, d = picks[:4]
 
+    # Hand-made prices (the item keeps its name): fields after the name are
+    # cheapest|market|listed|sold24|avg7|vendor|hourly|daily|listings
+    made = {
+        a: "4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200),        # a vendor pays 50s: "Vendor it", "+25% vs AH"
+        b_: "1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100),          # a vendor will not buy it: "Auction it", "can't vendor"
+        c: "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300),    # 2s 88c against 2s 50c: "Close call", "AH +9%"
+        d: "0|0|0|20|0|25|%s|0" % series24(30, 32),                         # nothing listed now: "Maybe auction"
+    }
+
     def fn(iid, f):
-        f = f + [""] * (10 - len(f))
-        if iid == a:                      # a vendor pays more than the auction would
-            f[6] = str(max(int(f[1]), 1) * 3)
-        elif iid == b_:                   # a vendor will not buy it
-            f[6] = "0"
-        elif iid == c:                    # the same either way: (21 - 1) * 0.95 = 19
-            f[1], f[6] = "21", "19"
-            f[3] = "50"
-        elif iid == d:                    # nothing listed now
-            f[1] = "0"
-            f[6] = "25"
-        return f
+        return [f[0]] + made[iid].split("|") if iid in made else None
     text = rewrite_items(ref.text, fn)
     r2 = RefData(text=text)
     w = World(r2, items, data_src=text)
     ns, M = w.ns, w.M
     tt = w.g.GameTooltip
     age = w.now - r2.updated
-    pos, neg = TT_POS_RGB, TT_NEG_RGB
-    for slot, (iid, count, verdict) in enumerate(((a, 20, "Vendor it: a vendor pays more"), (b_, 5, None),
-                                                   (c, 1, "Vendor it: a vendor pays the same"), (d, 4, None),
-                                                   (R.LINEN, 20, None), (R.RUNE, 1, None)), start=1):
+    kinds = {a: ("vendor",), b_: ("auction",), c: ("close",), d: ("maybe",)}
+    for slot, (iid, count) in enumerate(((a, 20), (b_, 5), (c, 20), (d, 4), (R.LINEN, 20), (R.RUNE, 1)), start=1):
         w.put_bag(4, slot, iid, count)
-        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
-        tt.SetBagItem(tt, 4, slot)
-        lines = w.lines(tt)
-        want = expected_tooltip(r2, iid, age, count=count)
-        sc.eq(lines, want, "stack %d x%d tooltip" % (iid, count))
-        texts = [l for l, _ in lines]
-        if verdict:
-            sc.check(any(t == verdict for t in texts), "stack %d: verdict %r (%s)" % (iid, verdict, texts))
-        if iid == d:
-            sc.check(not any(t.startswith(("This stack", "Vendor it")) for t in texts),
-                     "stack %d: nothing listed: no stack line (the game's own line says what a vendor pays)" % iid)
-        if iid == b_:
-            sc.check("This stack (5), after AH cut" in texts and not any(t.startswith("Vendor it") for t in texts),
-                     "stack %d: a vendor will not buy it: the stack's AH value, no 'Vendor it' (%s)" % (iid, texts))
-        # the model's verdict for the stack's colour: green when the auction house pays more
-        # than a vendor (or a vendor will not buy it), red when not
-        _, _, mv = rec_model.stack_values(ref_sell_prices(r2, iid)["now"], count, r2.items[iid]["vendor"])
-        al = M.addonLines(tt)
-        for k in range(1, len(al) + 1):
-            ln = al[k]
-            if (ln.left or "").startswith("This stack"):
-                good = mv in ("auction", "novendor")
-                sc.eq((round(ln.rr, 2), round(ln.rg, 2), round(ln.rb, 2)), pos if good else neg,
-                      "stack %d: the stack's value is %s" % (iid, "green" if good else "red"))
-            elif (ln.left or "").startswith("Vendor it"):
-                sc.eq((round(ln.lr, 2), round(ln.lg, 2), round(ln.lb, 2)), neg, "stack %d: vendor verdict is red" % iid)
+        for shift in (False, True):
+            M.shift = shift
+            tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+            tt.SetBagItem(tt, 4, slot)
+            lines = w.lines(tt)
+            mult = count if shift and count > 1 else 1
+            want, want_st = expected_tooltip(r2, iid, age, mult=mult, count=count, styles=True)
+            lab = "stack %d x%d%s" % (iid, count, " Shift" if shift else "")
+            sc.eq(lines, want, lab + " tooltip")
+            tooltip_values_ok(sc, r2, iid, lines, mult, lab)
+            verdict_line_ok(sc, r2, iid, lines, lab)
+            tooltip_style_ok(sc, w, tt, want_st, lab)
+            V = ref_verdict(r2, iid)
+            texts = [l for l, _ in lines]
+            stack = [r for l, r in lines if l.startswith("This stack")]
+            if iid in kinds:
+                sc.check(V is not None and V["kind"] in kinds[iid], "%s: verdict kind %s (%s)" % (lab, kinds[iid], V))
+            if V and V["kind"] in ("auction", "close") and count > 1:
+                sc.eq(stack, [money_icons(rec_model.stack_after_cut(V["unit"], count))],
+                      "%s: the stack at the verdict's price, the same with Shift" % lab)
+            else:
+                sc.eq(stack, [], "%s: no stack line for %s" % (lab, V and V["kind"]))
+            sc.check(not any(t.startswith("Vendor it:") for t in texts), "%s: no old 'Vendor it:' line (%s)" % (lab, texts))
+        M.shift = False
+    # c is the hand-made close call: 288 x 95 = 27,360 against 250 x 100 = 25,000 (9% more)
+    tt.SetBagItem(tt, 4, 3)
+    lines = w.lines(tt)
+    sc.check(("Close call", "AH +9%") in lines and ("This stack (20), after AH cut", money_icons(5472)) in lines,
+             "stack: Dense Stone's close call and its stack (54s 72c) (%s)" % lines)
     # with the auction house open, the live listing is used
     w.open_ah_modern()
     lp = r2.items[R.LINEN]["cheapest"] + 11
@@ -7073,13 +7407,330 @@ def sc_stack_verdicts(sc, ref, items):
     w.settle(0.3)
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 4, 5)
-    sc.eq(w.lines(tt), expected_tooltip(r2, R.LINEN, age, count=20, live=lp), "stack: live listing used for Sell now and the stack")
+    want, want_st = expected_tooltip(r2, R.LINEN, age, count=20, live=lp, styles=True)
+    sc.eq(w.lines(tt), want, "stack: live listing used for Sell now and the verdict")
     tooltip_values_ok(sc, r2, R.LINEN, w.lines(tt), 1, "stack live", live=lp)
+    verdict_line_ok(sc, r2, R.LINEN, w.lines(tt), "stack live", live=lp)
+    tooltip_style_ok(sc, w, tt, want_st, "stack live")
     w.close_ah_modern()
     # compact tooltips stay one line
     w.slash("/fah compact")
-    tt.SetBagItem(tt, 4, 1)
-    sc.eq(w.lines(tt), expected_tooltip(r2, a, age, compact=True), "stack: compact tooltip has no stack lines")
+    for slot, iid in ((1, a), (2, b_), (3, c), (4, d)):
+        tt.SetBagItem(tt, 4, slot)
+        want, want_st = expected_tooltip(r2, iid, age, compact=True, styles=True)
+        sc.eq(w.lines(tt), want, "stack %d: compact tooltip is one line, no stack line" % iid)
+        tooltip_style_ok(sc, w, tt, want_st, "stack %d compact" % iid)
+    sc.clean(w)
+
+
+# The spec's hand-made items for the sell verdict: (key, fields after the name,
+# the verdict as (left, right) or None, a stack and its value after the cut or None).
+VERDICT_FIXTURES = [
+    # Silk Cloth: the cheapest (1s 58c) is a lone dip under the usual 1s 90c; the AH value is 2s, a vendor pays 1s 50c
+    ("silk", "158|200|11850|14202|199|150|%s|%s|418" % (
+        enc_series([190] * 23 + [158], [200] * 24, [600] * 24), enc_series([190, 158], [198, 200], [14000, 14202])),
+     ("Auction it", "+26% vs vendor"), (20, 3800)),
+    ("heavy", "389|389|862|13417|367|60|%s|%s|39" % (
+        enc_series([340] * 12 + [389] * 12, [370] * 12 + [389] * 12, [500] * 24), enc_series([350] * 7, [367] * 7, [13000] * 7)),
+     ("Auction it", "6.1x vendor"), (17, 6266)),
+    ("shiny", "7|7|5000|7254|7|7|%s|323" % series24(7, 7, 300), ("Vendor it", "+5% vs AH"), (20, None)),
+    ("dense", "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300), ("Close call", "AH +9%"), (20, 5472)),
+    ("vendormore", "4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200), ("Vendor it", "+25% vs AH"), (20, None)),
+    ("novendor", "1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100), ("Auction it", "can't vendor"), (20, 20900)),
+    ("onelisting", "1000|1100|1|30|1050|10|%s|1" % series24(1000, 1100), ("Maybe auction", "few listed"), None),
+    ("vendorjunk", "1000|1100|5|30|1050|5|%s|5" % series24(1000, 1100), None, None),
+    ("nothingnow", "0|0|0|20|0|25|%s|0" % series24(30, 32), ("Maybe auction", "none listed now"), None),
+    ("even", "21|22|50|20|22|19|%s|20" % series24(21, 22), ("Close call", "tiny gain"), None),
+    ("jumped", "3000|3000|20|50|1000|1000|%s|%s|8" % (
+        enc_series([1000] * 23 + [3000], [1010] * 23 + [3000], [2] * 24), enc_series([1000] * 5, [1010] * 5, [50] * 5)),
+     ("Maybe auction", "price jumped"), None),
+    ("boundary", "44|44|500|100|44|38|%s|30" % series24(44, 44, 5), ("Auction it", "+10% vs vendor"), None),
+    ("vendorone", "100|100|500|100|100|96|%s|30" % series24(100, 100, 5), ("Vendor it", "+1% vs AH"), None),
+    ("double", "200|200|500|100|200|95|%s|30" % series24(200, 200, 5), ("Auction it", "2x vendor"), None),
+    ("almost", "199|199|500|100|199|95|%s|30" % series24(199, 199, 5), ("Auction it", "+99% vs vendor"), None),
+    ("ten", "1100|1100|500|100|1100|100|%s|30" % series24(1100, 1100, 5), ("Auction it", "10x vendor"), None),
+    ("junk", "1|1|5|20|1|0|%s|5" % series24(1, 1), None, None),
+    ("slow", "500|520|8|0|510|400|%s|8" % series24(500, 520, 0), ("Maybe auction", "sells slowly"), None),
+    ("slowhuge", "500|520|8|0|510|100|%s|8" % series24(500, 520, 0), ("Auction it", "4.9x vendor"), None),
+    ("tiny", "4|4|500|100|4|3|%s|30" % series24(4, 4, 5), ("Close call", "tiny gain"), (20, 76)),
+    ("thinvendor", "50|50|1|10|50|60|%s|1" % series24(50, 50), ("Vendor it", "+28% vs AH"), None),
+    ("thinnovendor", "30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000), ("Maybe auction", "few listed"), None),
+]
+
+
+def verdict_data(ref, items):
+    """The data under test plus the hand-made verdict items, under new ids (and the
+    mock game knows them, with the same vendor price). -> (text, items, {key: id})."""
+    ids, iid = {}, 970001
+    for key, _, _, _ in VERDICT_FIXTURES:
+        while iid in ref.items or str(iid) in items:
+            iid += 1
+        ids[key] = iid
+        iid += 1
+    lines = "".join('    [%d] = "Verdict %s|%s",\n' % (ids[k], k.capitalize(), f) for k, f, _, _ in VERDICT_FIXTURES)
+    a, _ = block_span(ref.text, "items")
+    nl = ref.text.index("\n", a) + 1 if ref.text[a] != "\n" else a + 1
+    text = ref.text[:nl] + lines + ref.text[nl:]
+    items2 = dict(items)
+    for key, f, _, _ in VERDICT_FIXTURES:
+        items2[str(ids[key])] = {"name": "Verdict " + key.capitalize(), "sell": int(f.split("|")[5]), "quality": "COMMON"}
+    return text, items2, ids
+
+
+def sc_tooltip_verdicts(sc, ref, items):
+    """The sell verdict on the spec's hand-made items: the words, the colours, the
+    bigger line, the stack line, Shift, compact, no verdict for a bound item or
+    another market, the live listing, and the bag panel's matching price."""
+    text, items2, ids = verdict_data(ref, items)
+    r2 = RefData(text=text)
+    sc.check(all(ids[k] in r2.items for k in ids), "verdicts: the hand-made items are in the data")
+    w = World(r2, items2, data_src=text)
+    M, ns = w.M, w.ns
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    for slot, (key, _, want, stack) in enumerate(VERDICT_FIXTURES, start=1):
+        iid = ids[key]
+        V = ref_verdict(r2, iid)
+        sc.eq((V["left"], V["right"]) if V else None, want, "verdicts %s: the model's verdict is the spec's" % key)
+        tt.SetItemByID(tt, iid)
+        lines = w.lines(tt)
+        want_lines, want_st = expected_tooltip(r2, iid, age, styles=True)
+        sc.eq(lines, want_lines, "verdicts %s: tooltip" % key)
+        verdict_line_ok(sc, r2, iid, lines, "verdicts %s" % key)
+        tooltip_values_ok(sc, r2, iid, lines, 1, "verdicts %s" % key)
+        tooltip_style_ok(sc, w, tt, want_st, "verdicts %s" % key)
+        count = stack[0] if stack else 20
+        w.put_bag(0, slot, iid, count)
+        for shift in (False, True):
+            M.shift = shift
+            tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+            tt.SetBagItem(tt, 0, slot)
+            lab = "verdicts %s x%d%s" % (key, count, " Shift" if shift else "")
+            lines = w.lines(tt)
+            want_lines, want_st = expected_tooltip(r2, iid, age, mult=count if shift else 1, count=count, styles=True)
+            sc.eq(lines, want_lines, lab)
+            verdict_line_ok(sc, r2, iid, lines, lab)
+            tooltip_style_ok(sc, w, tt, want_st, lab)
+            got_stack = [parse_coins(r) for l, r in lines if l.startswith("This stack")]
+            if stack and stack[1] is not None:
+                sc.eq(got_stack, [stack[1]], "%s: the spec's stack value" % lab)
+            elif want is not None and want[0] in ("Vendor it", "Maybe auction"):
+                sc.eq(got_stack, [], "%s: no stack line" % lab)
+        M.shift = False
+    # compact: one line, never bigger
+    w.slash("/fah compact")
+    for key, _, want, _ in VERDICT_FIXTURES:
+        tt.SetItemByID(tt, ids[key])
+        want_lines, want_st = expected_tooltip(r2, ids[key], age, compact=True, styles=True)
+        sc.eq(w.lines(tt), want_lines, "verdicts %s: compact" % key)
+        tooltip_style_ok(sc, w, tt, want_st, "verdicts %s compact" % key)
+    w.slash("/fah compact")
+    silk = ids["silk"]
+    # TC19 a bound copy: bind on pickup, or a soulbound bag slot: the prices, no verdict, no stack line
+    M["items"][silk].bind = 1
+    tt.SetItemByID(tt, silk)
+    want_lines, want_st = expected_tooltip(r2, silk, age, verdict=False, styles=True)
+    sc.eq(w.lines(tt), want_lines, "verdicts: bind on pickup Silk has no verdict")
+    tooltip_style_ok(sc, w, tt, want_st, "verdicts: bind on pickup Silk")
+    M["items"][silk].bind = 0
+    w.put_bag(1, 1, silk, 20)
+    M.bags[1][1].bound = True
+    tt.SetBagItem(tt, 1, 1)
+    sc.eq(w.lines(tt), expected_tooltip(r2, silk, age, count=20, verdict=False), "verdicts: soulbound Silk x20, no verdict")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq(w.lines(tt), expected_tooltip(r2, silk, age, count=20), "verdicts: the tradeable stack still has it")
+    # TC20 another market: the other faction, Hardcore, a goblin auction house
+    for label, setup, undo in (("Horde", lambda: setattr(M, "faction", "Horde"), lambda: setattr(M, "faction", "Alliance")),
+                               ("Hardcore", lambda: setattr(M, "hardcore", True), lambda: setattr(M, "hardcore", False))):
+        setup()
+        tt.SetBagItem(tt, 0, 1)
+        want_lines, want_st = expected_tooltip(r2, silk, age, count=20, verdict=False, styles=True)
+        sc.eq(w.lines(tt), want_lines, "verdicts: %s, no verdict" % label)
+        tooltip_style_ok(sc, w, tt, want_st, "verdicts: %s" % label)
+        undo()
+    M.npc, M.subzone = w.to_lua({}), "Booty Bay"
+    w.open_ah_modern()
+    sc.check(bool(ns.AHState.otherHouse), "verdicts: a goblin auction house is another house")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq(w.lines(tt), expected_tooltip(r2, silk, age, count=20, verdict=False), "verdicts: a goblin auction house, no verdict")
+    w.close_ah_modern()
+    M.npc, M.subzone = None, None
+    # TC21 the live cheapest feeds List At and Sell now
+    w.open_ah_modern()
+    for lp, own, want in ((195, False, "+26% vs vendor"), (210, False, "+32% vs vendor"), (196, True, "+26% vs vendor")):
+        w.set_commodity_results(silk, [(lp, 30, own)])
+        M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", silk)
+        w.settle(0.3)
+        sc.eq(w.live(silk), lp, "verdicts: live %d read" % lp)
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 0, 1)
+        lines = w.lines(tt)
+        want_lines, want_st = expected_tooltip(r2, silk, age, count=20, live=lp, own=own, styles=True)
+        sc.eq(lines, want_lines, "verdicts: Silk with a live listing at %d%s" % (lp, " (yours)" if own else ""))
+        sc.check(("Auction it", want) in lines, "verdicts: live %d gives %r (%s)" % (lp, want, lines[:2]))
+        tooltip_style_ok(sc, w, tt, want_st, "verdicts: live %d" % lp)
+    w.close_ah_modern()
+    # TC29 the bag panel values Silk at the verdict's price: 200 x 0.95 = 190 each, 3,800 for 20,
+    # an auction item (at Sell now it was 157 x 0.95 = 149 against a vendor's 150)
+    w.put_bag(1, 2, ids["vendorjunk"], 1)
+    s = ns.BagScan()
+    rows = {(s.drop[i].bag, s.drop[i].slot): s.drop[i] for i in range(1, len(s.drop) + 1)}
+    e = rows.get((0, 1))
+    got = (e.source, e.auction, e.value) if e else None
+    sc.check(got == ("auction", 190, 3800), "verdicts: the bag panel calls Silk x20 an auction item worth 3,800 (%r)" % (got,))
+    e = rows.get((1, 2))
+    got = (e.source, e.auction) if e else None
+    sc.check(got == ("vendor", None), "verdicts: a few listed far above the vendor price get no auction value (%r)" % (got,))
+    for (bag, slot), e in sorted(rows.items()):
+        value, unsure, source = bag_value(w, r2, int(e.id), int(e.count), bound=(bag, slot) == (1, 1))
+        sc.eq((e.value, bool(e.unsure), e.source), (value, unsure, source),
+              "verdicts: bag panel %d in %d:%d (model)" % (int(e.id), bag, slot))
+    sc.clean(w)
+
+
+def sc_tooltip_fonts(sc, ref, items):
+    """The bigger verdict line: on our own Font (one per face, size and flags),
+    its colour set again, restored on clear and hide, only GameTooltip and
+    ItemRefTooltip, lines made after it at the normal size, and the fallbacks."""
+    text, items2, ids = verdict_data(ref, items)
+    r2 = RefData(text=text)
+    silk, junk = ids["silk"], ids["vendorjunk"]
+    w = World(r2, items2, data_src=text)
+    M, g = w.M, w.g
+    tt = g.GameTooltip
+    age = w.now - r2.updated
+    w.put_bag(0, 1, silk, 20)
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
+    tt.SetBagItem(tt, 0, 1)
+    want_lines, want_st = expected_tooltip(r2, silk, age, count=20, styles=True)
+    sc.eq(w.lines(tt), want_lines, "fonts: Silk x20")
+    n = int(tt._blz) + 2           # the verdict: the game's 2 lines, our header, then it
+    sc.eq(big_fontstrings(w, tt), [(n, "left", "ForeverAHBigFont1", 15), (n, "right", "ForeverAHBigFont1", 15)],
+          "fonts: the verdict's both sides on ForeverAHBigFont1 at 15")
+    tooltip_style_ok(sc, w, tt, want_st, "fonts: Silk x20 (green after the swap)")
+    sc.eq(M.fontsCreated, 1, "fonts: one Font made")
+    f = g.ForeverAHBigFont1
+    sc.eq(f.GetFont(f), ("Fonts\\PTSansNarrow.ttf", 15, ""), "fonts: the line's own face and flags, 3 points bigger")
+    tt.ClearLines(tt)
+    sc.eq(big_fontstrings(w, tt), [], "fonts: ClearLines puts the Font back")
+    s = M.lineStyle(tt, n)
+    sc.eq((s.left.font, s.left.size, s.right.font), ("GameTooltipText", 12, "GameTooltipText"), "fonts: the exact Font object")
+    tt.SetBagItem(tt, 0, 1)
+    tt.Show(tt)
+    tt.Hide(tt)
+    sc.eq(big_fontstrings(w, tt), [], "fonts: Hide puts it back")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq(len(big_fontstrings(w, tt)), 2, "fonts: bigger again")
+    M.fireScript(tt, "OnHide")     # a hide that does not clear the lines
+    sc.eq(big_fontstrings(w, tt), [], "fonts: OnHide alone puts it back")
+    tt.ClearLines(tt)
+    tt.SetBagItem(tt, 0, 1)
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
+    sc.eq(big_fontstrings(w, tt), [], "fonts: SetOwner (a clear) puts it back")
+    tt.SetBagItem(tt, 0, 1)
+    tt.SetItemByID(tt, junk)
+    sc.eq(big_fontstrings(w, tt), [], "fonts: the next item, with no verdict, has nothing bigger")
+    for _ in range(50):
+        tt.SetBagItem(tt, 0, 1)
+    sc.eq((M.fontsCreated, len(big_fontstrings(w, tt))), (1, 2), "fonts: 50 more hovers make no new Font")
+    w.M.shift = True
+    tt.RefreshData(tt)
+    w.M.shift = False
+    tt.RefreshData(tt)
+    sc.eq(big_fontstrings(w, tt), [(n, "left", "ForeverAHBigFont1", 15), (n, "right", "ForeverAHBigFont1", 15)],
+          "fonts: Shift down and up (rebuilds): still exactly one bigger line")
+    gtt = g.GameTooltipText
+    gtt.SetFont(gtt, "Fonts\\PTSansNarrow.ttf", 14, "")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq((big_fontstrings(w, tt), M.fontsCreated),
+          ([(n, "left", "ForeverAHBigFont2", 17), (n, "right", "ForeverAHBigFont2", 17)], 2),
+          "fonts: GameTooltipText at 14 gets a new Font at 17")
+    tooltip_style_ok(sc, w, tt, want_st, "fonts: at 14 points", base_size=14)
+    gtt.SetFont(gtt, "Fonts\\PTSansNarrow.ttf", 12, "")
+    tt.ClearLines(tt)
+    ir = g.ItemRefTooltip
+    ir.SetHyperlink(ir, M.ItemLink(silk))
+    want_lines, want_st = expected_tooltip(r2, silk, age, styles=True)
+    tooltip_style_ok(sc, w, ir, want_st, "fonts: ItemRefTooltip from a chat link")
+    sc.eq(len(big_fontstrings(w, ir)), 2, "fonts: ItemRefTooltip's verdict is bigger")
+    sc.eq(M.fontsCreated, 2, "fonts: the 12-point Font is reused")
+    for name in ("ShoppingTooltip1", "ShoppingTooltip2", "ItemRefShoppingTooltip1"):
+        st = g[name]
+        st.SetItemByID(st, silk)
+        sc.eq(w.lines(st), want_lines, "fonts: %s lines" % name)
+        sc.eq(big_fontstrings(w, st), [], "fonts: %s is never bigger" % name)
+    # Lines made after ours copy a normal line: 8 game lines, Silk, then an ElvUI-like
+    # post call adding a blank line and the ID line
+    M.extraGameLines = w.to_lua(["stat %d" % i for i in range(3, 8)] + ["Sell Price: 1s"])
+    w.lua.execute("""TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt, d)
+        tt:AddLine(" ")
+        tt:AddDoubleLine("ID: " .. tostring(d.id), "Bags: 30")
+      end)""")
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
+    tt.SetItemByID(tt, silk)
+    al = w.all_lines(tt)
+    sc.eq([l for l, _ in al[8:]], ["Forever AH", "Auction it", "AH value", "2-day average", "Sell now", "Suggested price",
+                                   " ", "ID: %d" % silk], "fonts: lines 9 to 16")
+    sc.eq(big_fontstrings(w, tt), [(10, "left", "ForeverAHBigFont1", 15), (10, "right", "ForeverAHBigFont1", 15)],
+          "fonts: only line 10 is bigger")
+    others = []
+    for i in range(2, len(tt._L) + 1):
+        s = M.lineStyle(tt, i)
+        if i != 10:
+            others += [(i, side, x.font, x.size) for side, x in (("left", s.left), ("right", s.right))]
+    sc.eq([x for x in others if x[2:] != ("GameTooltipText", 12)], [], "fonts: lines 11 to 16, made on demand, stay at 12")
+    M.extraGameLines = None
+    sc.clean(w, "fonts")
+    # Fallbacks: the same lines and colours at the normal size, no error and no chat line
+    for label in ("hook refused", "no CreateFont", "CreateFont gives nothing"):
+        w3 = World(r2, items2, data_src=text)
+        t3 = w3.g.GameTooltip
+        if label == "hook refused":
+            w3.lua.execute("GameTooltip.HookScript = function() error('HookScript refused') end")
+        elif label == "no CreateFont":
+            w3.g.CreateFont = None
+        else:
+            w3.lua.execute("CreateFont = function() return nil end")
+        t3.SetItemByID(t3, silk)
+        want_lines, want_st = expected_tooltip(r2, silk, age, styles=True)
+        sc.eq(w3.lines(t3), want_lines, "fonts %s: the lines" % label)
+        tooltip_style_ok(sc, w3, t3, [(lc, rc, False) for lc, rc, _ in want_st], "fonts %s: normal size" % label)
+        sc.clean(w3, "fonts " + label)
+
+
+def sc_verdict_parity(sc, ref, items):
+    """rec_model.sell_verdict (the Python twin) equals ns.SellVerdict, and
+    sell_verdict_price ns.SellVerdictPrice, for every item of the data (a
+    sample for the longer timeframes and live prices of a big file)."""
+    w = World(ref, items)
+    ns = w.ns
+
+    def tup(v):
+        if v is None:
+            return None
+        if isinstance(v, dict):
+            return (v["kind"], v["unit"], v["left"], v["right"], v["lc"], v["rc"])
+        return (v.kind, v.unit, v.left, v.right, v.lc, v.rc)
+    cases = [(iid, "1D", None, False) for iid in sorted(ref.items)]
+    for iid in sample_ids(ref, SAMPLE * 2):
+        lp = ref.items[iid]["cheapest"] + 7
+        cases += [(iid, tf, None, False) for tf in ("5D", "1M", "1Y")] + [(iid, "1D", lp, False), (iid, "1D", lp, True)]
+    bad, kinds = [], {}
+    for iid, tf, live, own in cases:
+        rec = ref_recommend(ref, iid, tf, live)
+        it = ref.items[iid]
+        sp = rec_model.sell_prices(rec, live, own, it["vendor"])
+        want = tup(rec_model.sell_verdict(it, sp, rec, ref.salesHours))
+        g = ns.GetItem(iid)
+        P = ns.SellPrices(iid, tf, live, own)
+        got = tup(ns.SellVerdict(g, P))
+        pu, lu = rec_model.sell_verdict_price(it, sp, rec), ns.SellVerdictPrice(g, P)
+        if got != want or pu != lu:
+            bad.append((iid, tf, live, own, got, want, pu, lu))
+        k = want[0] if want else None
+        kinds[k] = kinds.get(k, 0) + 1
+    sc.eq(bad[:5], [], "parity: the Python twin matches the addon on %d item cases (%d differ)" % (len(cases), len(bad)))
+    sc.check(kinds.get("auction") and len(kinds) >= 2, "parity: the data has auction calls and other kinds (%s)" % kinds)
     sc.clean(w)
 
 
@@ -7111,13 +7762,17 @@ def bag_quests(w, quests):
 
 
 def bag_auction_unit(ref, iid):
-    """Bags.lua AuctionUnit: Sell now, else the market price (rough) when none is listed."""
+    """Bags.lua AuctionUnit: listed now, the tooltip verdict's price
+    (rec_model.sell_verdict_price); else Sell now; else the market price
+    (rough) when none is listed."""
     it = ref.items.get(iid)
     if not it:
         return None, False
-    sp = ref_sell_prices(ref, iid, "1D")
-    if sp["now"]:
-        return sp["now"], price_doubt(ref, iid)
+    rec = ref_recommend(ref, iid, "1D")
+    sp = rec_model.sell_prices(rec, None, False, it["vendor"])
+    u = rec_model.sell_verdict_price(it, sp, rec) if it["market"] > 0 else None
+    if u or sp["now"]:
+        return u or sp["now"], price_doubt(ref, iid)
     if sp["nowWhy"] == "none" and it["market"] > 0:
         return it["market"], True
     return None, False
@@ -7625,6 +8280,9 @@ SCENARIOS = [
     ("flip-no-gold-api", sc_flip_no_gold),
     ("old-data-format", sc_old_format),
     ("stack-verdicts", sc_stack_verdicts),
+    ("tooltip-verdicts", sc_tooltip_verdicts),
+    ("tooltip-fonts", sc_tooltip_fonts),
+    ("verdict-parity", sc_verdict_parity),
     ("bag-cleanup", sc_bag_cleanup),
     ("bag-cleanup-no-data", sc_bag_cleanup_nodata),
     ("bag-cleanup-elvui", sc_bag_cleanup_elvui),

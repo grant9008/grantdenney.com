@@ -938,6 +938,120 @@ ns.TOOLTIP_NAMES = TOOLTIP_NAMES
 local done = setmetatable({}, { __mode = "k" })      -- tooltip -> item id already shown
 local clearHooked = setmetatable({}, { __mode = "k" }) -- tooltip -> true when OnTooltipCleared is hooked
 
+-- The bigger verdict line ("Auction it" / "Vendor it"), on GameTooltip and
+-- ItemRefTooltip only. Both FontStrings of that line get our own Font: the
+-- line's face and flags, 3 points bigger (at most 24). It is done after all
+-- our lines exist, because a line the game makes later copies the Font of the
+-- line above it. The exact Font object is saved and put back when the tooltip
+-- clears or hides. GameTooltipText (ElvUI styles it) is never changed, nor the
+-- comparison tooltips' fonts. Anything that fails leaves the normal size.
+local BIG_TOOLTIPS = { GameTooltip = true, ItemRefTooltip = true }
+local BIG_STEP, BIG_MAX = 3, 24
+local bigFonts, bigSeq = {}, 0                        -- "file|size|flags" -> our Font (false: none could be made)
+local ourFonts = setmetatable({}, { __mode = "k" })   -- Font -> true for the Fonts made here
+local bigSaved = setmetatable({}, { __mode = "k" })   -- FontString -> { obj, file, size, flags }
+local bigLines = setmetatable({}, { __mode = "k" })   -- tooltip -> { FontString, ... }
+
+-- Puts the saved Font back on every enlarged FontString of a tooltip.
+local function restoreBig(tt)
+  local l = bigLines[tt]
+  if not l then return end
+  bigLines[tt] = nil
+  for _, fs in ipairs(l) do
+    local s = bigSaved[fs]
+    if s then
+      bigSaved[fs] = nil
+      if s.obj then pcall(fs.SetFontObject, fs, s.obj) else pcall(fs.SetFont, fs, s.file, s.size, s.flags) end
+    end
+  end
+end
+
+-- One Font per face, size and flags, made once (a copy of src keeps ElvUI's shadow).
+local function bigFontFor(src, file, size, flags)
+  local k = file .. "|" .. size .. "|" .. flags
+  local f = bigFonts[k]
+  if f ~= nil then return f or nil end
+  bigFonts[k] = false
+  if type(_G.CreateFont) ~= "function" then return nil end
+  bigSeq = bigSeq + 1
+  local ok, o = pcall(_G.CreateFont, "ForeverAHBigFont" .. bigSeq)
+  if not ok or type(o) ~= "table" or type(o.SetFont) ~= "function" then return nil end
+  if type(src) == "table" and type(o.CopyFontObject) == "function" then pcall(o.CopyFontObject, o, src) end
+  local ok2, set = pcall(o.SetFont, o, file, size, flags)
+  if not ok2 or set == false then return nil end
+  bigFonts[k] = o
+  ourFonts[o] = true
+  return o
+end
+
+-- The left or right FontString of tooltip line n, or nil.
+local function lineFS(tt, name, side, n)
+  local get = (side == "Left") and tt.GetLeftLine or tt.GetRightLine
+  local fs
+  if type(get) == "function" then
+    local ok, l = pcall(get, tt, n)
+    if ok then fs = l end
+  end
+  if type(fs) ~= "table" then fs = _G[name .. "Text" .. side .. n] end
+  if type(fs) ~= "table" or type(fs.GetFont) ~= "function" or type(fs.SetFontObject) ~= "function" then return nil end
+  return fs
+end
+
+-- Puts one FontString on the bigger Font and sets its colour c again
+-- (SetFontObject takes the Font's colour). false when it could not.
+local function enlargeFS(tt, fs, c)
+  local s = bigSaved[fs]
+  if not s then
+    local okF, file, size, flags = pcall(fs.GetFont, fs)
+    if not okF or isSecret(file) or isSecret(size) or isSecret(flags) then return false end
+    if type(file) ~= "string" or file == "" or type(size) ~= "number" or size <= 0 then return false end
+    local obj
+    if type(fs.GetFontObject) == "function" then
+      local ok, o = pcall(fs.GetFontObject, fs)
+      if ok and type(o) == "table" then
+        if ourFonts[o] then return false end
+        obj = o
+      end
+    end
+    s = { obj = obj, file = file, size = size, flags = type(flags) == "string" and flags or "" }
+  end
+  local base = floor(s.size + 0.5)
+  local big = min(base + BIG_STEP, BIG_MAX)
+  if big <= base then return false end
+  local font = bigFontFor(s.obj, s.file, big, s.flags)
+  if not font then return false end
+  bigSaved[fs] = s
+  local l = bigLines[tt] or {}
+  l[#l + 1] = fs
+  bigLines[tt] = l
+  if not pcall(fs.SetFontObject, fs, font) then return false end
+  pcall(fs.SetTextColor, fs, c[1], c[2], c[3])
+  return true
+end
+
+-- Enlarges both sides of tooltip line n (or neither). Only with the restore
+-- hook in, on GameTooltip / ItemRefTooltip, for n >= 3 and with a line after n.
+local function enlargeLine(tt, n, lc, rc)
+  if clearHooked[tt] ~= true then return false end
+  local okN, name = pcall(tt.GetName, tt)
+  if not okN or type(name) ~= "string" or isSecret(name) or not BIG_TOOLTIPS[name] then return false end
+  local okC, c = pcall(tt.NumLines, tt)
+  if not okC or type(c) ~= "number" or isSecret(c) or n < 3 or c <= n then return false end
+  local L, R = lineFS(tt, name, "Left", n), lineFS(tt, name, "Right", n)
+  if not L or not R or not enlargeFS(tt, L, lc) or not enlargeFS(tt, R, rc) then
+    restoreBig(tt)
+    return false
+  end
+  return true
+end
+
+local function numLines(tt)
+  if type(tt.NumLines) ~= "function" then return nil end
+  local ok, n = pcall(tt.NumLines, tt)
+  if ok and type(n) == "number" and not isSecret(n) then return n end
+  return nil
+end
+
 local function allowedTooltip(tt)
   if type(tt) ~= "table" then return false end
   if type(tt.IsForbidden) == "function" then
@@ -953,7 +1067,8 @@ local function ensureClearHook(tt)
   if clearHooked[tt] ~= nil then return clearHooked[tt] end
   local hooked = false
   if type(tt.HookScript) == "function" then
-    hooked = pcall(tt.HookScript, tt, "OnTooltipCleared", function(self) done[self] = nil end)
+    hooked = pcall(tt.HookScript, tt, "OnTooltipCleared", function(self) done[self] = nil; restoreBig(self) end)
+    if hooked then pcall(tt.HookScript, tt, "OnHide", restoreBig) end
   end
   clearHooked[tt] = hooked and true or false
   return clearHooked[tt]
@@ -1106,31 +1221,6 @@ local function liveFor(id)
   return nil
 end
 
--- The stack lines, only when there is a Sell now price: for a stack, what it
--- brings at auction after the 5% cut, in green when that beats what a vendor
--- pays and in red when it does not. Then, for a stack or one item, a red
--- "Vendor it" when a vendor pays as much or more. (The game's own Sell Price
--- line already says what a vendor pays.)
-local function addStackLines(tt, item, count, unitNow)
-  if not unitNow then return end
-  local C = ns.COLORS
-  local tx, pos, neg = C.text, C.pos, C.neg
-  local vendor = tonumber(item.vendor) or 0
-  local auction = floor(unitNow * count * ns.AH_CUT)
-  local vend = vendor * count
-  local better = vendor <= 0 or auction > vend
-  if count > 1 then
-    local c = better and pos or neg
-    tt:AddDoubleLine("This stack (" .. count .. "), after AH cut", ns.MoneyIcons(auction),
-      tx[1], tx[2], tx[3], c[1], c[2], c[3])
-  end
-  if not better then
-    tt:AddLine(auction == vend and "Vendor it: a vendor pays the same" or "Vendor it: a vendor pays more",
-      neg[1], neg[2], neg[3])
-  end
-end
-ns.AddStackLines = addStackLines
-
 -- How far today's AH value sits from the average price: "+3%" in green, "-5%"
 -- in red (whole percent, rounded toward 0 so it never says more than it is),
 -- a grey "0%" under 1%, or nil with no average to compare with.
@@ -1155,15 +1245,26 @@ end
 ns.AverageLabel = averageLabel
 
 -- Adds our lines. Returns true when anything was added. Kept short:
---   AH value (today's market value) and how far it is from the average,
---   the 7-day average, Sell now, Suggested price (the sell target from the
---   price history), then for a stack what it brings after the AH cut.
+--   the "Forever AH" header (how old the prices are), then the sell verdict
+--   (ns.SellVerdict: "Auction it", "Vendor it", "Close call" or "Maybe
+--   auction", and by how much), AH value (today's market value) and how far
+--   it is from the average, the 7-day average, Sell now and Suggested price
+--   (the sell target from the price history; each in red when it nets no
+--   more than a vendor pays), then for a stack what it brings at the
+--   verdict's price after the AH cut (only when the AH pays more, or about
+--   the same). "Auction it" and "Vendor it" are bigger while the prices are
+--   fresh (enlargeLine). Compact mode is one line: the verdict and the AH
+--   value, or the AH value alone.
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
--- the "no recent listings" line; version = "version" says the prices are for
--- this version only, version = "all" (or suffix = true) that they cover every
--- version of the item. Then the AH value and the average still show (they
--- are what the data saw), but there is no Sell now, Suggested price or stack
+-- the "no recent listings" line; bound = true (soulbound, bind on pickup or a
+-- quest item: it can never be on the auction house) leaves out the verdict and
+-- the stack line; version = "version" says the prices are for this version
+-- only, version = "all" (or suffix = true) that they cover every version of
+-- the item. Then the AH value and the average still show (they are what the
+-- data saw), but there is no verdict, Sell now, Suggested price or stack
 -- line: a price for selling would come from other versions' listings.
+-- There is no verdict either for a market these prices are not from
+-- (ns.MarketMismatch: Hardcore, the other faction, another auction house).
 function ns.AddTooltipLines(tt, itemID, count, opts)
   local S = ns.settings
   if not S.tooltip then return false end
@@ -1191,17 +1292,44 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local age = ns.DataAge() or 0
   -- How far today's AH value is from the average, in green or red.
   local vs = vsAverage(item.market, item.avg7)
+  -- Sell now: 1 copper under the cheapest listing (the live one when the
+  -- auction house showed it). Suggested price: the sell target from the
+  -- price history. Both, and the verdict, only for one exact item or version.
+  local mixed = opts.version == "all" or opts.suffix == true
+  local live, own = liveFor(item.id)
+  local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
+  local V
+  if P and opts.bound ~= true and type(ns.SellVerdict) == "function"
+     and not (type(ns.MarketMismatch) == "function" and ns.MarketMismatch()) then
+    V = ns.SellVerdict(item, P)
+  end
+  local vline   -- the line to enlarge, once all our lines are in
   if S.compact then
     local m = money(item.market)
-    local line
-    if m then
-      line = "AH value" .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
+    if V then
+      local lc = C[V.lc]
+      if m then
+        tt:AddDoubleLine(V.left .. ": " .. V.right, "AH" .. tag .. " " .. m .. (vs and ("  " .. vs) or ""),
+          lc[1], lc[2], lc[3], 1, 1, 1)
+      else
+        tt:AddDoubleLine(V.left .. ": " .. V.right, "AH: none listed", lc[1], lc[2], lc[3], mu[1], mu[2], mu[3])
+      end
     else
-      line = "AH value: none listed now"
+      local line
+      if m then
+        line = "AH value" .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
+      else
+        line = "AH value: none listed now"
+      end
+      tt:AddLine(line, tx[1], tx[2], tx[3])
     end
-    tt:AddLine(line, tx[1], tx[2], tx[3])
   else
     tt:AddDoubleLine("Forever AH", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
+    if V then
+      local lc, rc = C[V.lc], C[V.rc]
+      tt:AddDoubleLine(V.left, V.right, lc[1], lc[2], lc[3], rc[1], rc[2], rc[3])
+      if (V.kind == "auction" or V.kind == "vendor") and age <= ns.STALE_SECONDS then vline = numLines(tt) end
+    end
     local m = money(item.market)
     if m then
       tt:AddDoubleLine("AH value" .. tag, vs and (m .. "  " .. vs) or m, tx[1], tx[2], tx[3], 1, 1, 1)
@@ -1212,24 +1340,27 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     if a then
       tt:AddDoubleLine(averageLabel(item.id) .. tag, a, tx[1], tx[2], tx[3], 1, 1, 1)
     end
-    -- Sell now: 1 copper under the cheapest listing (the live one when the
-    -- auction house showed it). Suggested price: the sell target from the
-    -- price history. Each only when there is one; one grey line says when a
-    -- price is left out because it may be one player's guess.
-    local mixed = opts.version == "all" or opts.suffix == true
-    local live, own = liveFor(item.id)
-    local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
-    local nowP = P and P.now
-    if nowP then
-      tt:AddDoubleLine((P.live and "Sell now (live)" or "Sell now") .. tag, money(nowP), tx[1], tx[2], tx[3], 1, 1, 1)
+    -- In red when a vendor pays at least as much after the 5% cut (the flags
+    -- the sell buttons warn with).
+    local ng, wh = C.neg, { 1, 1, 1 }
+    if P and P.now then
+      local c = P.nowVendor and ng or wh
+      tt:AddDoubleLine((P.live and "Sell now (live)" or "Sell now") .. tag, money(P.now), tx[1], tx[2], tx[3], c[1], c[2], c[3])
     end
     if P and P.best then
-      tt:AddDoubleLine("Suggested price" .. tag, money(P.best), tx[1], tx[2], tx[3], 1, 1, 1)
+      local c = P.bestVendor and ng or wh
+      tt:AddDoubleLine("Suggested price" .. tag, money(P.best), tx[1], tx[2], tx[3], c[1], c[2], c[3])
     end
-    if P and (P.nowWhy == "unreliable" or P.bestWhy == "unreliable") then
+    -- One grey line says when a price is left out because it may be one
+    -- player's guess (not when the verdict already says "few listed").
+    if P and (P.nowWhy == "unreliable" or P.bestWhy == "unreliable") and not (V and V.right == "few listed") then
       tt:AddLine("Few listed: the price may not be reliable", mu[1], mu[2], mu[3])
     end
-    addStackLines(tt, item, count, nowP)
+    -- The stack at the verdict's price, never multiplied by Shift.
+    if V and V.unit and count > 1 and (V.kind == "auction" or V.kind == "close") then
+      tt:AddDoubleLine("This stack (" .. count .. "), after AH cut", ns.MoneyIcons(floor(V.unit * count * 95 / 100)),
+        tx[1], tx[2], tx[3], 1, 1, 1)
+    end
   end
   if opts.version == "version" then
     tt:AddLine("Prices for this version only", mu[1], mu[2], mu[3])
@@ -1239,6 +1370,8 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   if age > ns.STALE_SECONDS then
     tt:AddLine(sformat("Prices are %dh old: run Update-WoW-Prices.bat, then /reload", floor(age / 3600)), mu[1], mu[2], mu[3])
   end
+  -- Last: every line after the verdict exists now (see enlargeLine).
+  if vline then enlargeLine(tt, vline, C[V.lc], C[V.rc]) end
   return true
 end
 
@@ -1273,6 +1406,8 @@ local function onTooltipData(tt, data)
     opts.noData = not shopping and mightBeTradeable(tt, data, id)
   else
     opts.version = cover
+    -- Prices, but no verdict, for an item that can never be on the auction house.
+    opts.bound = not mightBeTradeable(tt, data, id)
   end
   ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
 end
@@ -1287,7 +1422,10 @@ local function onTooltipSetItem(tt)
   if guarded then done[tt] = id end
   local pid, cover = ns.PriceIDForLink(id, tooltipLink(tt, nil))
   pid = pid or id
-  local opts = { noData = ns.GetItem(pid) ~= nil or mightBeTradeable(tt, nil, id), version = cover }
+  local hasData = ns.GetItem(pid) ~= nil
+  local tradeable = mightBeTradeable(tt, nil, id)
+  local opts = { noData = hasData or tradeable, version = cover, bound = hasData and not tradeable }
+  -- Show lays the tooltip out again, the bigger verdict line included.
   if ns.AddTooltipLines(tt, pid, 1, opts) and type(tt.Show) == "function" then tt:Show() end
 end
 

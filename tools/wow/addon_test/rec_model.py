@@ -261,18 +261,86 @@ def week_range(cheap_week):
     return min(vals), max(vals)
 
 
-def stack_values(unit_now, count, vendor):
-    """The tooltip's "This stack (N)" numbers: (auction value after the 5% cut
-    or None, vendor value, verdict) where verdict is "auction", "vendor",
-    "same", "novendor" or None (no auction price to compare)."""
-    auction = math.floor(unit_now * count * AH_CUT) if unit_now else None
-    vend = vendor * count
-    if auction is None:
-        return None, vend, None
-    if vendor <= 0:
-        return auction, vend, "novendor"
-    if auction > vend:
-        return auction, vend, "auction"
-    if auction == vend:
-        return auction, vend, "same"
-    return auction, vend, "vendor"
+# The tooltip's sell verdict (ns.SellVerdict). Whole numbers only: A = what the
+# AH nets per item after the 5% cut, B = what a vendor pays, in 1/100 copper.
+AUCTION_PCT = 110   # "Auction it": A >= 110% of B (200% for a slow seller) ...
+SLOW_PCT = 200
+MIN_GAIN = 200      # ... and A - B >= 2 copper
+VENDOR_PCT = 101    # "Vendor it": A under 101% of B
+OLD_FAR = 200       # nothing listed: a Suggested price over 200x the vendor price is not used
+SLOW_HOURS = 6      # fewer measured sales hours: how fast it sells is unknown
+
+
+def sell_verdict_price(item, sp, rec):
+    """ns.SellVerdictPrice: the AH price per item the verdict judges, or None.
+    item {"vendor", "market"}, sp = sell_prices(...), rec = recommend(...).
+    Listed now: List At (postAt), never over the AH value (or over Sell now
+    when that is higher). Nothing listed: the Suggested price, unless it is
+    over 200x the vendor price. None for vendorFar and for 1 copper or less."""
+    if rec["vendorFar"]:
+        return None
+    v, m = item["vendor"], item["market"]
+    if m > 0:
+        u = min(rec["postAt"] or 0, max(m, sp["now"] or 0))
+    else:
+        u = sp["best"]
+        if u is None or (v > 0 and u > OLD_FAR * v):
+            return None
+    return u if u > 1 else None
+
+
+def better_text(hi, lo, what):
+    """ns.BetterText: how much more hi pays than lo (hi >= lo > 0), rounded down."""
+    if hi > lo * 100:
+        return "over 100x " + what
+    if hi >= lo * 10:
+        return "%dx %s" % (hi // lo, what)
+    if hi >= lo * 2:
+        t = hi * 10 // lo
+        return ("%d" % (t // 10) if t % 10 == 0 else "%d.%d" % (t // 10, t % 10)) + "x " + what
+    p = (hi - lo) * 100 // lo
+    return ("same as " + what) if p < 1 else "+%d%% vs %s" % (p, what)
+
+
+def sell_verdict(item, sp, rec, sales_hours=None):
+    """ns.SellVerdict: {"kind", "unit", "left", "right", "lc", "rc"} or None.
+    item {"vendor", "market", "sold24"}; sales_hours as in the data file (None = a full day).
+    kind "auction" ("Auction it"), "vendor" ("Vendor it"), "close" ("Close call")
+    or "maybe" ("Maybe auction", no unit); lc / rc are ns.COLORS keys."""
+    u = sell_verdict_price(item, sp, rec)
+    if u is None:
+        return None
+    v, m = item["vendor"], item["market"]
+    unsure = "few listed" if rec["thinListings"] else ("none listed now" if m <= 0 else None)
+
+    def maybe(why):
+        return {"kind": "maybe", "unit": None, "left": "Maybe auction", "right": why, "lc": "buy", "rc": "muted"}
+    if v <= 0:
+        if unsure:
+            return maybe(unsure)
+        return {"kind": "auction", "unit": u, "left": "Auction it", "right": "can't vendor", "lc": "pos", "rc": "muted"}
+    a, b = u * 95, v * 100
+
+    def wins(x, pct):
+        return x * 100 >= b * pct and x - b >= MIN_GAIN
+    if wins(a, AUCTION_PCT):
+        if unsure:
+            return maybe(unsure)
+        per, _ = sold_per_day(item["sold24"], sales_hours)
+        if per is not None and sales_hours_of(sales_hours) >= SLOW_HOURS and per < 1 and not wins(a, SLOW_PCT):
+            return maybe("sells slowly")
+        return {"kind": "auction", "unit": u, "left": "Auction it", "right": better_text(a, b, "vendor"),
+                "lc": "pos", "rc": "pos"}
+    if rec["far"] and sp["now"] and wins(sp["now"] * 95, AUCTION_PCT):
+        return maybe("price jumped")
+    if a * 100 < b * VENDOR_PCT:
+        return {"kind": "vendor", "unit": u, "left": "Vendor it",
+                "right": better_text(b, a, "AH") if b > a else "same as AH", "lc": "neg", "rc": "neg"}
+    p = (a - b) * 100 // b
+    return {"kind": "close", "unit": u, "left": "Close call", "right": ("AH +%d%%" % p) if p < 10 else "tiny gain",
+            "lc": "muted", "rc": "muted"}
+
+
+def stack_after_cut(unit, count):
+    """The tooltip's "This stack (N), after AH cut" value: floor(unit * N * 95 / 100)."""
+    return unit * count * 95 // 100

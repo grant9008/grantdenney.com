@@ -623,30 +623,32 @@ def test_tooltip(G, ns):
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
     # AH value: the market (47c), 2% over the 7-day average (46c: 1c over is 2.17%,
     # rounded down). Sell now: 1c under the cheapest (44c). Suggested price: the 1D sell
-    # target. This stack of 20: 44c x 20 after the 5% cut = 8s 36c, more than a vendor's
-    # 13c x 20 = 2s 60c, so it is green and there is no "Vendor it".
+    # target. The verdict judges List At (52c) capped at the AH value: 47c x 95 = 4,465
+    # against a vendor's 13c x 100 = 1,300, 3.4x. This stack of 20 at that price after
+    # the 5% cut: 47c x 20 x 95 / 100 = 8s 93c, in white.
     up2 = vs("+2%", POS)
-    eq(got, [("Forever AH", "2h ago"), ("AH value", "47c  " + up2), ("7-day average", "46c"),
-             ("Sell now", "44c"), ("Suggested price", "52c"),
-             ("This stack (20), after AH cut", "8s 36c")], "full tooltip, known item")
+    eq(got, [("Forever AH", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
+             ("7-day average", "46c"), ("Sell now", "44c"), ("Suggested price", "52c"),
+             ("This stack (20), after AH cut", "8s 93c")], "full tooltip, known item")
     sp = rec_model.sell_prices(py_recommend(ns, 2589, "1D"), None, False, 13)
     eq((sp["now"], sp["best"]), (44, 52), "Sell now and Suggested price match the Python model")
     stk = tt.lines[len(tt.lines)]
-    eq((round(stk.rr, 2), round(stk.rg, 2), round(stk.rb, 2)), (0.25, 0.8, 0.45),
-       "the stack's value is green: the auction house pays more than a vendor")
+    eq((round(stk.rr, 2), round(stk.rg, 2), round(stk.rb, 2)), (1, 1, 1), "the stack's value is white")
     hdr = tt.lines[1]
     eq((round(hdr.r, 3), round(hdr.g, 3), round(hdr.b, 3)), (0.22, 0.74, 0.97), "header in the sell colour")
+    vl = tt.lines[2]
+    eq((round(vl.r, 2), round(vl.g, 2), round(vl.rr, 2), round(vl.rg, 2)), (0.25, 0.8, 0.25, 0.8), "Auction it in green")
 
     M.ShowItem(tt, 2589, bag_info, False)     # same show fires again without a clear
-    eq(len(tt.lines), 6, "no duplicate lines on a second post call")
+    eq(len(tt.lines), 7, "no duplicate lines on a second post call")
 
     M.shift = True
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    eq(got, [("Forever AH", "2h ago"), ("AH value (x20)", "9s 40c  " + up2), ("7-day average (x20)", "9s 20c"),
-             ("Sell now (x20)", "8s 80c"), ("Suggested price (x20)", "10s 40c"),
-             ("This stack (20), after AH cut", "8s 36c")], "Shift shows stack values")
+    eq(got, [("Forever AH", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
+             ("7-day average (x20)", "9s 20c"), ("Sell now (x20)", "8s 80c"), ("Suggested price (x20)", "10s 40c"),
+             ("This stack (20), after AH cut", "8s 93c")], "Shift shows stack values (the verdict and stack line stay)")
     got = lines_of(M.ShowItem(tt, 2589, None))
-    eq(got[1], ("AH value", "47c  " + up2), "Shift without a stack shows unit price")
+    eq(got[2], ("AH value", "47c  " + up2), "Shift without a stack shows unit price")
     M.shift = False
 
     got = lines_of(M.ShowItem(tt, 99999, None))
@@ -676,7 +678,7 @@ def test_tooltip(G, ns):
     got = lines_of(M.ShowItem(tt, 2589, None))
     eq(got[-1], ("Price covers all versions of this item",), "suffix link gets the versions note")
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
-    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 5, "plain link: no versions note")
+    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 6, "plain link: no versions note")
     tt.itemLink = "|cff1eff00|Hitem:2589::::::::60:::1:1:12718:1:28:6874:::::|h[Linen Cloth of the Bear]|h|r"
     eq(lines_of(M.ShowItem(tt, 2589, None))[-1], ("Price covers all versions of this item",),
        "bonus ids with no versions in the data: the versions note")
@@ -689,12 +691,14 @@ def test_tooltip(G, ns):
        "item with nothing listed: no prices (the game's own line says what a vendor pays)")
 
     got = lines_of(M.ShowItem(tt, 13468, None))
-    eq(got[1], ("AH value", "350g  " + vs("0%", MUTED)), "big price in tooltip, under 1% from its average: a grey 0%")
+    eq(got[1:3], [("Auction it", "over 100x vendor"), ("AH value", "350g  " + vs("0%", MUTED))],
+       "big price in tooltip, under 1% from its average: a grey 0%")
 
     ns.settings.compact = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("AH value: 47c  " + up2,)], "compact one line")
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH 47c  " + up2)], "compact one line")
     M.shift = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("AH value (x20): 9s 40c  " + up2,)], "compact with Shift")
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH (x20) 9s 40c  " + up2)],
+       "compact with Shift")
     M.shift = False
     eq(lines_of(M.ShowItem(tt, 99001, None)), [("AH value: none listed now",)], "compact nothing listed")
     ns.settings.compact = False
@@ -705,7 +709,7 @@ def test_tooltip(G, ns):
     eq(got[-1], ("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "stale warning line")
     M.now = UPDATED + 2 * 3600 + 100
 
-    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 5, "comparison tooltip gets lines")
+    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 6, "comparison tooltip gets lines")
     eq(len(M.ShowItem(G.EmbeddedItemTooltip, 2589, None)), 0, "other tooltips are skipped")
     tt.forbidden = True
     eq(len(M.ShowItem(tt, 2589, None)), 0, "forbidden tooltip is skipped")
@@ -715,7 +719,7 @@ def test_tooltip(G, ns):
     ns.settings.tooltip = False
     eq(len(M.ShowItem(tt, 2589, None)), 0, "tooltip setting off")
     ns.settings.tooltip = True
-    eq(len(M.ShowItem(tt, 2589, None)), 5, "tooltip setting back on")
+    eq(len(M.ShowItem(tt, 2589, None)), 6, "tooltip setting back on")
     eq(ns.lastError, None, "no tooltip errors")
 
 
@@ -828,13 +832,22 @@ def test_fallback_hooks():
     tt = G.GameTooltip
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(lines_of(tt.lines)[:2], [("Forever AH", "1h ago"), ("AH value", "47c  " + vs("+2%", POS))], "fallback adds lines")
+    eq(lines_of(tt.lines)[:3], [("Forever AH", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%", POS))],
+       "fallback adds lines")
     eq(tt.shown, 1, "fallback resizes the tooltip with Show")
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 5, "fallback no duplicates")
+    eq(len(tt.lines), 6, "fallback no duplicates")
     tt.Clear(tt)
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 5, "fallback adds again after a clear")
+    eq(len(tt.lines), 6, "fallback adds again after a clear")
+    # a bound copy (bind on pickup): the prices, but no verdict
+    G.C_Item = G.loadstring("""return { GetItemInfo = function(id)
+        return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 15, 0, 1 end }""")()
+    tt.Clear(tt)
+    tt.Fire(tt, "OnTooltipSetItem")
+    eq([ln[0] for ln in lines_of(tt.lines)], ["Forever AH", "AH value", "7-day average", "Sell now", "Suggested price"],
+       "fallback: a bound item gets no verdict")
+    G.C_Item = None
     eq(ns.lastError, None, "no fallback errors")
 
 
@@ -916,6 +929,8 @@ def test_localdata():
                             print("    mismatch item", iid, tf, t, "got", got, "hist", (want_c, want_m, want_s))
         count += 1
     eq(mismatches, 0, "decoded series match hist/<id>.json")
+    verdict_parity(ns, sorted(int(k) for k in db["items"].keys()), "simulated local data", tfs=("1D", "1W"),
+                   lives=((None, False),))
     print("    checked %d simulated items" % count)
 
 
@@ -1103,7 +1118,7 @@ def test_daily_points():
 
     def ah_and_avg(iid):
         got = lines_of(M2.ShowItem(G2.GameTooltip, iid, None))
-        return got[1], [x for x in got if x[0].endswith("-day average")]
+        return [x for x in got if x[0] == "AH value"][0], [x for x in got if x[0].endswith("-day average")]
     eq(ah_and_avg(9403), (("AH value", "1s 10c  " + vs("+4%", POS)), [("3-day average", "1s 5c")]),
        "3 days of prices: a 3-day average, and the AH value 4% over it (green)")
     eq(ah_and_avg(9404), (("AH value", "90c  " + vs("-10%", NEG)), [("7-day average", "1s")]),
@@ -1111,8 +1126,8 @@ def test_daily_points():
     eq(ah_and_avg(9405), (("AH value", "10s  " + vs("0%", MUTED)), [("7-day average", "10s 5c")]),
        "under 1% from the average: a grey 0%")
     ns2.settings.compact = True
-    eq(lines_of(M2.ShowItem(G2.GameTooltip, 9404, None)), [("AH value: 90c  " + vs("-10%", NEG),)],
-       "compact: the AH value and its % too")
+    eq(lines_of(M2.ShowItem(G2.GameTooltip, 9404, None)), [("Auction it: can't vendor", "AH 90c  " + vs("-10%", NEG))],
+       "compact: the verdict, the AH value and its % too")
     ns2.settings.compact = False
 
 
@@ -1328,7 +1343,9 @@ def test_versions():
     tt = G.GameTooltip
     tt.itemLink = link([12718])
     got = lines_of(M.ShowItem(tt, CLOAK, None))
-    eq(got[1], ("AH value", "1g 50s  " + vs("0%", MUTED)), "version tooltip: that version's market price")
+    # the verdict judges that version's prices: 1g 50s x 95 against a vendor's 23s 82c x 100
+    eq(got[1:3], [("Auction it", "5.9x vendor"), ("AH value", "1g 50s  " + vs("0%", MUTED))],
+       "version tooltip: that version's verdict and market price")
     eq(got[-1], ("Prices for this version only",), "version tooltip: says so")
     tt.itemLink = link([55555])
     got = lines_of(M.ShowItem(tt, CLOAK, None))
@@ -1425,7 +1442,11 @@ def test_sell_prices():
 
 
 def test_stack_verdicts():
-    print("This stack: auction against vendor")
+    # The old "This stack" line (at Sell now, green or red) and the trailing red
+    # "Vendor it: a vendor pays more / the same" line are replaced by the sell
+    # verdict: the stack line is worth the verdict's price, in white, and only
+    # shows when the AH pays more ("Auction it") or about the same ("Close call").
+    print("This stack: at the verdict's price, only when the AH pays more")
     items = dict(ITEMS)
     items.update({
         9501: "Vendor Pays More|4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200),
@@ -1440,36 +1461,574 @@ def test_stack_verdicts():
     M.bag["0:1"] = G.loadstring("return { stackCount = 20 }")()
     bag = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
     tt = G.GameTooltip
+    VERDICTS = ("Auction it", "Vendor it", "Close call", "Maybe auction")
 
-    def stack(iid):
-        return [ln for ln in lines_of(M.ShowItem(tt, iid, bag)) if ln[0].startswith(("This stack", "This item", "Auction it", "Vendor it"))]
-    # 3999 x 20 after the cut = 75,981c; a vendor pays 5000 x 20 = 100,000c: red, and "Vendor it"
-    eq(stack(9501), [("This stack (20), after AH cut", "7g 59s 81c"), ("Vendor it: a vendor pays more",)],
-       "a vendor pays more: vendor it")
-    eq((round(tt.lines[len(tt.lines)].r, 2), round(tt.lines[len(tt.lines)].g, 2)), (0.9, 0.33), "vendor verdict is red")
-    sl = tt.lines[len(tt.lines) - 1]
-    eq((round(sl.rr, 2), round(sl.rg, 2)), (0.9, 0.33), "the stack's value is red when a vendor pays more")
-    eq(stack(9502), [("This stack (20), after AH cut", "1g 89s 81c")], "no vendor price: just the stack's AH value")
+    def stack(iid, info=bag):
+        return [ln for ln in lines_of(M.ShowItem(tt, iid, info)) if ln[0].startswith(("This stack", "Vendor it:")) or ln[0] in VERDICTS]
+    # a vendor pays 50s, the AH 42s after the cut (4200 x 95 = 399,000 against 500,000): +25%, no stack line
+    eq(stack(9501), [("Vendor it", "+25% vs AH")], "a vendor pays more: Vendor it, no stack line")
+    vl = tt.lines[2]
+    eq((round(vl.r, 2), round(vl.g, 2), round(vl.rr, 2), round(vl.rg, 2)), (0.9, 0.33, 0.9, 0.33), "Vendor it is red")
+    # no vendor price: the stack at the verdict's price, 1100 x 20 x 95 / 100 = 2g 9s
+    eq(stack(9502), [("Auction it", "can't vendor"), ("This stack (20), after AH cut", "2g 9s")],
+       "no vendor price: Auction it and the stack's AH value")
     sl = tt.lines[len(tt.lines)]
-    eq((round(sl.rr, 2), round(sl.rg, 2)), (0.25, 0.8), "and it is green")
-    eq(stack(9504), [], "nothing listed: no stack line (the game's own line says what a vendor pays)")
-    eq(stack(9505), [], "1c listing and no vendor price: no stack lines")
-    got = [ln for ln in lines_of(M.ShowItem(tt, 9503, None)) if ln[0].startswith(("This item", "This stack", "Vendor it", "Auction it"))]
-    eq(got, [("Vendor it: a vendor pays the same",)], "one item, equal prices: vendor it (no waiting), no stack line")
+    eq((round(sl.rr, 2), round(sl.rg, 2), round(sl.rb, 2)), (1, 1, 1), "and the stack's value is white")
+    eq(stack(9504), [("Maybe auction", "none listed now")], "nothing listed now: a maybe, no stack line")
+    eq(stack(9505), [], "a 1c listing: no verdict and no stack line")
+    eq(stack(9503, None), [("Close call", "tiny gain")], "one item, 22c against 19c: a close call, no stack line")
+    eq(stack(9503), [("Close call", "tiny gain"), ("This stack (20), after AH cut", "4s 18c")],
+       "a close call on a stack: the stack line at 22c (22 x 20 x 95 / 100 = 418)")
     for iid in sorted(items):
         it = ns.GetItem(iid)
-        sp = rec_model.sell_prices(py_recommend(ns, iid, "1D"), None, False, it.vendor)
-        auction, vend, verdict = rec_model.stack_values(sp["now"], 20, it.vendor)
-        lines = stack(iid)
-        if auction is None:
-            eq(lines, [], "stack %d: no lines without a Sell now price" % iid)
-            continue
-        eq(lines[0][0], "This stack (20), after AH cut", "stack %d: the stack's AH value" % iid)
-        eq([x[0] for x in lines[1:]], ["Vendor it: a vendor pays " + ("the same" if verdict == "same" else "more")]
-           if verdict in ("same", "vendor") else [], "stack %d: 'Vendor it' only when a vendor pays as much or more (%s)" % (iid, verdict))
+        rec = py_recommend(ns, iid, "1D")
+        sp = rec_model.sell_prices(rec, None, False, it.vendor)
+        V = rec_model.sell_verdict(py_item(it), sp, rec, ns.db.salesHours)
+        lines = [ln for ln in stack(iid) if ln[0].startswith("This stack")]
+        if V and V["kind"] in ("auction", "close"):
+            eq(lines, [("This stack (20), after AH cut", ns.MoneyText(rec_model.stack_after_cut(V["unit"], 20)))],
+               "stack %d: the stack at the verdict's price" % iid)
+        else:
+            eq(lines, [], "stack %d: no stack line for %s" % (iid, V and V["kind"]))
     ns.settings.compact = True
-    eq(stack(9501), [], "compact tooltips have no stack lines")
+    eq(lines_of(M.ShowItem(tt, 9502, bag)), [("Auction it: can't vendor", "AH 11s  " + vs("+4%", POS))],
+       "compact tooltips are one line, no stack line")
     ns.settings.compact = False
+
+
+# ---------------------------------------------------------------------------
+# The sell verdict (Recommend.lua ns.SellVerdict, the tooltip's call) with a
+# tooltip mock that has real fonts: TC1 to TC28 of the spec
+# ---------------------------------------------------------------------------
+VERDICT_ITEMS = dict(ITEMS)
+VERDICT_ITEMS.update({
+    # vendor 1s 50c; the cheapest (1s 58c) is a lone dip under the usual 1s 90c, the AH value 2s
+    4306: "Silk Cloth|158|200|11850|14202|199|150|%s|%s|418" % (
+        enc_series([190] * 23 + [158], [200] * 24, [600] * 24), enc_series([190, 158], [198, 200], [14000, 14202])),
+    2838: "Heavy Stone|389|389|862|13417|367|60|%s|%s|39" % (
+        enc_series([340] * 12 + [389] * 12, [370] * 12 + [389] * 12, [500] * 24), enc_series([350] * 7, [367] * 7, [13000] * 7)),
+    17057: "Shiny Fish Scales|7|7|5000|7254|7|7|%s|323" % series24(7, 7, 300),
+    12365: "Dense Stone|278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300),
+    9501: "Vendor Pays More|4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200),
+    9502: "No Vendor|1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100),
+    9102: "One Listing|1000|1100|1|30|1050|10|%s|1" % series24(1000, 1100),
+    9104: "Vendor Junk|1000|1100|5|30|1050|5|%s|5" % series24(1000, 1100),
+    9504: "Nothing Now|0|0|0|20|0|25|%s|0" % series24(30, 32),
+    9503: "Even|21|22|50|20|22|19|%s|20" % series24(21, 22),
+    9601: "Jumped|3000|3000|20|50|1000|1000|%s|%s|8" % (
+        enc_series([1000] * 23 + [3000], [1010] * 23 + [3000], [2] * 24), enc_series([1000] * 5, [1010] * 5, [50] * 5)),
+    9602: "Boundary|44|44|500|100|44|38|%s|30" % series24(44, 44, 5),
+    9603: "Vendor One|100|100|500|100|100|96|%s|30" % series24(100, 100, 5),
+    9604: "Double|200|200|500|100|200|95|%s|30" % series24(200, 200, 5),
+    9605: "Almost Double|199|199|500|100|199|95|%s|30" % series24(199, 199, 5),
+    9704: "Ten Times|1100|1100|500|100|1100|100|%s|30" % series24(1100, 1100, 5),
+    9505: "Junk|1|1|5|20|1|0|%s|5" % series24(1, 1),
+    9701: "Slow Seller|500|520|8|0|510|400|%s|8" % series24(500, 520, 0),
+    9702: "Slow Huge|500|520|8|0|510|100|%s|8" % series24(500, 520, 0),
+    9703: "Tiny Gain|4|4|500|100|4|3|%s|30" % series24(4, 4, 5),
+    9705: "Thin Vendor|50|50|1|10|50|60|%s|1" % series24(50, 50),
+    9706: "Thin No Vendor|30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000),
+})
+
+# A tooltip with the engine's font facts: Font objects (CreateFont counted),
+# 8 template lines (line 1 on the header font), more lines made on demand
+# copying the Font of the line above, SetFontObject taking the Font's colour,
+# GetLeftLine / GetRightLine and _G[name .. "TextLeft" .. i]. Clear fires
+# OnTooltipCleared; Hide fires OnHide, then clears.
+MOCKS_FONT = r"""
+MOCK.fontsCreated = 0
+local function newFont(name, file, size, flags, r, g, b)
+  local f = { _name = name, _file = file, _size = size, _flags = flags, _c = { r or 1, g or 1, b or 1 }, _shadow = { 1, -1 } }
+  function f:GetFont() return self._file, self._size, self._flags end
+  function f:SetFont(p, s, fl) self._file, self._size, self._flags = p, s, fl; return true end
+  function f:CopyFontObject(o)
+    self._file, self._size, self._flags = o._file, o._size, o._flags
+    self._c = { o._c[1], o._c[2], o._c[3] }; self._shadow = { o._shadow[1], o._shadow[2] }
+  end
+  function f:GetTextColor() return self._c[1], self._c[2], self._c[3] end
+  function f:GetName() return self._name end
+  return f
+end
+MOCK.newFont = newFont
+GameTooltipText = newFont("GameTooltipText", "Fonts\\PTSansNarrow.ttf", 12, "", 1, 1, 1)
+GameTooltipHeaderText = newFont("GameTooltipHeaderText", "Fonts\\PTSansNarrow.ttf", 13, "", 1, 1, 1)
+function CreateFont(name)
+  if MOCK.noCreateFont then return nil end
+  MOCK.fontsCreated = MOCK.fontsCreated + 1
+  local f = newFont(name, nil, nil, nil, 1, 1, 1); _G[name] = f; return f
+end
+
+local function newFS(name, font)
+  local fs = { _name = name, _font = font, _c = { font._c[1], font._c[2], font._c[3] } }
+  -- SetFontObject takes the Font's colour, like the game
+  function fs:SetFontObject(o) self._font = o; self._c = { o._c[1], o._c[2], o._c[3] } end
+  function fs:GetFontObject() return self._font end
+  function fs:GetFont() return self._font:GetFont() end
+  function fs:SetFont(p, s, fl) MOCK.lineSetFont = (MOCK.lineSetFont or 0) + 1; error("SetFont on a tooltip line") end
+  function fs:SetTextColor(r, g, b) self._c = { r, g, b } end
+  function fs:GetTextColor() return self._c[1], self._c[2], self._c[3] end
+  function fs:SetText(t) self._text = t end
+  return fs
+end
+
+local function newTooltip(name)
+  local tt = { name = name, lines = {}, scripts = {}, forbidden = false, shown = 0, nfs = 0 }
+  local function ensure(self, i)
+    while self.nfs < i do
+      local k = self.nfs + 1
+      local fl, fr
+      if k == 1 then fl, fr = GameTooltipHeaderText, GameTooltipHeaderText
+      elseif k <= 8 then fl, fr = GameTooltipText, GameTooltipText
+      else fl, fr = _G[name .. "TextLeft" .. (k - 1)]._font, _G[name .. "TextRight" .. (k - 1)]._font end
+      _G[name .. "TextLeft" .. k] = newFS(name .. "TextLeft" .. k, fl)
+      _G[name .. "TextRight" .. k] = newFS(name .. "TextRight" .. k, fr)
+      self.nfs = k
+    end
+  end
+  ensure(tt, 8)
+  function tt:GetName() return self.name end
+  function tt:IsForbidden() return self.forbidden end
+  function tt:AddLine(text, r, g, b)
+    local i = #self.lines + 1; ensure(self, i)
+    table.insert(self.lines, { left = text, r = r, g = g, b = b })
+    local L = _G[name .. "TextLeft" .. i]; L:SetText(text); L:SetTextColor(r or 1, g or 1, b or 1)
+    _G[name .. "TextRight" .. i]:SetText(nil)
+  end
+  function tt:AddDoubleLine(l, rt, lr, lg, lb, rr, rg, rb)
+    local i = #self.lines + 1; ensure(self, i)
+    table.insert(self.lines, { left = l, right = rt, r = lr, g = lg, b = lb, rr = rr, rg = rg, rb = rb })
+    local L, R = _G[name .. "TextLeft" .. i], _G[name .. "TextRight" .. i]
+    L:SetText(l); L:SetTextColor(lr or 1, lg or 1, lb or 1); R:SetText(rt); R:SetTextColor(rr or 1, rg or 1, rb or 1)
+  end
+  function tt:NumLines() return #self.lines end
+  function tt:GetLeftLine(i) return _G[name .. "TextLeft" .. i] end
+  function tt:GetRightLine(i) return _G[name .. "TextRight" .. i] end
+  function tt:HookScript(s, fn)
+    if self.failHook then error("HookScript refused") end
+    self.scripts[s] = self.scripts[s] or {}
+    table.insert(self.scripts[s], fn)
+  end
+  function tt:HasScript(s) return true end
+  function tt:Show() self.shown = self.shown + 1 end
+  function tt:GetItem() return self.itemName, self.itemLink end
+  function tt:Fire(s) for _, fn in ipairs(self.scripts[s] or {}) do fn(self) end end
+  function tt:Clear() self.lines = {}; self:Fire("OnTooltipCleared") end
+  function tt:Hide() self:Fire("OnHide"); self:Clear() end
+  return tt
+end
+MOCK.newTooltip = newTooltip
+GameTooltip = newTooltip("GameTooltip")
+ItemRefTooltip = newTooltip("ItemRefTooltip")
+ShoppingTooltip1 = newTooltip("ShoppingTooltip1")
+ShoppingTooltip2 = newTooltip("ShoppingTooltip2")
+EmbeddedItemTooltip = newTooltip("EmbeddedItemTooltip")
+-- The game's own lines first (the item's name, ElvUI's "Sell Price" text line), then the post calls.
+function MOCK.ShowGameItem(tt, id, info, blz)
+  tt:Clear()
+  for _, t in ipairs(blz or { "Item " .. id, "Sell Price: x" }) do tt:AddLine(t, 1, 1, 1) end
+  tt.blz = #(blz or { 1, 2 })
+  tt.processingInfo = info
+  local fn = MOCK.postcalls[Enum.TooltipDataType.Item]
+  if fn then fn(tt, { id = id }) end
+  return tt.lines
+end
+function MOCK.Font(tt, i, side)
+  local fs = _G[tt.name .. side .. i]
+  if not fs then return nil end
+  local _, size = fs:GetFont()
+  return fs._font._name, size
+end
+function MOCK.Color(tt, i, side)
+  local fs = _G[tt.name .. side .. i]
+  if not fs then return nil end
+  return fs:GetTextColor()
+end
+"""
+
+
+def font_env(items=None, now_offset=100, sales_hours=None):
+    L = lua51.LuaRuntime(unpack_returned_tuples=True)
+    L.globals().MOCK_PROCESSOR = True
+    L.execute(MOCKS)
+    L.execute(MOCKS_FONT)
+    G = L.globals()
+    G.LOAD(fixture_lua(VERDICT_ITEMS if items is None else items, sales_hours), "Data.lua")
+    G.LOAD(read(os.path.join(ADDON, "Core.lua")), "Core.lua")
+    G.LOAD(read(os.path.join(ADDON, "Recommend.lua")), "Recommend.lua")
+    G.MOCK.now = UPDATED + now_offset
+    return L, G, G.NS
+
+
+COLOR_NAMES = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "text": (0.90, 0.88, 0.84), "white": (1, 1, 1),
+               "pos": (0.25, 0.80, 0.45), "neg": (0.90, 0.33, 0.33), "buy": (0.898, 0.722, 0.259)}
+
+
+def cname(c):
+    for k, v in COLOR_NAMES.items():
+        if all(abs(a - b) < 0.001 for a, b in zip(c, v)):
+            return k
+    return str(c)
+
+
+def show(G, tt, iid, count=1, shift=False):
+    """Shows an item as the game does (2 game lines, then the post calls). A count > 1
+    is a bag stack. Returns our lines as [(text, left colour, right colour)]."""
+    M = G.MOCK
+    M.shift = shift
+    info = None
+    if count > 1:
+        M.bag["0:1"] = G.loadstring("return { stackCount = %d }" % count)()
+        info = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
+    M.ShowGameItem(tt, iid, info)
+    M.shift = False
+    return rows_of(G, tt)
+
+
+def rows_of(G, tt):
+    M = G.MOCK
+    out = []
+    for i in range(int(tt.blz or 0) + 1, len(tt.lines) + 1):
+        ln = tt.lines[i]
+        txt = (ln.left, ln.right) if ln.right is not None else (ln.left,)
+        out.append((txt, cname(M.Color(tt, i, "TextLeft")), cname(M.Color(tt, i, "TextRight")) if ln.right is not None else None))
+    return out
+
+
+def big_lines(G, tt):
+    """Every FontString of the tooltip (shown or not) on one of our Fonts: [(line, side, font, size)]."""
+    out = []
+    for i in range(1, int(tt.nfs) + 1):
+        for side in ("TextLeft", "TextRight"):
+            name, size = G.MOCK.Font(tt, i, side)
+            if str(name).startswith("ForeverAH"):
+                out.append((i, side, name, size))
+    return out
+
+
+def normal_fonts(G, tt, skip=(), size=12):
+    """True when every line from 2 on (but skip) is on GameTooltipText at its size."""
+    bad = []
+    for i in range(2, int(tt.nfs) + 1):
+        if i in skip:
+            continue
+        for side in ("TextLeft", "TextRight"):
+            f = G.MOCK.Font(tt, i, side)
+            if f != ("GameTooltipText", size):
+                bad.append((i, side, f))
+    return bad
+
+
+BIG4 = [(4, "TextLeft", "ForeverAHBigFont1", 15), (4, "TextRight", "ForeverAHBigFont1", 15)]
+
+
+def tc(G, tt, iid, want, big, label, count=1, shift=False):
+    """One spec case: the lines with their colours, and whether the verdict (line 4) is bigger."""
+    got = show(G, tt, iid, count, shift)
+    eq(got, want, label)
+    eq(big_lines(G, tt), BIG4 if big else [], label + ": " + ("the verdict is bigger" if big else "nothing is bigger"))
+    eq(normal_fonts(G, tt, skip=(4,) if big else ()), [], label + ": every other line at the normal size")
+
+
+def H(age="1m ago"):
+    return (("Forever AH", age), "sell", "muted")
+
+
+def AHV(money, pct=None, colour=MUTED, tag=""):
+    return (("AH value" + tag, money + ("  " + vs(pct, colour) if pct else "")), "text", "white")
+
+
+def ROW(left, right, rc="white"):
+    return ((left, right), "text", rc)
+
+
+def py_item(it):
+    return {"vendor": int(it.vendor or 0), "market": int(it.market or 0), "sold24": int(it.sold24 or 0)}
+
+
+SILK_LINES = [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
+              ROW("Sell now", "1s 57c", "neg"), ROW("Suggested price", "2s")]
+
+
+def test_verdict_tooltips():
+    print("sell verdict: the tooltip lines (TC1 to TC17, TC28)")
+    L, G, ns = font_env()
+    tt = G.GameTooltip
+    stack = lambda v: ROW("This stack (%d), after AH cut" % v[0], v[1])  # noqa: E731
+    # TC1 Silk x20: the cheapest (1s 58c) is a lone dip, the verdict judges List At, the AH value:
+    # 200 x 95 = 19,000 against a vendor's 150 x 100 = 15,000, 26% more; the stack 200 x 20 x 95 / 100 = 38s
+    tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC1 Silk x20", count=20)
+    check(not any(r[0][0].startswith("Vendor it") for r in show(G, tt, 4306, 20)), "TC1: no 'Vendor it' line")
+    tc(G, tt, 4306, SILK_LINES, True, "TC2 Silk by id")
+    tc(G, tt, 4306, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("40s", "0%", tag=" (x20)"),
+                     ROW("2-day average (x20)", "39s 80c"), ROW("Sell now (x20)", "31s 40c", "neg"),
+                     ROW("Suggested price (x20)", "40s"), stack((20, "38s"))], True, "TC3 Silk x20 with Shift",
+       count=20, shift=True)
+    tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC3 Shift released: TC1 again", count=20)
+    eq(len(big_lines(G, tt)), 2, "TC3: exactly two big FontStrings after the rebuild")
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+5%", POS),
+                     ROW("7-day average", "3s 67c"), ROW("Sell now", "3s 88c"), ROW("Suggested price", "3s 89c"),
+                     stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17", count=17)
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("66s 13c", "+5%", POS, " (x17)"),
+                     ROW("7-day average (x17)", "62s 39c"), ROW("Sell now (x17)", "65s 96c"),
+                     ROW("Suggested price (x17)", "66s 13c"), stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17 Shift",
+       count=17, shift=True)
+    tc(G, tt, 13468, [H(), (("Auction it", "over 100x vendor"), "pos", "pos"), AHV("350g", "0%"),
+                      ROW("1-day average", "350g 5s"), ROW("Sell now", "350g 19s"), ROW("Suggested price", "350g 19s")],
+       True, "TC5 Black Lotus")
+    tc(G, tt, 17057, [H(), (("Vendor it", "+5% vs AH"), "neg", "neg"), AHV("7c", "0%"), ROW("5-day average", "7c"),
+                      ROW("Sell now", "6c", "neg"), ROW("Suggested price", "7c", "neg")], True,
+       "TC6 Shiny Fish Scales x20 (no stack line)", count=20)
+    tc(G, tt, 12365, [H(), (("Close call", "AH +9%"), "muted", "muted"), AHV("2s 88c", "0%"),
+                      ROW("5-day average", "2s 88c"), ROW("Sell now", "2s 77c"), ROW("Suggested price", "2s 88c"),
+                      stack((20, "54s 72c"))], False, "TC7 Dense Stone x20", count=20)
+    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), AHV("42s", "0%"), ROW("5-day average", "42s"),
+                     ROW("Sell now", "39s 99c", "neg"), ROW("Suggested price", "42s", "neg")], True,
+       "TC8 Vendor Pays More x20 (no stack line)", count=20)
+    tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "+4%", POS),
+                     ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c"), ROW("Suggested price", "11s"),
+                     stack((20, "2g 9s"))], True, "TC9 No Vendor x20", count=20)
+    tc(G, tt, 9102, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("11s", "+4%", POS),
+                     ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c")], False,
+       "TC10 One Listing (no 'Few listed' line, no Suggested price)")
+    tc(G, tt, 9104, [H(), AHV("11s", "+4%", POS), ROW("5-day average", "10s 50c"),
+                     (("Few listed: the price may not be reliable",), "muted", None)], False, "TC11 vendorFar: no verdict")
+    tc(G, tt, 9504, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
+                     ROW("Suggested price", "32c")], False, "TC12 Nothing Now")
+    # TC13 the thresholds
+    tc(G, tt, 9503, [H(), (("Close call", "tiny gain"), "muted", "muted"), AHV("22c", "0%"), ROW("5-day average", "22c"),
+                     ROW("Sell now", "20c", "neg"), ROW("Suggested price", "22c")], False, "TC13 9503 Even")
+    for iid, verdict, big, rows in (
+            (9602, ("Auction it", "+10% vs vendor"), True, [AHV("44c", "0%"), ROW("5-day average", "44c"),
+                                                             ROW("Sell now", "43c"), ROW("Suggested price", "44c")]),
+            (9603, ("Vendor it", "+1% vs AH"), True, [AHV("1s", "0%"), ROW("5-day average", "1s"),
+                                                       ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")]),
+            (9604, ("Auction it", "2x vendor"), True, [AHV("2s", "0%"), ROW("5-day average", "2s"),
+                                                        ROW("Sell now", "1s 99c"), ROW("Suggested price", "2s")]),
+            (9605, ("Auction it", "+99% vs vendor"), True, [AHV("1s 99c", "0%"), ROW("5-day average", "1s 99c"),
+                                                             ROW("Sell now", "1s 98c"), ROW("Suggested price", "1s 99c")]),
+            (9704, ("Auction it", "10x vendor"), True, [AHV("11s", "0%"), ROW("5-day average", "11s"),
+                                                         ROW("Sell now", "10s 99c"), ROW("Suggested price", "11s")])):
+        c = ("pos", "pos") if verdict[0] == "Auction it" else ("neg", "neg")
+        tc(G, tt, iid, [H(), (verdict, c[0], c[1])] + rows, big, "TC13 %d %s" % (iid, verdict[1]))
+    for hi, lo, what, want in ((99940, 1000, "vendor", "99x vendor"), (10000, 100, "vendor", "100x vendor"),
+                               (10001, 100, "vendor", "over 100x vendor"), (36860, 6000, "vendor", "6.1x vendor"),
+                               (999, 100, "AH", "9.9x AH"), (209, 100, "AH", "2x AH"), (210, 100, "AH", "2.1x AH"),
+                               (100, 100, "AH", "same as AH"), (19000, 15000, "vendor", "+26% vs vendor")):
+        eq(ns.BetterText(hi, lo, what), want, "TC13 BetterText(%d, %d, %s)" % (hi, lo, what))
+        eq(rec_model.better_text(hi, lo, what), want, "TC13 the Python twin's better_text(%d, %d, %s)" % (hi, lo, what))
+    tc(G, tt, 9601, [H(), (("Maybe auction", "price jumped"), "buy", "muted"), AHV("30s", "+200%", POS),
+                     ROW("5-day average", "10s"), ROW("Sell now", "29s 99c"), ROW("Suggested price", "10s 10c", "neg")],
+       False, "TC14 Jumped")
+    slow_rows = [AHV("5s 20c", "+1%", POS), ROW("5-day average", "5s 10c"), ROW("Sell now", "4s 99c"),
+                 ROW("Suggested price", "5s 20c")]
+    tc(G, tt, 9701, [H(), (("Maybe auction", "sells slowly"), "buy", "muted")] + slow_rows, False, "TC15 Slow Seller")
+    tc(G, tt, 9702, [H(), (("Auction it", "4.9x vendor"), "pos", "pos")] + slow_rows, True, "TC15 Slow Huge")
+    L3, G3, ns3 = font_env(sales_hours=3)
+    tc(G3, G3.GameTooltip, 9701, [H(), (("Auction it", "+23% vs vendor"), "pos", "pos")] + slow_rows, True,
+       "TC15 Slow Seller with 3 hours of sales measured (speed unknown)")
+    tc(G, tt, 9703, [H(), (("Close call", "tiny gain"), "muted", "muted"), AHV("4c", "0%"), ROW("5-day average", "4c"),
+                     ROW("Sell now", "3c", "neg"), ROW("Suggested price", "4c", "neg"), stack((20, "76c"))], False,
+       "TC16 Tiny Gain x20", count=20)
+    tc(G, tt, 9705, [H(), (("Vendor it", "+28% vs AH"), "neg", "neg"), AHV("50c", "0%"), ROW("5-day average", "50c"),
+                     ROW("Sell now", "49c", "neg"), (("Few listed: the price may not be reliable",), "muted", None)],
+       True, "TC17 Thin Vendor")
+    tc(G, tt, 9706, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("3g", "0%"), ROW("5-day average", "3g"),
+                     ROW("Sell now", "2g 99s 99c")], False, "TC17 Thin No Vendor")
+    # TC28 unchanged lines and no verdict
+    tc(G, tt, 9505, [H(), AHV("1c", "0%"), ROW("5-day average", "1c"), ROW("Suggested price", "1c")], False,
+       "TC28 Junk: 1 copper, no verdict")
+    tc(G, tt, 99001, [H(), ROW("AH value", "none listed", "muted")], False, "TC28 nothing listed, no history")
+    tc(G, tt, 99999, [(("Forever AH: no recent listings",), "muted", None)], False, "TC28 not in the data")
+    eq((ns.lastError, G.MOCK.lineSetFont), (None, None), "no tooltip errors, no SetFont on a line")
+
+
+def test_verdict_cases():
+    print("sell verdict: versions, bound, other markets, live, stale, compact (TC18 to TC23)")
+    L, G, ns = font_env()
+    M = G.MOCK
+    tt = G.GameTooltip
+    # TC18 a suffix link: the prices mix versions, so no verdict and nothing to sell at
+    tt.itemLink = "|cff1eff00|Hitem:4306::::::1034::60:::::|h[Silk Cloth of the Monkey]|h|r"
+    tc(G, tt, 4306, [H(), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
+                     (("Price covers all versions of this item",), "muted", None)], False, "TC18 all versions")
+    tt.itemLink = None
+    # TC19 bound: bind on pickup, then a soulbound bag copy (C_Item.IsBound)
+    no_verdict = [H(), AHV("2s", "0%"), ROW("2-day average", "1s 99c"), ROW("Sell now", "1s 57c", "neg"),
+                  ROW("Suggested price", "2s")]
+    G.C_Item = G.loadstring("""return {
+      GetItemInfo = function(id)
+        local bind = ({ [4306] = 1 })[id] or 0
+        return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 15, 0, bind
+      end }""")()
+    tc(G, tt, 4306, no_verdict, False, "TC19 bound Silk x20 (bind on pickup): no verdict, no stack line", count=20)
+    G.C_Item = G.loadstring("""return {
+      GetItemInfo = function(id) return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 15, 0, 0 end,
+      IsBound = function(loc) return loc.bag == 0 and loc.slot == 1 end }""")()
+    G.ItemLocation = G.loadstring("""return { CreateFromBagAndSlot = function(self, bag, slot)
+      return { bag = bag, slot = slot } end }""")()
+    tc(G, tt, 4306, no_verdict, False, "TC19 soulbound Silk x20 in a bag: no verdict, no stack line", count=20)
+    G.C_Item, G.ItemLocation = None, None
+    # TC20 another market
+    M.faction = "Horde"
+    tc(G, tt, 4306, no_verdict, False, "TC20 Horde (the prices are the Alliance's)", count=20)
+    M.faction = "Alliance"
+    G.C_GameRules = G.loadstring("return { IsHardcoreActive = function() return true end }")()
+    tc(G, tt, 4306, no_verdict, False, "TC20 Hardcore", count=20)
+    G.C_GameRules = None
+    tc(G, tt, 4306, SILK_LINES + [ROW("This stack (20), after AH cut", "38s")], True, "TC20 back home", count=20)
+    # TC21 the auction house open: the live cheapest feeds List At and Sell now
+    for live, own, verdict, now, best, stk in ((195, "false", "+26% vs vendor", "1s 94c", "2s", "38s"),
+                                               (210, "false", "+32% vs vendor", "2s 9c", "2s 9c", "39s 71c"),
+                                               (196, "true", "+26% vs vendor", "1s 96c", "2s", "38s")):
+        ns.LiveCheapest = G.loadstring("return function(id) if id == 4306 then return %d, %s end end" % (live, own))()
+        tc(G, tt, 4306, [H(), (("Auction it", verdict), "pos", "pos"), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
+                         ROW("Sell now (live)", now), ROW("Suggested price", best),
+                         ROW("This stack (20), after AH cut", stk)], True, "TC21 live %d %s" % (live, own), count=20)
+    ns.LiveCheapest = None
+    # TC22 prices 7h old: the verdict at the normal size, the stale line last
+    L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
+    tc(G2, G2.GameTooltip, 4306, [H("7h ago")] + SILK_LINES[1:] +
+       [(("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
+    # TC23 compact: one line, never bigger
+    ns.settings.compact = True
+    for iid, count, shift, want in (
+            (4306, 20, False, (("Auction it: +26% vs vendor", "AH 2s  " + vs("0%", MUTED)), "pos", "white")),
+            (4306, 20, True, (("Auction it: +26% vs vendor", "AH (x20) 40s  " + vs("0%", MUTED)), "pos", "white")),
+            (2838, 17, False, (("Auction it: 6.1x vendor", "AH 3s 89c  " + vs("+5%", POS)), "pos", "white")),
+            (17057, 20, False, (("Vendor it: +5% vs AH", "AH 7c  " + vs("0%", MUTED)), "neg", "white")),
+            (12365, 1, False, (("Close call: AH +9%", "AH 2s 88c  " + vs("0%", MUTED)), "muted", "white")),
+            (9102, 1, False, (("Maybe auction: few listed", "AH 11s  " + vs("+4%", POS)), "buy", "white")),
+            (9504, 1, False, (("Maybe auction: none listed now", "AH: none listed"), "buy", "muted")),
+            (9502, 1, False, (("Auction it: can't vendor", "AH 11s  " + vs("+4%", POS)), "pos", "white")),
+            (9104, 1, False, (("AH value: 11s  " + vs("+4%", POS),), "text", None)),
+            (99001, 1, False, (("AH value: none listed now",), "text", None))):
+        tc(G, tt, iid, [want], False, "TC23 compact %d x%d%s" % (iid, count, " Shift" if shift else ""), count, shift)
+    ns.settings.compact = False
+    eq(ns.lastError, None, "no tooltip errors")
+
+
+def test_verdict_fonts():
+    print("sell verdict: the bigger line's font (TC24 to TC26)")
+    L, G, ns = font_env()
+    M = G.MOCK
+    tt = G.GameTooltip
+    show(G, tt, 4306, 20)
+    eq(big_lines(G, tt), BIG4, "TC24 Silk: line 4 on ForeverAHBigFont1 at 15")
+    eq([cname(G.GameTooltipTextLeft4.GetTextColor(G.GameTooltipTextLeft4)),
+        cname(G.GameTooltipTextRight4.GetTextColor(G.GameTooltipTextRight4))], ["pos", "pos"],
+       "TC24: its colour is set again after SetFontObject (green, not the Font's white)")
+    eq(normal_fonts(G, tt, skip=(4,)), [], "TC24: every other line is GameTooltipText 12")
+    eq(M.fontsCreated, 1, "TC24: one Font made")
+    tt.Clear(tt)
+    eq((big_lines(G, tt), M.Font(tt, 4, "TextLeft")), ([], ("GameTooltipText", 12)), "TC24: a clear puts line 4 back")
+    show(G, tt, 4306, 20)
+    tt.Hide(tt)
+    eq(big_lines(G, tt), [], "TC24: Hide puts it back too")
+    show(G, tt, 4306, 20)
+    tt.Fire(tt, "OnHide")         # a hide that does not clear the lines
+    eq(big_lines(G, tt), [], "TC24: OnHide alone puts it back")
+    show(G, tt, 9104)
+    eq(big_lines(G, tt), [], "TC24: the next item (no verdict) has nothing bigger")
+    for _ in range(50):
+        show(G, tt, 4306, 20)
+    eq((M.fontsCreated, big_lines(G, tt)), (1, BIG4), "TC24: 50 more hovers make no new Font")
+    G.GameTooltipText._size = 14
+    show(G, tt, 4306, 20)
+    eq((big_lines(G, tt), M.fontsCreated), ([(4, "TextLeft", "ForeverAHBigFont2", 17), (4, "TextRight", "ForeverAHBigFont2", 17)], 2),
+       "TC24: GameTooltipText at 14 gets a new Font at 17")
+    G.GameTooltipText._size = 12
+    tt.Clear(tt)
+    ir = G.ItemRefTooltip
+    show(G, ir, 4306)
+    eq(big_lines(G, ir), [(4, "TextLeft", "ForeverAHBigFont1", 15), (4, "TextRight", "ForeverAHBigFont1", 15)],
+       "TC24: ItemRefTooltip's line 4 is bigger too")
+    eq(M.fontsCreated, 2, "TC24: the 12-point Font is reused for ItemRefTooltip")
+    # TC25 lines made after ours copy a normal line: 8 game lines, Silk, then ElvUI's own post call
+    L2, G2, ns2 = font_env()
+    tt2 = G2.GameTooltip
+    blz = G2.loadstring("return { 'Heavy Thing', 'stat 2', 'stat 3', 'stat 4', 'stat 5', 'stat 6', 'stat 7', 'Sell Price: 1s' }")()
+    G2.MOCK.ShowGameItem(tt2, 4306, None, blz)
+    tt2.AddLine(tt2, " ")
+    tt2.AddDoubleLine(tt2, "ID: 4306", "Bags: 30")
+    eq([tt2.lines[i].left for i in range(9, 17)], ["Forever AH", "Auction it", "AH value", "2-day average", "Sell now",
+                                                   "Suggested price", " ", "ID: 4306"], "TC25 lines 9 to 16")
+    eq(big_lines(G2, tt2), [(10, "TextLeft", "ForeverAHBigFont1", 15), (10, "TextRight", "ForeverAHBigFont1", 15)],
+       "TC25: only line 10 is bigger")
+    eq(normal_fonts(G2, tt2, skip=(10,)), [], "TC25: lines 11 to 16, made on demand, are GameTooltipText 12")
+    # TC26 fallbacks: the same text and colours at the normal size, no error
+    for label, setup in (("ShoppingTooltip1", None), ("HookScript errors", "hook"), ("CreateFont missing", "nofont"),
+                         ("CreateFont gives nothing", "nilfont")):
+        L3, G3, ns3 = font_env()
+        t3 = G3.ShoppingTooltip1 if setup is None else G3.GameTooltip
+        if setup == "hook":
+            t3.failHook = True
+        elif setup == "nofont":
+            G3.CreateFont = None
+        elif setup == "nilfont":
+            G3.MOCK.noCreateFont = True
+        n0 = len(G3.MOCK.prints)
+        tc(G3, t3, 4306, SILK_LINES, False, "TC26 " + label)
+        eq((ns3.lastError, len(G3.MOCK.prints) - n0, G3.MOCK.lineSetFont), (None, 0, None),
+           "TC26 %s: no error, no chat print" % label)
+    # the light tooltip mock (no NumLines, no GetLeftLine, no TextLeftN)
+    L4, G4, ns4 = new_env(fixture_lua(VERDICT_ITEMS))
+    G4.MOCK.now = UPDATED + 100
+    got = lines_of(G4.MOCK.ShowItem(G4.GameTooltip, 4306, None))
+    eq(got, [r[0] for r in SILK_LINES], "TC26 light tooltip mock: the same lines")
+    eq((ns4.lastError, len(G4.MOCK.prints)), (None, 0), "TC26 light tooltip mock: no error, no chat print")
+
+
+def verdict_tuple(v):
+    if v is None:
+        return None
+    if isinstance(v, dict):
+        return (v["kind"], v["unit"], v["left"], v["right"], v["lc"], v["rc"])
+    return (v.kind, int(v.unit) if v.unit is not None else None, v.left, v.right, v.lc, v.rc)
+
+
+def verdict_parity(ns, iids, label, tfs=("1D", "5D", "1M"), lives=((None, False), (1200, False), (1200, True), (2, False))):
+    """TC27: rec_model.sell_verdict (the Python twin) equals ns.SellVerdict for every item."""
+    bad = 0
+    for iid in iids:
+        it = ns.GetItem(iid)
+        if it is None:
+            continue
+        for tf in tfs:
+            for live, own in lives:
+                P = ns.SellPrices(iid, tf, live, own)
+                rec = py_recommend(ns, iid, tf, live)
+                sp = rec_model.sell_prices(rec, live, own, it.vendor)
+                py = verdict_tuple(rec_model.sell_verdict(py_item(it), sp, rec, ns.db.salesHours))
+                lu = verdict_tuple(ns.SellVerdict(it, P))
+                if py != lu:
+                    bad += 1
+                    if bad <= 5:
+                        print("    verdict mismatch", label, iid, tf, live, own, py, lu)
+                u = ns.SellVerdictPrice(it, P)
+                pu = rec_model.sell_verdict_price(py_item(it), sp, rec)
+                if (int(u) if u is not None else None) != pu:
+                    bad += 1
+    eq(bad, 0, "TC27 %s: the Python twin matches ns.SellVerdict and ns.SellVerdictPrice" % label)
+
+
+def test_verdict_parity():
+    print("sell verdict: the Python twin (TC27)")
+    for hours in (None, 0, 3, 6, 24):
+        L, G, ns = font_env(sales_hours=hours)
+        verdict_parity(ns, sorted(VERDICT_ITEMS), "fixtures, salesHours %s" % hours)
+    L, G, ns = new_env(fixture_lua(NEW_ITEMS))
+    verdict_parity(ns, sorted(NEW_ITEMS), "new fields")
+    L, G, ns = new_env(fixture_lua(RULE_ITEMS))
+    verdict_parity(ns, sorted(RULE_ITEMS), "rule items")
+    L, G, ns = new_env(versions_lua(variants=CLOAK_VARIANTS))
+    verdict_parity(ns, sorted(CLOAK_ITEMS), "versions")
+    L, G, ns = font_env()
+    eq(ns.SellVerdict(None, None), None, "SellVerdict with nothing")
+    eq(ns.SellVerdictPrice(ns.GetItem(4306), G.loadstring("return { rec = 5 }")()), None, "SellVerdictPrice with no advice table")
+    eq(ns.SellVerdictPrice(ns.GetItem(4306), ns.SellPrices(4306, "1D")), 200, "Silk's verdict price is the AH value 2s")
+    eq(ns.SellVerdictPrice(ns.GetItem(2838), ns.SellPrices(2838, "1D")), 388, "Heavy Stone's is List At, 3s 88c")
+    eq(ns.SellVerdictPrice(ns.GetItem(9504), ns.SellPrices(9504, "1D")), 32, "nothing listed: the Suggested price")
+    eq(ns.SellVerdictPrice(ns.GetItem(9104), ns.SellPrices(9104, "1D")), None, "vendorFar: none")
 
 
 def test_chart_line_setting():
@@ -1503,6 +2062,10 @@ def main():
     test_data_flips()
     test_sell_prices()
     test_stack_verdicts()
+    test_verdict_tooltips()
+    test_verdict_cases()
+    test_verdict_fonts()
+    test_verdict_parity()
     test_chart_line_setting()
     test_localdata()
     print()
