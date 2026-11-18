@@ -1566,6 +1566,10 @@ function UnitFactionGroup(unit)
   if unit == "player" then return M.faction, M.faction end
   if unit == "npc" and M.npc then return M.npc.faction, M.npc.faction end
 end
+-- Race and class: name, file name and id (quest items: which quests are yours).
+M.race, M.class = { "Human", "Human", 1 }, { "Warrior", "WARRIOR", 1 }
+function UnitRace(unit) if unit == "player" then return M.race[1], M.race[2], M.race[3] end end
+function UnitClass(unit) if unit == "player" then return M.class[1], M.class[2], M.class[3] end end
 function UnitExists(unit) return unit == "player" or (unit == "npc" and M.npc ~= nil and M.ahOpenNPC == true) end
 function GetSubZoneText() return M.subzone or "" end
 function GetMinimapZoneText() return M.subzone or M.zone or "" end
@@ -2145,7 +2149,13 @@ function C_CVar.GetCVar(name) return M.cvars[name] end
 C_GameRules = { IsHardcoreActive = function() return M.hardcore end }
 C_AddOns = {}
 function C_AddOns.IsAddOnLoaded(name) return M.loaded[name] == true, M.loaded[name] == true end
-function C_AddOns.GetAddOnMetadata(name, key) if name == "ForeverAH" and key == "Version" then return "1.0.0" end end
+-- TOC fields of other addons a scenario installs (QuestieDB's Version and X-BUILD-COMMIT).
+M.addonMeta = {}
+function C_AddOns.GetAddOnMetadata(name, key)
+  if name == "ForeverAH" and key == "Version" then return "1.0.0" end
+  local t = M.addonMeta[name]
+  if t then return t[key] end
+end
 function C_AddOns.LoadAddOn(name)
   if M.loaded[name] then return true end
   local loader = M.loadOnDemand and M.loadOnDemand[name]
@@ -9259,7 +9269,7 @@ def bagcheck(sc, w, label, cmd="/fah bagcheck"):
     body = [t.split("Forever AH: ", 1)[-1] for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
-    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18e", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18f", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
     num = {}
     for t in body:
         m = re.match(r"^(\d+)\. (.*)$", t)
@@ -9406,6 +9416,700 @@ def sc_bag_check(sc, ref, items):
     sc.check(any(t.endswith("unknown command. Type /fah help for the list.") for t in out), "no Bags.lua: unknown command (%s)" % out)
 
 
+# ===========================================================================
+# Quest items and QuestieDB: whether a quest item can go
+# ===========================================================================
+QDB_ALLY = 77 + 2 ** 32        # Human, Dwarf, Night Elf, Gnome, and Forever's Skyborne Alliance at bit 32
+QDB_HORDE = 178 + 2 ** 33      # Orc, Undead, Tauren, Troll, and Skyborne Horde at bit 33
+QDB_RACES = {1: 1, 2: 2, 3: 4, 4: 8, 5: 16, 6: 32, 7: 64, 8: 128, 95: 2 ** 32, 96: 2 ** 33}
+QDB_COMMIT = "e1652ce62113c152da682baf2d6fb85f1396bcfb"
+QDB_STAMP = "1.1.2|%s|4|1" % QDB_COMMIT
+
+
+def qobj(*ids):
+    """A quest's objectives as QuestieDB stores them: the item list is group 3, {itemId, text, 0} each."""
+    return {3: [[i, None, 0] for i in ids]}
+
+
+# Quests and items as this player's QuestieDB 1.1.2 has them (decoded from its
+# QuestieDB_Forever.toc): the Uldaman necklace chain (the phial is given by
+# 2200 and used in 2201; it is also the reward of 3375) and both factions'
+# Badlands Reagent Run. Made up: a letter that starts a quest, a repeatable
+# turn-in, two quests that exclude each other and a Warrior quest.
+QDB_QUESTS = {
+    2198: {"name": "The Shattered Necklace", "requiredRaces": QDB_ALLY, "sourceItemId": 7666, "nextQuestInChain": 2199},
+    2199: {"name": "Lore for a Price", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2200, "objectives": qobj(2842)},
+    2200: {"name": "Back to Uldaman", "requiredRaces": QDB_ALLY, "sourceItemId": 7667, "nextQuestInChain": 2201},
+    2201: {"name": "Find the Gems", "requiredRaces": QDB_ALLY, "sourceItemId": 7668, "nextQuestInChain": 2204,
+           "objectives": qobj(7669, 7670, 7671)},
+    2204: {"name": "Restoring the Necklace", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2361, "objectives": qobj(7672)},
+    3375: {"name": "Replacement Phial", "requiredRaces": QDB_ALLY, "specialFlags": 1, "availableUntilCompleted": 2361,
+           "objectives": qobj(3827, 3857, 1708)},
+    2500: {"name": "Badlands Reagent Run", "requiredRaces": QDB_ALLY, "nextQuestInChain": 17, "objectives": qobj(7847, 7846, 7848)},
+    2258: {"name": "Badlands Reagent Run", "requiredRaces": QDB_HORDE, "nextQuestInChain": 2202,
+           "objectives": qobj(7847, 7846, 7848)},
+    950001: {"name": "A Sealed Letter"},
+    950002: {"name": "Minion's Scourgestones", "specialFlags": 1, "objectives": qobj(12840)},
+    950010: {"name": "Ogre Toll", "exclusiveTo": [950011], "objectives": qobj(900503)},
+    950011: {"name": "Teeth for Thelsamar", "exclusiveTo": [950010], "objectives": qobj(900503)},
+    950020: {"name": "The Brutal Way", "requiredClasses": 1, "requiredSourceItems": [900504]},
+    950030: {"name": "Old Debts", "availableUntilCompleted": 950031, "objectives": qobj(900505)},
+    950031: {"name": "New Debts"},
+}
+QDB_ITEMS = {
+    7666: {"name": "Shattered Necklace", "class": 12},
+    7667: {"name": "Talvash's Phial of Scrying", "class": 12, "flags": 64, "questRewards": [3375]},
+    7846: {"name": "Crag Coyote Fang", "class": 12},
+    12840: {"name": "Minion's Scourgestone", "class": 12},
+    900501: {"name": "Sealed Letter", "class": 12, "startQuest": 950001},
+    900503: {"name": "Ogre Tooth", "class": 12},
+    900504: {"name": "Brutal Token", "class": 12},
+}
+# The bags: (bag, slot, item, count, name, fields for the mock game).
+QUEST_BAG = [
+    (0, 1, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 2, 7846, 4, "Crag Coyote Fang", {"classID": 12, "bind": 4, "maxStack": 20}),
+    (0, 3, 900501, 1, "Sealed Letter", {"classID": 12, "bind": 4, "maxStack": 1, "startsQuest": 950001}),
+    (0, 4, 12840, 3, "Minion's Scourgestone", {"classID": 12, "maxStack": 20}),
+    (0, 5, 900502, 2, "Gnarled Root", {"classID": 12, "maxStack": 20}),
+    (0, 6, 900503, 1, "Ogre Tooth", {"classID": 12, "maxStack": 20}),
+    (0, 7, 900504, 1, "Brutal Token", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 8, 900505, 1, "Faded Ledger", {"classID": 12, "bind": 4, "maxStack": 1}),
+]
+LOG_FIND_GEMS = [
+    {"title": "Uldaman", "isHeader": True},
+    {"title": "Find the Gems", "questID": 2201,
+     "objectives": ["Shattered Necklace Ruby: 0/1", "Shattered Necklace Sapphire: 0/1", "Shattered Necklace Topaz: 0/1"]},
+]
+# The player's log after Find the Gems: Restoring the Necklace mentions
+# Talvash, so the quest log's words alone keep the phial.
+LOG_NECKLACE = [
+    {"title": "Uldaman", "isHeader": True},
+    {"title": "Restoring the Necklace", "questID": 2204,
+     "objectives": ["Shattered Necklace Power Source: 0/1", "Bring it to Talvash del Kissel"]},
+]
+QDB_COLORS = {"pos": (0.25, 0.8, 0.45), "buy": (0.898, 0.722, 0.259), "muted": (0.55, 0.51, 0.45)}
+
+QDB_MOCK_LUA = r'''
+-- LibQuestieDB as QuestieDB 1.1.2 shows it to other addons (src/api.lua,
+-- contract 4): Quest and Item with Get, GetAll, GetAllIds and Exists over the
+-- rows a scenario gives; number fields read 0 and objectives {} for a known
+-- id, table fields come back as fresh copies, an unknown id reads nil.
+local M = MOCK
+local data = ...
+M.profileMs = M.profileMs or 0
+-- reads: every Get; objectives: how many quests' objectives were read (the
+-- index reads each quest's once); fail: every read errors; cost: fake
+-- milliseconds a read takes (for debugprofilestop).
+M.qdb = { reads = 0, objectives = 0, fail = false, cost = nil, contractFails = data.contractFails == true }
+local function copy(v)
+  if type(v) ~= "table" then return v end
+  local o = {}
+  for k, x in pairs(v) do o[k] = copy(x) end
+  return o
+end
+local QUEST_NUM = { requiredLevel = 1, questLevel = 1, requiredRaces = 1, requiredClasses = 1, sourceItemId = 1,
+  zoneOrSort = 1, nextQuestInChain = 1, questFlags = 1, specialFlags = 1, parentQuest = 1, breadcrumbForQuestId = 1,
+  requiredSpell = 1, requiredSpecialization = 1, requiredMaxLevel = 1, availableUntilCompleted = 1,
+  availableStartingWith = 1, disabledByQuest = 1 }
+local QUEST_TABLES = { startedBy = 1, finishedBy = 1, objectivesText = 1, triggerEnd = 1, objectives = 1,
+  preQuestGroup = 1, preQuestSingle = 1, childQuests = 1, inGroupWith = 1, exclusiveTo = 1, requiredSkill = 1,
+  requiredMinRep = 1, requiredMaxRep = 1, requiredSourceItems = 1, reputationReward = 1, breadcrumbs = 1,
+  extraObjectives = 1, requiredRanks = 1 }
+local NEVER_NIL = { startedBy = 1, finishedBy = 1, objectives = 1 }
+local ITEM_NUM = { startQuest = 1, flags = 1, foodType = 1, itemLevel = 1, requiredLevel = 1, ammoType = 1,
+  class = 1, subClass = 1, teachesSpell = 1 }
+local ITEM_TABLES = { npcDrops = 1, objectDrops = 1, itemDrops = 1, questRewards = 1, vendors = 1, relatedQuests = 1 }
+local function entity(rows, nums, tables, neverNil, kind)
+  local e, ids, map = {}, {}, {}
+  for id in pairs(rows) do ids[#ids + 1] = id end
+  table.sort(ids)
+  for _, id in ipairs(ids) do map[id] = true end
+  local function get(id, key)
+    local st = M.qdb
+    if st.fail then error("QuestieDB read failed") end
+    st.reads = st.reads + 1
+    if st.cost then M.profileMs = M.profileMs + st.cost end
+    if type(key) ~= "string" or not (key == "name" or nums[key] or tables[key]) then return nil end
+    local r = rows[id]
+    if not r then return nil end
+    if kind == "Quest" and key == "objectives" then st.objectives = st.objectives + 1 end
+    local v = r[key]
+    if v == nil then
+      if nums[key] then return 0 end
+      if neverNil[key] then return {} end
+      return nil
+    end
+    return copy(v)
+  end
+  e.Get = get
+  function e.GetAll(id, keys)
+    if not map[id] then return nil end
+    local out = { n = #keys }
+    for i, k in ipairs(keys) do out[i] = get(id, k) end
+    return out
+  end
+  function e.GetAllIds(hashmap) if hashmap == true then return map end return ids end
+  function e.Exists(id) return map[id] == true end
+  return e
+end
+local L = {
+  Quest = entity(data.quests, QUEST_NUM, QUEST_TABLES, NEVER_NIL, "Quest"),
+  Item = entity(data.items, ITEM_NUM, ITEM_TABLES, {}, "Item"),
+  contractVersion = 4, minSupportedContract = 1, addonName = "QuestieDB", readMode = "baked",
+  Enum = { raceMaskById = data.races, factionRaceMasks = { Alliance = data.ally, Horde = data.horde } },
+}
+function L.RequireContract(required)
+  if M.qdb.contractFails then return false, "QuestieDB contract mismatch: this consumer needs version 4" end
+  if type(required) == "number" and required >= L.minSupportedContract and required <= L.contractVersion then return true end
+  return false, "QuestieDB contract mismatch"
+end
+if data.noQuestList then L.Quest.GetAllIds = nil end
+LibQuestieDB, QuestDB, ItemDB = L, L.Quest, L.Item
+M.loaded.QuestieDB = true
+M.addonMeta.QuestieDB = { Version = data.version, ["X-BUILD-COMMIT"] = data.commit, ["X-Contract-Version"] = "4" }
+'''
+
+
+def install_questie(w, version="1.1.2", commit=QDB_COMMIT, filler=0, contract_fails=False, no_quest_list=False):
+    """QuestieDB loaded (as LibQuestieDB), with QDB_QUESTS and QDB_ITEMS plus
+    `filler` more quests (every 7th asks for one of 50 made-up items)."""
+    quests = dict(QDB_QUESTS)
+    for k in range(filler):
+        row = {"name": "Filler Quest %d" % (k + 1), "requiredRaces": QDB_ALLY if k % 2 else 0}
+        if k % 7 == 0:
+            row["objectives"] = qobj(880000 + k % 50)
+        quests[100001 + k] = row
+    data = {"quests": quests, "items": QDB_ITEMS, "version": version, "commit": commit, "races": QDB_RACES,
+            "ally": QDB_ALLY, "horde": QDB_HORDE, "contractFails": contract_fails, "noQuestList": no_quest_list}
+    w.loader(QDB_MOCK_LUA, "@MOCK/QuestieDB.lua", w.to_lua(data))
+    return quests
+
+
+def quest_bags(w, log=None, done=()):
+    for bag, slot, iid, count, name, fields in QUEST_BAG:
+        bag_add_item(w, iid, name, 1, 0, **fields)
+        bag_put(w, bag, slot, iid, count)
+    bag_quests(w, LOG_FIND_GEMS if log is None else log)
+    for q in done:
+        w.M.questDone[q] = True
+
+
+def lua_to_py(v):
+    """A Lua table as Python dicts (whole-number keys as int)."""
+    if lua51.lua_type(v) != "table":
+        return v
+    out = {}
+    for k, x in v.items():
+        if isinstance(k, float) and k == int(k):
+            k = int(k)
+        out[k] = lua_to_py(x)
+    return out
+
+
+# --- an independent model of Bags.lua's QuestieDB verdicts ---------------------------
+QDB_RANK = {"use": 1, "nextq": 2, "start": 3, "give": 4}
+QDB_REPEATABLE = {12840, 12841, 12843, 12844, 22523, 22524, 22525, 22526, 22527, 22528, 22529, 21377, 21383, 20404,
+                  20513, 20514, 20515} | set(range(19698, 19716))
+
+
+def ref_quest_index(quests):
+    """item -> quest * 4 + role (0 asks for it, 1 gives it): one code, or a list in quest order."""
+    idx = {}
+
+    def add(it, code):
+        lst = idx.setdefault(it, [])
+        if code not in lst:
+            lst.append(code)
+    for q in sorted(quests):
+        row = quests[q]
+        for o in (row.get("objectives") or {}).get(3, []):
+            add(o[0], q * 4)
+        for it in row.get("requiredSourceItems", []):
+            add(it, q * 4)
+        if row.get("sourceItemId"):
+            add(row["sourceItemId"], q * 4 + 1)
+    return {k: (v[0] if len(v) == 1 else v) for k, v in idx.items()}
+
+
+def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None):
+    """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it."""
+    idx = ref_quest_index(quests)
+    R, order = {}, []
+
+    def mine(row):
+        races, classes = row.get("requiredRaces", 0), row.get("requiredClasses", 0)
+        rb, cb = QDB_RACES[race], 2 ** (cls - 1)
+        return (not races or (races // rb) % 2 == 1) and (not classes or (classes // cb) % 2 == 1)
+
+    def add(q, role):
+        if not q or q <= 0:
+            return False
+        if q in R:
+            return True
+        row = quests.get(q)
+        if not row or not mine(row):
+            return False
+        R[q] = role
+        order.append(q)
+        return True
+    e = idx.get(iid)
+    for c in (e if isinstance(e, list) else ([] if e is None else [e])):
+        q, role = c // 4, c % 4
+        if role == 0:
+            add(q, "use")
+        elif role == 1 and add(q, "give"):
+            add(quests[q].get("nextQuestInChain", 0), "nextq")
+    add(QDB_ITEMS.get(iid, {}).get("startQuest", 0), "start")
+    add(start_q, "start")
+    if not order:
+        return None
+
+    def pick(pred):
+        best = None
+        for q in order:
+            if pred(q) and (best is None or QDB_RANK[R[q]] < QDB_RANK[R[best]]):
+                best = q
+        return best
+
+    def closed(q):
+        return (q in done or quests[q].get("availableUntilCompleted") in done
+                or any(x in done for x in quests[q].get("exclusiveTo", [])))
+    name = lambda q: quests[q]["name"]  # noqa: E731
+    q = pick(lambda x: x in in_log)
+    if q:
+        return ("keep", name(q), False)
+    q = pick(lambda x: R[x] == "start" and not closed(x))
+    if q:
+        return ("starts", name(q), False)
+    q = pick(lambda x: quests[x].get("specialFlags", 0) % 2 == 1)
+    if q or iid in QDB_REPEATABLE:
+        return ("keep", name(q or pick(lambda x: True)), True)
+    q = pick(lambda x: not closed(x))
+    if not q:
+        return ("done", name(pick(lambda x: True)), False)
+    if not log_known:
+        return None
+    return ("open", name(q), False)
+
+
+def quest_line_text(v):
+    """The tooltip line and its colour key for a model verdict."""
+    kind, n, rep = v
+    if kind == "done":
+        return "Done: you can drop it (%s)" % n, "pos"
+    if kind == "open":
+        return "Only for %s, not in your quest log" % n, "muted"
+    if kind == "starts":
+        return "Starts %s" % n, "buy"
+    if rep:
+        return "Keep: for %s (repeatable)" % n, "buy"
+    return "Keep: needed for %s" % n, "buy"
+
+
+def lua_verdict(w, iid):
+    v = w.ns.QuestItemVerdict(iid)
+    return None if v is None else (v.kind, v.name, bool(v.rep))
+
+
+def quest_tip(w, bag, slot):
+    """Our lines on the bag slot's item tooltip: (text, colour) each."""
+    tt = w.g.GameTooltip
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+    tt.SetBagItem(tt, bag, slot)
+    al = w.M.addonLines(tt)
+    out = []
+    for i in range(1, len(al) + 1):
+        ln = al[i]
+        c = None if ln.lr is None else (round(ln.lr, 3), round(ln.lg, 3), round(ln.lb, 3))
+        out.append((ln.left, c))
+    tt.Hide(tt)
+    return out
+
+
+def quest_rows(BP):
+    """The cleanup panel's shown OLD QUEST ITEMS rows: (item, right text, right colour)."""
+    out = []
+    for i in range(1, len(BP.rows) + 1):
+        r = BP.rows[i]
+        if r.IsShown(r) and r.kind == "quest":
+            c = r.right._textColor
+            out.append((r.entry.id, r.right._text, (round(c[1], 3), round(c[2], 3), round(c[3], 3))))
+    return out
+
+
+NO_LISTINGS = ("Forever AH: no recent listings", QDB_COLORS["muted"])
+
+
+def plain_tip(fields):
+    """Our lines on a quest item's tooltip without QuestieDB: none, or for one
+    that is not bound (it might go on the auction house) the no-listings line."""
+    return [] if fields.get("bind") == 4 else [NO_LISTINGS]
+
+
+def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None):
+    """Every bag item's verdict, tooltip line and colour against the model."""
+    for bag, slot, iid, count, name, fields in QUEST_BAG:
+        if ids and iid not in ids:
+            continue
+        want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"))
+        sc.eq(lua_verdict(w, iid), want, "%s: %s verdict" % (label, name))
+        tip = quest_tip(w, bag, slot)
+        if want is None:
+            sc.eq(tip, plain_tip(fields), "%s: %s tooltip has no quest line" % (label, name))
+        else:
+            text, key = quest_line_text(want)
+            sc.eq(tip, plain_tip(fields) + [(text, QDB_COLORS[key])], "%s: %s tooltip, one quest line last" % (label, name))
+
+
+def sc_bag_questie(sc, ref, items):
+    """With QuestieDB: a quest item's tooltip says whether it can go (keep,
+    starts, done, not started), the cleanup panel lists the done and not
+    started ones with the quest in the row tooltip, /fah bags says the same,
+    and the phial the player asked about says done once its quests are."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    quests = install_questie(w)
+    quest_bags(w, LOG_FIND_GEMS, done=(2198, 2199, 2200))
+    QI = ns.QuestIndex
+    sc.eq(QI.state, "idle", "questie: the index waits a few seconds after login")
+    # First need: the phial's tooltip. Nothing yet, the index starts.
+    sc.eq(quest_tip(w, 0, 1), [], "questie: no quest line while the index is being made")
+    sc.eq(QI.state, "building", "questie: a quest item's tooltip starts the index")
+    w.settle(0.5)
+    sc.eq(QI.state, "ready", "questie: the index is ready a few frames later")
+    sc.eq(QI.size, len(ref_quest_index(quests)), "questie: every item a quest asks for or gives is indexed")
+    # On Find the Gems (2200 done): the phial is needed.
+    in_log, done = {2201}, {2198, 2199, 2200}
+    sc.eq(lua_verdict(w, 7667), ("keep", "Find the Gems", False), "questie: phial while on Find the Gems: keep")
+    sc.eq(lua_verdict(w, 7846), ("open", "Badlands Reagent Run", False),
+          "questie: Crag Coyote Fang, Badlands Reagent Run not in the log: not started")
+    sc.eq(lua_verdict(w, 900501), ("starts", "A Sealed Letter", False), "questie: the letter starts a quest you have not done")
+    sc.eq(lua_verdict(w, 12840), ("keep", "Minion's Scourgestones", True), "questie: a repeatable turn-in is kept")
+    sc.eq(lua_verdict(w, 900502), None, "questie: an item QuestieDB does not know has no verdict")
+    quest_checks(sc, w, quests, in_log, done, "on Find the Gems")
+    tip = quest_tip(w, 0, 1)
+    sc.eq(tip, [("Keep: needed for Find the Gems", QDB_COLORS["buy"])], "questie: phial tooltip, gold keep line")
+    sc.eq(quest_tip(w, 0, 2), [("Only for Badlands Reagent Run, not in your quest log", QDB_COLORS["muted"])],
+          "questie: fang tooltip, grey not started line")
+    # The panel: not started ones listed (the quest in the row tooltip), kept ones not.
+    M.OpenBags(1)
+    w.settle(0.2)
+    BP = ns.BagPanel
+    M.click(BP.tab)
+    w.settle(0.2)
+    mu, pos = QDB_COLORS["muted"], QDB_COLORS["pos"]
+    sc.eq(quest_rows(BP), [(900504, "not started", mu), (7846, "not started", mu), (900505, "not started", mu),
+                           (900503, "not started", mu), (900502, "not needed", mu)],
+          "questie panel: not started items, then the one QuestieDB does not know (its quest log verdict)")
+    row = bag_row_for(BP, 7846)
+    if sc.check(row is not None, "questie panel: the fang has a row"):
+        M.enter(row)
+        lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
+        sc.check("Old quest item" in lines and "Only for Badlands Reagent Run, not in your quest log." in lines,
+                 "questie panel: the row tooltip names the quest (%s)" % lines)
+        sc.check("Only for Badlands Reagent Run, not in your quest log" not in lines,
+                 "questie panel: the item tooltip's own quest line is left out of the row's (%s)" % lines)
+        M.leave(row)
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(any(t.endswith("old quest items: [Brutal Token] (not started: The Brutal Way), [Crag Coyote Fang] x4 "
+                            "(not started: Badlands Reagent Run), [Faded Ledger] (not started: Old Debts), "
+                            "[Ogre Tooth] (not started: Ogre Toll), [Gnarled Root] x2 (no quest needs it)") for t in out),
+             "questie /fah bags: quest line (%s)" % out)
+    sc.check(not any("still reading" in t for t in out), "questie /fah bags: nothing about reading once ready")
+
+    # Find the Gems done, Restoring the Necklace (it mentions Talvash) in the log: the phial can go.
+    bag_quests(w, LOG_NECKLACE)
+    M.questDone[2201] = True
+    M.fire("QUEST_LOG_UPDATE")
+    w.settle(0.5)
+    in_log, done = {2204}, {2198, 2199, 2200, 2201}
+    sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "questie: phial after Find the Gems, Restoring the Necklace in the log: done")
+    sc.eq(quest_tip(w, 0, 1), [("Done: you can drop it (Find the Gems)", QDB_COLORS["pos"])], "questie: phial tooltip, green done line")
+    quest_checks(sc, w, quests, in_log, done, "after Find the Gems")
+    rows = quest_rows(BP)
+    sc.eq(rows[:1], [(7667, "done", pos)], "questie panel: the phial is listed first, done in green")
+    row = bag_row_for(BP, 7667)
+    if sc.check(row is not None, "questie panel: the phial has a row"):
+        M.enter(row)
+        lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
+        sc.check("Quest done: Find the Gems. You can drop it." in lines, "questie panel: the phial's row tooltip (%s)" % lines)
+        sc.check(not any("check your quest log" in l for l in lines), "questie panel: no unsure note for a QuestieDB verdict")
+        M.leave(row)
+        # The drop flow is as before for quest items: picked up, the game asks.
+        n_pick = len(M.pickups)
+        M.click(row, "LeftButton")
+        C = g.ForeverAHBagConfirm
+        sc.check(C is None or not C.IsShown(C), "questie panel: a quest item gets no drop box")
+        sc.eq(len(M.pickups), n_pick + 1, "questie panel: a click picks the phial up")
+        if len(M.pickups) > n_pick:
+            p = M.pickups[len(M.pickups)]
+            sc.eq((p[1], p[2]), (0, 1), "questie panel: the phial's slot")
+        w.lua.execute("ClearCursor()")
+        sc.eq(len(M.destroyed), 0, "questie panel: nothing destroyed")
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(any("old quest items: [Talvash's Phial of Scrying] (done: Find the Gems), " in t for t in out),
+             "questie /fah bags: the phial is done (%s)" % out)
+
+    # The letter's quest taken, then done; the scourgestone's quest done; the
+    # Alliance reagent run done (the Horde one does not count); one of the two
+    # ogre quests done (the other is shut).
+    M.quests[len(M.quests) + 1] = w.to_lua({"title": "A Sealed Letter", "questID": 950001, "objectives": []})
+    M.questActive[950001] = True
+    sc.eq(lua_verdict(w, 900501), ("keep", "A Sealed Letter", False), "questie: the letter while its quest is in the log: keep")
+    M.quests[len(M.quests)] = None
+    M.questActive[950001] = None
+    for q in (950001, 950002, 2500, 950010, 950031):
+        M.questDone[q] = True
+    done = done | {950001, 950002, 2500, 950010, 950031}
+    sc.eq(lua_verdict(w, 900501), ("done", "A Sealed Letter", False), "questie: the letter once its quest is done: done")
+    sc.eq(lua_verdict(w, 12840), ("keep", "Minion's Scourgestones", True), "questie: a repeatable turn-in is never done")
+    sc.eq(lua_verdict(w, 7846), ("done", "Badlands Reagent Run", False),
+          "questie: fang with the Alliance reagent run done: done (the Horde one is not yours)")
+    sc.eq(lua_verdict(w, 900503), ("done", "Ogre Toll", False), "questie: a quest shut by the one you did counts as done")
+    sc.eq(lua_verdict(w, 900505), ("done", "Old Debts", False),
+          "questie: a quest only available until one you did counts as done")
+    quest_checks(sc, w, quests, in_log, done, "later")
+
+    # Closed quest log headers and no IsOnQuest: "not started" cannot be told, done still can.
+    M.questDone[2500] = None
+    M.questDone[950010] = None
+    done = done - {2500, 950010}
+    bag_quests(w, [{"title": "Uldaman", "isHeader": True, "isCollapsed": True}])
+    quest_checks(sc, w, quests, set(), done, "log headers closed", log_known=False)
+    s = ns.BagScan()
+    sc.eq([s.quest[i].id for i in range(1, len(s.quest) + 1)], [900505, 900501, 7667],
+          "questie: with a header closed only the done ones are listed (by name)")
+    # C_QuestLog.IsOnQuest knows every quest, closed headers or not.
+    w.lua.execute("MOCK.onQuest = {}; C_QuestLog.IsOnQuest = function(q) return MOCK.onQuest[q] == true end")
+    quest_checks(sc, w, quests, set(), done, "IsOnQuest")
+    w.lua.execute("MOCK.onQuest[2500] = true")
+    sc.eq(lua_verdict(w, 7846), ("keep", "Badlands Reagent Run", False), "questie: IsOnQuest finds a quest under a closed header")
+    w.lua.execute("C_QuestLog.IsOnQuest = nil")
+    n, _ = bagcheck(sc, w, "questie bagcheck")
+    sc.check((n.get(8) or "").endswith(", quests from QuestieDB (%d items)" % len(ref_quest_index(quests))),
+             "questie bagcheck: line 8 says the quest data is QuestieDB's (%s)" % n.get(8))
+    w.settle(10.5)
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "questie", ok_chat=BAGCHECK_LINES)
+
+    # Horde (an Orc mage): the Alliance chain is not theirs, the Warrior quest neither.
+    wh = World(ref, items, faction="Horde")
+    wh.M.race = wh.to_lua(["Orc", "Orc", 2])
+    wh.M["class"] = wh.to_lua(["Mage", "MAGE", 8])
+    quests = install_questie(wh)
+    quest_bags(wh, LOG_FIND_GEMS, done=(2198, 2199, 2200, 2500))
+    wh.ns.BagScan()
+    wh.settle(0.5)
+    sc.eq(wh.ns.QuestIndex.state, "ready", "questie horde: the bag scan started the index")
+    hdone = {2198, 2199, 2200, 2500}
+    sc.eq(lua_verdict(wh, 7846), ("open", "Badlands Reagent Run", False),
+          "questie horde: fang with only the Alliance reagent run done: not started")
+    sc.eq(lua_verdict(wh, 7667), None, "questie horde: the Alliance phial chain is not theirs (quest log verdict)")
+    sc.eq(lua_verdict(wh, 900504), None, "questie horde: a Warrior quest is not a mage's")
+    quest_checks(sc, wh, quests, {2201}, hdone, "horde mage", race=2, cls=8)
+    wh.M.questDone[2258] = True
+    quest_checks(sc, wh, quests, {2201}, hdone | {2258}, "horde mage, their run done", race=2, cls=8)
+    sc.eq(lua_verdict(wh, 7846), ("done", "Badlands Reagent Run", False), "questie horde: fang once their own run is done")
+    sc.clean(wh, "questie horde")
+
+    # The legacy client's tooltip script gets the line too.
+    wl = World(ref, items, client="legacy")
+    quests = install_questie(wl)
+    quest_bags(wl, LOG_NECKLACE, done=(2198, 2199, 2200, 2201))
+    wl.ns.BagScan()
+    wl.settle(0.5)
+    sc.eq(quest_tip(wl, 0, 1), [("Done: you can drop it (Find the Gems)", QDB_COLORS["pos"])], "questie legacy: phial tooltip")
+    sc.eq(quest_tip(wl, 0, 5), [NO_LISTINGS], "questie legacy: no quest line for an item QuestieDB does not know")
+    # /fah tooltip off: no quest line either.
+    wl.slash("/fah tooltip")
+    sc.eq(quest_tip(wl, 0, 1), [], "questie: /fah tooltip off hides the quest line too")
+    sc.clean(wl, "questie legacy")
+
+
+def sc_bag_questie_slicing(sc, ref, items):
+    """The index is made over many frames: at most 150 quests a frame, or about
+    3 ms when debugprofilestop exists; a few seconds after login, or at once
+    when the bag cleanup first needs it."""
+    TICK_LOG = r'''
+      local M = MOCK
+      M.tickReads = {}
+      local orig = M.tick
+      M.tick = function(dt)
+        local r0, ms0 = M.qdb.objectives, M.profileMs
+        orig(dt)
+        local n = M.qdb.objectives - r0
+        if n > 0 then M.tickReads[#M.tickReads + 1] = { n = n, ms = M.profileMs - ms0 } end
+      end
+    '''
+    filler = 2000
+    w = World(ref, items)
+    quests = install_questie(w, filler=filler)
+    total = len(quests)
+    w.lua.execute(TICK_LOG)
+    QI = w.ns.QuestIndex
+    w.settle(4.0)
+    sc.eq(QI.state, "idle", "slicing: nothing read in the first seconds after login")
+    sc.eq(w.M.qdb.objectives, 0, "slicing: no quest read yet")
+    w.settle(0.9)
+    sc.eq(QI.state, "building", "slicing: started 5 seconds after login")
+    w.settle(5.0)
+    sc.eq(QI.state, "ready", "slicing: ready")
+    ticks = [(w.M.tickReads[i].n, w.M.tickReads[i].ms) for i in range(1, len(w.M.tickReads) + 1)]
+    sc.eq(sum(n for n, _ in ticks), total, "slicing: each quest read once (%d)" % total)
+    sc.check(max(n for n, _ in ticks) <= 150, "slicing: at most 150 quests a frame (%d)" % max(n for n, _ in ticks))
+    sc.eq(len(ticks), -(-total // 150), "slicing: %d quests over %d frames" % (total, -(-total // 150)))
+    sc.eq((QI.ticks, QI.most), (len(ticks), 150), "slicing: the index counts its frames and the most in one")
+    sc.eq(QI.size, len(ref_quest_index(quests)), "slicing: every item indexed")
+    sc.clean(w, "slicing")
+
+    # debugprofilestop: each read takes 0.02 ms here, so a quest (3 reads)
+    # 0.06 ms, and about 50 fit in the 3 ms a frame may take.
+    w2 = World(ref, items)
+    w2.lua.execute("debugprofilestop = function() return MOCK.profileMs end")
+    quests = install_questie(w2, filler=filler)
+    w2.lua.execute(TICK_LOG)
+    w2.M.qdb.cost = 0.02
+    quest_bags(w2, LOG_FIND_GEMS, done=(2198, 2199, 2200))
+    # The bag cleanup's first need starts it at once, and /fah bags says it is still reading.
+    out = [plain(x) for x in w2.slash("/fah bags")]
+    sc.eq(w2.ns.QuestIndex.state, "building", "slicing ms: /fah bags started the index before the login delay")
+    sc.check(any("still reading Questie's quests: type /fah bags again in a moment" in t for t in out),
+             "slicing ms: /fah bags says it is still reading (%s)" % out)
+    w2.settle(6.0)
+    sc.eq(w2.ns.QuestIndex.state, "ready", "slicing ms: ready")
+    ticks = [(w2.M.tickReads[i].n, w2.M.tickReads[i].ms) for i in range(1, len(w2.M.tickReads) + 1)]
+    per = 3 * 0.02
+    sc.eq(sum(n for n, _ in ticks), len(quests), "slicing ms: each quest read once")
+    sc.check(all(ms <= 3 + per + 1e-6 for _, ms in ticks), "slicing ms: no frame over 3 ms and one quest (%s)"
+             % max(ms for _, ms in ticks))
+    sc.check(all(n <= 51 for n, _ in ticks) and max(n for n, _ in ticks) >= 49,
+             "slicing ms: about 50 quests a frame (%s)" % sorted(set(n for n, _ in ticks)))
+    out = [plain(x) for x in w2.slash("/fah bags")]
+    sc.check(any("(not started: Badlands Reagent Run)" in t for t in out), "slicing ms: QuestieDB verdicts once ready (%s)" % out)
+    sc.check(not any("still reading" in t for t in out), "slicing ms: no reading note once ready")
+    sc.clean(w2, "slicing ms")
+
+
+def sc_bag_questie_saved(sc, ref, items):
+    """The index is saved with QuestieDB's version, used again as long as that
+    stays, and made again when QuestieDB changes (or our format does)."""
+    w = World(ref, items)
+    quests = install_questie(w)
+    want = ref_quest_index(quests)
+    w.settle(6.0)
+    sc.eq(w.ns.QuestIndex.state, "ready", "saved: built after login")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    qi = saved.get("questIndex") or {}
+    sc.eq(qi.get("stamp"), QDB_STAMP, "saved: the stamp is QuestieDB's version, commit, contract and our format")
+    raw = qi.get("items") or {}
+    sc.check(all(isinstance(v, (int, float)) or (isinstance(v, str) and re.match(r"^\d+(,\d+)+$", v)) for v in raw.values()),
+             "saved: compact, a code or a string of codes per item")
+    got = {k: (sorted(int(c) for c in v.split(",")) if isinstance(v, str) else v) for k, v in raw.items()}
+    sc.eq(got, {k: (sorted(v) if isinstance(v, list) else v) for k, v in want.items()}, "saved: the index item -> quest codes")
+    sc.eq(got.get(7667), 2200 * 4 + 1, "saved: the phial is given by Back to Uldaman")
+    sc.eq(raw.get(7846), "9032,10000", "saved: the fang is asked for by both reagent runs (2258, 2500)")
+
+    def again(label, version="1.1.2", commit=QDB_COMMIT, sv=saved):
+        w2 = World(ref, items, saved=sv)
+        install_questie(w2, version=version, commit=commit)
+        quest_bags(w2, LOG_NECKLACE, done=(2198, 2199, 2200, 2201))
+        w2.ns.BagScan()
+        return w2
+    w2 = again("same")
+    sc.eq(w2.ns.QuestIndex.state, "ready", "saved: the same QuestieDB uses the saved index at once")
+    sc.check(w2.ns.QuestIndex.saved is True, "saved: and says so")
+    w2.settle(6.0)
+    sc.eq(w2.M.qdb.objectives, 0, "saved: no quest is read again")
+    sc.eq(lua_verdict(w2, 7667), ("done", "Find the Gems", False), "saved: the phial's verdict from the saved index")
+    sc.eq(lua_verdict(w2, 7846), ("open", "Badlands Reagent Run", False), "saved: the fang's (two quests in one saved string)")
+    n, _ = bagcheck(sc, w2, "saved bagcheck")
+    sc.check((n.get(8) or "").endswith(", quests from QuestieDB (%d items, saved)" % len(want)), "saved bagcheck: line 8 (%s)" % n.get(8))
+    sc.clean(w2, "saved", ok_chat=BAGCHECK_LINES)
+    for label, kw in (("new QuestieDB version", {"version": "1.1.3"}), ("new QuestieDB commit", {"commit": "0123abc"})):
+        w3 = again(label, **kw)
+        sc.eq(w3.ns.QuestIndex.state, "building", "saved, %s: made again" % label)
+        w3.settle(1.0)
+        sc.eq(w3.M.qdb.objectives, len(quests), "saved, %s: every quest read again" % label)
+        st = lua_to_py(w3.g.ForeverAH_Settings).get("questIndex") or {}
+        stamp = "%s|%s|4|1" % (kw.get("version", "1.1.2"), kw.get("commit", QDB_COMMIT))
+        sc.eq(st.get("stamp"), stamp, "saved, %s: saved with the new stamp" % label)
+        sc.eq(lua_verdict(w3, 7667), ("done", "Find the Gems", False), "saved, %s: verdicts" % label)
+        sc.clean(w3, "saved " + label)
+    old = dict(saved)
+    old["questIndex"] = dict(qi, stamp=QDB_STAMP[:-1] + "0")
+    w4 = again("older format", sv=old)
+    sc.eq(w4.ns.QuestIndex.state, "building", "saved: an index of an older format is made again")
+    w4.settle(1.0)
+    sc.eq(w4.ns.QuestIndex.state, "ready", "saved: older format, ready again")
+    # QuestieDB that names no version: made each session, not saved.
+    w5 = World(ref, items)
+    install_questie(w5, version=None, commit=None)
+    w5.settle(7.0)
+    sc.eq(w5.ns.QuestIndex.state, "ready", "saved: no version stamp, still made")
+    sc.check(w5.g.ForeverAH_Settings.questIndex is None, "saved: but not saved without a version stamp")
+    sc.clean(w5, "saved no stamp")
+
+
+def sc_bag_questie_fallback(sc, ref, items):
+    """Without QuestieDB, with one whose contract does not match, or one that
+    breaks: quest items are judged from the quest log exactly as before."""
+    def world(setup=None):
+        w = World(ref, items)
+        if setup:
+            setup(w)
+        quest_bags(w, LOG_NECKLACE, done=(2198, 2199, 2200, 2201))
+        return w
+
+    def snapshot(w):
+        s = w.ns.BagScan()
+        w.settle(0.5)
+        s = w.ns.BagScan()
+        quest = [(s.quest[i].id, s.quest[i].why, bool(s.quest[i].sure), s.quest[i].qdb) for i in range(1, len(s.quest) + 1)]
+        tips = [quest_tip(w, bag, slot) for bag, slot, _, _, _, _ in QUEST_BAG]
+        return quest, tips
+    base = world()
+    bq, btips = snapshot(base)
+    sc.check(7667 not in [q[0] for q in bq], "no questie: the phial is kept (Restoring the Necklace mentions Talvash): today's silence")
+    sc.check(all(q[3] is None for q in bq), "no questie: every verdict is the quest log's")
+    sc.eq(btips, [plain_tip(f) for _, _, _, _, _, f in QUEST_BAG], "no questie: no quest line on any tooltip")
+    sc.eq(base.ns.QuestIndex.state, "absent", "no questie: the index knows QuestieDB is not loaded")
+    base.settle(6.0)
+    sc.eq(base.ns.QuestIndex.state, "absent", "no questie: and stays so after the login delay")
+    n, _ = bagcheck(sc, base, "no questie bagcheck")
+    sc.check(", quests" not in (n.get(8) or "") and "QuestieDB" not in (n.get(8) or ""), "no questie bagcheck: line 8 as before (%s)" % n.get(8))
+    sc.clean(base, "no questie", ok_chat=BAGCHECK_LINES)
+    cases = [
+        ("contract mismatch", lambda w: install_questie(w, contract_fails=True), "contract mismatch"),
+        ("no quest list", lambda w: install_questie(w, no_quest_list=True), "no quest reads"),
+        ("reads fail", lambda w: (install_questie(w), w.lua.execute("MOCK.qdb.fail = true")), "QuestieDB read failed"),
+    ]
+    for label, setup, why in cases:
+        w = world(setup)
+        q, tips = snapshot(w)
+        sc.eq(q, bq, "%s: the old quest items are today's" % label)
+        sc.eq(tips, btips, "%s: no quest line on any tooltip" % label)
+        sc.eq(w.ns.QuestIndex.state, "off", "%s: QuestieDB is not used this session" % label)
+        sc.check(why in str(w.ns.QuestIndex.err), "%s: and why (%s)" % (label, w.ns.QuestIndex.err))
+        n, _ = bagcheck(sc, w, label + " bagcheck")
+        sc.check("QuestieDB not used (" in (n.get(8) or ""), "%s bagcheck: line 8 says QuestieDB is not used (%s)" % (label, n.get(8)))
+        sc.clean(w, label, ok_chat=BAGCHECK_LINES + ("QuestieDB not used",))
+    # Reads that break after the index was made: back to the quest log, the saved index dropped.
+    w = World(ref, items)
+    install_questie(w)
+    quest_bags(w, LOG_NECKLACE, done=(2198, 2199, 2200, 2201))
+    w.settle(6.0)
+    sc.check(w.g.ForeverAH_Settings.questIndex is not None, "breaks later: the index was saved")
+    w.lua.execute("MOCK.qdb.fail = true")
+    q, tips = snapshot(w)
+    sc.eq(q, bq, "breaks later: the old quest items are today's")
+    sc.eq(tips, btips, "breaks later: no quest line")
+    sc.eq(w.ns.QuestIndex.state, "off", "breaks later: QuestieDB is not used")
+    sc.check(w.g.ForeverAH_Settings.questIndex is None, "breaks later: the saved index is dropped (made again next time)")
+    sc.clean(w, "breaks later")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -9469,6 +10173,10 @@ SCENARIOS = [
     ("bag-elvui-hooks", sc_bag_elvui_hooks),
     ("bag-window-unreadable", sc_bag_window_unreadable),
     ("bag-check", sc_bag_check),
+    ("bag-questie", sc_bag_questie),
+    ("bag-questie-slicing", sc_bag_questie_slicing),
+    ("bag-questie-saved", sc_bag_questie_saved),
+    ("bag-questie-fallback", sc_bag_questie_fallback),
 ]
 
 

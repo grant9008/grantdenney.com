@@ -3,8 +3,11 @@ local ADDON_NAME, ns = ...
 -- When your bags fill up, this says what to get rid of first:
 --   Merge stacks    : partial stacks of the same item that fit in one slot
 --                     (frees a slot and costs nothing)
---   Old quest items : quest items no quest in your log asks for, and items
---                     that start a quest you already finished
+--   Old quest items : with Questie, quest items whose quests are all done or
+--                     not in your quest log (its database says which quests
+--                     use an item, and a quest item's tooltip says it too);
+--                     else quest items no quest in your log asks for, and
+--                     items that start a quest you already finished
 --   Worth the least : everything else, cheapest stack first, valued at the
 --                     better of what a vendor pays and what it sells for at
 --                     auction right now (after the 5% cut)
@@ -46,7 +49,7 @@ local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes yo
 local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
                             -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-18e"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-18f"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -302,7 +305,7 @@ local function ObjectiveName(text)
 end
 
 local function ReadQuestLog()
-  local log = { needs = {}, words = {}, count = 0, bare = 0, complete = true }
+  local log = { needs = {}, words = {}, ids = {}, count = 0, bare = 0, complete = true }
   local QL = type(_G.C_QuestLog) == "table" and _G.C_QuestLog or nil
   local function objectives(questID, index)
     local texts, read = {}, false
@@ -326,6 +329,7 @@ local function ReadQuestLog()
   end
   local function quest(title, questID, index)
     log.count = log.count + 1
+    if Num(questID) and questID > 0 then log.ids[questID] = true end
     AddWords(title, log.words)
     local texts = objectives(questID, index)
     -- A quest that lists no objectives (deliver this, talk to him) may need
@@ -403,6 +407,492 @@ local function QuestVerdict(e, qi, log)
 end
 
 ---------------------------------------------------------------------------
+-- Quest items and Questie: whether you can drop one
+---------------------------------------------------------------------------
+-- QuestieDB (the database Questie reads) knows which quests ask for an item,
+-- which quest gives it and which quest it starts. Once per QuestieDB version
+-- every quest is read, a few a frame (at most QI_BATCH quests, or about QI_MS
+-- milliseconds), into an index item -> quests (the quests that ask for it,
+-- as objectives or besides, and the one that gives it) that is kept in
+-- ForeverAH_Settings. The quest an item starts is QuestieDB's item data, read
+-- when needed. A quest item's verdict comes from the quests that use it (for
+-- your race and class): the ones that ask for it, the one that gives it and
+-- the quest after that one, and the one it starts:
+--   keep    one of them is in your quest log (or one is repeatable)
+--   starts  it starts a quest you have not done
+--   done    they are all done: you can drop it
+--   open    you have not started them (none is in your quest log)
+-- Without QuestieDB, while the index is being made, for items QuestieDB does
+-- not know, and when anything about it fails, quest items are judged from
+-- the quest log as before (QuestVerdict).
+local QDB_CONTRACT = 4      -- the LibQuestieDB contract this is written against
+local QI_VERSION = 1        -- the saved index's format: a new one rebuilds it
+local QI_BATCH = 150        -- quests read a frame at most
+local QI_MS = 3             -- and for about this long (when debugprofilestop exists)
+local QI_DELAY = 5          -- seconds after login before the index is made
+local ROLE_USE, ROLE_GIVE = 0, 1   -- index codes are quest * 4 + role
+
+-- state: "idle" (not started), "absent" (no QuestieDB), "building", "ready",
+-- or "off" (QuestieDB cannot be used this session; err says why).
+local QI = { state = "idle", ticks = 0, most = 0, pos = 0, total = 0, info = {} }
+ns.QuestIndex = QI
+local rowTip = false        -- a cleanup row draws its tooltip: the row names the quest itself
+
+local function AddonMeta(addon, key)
+  local CA = _G.C_AddOns
+  local f = (type(CA) == "table" and type(CA.GetAddOnMetadata) == "function") and CA.GetAddOnMetadata
+    or _G.GetAddOnMetadata
+  if type(f) ~= "function" then return nil end
+  local ok, v = pcall(f, addon, key)
+  return ok and Str(v) or nil
+end
+
+-- LibQuestieDB when it is loaded and keeps our contract; else nil and why.
+local function QuestieLib()
+  local L = rawget(_G, "LibQuestieDB")
+  if type(L) ~= "table" then return nil, "absent" end
+  if type(L.RequireContract) ~= "function" then return nil, "no contract check" end
+  local ok, good = pcall(L.RequireContract, QDB_CONTRACT)
+  if not ok or good ~= true then return nil, "contract mismatch" end
+  local Q, I = L.Quest, L.Item
+  if type(Q) ~= "table" or type(Q.Get) ~= "function" or type(Q.GetAllIds) ~= "function"
+     or type(I) ~= "table" or type(I.Get) ~= "function" then
+    return nil, "no quest reads"
+  end
+  return L
+end
+
+-- The saved index is for one QuestieDB build: its version and commit, the
+-- contract and our format. nil when QuestieDB names neither (the index is
+-- then made each session and not saved).
+local function IndexStamp(L)
+  local name = Str(L.addonName) or "QuestieDB"
+  local ver, commit = AddonMeta(name, "Version"), AddonMeta(name, "X-BUILD-COMMIT")
+  if not ver and not commit then return nil end
+  return sformat("%s|%s|%s|%d", ver or "", commit or "", tostring(Num(L.contractVersion) or ""), QI_VERSION)
+end
+
+-- While the index is made, an item's entry is one code, or a list of them
+-- when several quests use it.
+local function IndexAdd(map, item, code)
+  local cur = map[item]
+  if cur == nil then
+    map[item] = code
+  elseif type(cur) == "number" then
+    if cur ~= code then map[item] = { cur, code } end
+  else
+    for i = 1, #cur do
+      if cur[i] == code then return end
+    end
+    cur[#cur + 1] = code
+  end
+end
+
+-- One quest into the index: the items it asks for (its objectives and the
+-- items it needs besides) and the item it gives you when you take it.
+local function IndexQuest(Q, q, map)
+  local use, give = q * 4 + ROLE_USE, q * 4 + ROLE_GIVE
+  local obj = Q.Get(q, "objectives")
+  local list = type(obj) == "table" and obj[3] or nil
+  if type(list) == "table" then
+    for _, o in pairs(list) do
+      local it = type(o) == "table" and Num(o[1]) or nil
+      if it and it > 0 then IndexAdd(map, it, use) end
+    end
+  end
+  local need = Q.Get(q, "requiredSourceItems")
+  if type(need) == "table" then
+    for _, it in pairs(need) do
+      it = Num(it)
+      if it and it > 0 then IndexAdd(map, it, use) end
+    end
+  end
+  local src = Num(Q.Get(q, "sourceItemId"))
+  if src and src > 0 then IndexAdd(map, src, give) end
+end
+
+local function ProfileMs()
+  local f = _G.debugprofilestop
+  if type(f) ~= "function" then return nil end
+  local ok, t = pcall(f)
+  return ok and Num(t) or nil
+end
+
+local function RefreshPanel()
+  local bp = ns.BagPanel
+  if type(bp) == "table" and type(bp.RefreshSoon) == "function" then bp:RefreshSoon() end
+end
+
+-- Anything wrong with QuestieDB or the index: quest items go back to the
+-- quest log's words for this session, and the saved index is dropped.
+function QI.Fail(err)
+  QI.state, QI.err = "off", tostring(err)
+  QI.map, QI.work, QI.ids, QI.lib = nil, nil, nil, nil
+  local st = S()
+  if st then st.questIndex = nil end
+  RefreshPanel()
+end
+
+-- Kept compact: an item one quest uses has its code, one several quests use
+-- a string of codes ("9032,10000").
+local function Finish(map)
+  local n = 0
+  for item, v in pairs(map) do
+    n = n + 1
+    if type(v) == "table" then map[item] = tconcat(v, ",") end
+  end
+  QI.map, QI.size, QI.state, QI.work, QI.ids = map, n, "ready", nil, nil
+  local st = S()
+  if st and QI.stamp and ns.settingsLoaded == true then
+    st.questIndex = { stamp = QI.stamp, items = map }
+  end
+  RefreshPanel()
+end
+
+-- One frame's share of the quests, then the next frame's.
+local function Step()
+  if QI.state ~= "building" then return end
+  local ids, map, Q = QI.ids, QI.work, QI.lib.Quest
+  local i, n, done = QI.pos, QI.total, 0
+  local t0 = ProfileMs()
+  while i <= n and done < QI_BATCH do
+    local q = Num(ids[i])
+    if q and q > 0 then IndexQuest(Q, q, map) end
+    i, done = i + 1, done + 1
+    local t = t0 and ProfileMs()
+    if t and t - t0 >= QI_MS then break end
+  end
+  QI.pos, QI.ticks = i, QI.ticks + 1
+  if done > QI.most then QI.most = done end
+  if i > n then Finish(map) else After(0, QI.Step) end
+end
+
+function QI.Step()
+  local ok, err = pcall(Step)
+  if not ok then QI.Fail(err) end
+end
+
+-- The saved index when it is for this QuestieDB, else a new one made over
+-- the next frames.
+function QI.Start()
+  local s = QI.state
+  if s == "building" or s == "ready" or s == "off" then return end
+  local L, why = QuestieLib()
+  if not L then
+    if why == "absent" then QI.state = "absent" else QI.state, QI.err = "off", why end
+    return
+  end
+  QI.lib, QI.stamp, QI.err = L, IndexStamp(L), nil
+  local st = S()
+  local saved = st and st.questIndex
+  if QI.stamp and type(saved) == "table" and saved.stamp == QI.stamp and type(saved.items) == "table" then
+    local n = 0
+    for _ in pairs(saved.items) do n = n + 1 end
+    QI.map, QI.size, QI.saved, QI.state = saved.items, n, true, "ready"
+    return
+  end
+  if st then st.questIndex = nil end
+  local ids = L.Quest.GetAllIds()
+  if type(ids) ~= "table" then error("QuestieDB lists no quests") end
+  QI.ids, QI.total, QI.pos, QI.work = ids, #ids, 1, {}
+  QI.ticks, QI.most, QI.saved, QI.state = 0, 0, false, "building"
+  After(0, QI.Step)
+end
+
+local function StartIndex()
+  local ok, err = pcall(QI.Start)
+  if not ok then QI.Fail(err) end
+end
+
+-- LibQuestieDB once the index is ready, else nil (and the index is started).
+local function QuestieReady()
+  local s = QI.state
+  if s == "idle" or s == "absent" then
+    StartIndex()
+    s = QI.state
+  end
+  if s == "ready" then return QI.lib end
+  return nil
+end
+
+-- What a verdict needs from one quest, read once a session; false for a
+-- quest QuestieDB does not have.
+local function QuestInfo(L, q)
+  local c = QI.info[q]
+  if c ~= nil then return c end
+  local Q = L.Quest
+  local name = (type(Q.Exists) ~= "function" or Q.Exists(q) == true) and Str(Q.Get(q, "name")) or nil
+  if not name then
+    QI.info[q] = false
+    return false
+  end
+  local ex = {}
+  local list = Q.Get(q, "exclusiveTo")
+  if type(list) == "table" then
+    for _, x in pairs(list) do
+      x = Num(x)
+      if x and x > 0 then ex[#ex + 1] = x end
+    end
+  end
+  c = {
+    name = name,
+    races = Num(Q.Get(q, "requiredRaces")) or 0,
+    classes = Num(Q.Get(q, "requiredClasses")) or 0,
+    rep = (Num(Q.Get(q, "specialFlags")) or 0) % 2 == 1,   -- flag 1: repeatable
+    nextQ = Num(Q.Get(q, "nextQuestInChain")),
+    -- It can no longer be taken once you did one of these.
+    ex = ex,
+    untilQ = Num(Q.Get(q, "availableUntilCompleted")),
+  }
+  QI.info[q] = c
+  return c
+end
+
+local function HasBit(mask, bit)
+  return bit > 0 and mask % (bit * 2) >= bit
+end
+
+-- Whether two race masks share a race. Forever's masks reach past 32 bits,
+-- so this is plain arithmetic, not the bit library.
+local function Overlaps(a, b)
+  local bit = 1
+  while bit <= b do
+    if HasBit(b, bit) and HasBit(a, bit) then return true end
+    bit = bit * 2
+  end
+  return false
+end
+
+-- Your race's bit (QuestieDB's own mapping), your faction's races and your
+-- class's bit; each nil when it cannot be read.
+local function PlayerMasks(L)
+  if QI.player then return QI.player end
+  local p, E = {}, type(L.Enum) == "table" and L.Enum or {}
+  if type(_G.UnitRace) == "function" and type(E.raceMaskById) == "table" then
+    local ok, _, _, raceID = pcall(_G.UnitRace, "player")
+    if ok and Num(raceID) then p.race = Num(E.raceMaskById[raceID]) end
+  end
+  if type(_G.UnitFactionGroup) == "function" and type(E.factionRaceMasks) == "table" then
+    local ok, f = pcall(_G.UnitFactionGroup, "player")
+    if ok and Str(f) then p.faction = Num(E.factionRaceMasks[f]) end
+  end
+  if type(_G.UnitClass) == "function" then
+    local ok, _, _, classID = pcall(_G.UnitClass, "player")
+    if ok and Num(classID) and classID >= 1 and classID <= 32 then p.class = 2 ^ (classID - 1) end
+  end
+  if p.race or p.faction then QI.player = p end
+  return p
+end
+
+-- A quest you can take: for your race (or at least your faction) and class.
+local function ForPlayer(L, info)
+  local p = PlayerMasks(L)
+  if info.races > 0 then
+    if p.race then
+      if not HasBit(info.races, p.race) then return false end
+    elseif p.faction and not Overlaps(info.races, p.faction) then
+      return false
+    end
+  end
+  if info.classes > 0 and p.class and not HasBit(info.classes, p.class) then return false end
+  return true
+end
+
+-- Done, or shut for good because you did a quest that excludes it (or the
+-- one it is only available until).
+local function Closed(info, q)
+  if QuestDone(q) then return true end
+  if info.untilQ and info.untilQ > 0 and QuestDone(info.untilQ) then return true end
+  for _, x in ipairs(info.ex) do
+    if QuestDone(x) then return true end
+  end
+  return false
+end
+
+-- true: the quest is in your log; false: it is not; nil: closed quest log
+-- headers hide some quests, so it cannot be told.
+local function InLog(q, ctx)
+  local QL = type(_G.C_QuestLog) == "table" and _G.C_QuestLog or nil
+  if QL and type(QL.IsOnQuest) == "function" then
+    local ok, r = pcall(QL.IsOnQuest, q)
+    if ok and type(r) == "boolean" then return r end
+  end
+  local log = ctx.log
+  if not log then
+    log = ReadQuestLog()
+    ctx.log = log
+  end
+  if log.ids[q] then return true end
+  local f = (QL and type(QL.GetLogIndexForQuestID) == "function") and QL.GetLogIndexForQuestID or _G.GetQuestLogIndexByID
+  if type(f) == "function" then
+    local ok, r = pcall(f, q)
+    if ok and Num(r) and r > 0 then return true end
+  end
+  if log.complete then return false end
+  return nil
+end
+
+-- Which quest a verdict names: one that asks for the item, else the one
+-- after the quest that gives it, the one it starts, the one that gives it.
+local RANK = { use = 1, nextq = 2, start = 3, give = 4 }
+
+-- QuestieDB's verdict on a quest item (see above): { kind = "keep",
+-- "starts", "done" or "open", quest = id, name = its name, rep = true when
+-- it is kept for a repeatable quest }. nil when there is none: QuestieDB is
+-- not loaded or not usable, the index is still being made, no quest for you
+-- uses the item, or closed quest log headers leave it open.
+-- log: ReadQuestLog() when the caller has it. startQ: the quest the game
+-- says the item starts.
+local function QuestieVerdict(id, log, startQ)
+  local L = QuestieReady()
+  if not L or not Num(id) then return nil end
+  local R, order = {}, {}
+  local function add(q, role)
+    q = Num(q)
+    if not q or q <= 0 then return false end
+    if R[q] then return true end
+    local info = QuestInfo(L, q)
+    if not info or not ForPlayer(L, info) then return false end
+    R[q] = { role = role, info = info }
+    order[#order + 1] = q
+    return true
+  end
+  local entry, codes = QI.map[id], {}
+  if type(entry) == "string" then
+    for c in sgmatch(entry, "%d+") do codes[#codes + 1] = tonumber(c) end
+  elseif type(entry) == "table" then
+    codes = entry
+  else
+    codes[1] = entry
+  end
+  for i = 1, #codes do
+    local c = Num(codes[i])
+    if c and c > 0 then
+      local q, role = floor(c / 4), c % 4
+      if role == ROLE_USE then
+        add(q, "use")
+      elseif role == ROLE_GIVE and add(q, "give") then
+        -- The quest after the one that gives it is the one it is for, as a rule.
+        add(R[q].info.nextQ, "nextq")
+      end
+    end
+  end
+  add(L.Item.Get(id, "startQuest"), "start")
+  add(startQ, "start")
+  if #order == 0 then return nil end
+  local function pick(want)
+    local bq, br
+    for _, q in ipairs(order) do
+      if want(q) then
+        local r = RANK[R[q].role] or 9
+        if not br or r < br then bq, br = q, r end
+      end
+    end
+    return bq
+  end
+  local function verdict(kind, q, rep)
+    return { kind = kind, quest = q, name = R[q].info.name, rep = rep }
+  end
+  local ctx, inLog, unsure = { log = log }, {}, false
+  for _, q in ipairs(order) do
+    local s = InLog(q, ctx)
+    if s == true then inLog[q] = true elseif s == nil then unsure = true end
+  end
+  local q = pick(function(x) return inLog[x] end)
+  if q then return verdict("keep", q) end
+  local closed = {}
+  for _, x in ipairs(order) do closed[x] = Closed(R[x].info, x) end
+  q = pick(function(x) return R[x].role == "start" and not closed[x] end)
+  if q then return verdict("starts", q) end
+  local function any() return true end
+  -- Turn-ins you can repeat are never done.
+  q = pick(function(x) return R[x].info.rep end)
+  if q or REPEATABLE[id] then return verdict("keep", q or pick(any), true) end
+  q = pick(function(x) return not closed[x] end)
+  if not q then return verdict("done", pick(any)) end
+  if unsure then return nil end
+  return verdict("open", q)
+end
+
+-- QuestieDB's verdict on one item as a tooltip sees it (the tests read it).
+function ns.QuestItemVerdict(id)
+  if QI.state == "off" then return nil end
+  local ok, v = pcall(QuestieVerdict, id, nil, nil)
+  if not ok then
+    QI.Fail(v)
+    return nil
+  end
+  return v
+end
+
+-- The verdict for the bag scan; nil (the quest log's words decide) when
+-- there is none or reading it fails.
+local function ScanVerdict(id, log, qi)
+  if QI.state == "off" then return nil end
+  local ok, v = pcall(QuestieVerdict, id, log, qi and Num(qi.questID) or nil)
+  if not ok then
+    QI.Fail(v)
+    return nil
+  end
+  return v
+end
+
+-- The tooltip line for a verdict, and its colour.
+local function QuestLineText(v)
+  local n = v.name
+  if v.kind == "done" then return "Done: you can drop it" .. (n and (" (" .. n .. ")") or ""), "pos" end
+  if v.kind == "open" then return "Only for " .. (n or "a quest") .. ", not in your quest log", "muted" end
+  if v.kind == "starts" then return "Starts " .. (n or "a quest"), "buy" end
+  if v.rep then return "Keep: for " .. (n and (n .. " (repeatable)") or "a repeatable quest"), "buy" end
+  return "Keep: needed for " .. (n or "a quest in your log"), "buy"
+end
+
+local function IsQuestItem(id)
+  local gi = ItemInfo(id)
+  if gi then return gi.classID == CLASS_QUEST or gi.bind == BIND_QUEST end
+  return (InstantInfo(id)) == CLASS_QUEST
+end
+
+-- Core.lua's tooltip handler calls this for an item it has no prices for:
+-- a quest item QuestieDB knows gets one line, green when you can drop it,
+-- gold when you need it, grey when its quest is not in your log. Nothing
+-- while the index is being made or when QuestieDB has no verdict. true when
+-- the line was added.
+function ns.QuestItemLine(tt, id)
+  id = Num(id)
+  if not id or rowTip or type(tt) ~= "table" or type(tt.AddLine) ~= "function" then return false end
+  local st = S()
+  if st and st.tooltip == false then return false end
+  if QI.state == "off" then return false end
+  local ok, v = pcall(function()
+    if not IsQuestItem(id) then return nil end
+    return QuestieVerdict(id, nil, nil)
+  end)
+  if not ok then
+    QI.Fail(v)
+    return false
+  end
+  if not v then return false end
+  local text, key = QuestLineText(v)
+  local c = Col(key)
+  return (pcall(tt.AddLine, tt, text, c[1], c[2], c[3]))
+end
+
+-- For /fah bagcheck: what QuestieDB gives the bag cleanup, or nil without it.
+local function QuestIndexText()
+  QuestieReady()
+  local s = QI.state
+  if s == "ready" then
+    return sformat("quests from QuestieDB (%d items%s)", QI.size or 0, QI.saved and ", saved" or "")
+  elseif s == "building" then
+    return sformat("reading QuestieDB (%d of %d quests)", max(0, QI.pos - 1), QI.total)
+  elseif s == "off" then
+    return "QuestieDB not used (" .. tostring(QI.err):sub(1, 60) .. ")"
+  end
+  return nil
+end
+
+---------------------------------------------------------------------------
 -- What a stack is worth
 ---------------------------------------------------------------------------
 local function LiveFor(id)
@@ -477,13 +967,21 @@ end
 --                 count, quality, icon, value, vendor (each), auction (each,
 --                 after the cut, or nil), source "vendor"/"auction", unsure, junk,
 --                 questItem (a quest item the auction house trades) }
---   quest         old quest items: the same fields plus why ("done"/"none") and sure
+--   quest         old quest items: the same fields plus why and sure. From
+--                 QuestieDB (qdb true, quest = the quest's name): why "done"
+--                 (its quests are done) or "open" (not in your quest log).
+--                 From the quest log's words: "done" (it starts a quest you
+--                 finished) or "none" (no quest in your log names it)
 --   merge         { id, name, icon, quality, stacks, frees, from, to } (from/to
 --                 are slot entries; nil when no two stacks fit in one)
 --   junk          grey items a vendor buys (what "Sell junk" sells)
 --   pending       some items were not loaded yet (the scan reruns when they are)
 --   questPartial  collapsed quest log headers hid some quests
+--   questBuilding QuestieDB's quests are still being read (the list is from
+--                 the quest log until they are)
 -- }
+local WHY_ORDER = { done = 1, open = 2, none = 3 }
+
 function ns.BagScan()
   local keep = KeepList()
   local level = PlayerLevel()
@@ -550,10 +1048,21 @@ function ns.BagScan()
           if locked or keep[id] or PROTECT[id] then
             -- moving, kept or a tool: leave it alone
           elseif isQuest then
-            local why, sure = QuestVerdict(e, qi, log)
-            if why then
-              e.why, e.sure = why, sure
-              out.quest[#out.quest + 1] = e
+            -- Questie's quests for it first; the quest log's words when it has none.
+            local v = ScanVerdict(id, log, qi)
+            if QI.state == "building" then out.questBuilding = true end
+            if v then
+              -- Listed when you can drop it or have not started its quest; kept otherwise.
+              if v.kind == "done" or v.kind == "open" then
+                e.why, e.sure, e.quest, e.qdb = v.kind, true, v.name, true
+                out.quest[#out.quest + 1] = e
+              end
+            else
+              local why, sure = QuestVerdict(e, qi, log)
+              if why then
+                e.why, e.sure = why, sure
+                out.quest[#out.quest + 1] = e
+              end
             end
           else
             local vendor = (gi and gi.vendor) or DataVendor(id)
@@ -601,7 +1110,8 @@ function ns.BagScan()
     return a.slot < b.slot
   end)
   sort(out.quest, function(a, b)
-    if a.why ~= b.why then return a.why == "done" end
+    local ra, rb = WHY_ORDER[a.why] or 9, WHY_ORDER[b.why] or 9
+    if ra ~= rb then return ra < rb end
     if (a.sure and 1 or 0) ~= (b.sure and 1 or 0) then return a.sure end
     return (a.name or "") < (b.name or "")
   end)
@@ -973,7 +1483,12 @@ local function RowTooltip(row)
   tt:SetOwner(row, "ANCHOR_LEFT")
   local slot = kind == "merge" and e.from or e
   local shown = false
-  if slot and type(tt.SetBagItem) == "function" then shown = pcall(tt.SetBagItem, tt, slot.bag, slot.slot) end
+  if slot and type(tt.SetBagItem) == "function" then
+    -- The row says the quest itself, so the item tooltip leaves its quest line out.
+    rowTip = true
+    shown = pcall(tt.SetBagItem, tt, slot.bag, slot.slot)
+    rowTip = false
+  end
   if not shown then tt:AddLine(e.name or ("Item " .. tostring(e.id)), QualityRGB(e.quality)) end
   tt:AddLine(" ")
   local mu = Col("muted")
@@ -988,7 +1503,14 @@ local function RowTooltip(row)
     end
   elseif kind == "quest" then
     tt:AddLine(Paint("Old quest item", "buy"))
-    tt:AddLine("This " .. (QUEST_TEXT[e.why] or "may be left over") .. ".", 0.8, 0.8, 0.8, true)
+    if e.qdb and e.why == "done" then
+      tt:AddLine(e.quest and ("Quest done: " .. e.quest .. ". You can drop it.") or "Its quests are done. You can drop it.",
+        0.8, 0.8, 0.8, true)
+    elseif e.qdb then
+      tt:AddLine("Only for " .. (e.quest or "a quest") .. ", not in your quest log.", 0.8, 0.8, 0.8, true)
+    else
+      tt:AddLine("This " .. (QUEST_TEXT[e.why] or "may be left over") .. ".", 0.8, 0.8, 0.8, true)
+    end
     if not e.sure then
       tt:AddLine("Some quests (deliver this, talk to someone) do not list what they need: check your quest log first.",
         0.6, 0.6, 0.6, true)
@@ -1128,6 +1650,10 @@ function BP:FillRow(r, e, kind)
   if kind == "merge" then
     r.right:SetText("frees " .. e.frees)
     SetFSColor(r.right, "pos")
+  elseif kind == "quest" and e.qdb then
+    -- From QuestieDB: green when its quests are done, grey when not started.
+    r.right:SetText(e.why == "done" and "done" or "not started")
+    SetFSColor(r.right, e.why == "done" and "pos" or "muted")
   elseif kind == "quest" then
     r.right:SetText(e.why == "done" and "quest done" or (e.sure and "not needed" or "check log"))
     SetFSColor(r.right, e.sure and "muted" or "buy")
@@ -1880,8 +2406,9 @@ local function Changed() BP:RefreshSoon() end
 
 -- By login ElvUI has built its bag window and set up its bag module: both
 -- get hooked here (and again on entering the world, in case either is late).
+-- A few seconds later QuestieDB's quests are read (or the saved index used).
 local handlers = {
-  PLAYER_LOGIN = function() HookBagFrames() BP:UpdateSoon() end,
+  PLAYER_LOGIN = function() HookBagFrames() BP:UpdateSoon() After(QI_DELAY, StartIndex) end,
   PLAYER_ENTERING_WORLD = function() HookBagFrames() end,
   BAG_UPDATE_DELAYED = Changed,
   BAG_UPDATE = Changed,
@@ -1930,8 +2457,14 @@ local function Report()
   end
   if #s.quest > 0 then
     Print("old quest items: " .. ListText(s.quest, 6, function(e)
+      if e.qdb then
+        return ItemText(e) .. " (" .. (e.why == "done" and "done" or "not started") .. (e.quest and (": " .. e.quest) or "") .. ")"
+      end
       return ItemText(e) .. " (" .. (e.why == "done" and "quest done" or (e.sure and "no quest needs it" or "check your quest log")) .. ")"
     end))
+  end
+  if s.questBuilding then
+    Print("still reading Questie's quests: type /fah bags again in a moment to check every quest item.")
   end
   if s.questPartial then
     Print("some quest log headers are closed: open them so old quest items can be checked too.")
@@ -2082,8 +2615,11 @@ local function BagCheck()
   -- 8. The scan
   local okS, s = pcall(ns.BagScan)
   if okS and type(s) == "table" then
-    Print(sformat("8. scan: %d of %d slots free, %d to clear, %d cheap stack%s", s.free, s.slots,
-      #s.merge + #s.quest + #s.junk, #s.drop, #s.drop == 1 and "" or "s"))
+    -- With QuestieDB: where the quest item verdicts come from.
+    local okQ, q = pcall(QuestIndexText)
+    q = okQ and q or nil
+    Print(sformat("8. scan: %d of %d slots free, %d to clear, %d cheap stack%s%s", s.free, s.slots,
+      #s.merge + #s.quest + #s.junk, #s.drop, #s.drop == 1 and "" or "s", q and (", " .. q) or ""))
   else
     Print("8. scan error: " .. tostring(s))
   end
