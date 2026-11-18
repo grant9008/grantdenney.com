@@ -1668,6 +1668,46 @@ MerchantFrame:Hide()
 function M.OpenMerchant() MerchantFrame:Show(); M.fire("MERCHANT_SHOW") end
 function M.CloseMerchant() MerchantFrame:Hide(); M.fire("MERCHANT_CLOSED") end
 
+-- The game's bag keys: open or close the game's bags, or ElvUI's when it is in.
+function ToggleAllBags()
+  if M.elvBags then
+    local f = ElvUI_ContainerFrame
+    if f:IsShown() then f:Hide() else f:Show() end
+  elseif ContainerFrame1:IsShown() then M.CloseBags() else M.OpenBags(5) end
+end
+function ToggleBackpack() ToggleAllBags() end
+function OpenAllBags() if M.elvBags then ElvUI_ContainerFrame:Show() else M.OpenBags(5) end end
+function CloseAllBags() if M.elvBags then ElvUI_ContainerFrame:Hide() else M.CloseBags() end end
+-- ElvUI's bags: one window (ElvUI_ContainerFrame, under ElvUI's own scaled
+-- parent) with frame.Bags[bagID][slotID] item buttons. ElvUI builds it when
+-- you log in, after the other addons loaded.
+function M.InstallElvUIBags(scale)
+  local parent = CreateFrame("Frame", "ElvUIParent", UIParent)
+  parent:SetAllPoints(UIParent)
+  parent:SetScale(scale or 0.8)
+  local f = CreateFrame("Button", "ElvUI_ContainerFrame", parent)
+  f:SetFrameStrata("HIGH")
+  f:SetSize(420, 380)
+  f:SetPoint("BOTTOMRIGHT", parent, "BOTTOMRIGHT", -10, 200)
+  f:Hide()
+  f.Bags = {}
+  for bagID = 0, 4 do
+    local bag = CreateFrame("Frame", "ElvUI_ContainerFrameBag" .. bagID, f)
+    bag:SetID(bagID)
+    f.Bags[bagID] = bag
+    for slot = 1, 16 do
+      local b = CreateFrame("Button", "ElvUI_ContainerFrameBag" .. bagID .. "Slot" .. slot, bag)
+      b:SetSize(30, 30)
+      b:SetID(slot)
+      local i = bagID * 16 + slot - 1
+      b:SetPoint("TOPLEFT", f, "TOPLEFT", 4 + (i % 12) * 34, -4 - math.floor(i / 12) * 34)
+      bag[slot] = b
+    end
+  end
+  M.elvBags = true
+  return f
+end
+
 C_GameRules = { IsHardcoreActive = function() return M.hardcore end }
 C_AddOns = {}
 function C_AddOns.IsAddOnLoaded(name) return M.loaded[name] == true, M.loaded[name] == true end
@@ -6341,6 +6381,70 @@ def sc_bag_cleanup_nodata(sc, ref, items):
         sc.clean(w, "bags " + client)
 
 
+def sc_bag_cleanup_elvui(sc, ref, items):
+    """ElvUI's bags (built after login, under ElvUI's own scaled parent): the
+    tab and panel hang off ElvUI's bag window and follow it, slots light up."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    elv = M.InstallElvUIBags(0.8)
+    bag_add_item(w, 900301, "Chipped Claw", 0, 9, classID=15)
+    bag_add_item(w, 900302, "Coyote Meat", 1, 4, classID=7)
+    w.put_bag(0, 3, 900301, 2)
+    w.put_bag(2, 5, 900302, 3)
+    BP = ns.BagPanel
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(elv.IsVisible(elv) and not g.ContainerFrame1.IsShown(g.ContainerFrame1), "elvui: ElvUI's bag window opens, not the game's")
+    sc.check(BP.built and BP.tab.IsVisible(BP.tab), "elvui: tab shows beside ElvUI's bags")
+    p = BP.tab._points[1]
+    sc.check(p[1] == "BOTTOMRIGHT" and w.same(p[2], elv) and p[3] == "BOTTOMLEFT", "elvui: tab hangs off ElvUI's bag window")
+    tabE, elvE = BP.tab.GetEffectiveScale(BP.tab), elv.GetEffectiveScale(elv)
+    sc.check(abs(BP.tab.GetRight(BP.tab) * tabE - (elv.GetLeft(elv) * elvE - 4 * tabE)) < 0.01, "elvui: tab right edge is 4 left of the bags")
+    sc.check(abs(BP.tab.GetBottom(BP.tab) * tabE - elv.GetBottom(elv) * elvE) < 0.01, "elvui: tab level with the bottom of the bags")
+    sc.eq(BP.tab.GetFrameStrata(BP.tab), "HIGH", "elvui: same strata as ElvUI's bags (drawn above the game's frames)")
+    M.click(BP.tab)
+    w.settle(0.1)
+    F = g.ForeverAHBagPanel
+    sc.check(F.IsVisible(F), "elvui: panel opens")
+    rows = [BP.rows[i] for i in range(1, len(BP.rows) + 1) if BP.rows[i].IsShown(BP.rows[i])]
+    want = sorted([(18, 900301), (12, 900302)])   # Chipped Claw 2 x 9c, Coyote Meat 3 x 4c
+    sc.eq([r.entry.id for r in rows if r.kind == "drop"], [i for _, i in want], "elvui: drop rows cheapest first")
+    # Hover lights the ElvUI slot button.
+    for r in rows:
+        if r.entry.id == 900302:
+            M.enter(r)
+            btn = elv.Bags[2][5]
+            sc.check(BP.glow.IsShown(BP.glow) and w.same(BP.glow._points[1][2], btn), "elvui: hover outlines ElvUI's slot button")
+            M.leave(r)
+    # ElvUI's window is dragged: the panel follows.
+    elv.ClearAllPoints(elv)
+    elv.SetPoint(elv, "BOTTOMRIGHT", g.ElvUIParent, "BOTTOMRIGHT", -300, 120)
+    sc.check(abs(F.GetRight(F) * F.GetEffectiveScale(F) - (elv.GetLeft(elv) * elvE - 4 * F.GetEffectiveScale(F))) < 0.01,
+             "elvui: panel follows when ElvUI's bags move")
+    w.lua.execute("ToggleAllBags()")
+    w.settle(0.2)
+    sc.check(not F.IsShown(F) and not BP.tab.IsShown(BP.tab), "elvui: closing ElvUI's bags hides the panel")
+    w.lua.execute("OpenAllBags()")
+    w.settle(0.2)
+    sc.check(F.IsVisible(F), "elvui: reopening brings the panel back (it was left open)")
+    sc.clean(w, "elvui")
+
+
+def sc_bag_cleanup_parked(sc, ref, items):
+    """A bag addon that parks the game's bag windows shown but with no position:
+    no tab, and /fah bags still works."""
+    w = World(ref, items)
+    w.lua.execute("ContainerFrame1:SetID(0); ContainerFrame1:ClearAllPoints(); ContainerFrame1:Show()")
+    w.settle(0.2)
+    BP = w.ns.BagPanel
+    sc.check(not BP.built or not BP.tab.IsShown(BP.tab), "parked: no tab for a bag window with no position")
+    bag_add_item(w, 900303, "Brittle Bone", 0, 3, classID=15)
+    w.put_bag(0, 1, 900303, 1)
+    out = [strip_codes(x) for x in w.slash("/fah bags")]
+    sc.check(any("Brittle Bone" in t for t in out), "parked: /fah bags lists the bags")
+    sc.clean(w, "parked")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -6387,6 +6491,8 @@ SCENARIOS = [
     ("stack-verdicts", sc_stack_verdicts),
     ("bag-cleanup", sc_bag_cleanup),
     ("bag-cleanup-no-data", sc_bag_cleanup_nodata),
+    ("bag-cleanup-elvui", sc_bag_cleanup_elvui),
+    ("bag-cleanup-parked", sc_bag_cleanup_parked),
 ]
 
 

@@ -713,10 +713,19 @@ function ns.ToggleBagKeep(id)
 end
 
 ---------------------------------------------------------------------------
--- The bag frames (the game's own; bag addons that replace them get chat only)
+-- The bag frames: the game's own, and the bag window of bag addons we know.
+-- Other bag addons (they hide the game's bags) get /fah bags in chat.
 ---------------------------------------------------------------------------
+-- ElvUI's bags: one window, ElvUI_ContainerFrame. Its slots sit in
+-- frame.Bags[bagID][slotID].
+local ADDON_BAG_FRAMES = { "ElvUI_ContainerFrame" }
+
 local function BagFrames()
   local out = {}
+  for _, name in ipairs(ADDON_BAG_FRAMES) do
+    local f = _G[name]
+    if type(f) == "table" and type(f.IsShown) == "function" then out[#out + 1] = f end
+  end
   local cb = _G.ContainerFrameCombinedBags
   if type(cb) == "table" and type(cb.IsShown) == "function" then out[#out + 1] = cb end
   local n = Num(_G.NUM_CONTAINER_FRAMES) or 13
@@ -727,11 +736,16 @@ local function BagFrames()
   return out
 end
 
+-- Open bag windows that are on screen. A window with no position (bag
+-- addons park the game's bags that way) does not count.
 local function OpenBagFrames()
   local out = {}
   for _, f in ipairs(BagFrames()) do
     local ok, vis = pcall(f.IsVisible, f)
-    if ok and vis then out[#out + 1] = f end
+    if ok and vis then
+      local okL, l = pcall(f.GetLeft, f)
+      if okL and Num(l) then out[#out + 1] = f end
+    end
   end
   return out
 end
@@ -739,7 +753,12 @@ end
 -- The item button of a bag slot in the open bags, when we can find it.
 local function SlotButton(bag, slot)
   for _, f in ipairs(OpenBagFrames()) do
-    if type(f.EnumerateValidItems) == "function" then
+    local bags = rawget(f, "Bags")
+    if type(bags) == "table" then
+      -- ElvUI: frame.Bags[bagID][slotID]
+      local b = type(bags[bag]) == "table" and bags[bag][slot] or nil
+      if type(b) == "table" and type(b.IsVisible) == "function" and b:IsVisible() then return b end
+    elseif type(f.EnumerateValidItems) == "function" then
       local ok, iter, st, init = pcall(f.EnumerateValidItems, f)
       if ok and type(iter) == "function" then
         for _, b in iter, st, init do
@@ -1116,14 +1135,14 @@ function BP:Place()
   if not self.built then return false end
   local UI = _G.UIParent
   local uiScale = (UI.GetEffectiveScale and UI:GetEffectiveScale()) or 1
-  local left, bottom, strata
+  local left, bottom, strata, leftFrame, leftBottom
   for _, f in ipairs(OpenBagFrames()) do
     local l, b = f:GetLeft(), f:GetBottom()
     if Num(l) and Num(b) then
       local s = ((f.GetEffectiveScale and f:GetEffectiveScale()) or 1) / uiScale
       l, b = l * s, b * s
       if not left or l < left then
-        left = l
+        left, leftFrame, leftBottom = l, f, b
         strata = f.GetFrameStrata and f:GetFrameStrata() or nil
       end
       if not bottom or b < bottom then bottom = b end
@@ -1132,7 +1151,13 @@ function BP:Place()
   if not left then return false end
   for _, o in ipairs({ self.frame, self.tab }) do
     o:ClearAllPoints()
-    o:SetPoint("BOTTOMRIGHT", UI, "BOTTOMLEFT", left - 4, bottom)
+    if leftBottom <= bottom + 0.5 then
+      -- One bag window (ElvUI, the combined bags) or the leftmost is also the
+      -- lowest: hang off it, so the panel follows when it moves or resizes.
+      o:SetPoint("BOTTOMRIGHT", leftFrame, "BOTTOMLEFT", -4, 0)
+    else
+      o:SetPoint("BOTTOMRIGHT", UI, "BOTTOMLEFT", left - 4, bottom)
+    end
     if strata and o.SetFrameStrata then pcall(o.SetFrameStrata, o, strata) end
   end
   return true
@@ -1296,10 +1321,24 @@ local function HookBagFrames()
       hooked[f] = ok and ok2
     end
   end
-  if not BP.hookedAnchors and type(_G.hooksecurefunc) == "function" and type(_G.UpdateContainerFrameAnchors) == "function" then
+  if type(_G.hooksecurefunc) ~= "function" then return end
+  if not BP.hookedAnchors and type(_G.UpdateContainerFrameAnchors) == "function" then
     BP.hookedAnchors = pcall(_G.hooksecurefunc, "UpdateContainerFrameAnchors", function()
       if BP:Visible() then BP:Place() end
     end)
+  end
+  -- Opening or closing bags by key or button: catches a bag window that
+  -- was made after we looked (ElvUI builds its own once you log in).
+  if not BP.hookedToggles then
+    BP.hookedToggles = true
+    for _, fn in ipairs({ "ToggleBackpack", "ToggleAllBags", "OpenAllBags", "CloseAllBags", "OpenBackpack", "CloseBackpack" }) do
+      if type(_G[fn]) == "function" then
+        pcall(_G.hooksecurefunc, fn, function()
+          BP.HookBagFrames()
+          BP:UpdateSoon()
+        end)
+      end
+    end
   end
 end
 BP.HookBagFrames = HookBagFrames
@@ -1318,6 +1357,7 @@ local function Changed() BP:RefreshSoon() end
 
 local handlers = {
   PLAYER_LOGIN = function() HookBagFrames() BP:UpdateSoon() end,
+  PLAYER_ENTERING_WORLD = function() HookBagFrames() end,
   BAG_UPDATE_DELAYED = Changed,
   BAG_UPDATE = Changed,
   QUEST_LOG_UPDATE = Changed,
