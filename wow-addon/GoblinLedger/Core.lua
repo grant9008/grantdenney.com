@@ -1448,7 +1448,7 @@ local function onTooltipData(tt, data)
   ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not priced and type(ns.QuestItemLine) == "function" then ns.QuestItemLine(tt, id) end
-  -- Gear you could enchant: the best enchant for your role (Enchants.lua), after our other lines.
+  -- Gear you could enchant: the best enchants for your role (Enchants.lua), after our other lines.
   if type(ns.EnchantLines) == "function" then ns.EnchantLines(tt, id, link, info) end
 end
 
