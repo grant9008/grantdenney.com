@@ -146,6 +146,9 @@ def preview(iid, item):
 
 
 T = [int(time.time()) - 240 * 3600]
+# prices follow the hours since the first snapshot, not the clock, so every run makes the same
+# prices (only the times move); PHASE is the start of a run whose data passes every check
+START, PHASE = T[0], 1794184780
 f.time.time = lambda: T[0]
 f.time.sleep = lambda s: None
 f.get_token = lambda: "sim"
@@ -173,6 +176,7 @@ def units_of(iid, bonus=None):
 
 
 def drift(iid, t):
+    t = t - START + PHASE
     return 1 + 0.12 * math.sin(t / 86400 * 2 * math.pi / 3 + iid) + 0.05 * math.sin(t / 3600 / 5 + iid)
 
 
