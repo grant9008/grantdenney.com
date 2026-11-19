@@ -1047,7 +1047,8 @@ function Frame:Raise() end
 function Frame:Lower() end
 function Frame:EnableMouse(v) self._mouse = v and true or false end
 function Frame:IsMouseEnabled() return self._mouse == true end
-function Frame:EnableMouseWheel(v) end
+function Frame:EnableMouseWheel(v) self._wheel = v and true or false end
+function Frame:IsMouseWheelEnabled() return self._wheel == true end
 function Frame:EnableKeyboard(v) end
 function Frame:SetMovable(v) self._movable = v and true or false end
 function Frame:IsMovable() return self._movable == true end
@@ -15644,17 +15645,27 @@ def cs_hex(c):
     return "ff" + "".join("%02x" % int(math.floor(max(0, min(1, v)) * 255 + 0.5)) for v in c[:3])
 
 
+_CS_ITEMS = {}
+
+
 def cs_source_items():
     """Consumes.lua's items, read from the source: id -> (name, short name or None, section, level,
-    quality, buff, xp %, vendor copper, group)."""
-    src = open(os.path.join(ADDON, "Consumes.lua"), "rb").read().decode("ascii")
+    quality, buff, xp %, vendor copper, group, classes (None: all, else a set))."""
+    path = os.path.join(ADDON, "Consumes.lua")
+    if path in _CS_ITEMS:
+        return _CS_ITEMS[path]
+    src = open(path, "rb").read().decode("ascii").replace("\r\n", "\n")
     block = src.split("local ITEMS = {", 1)[1].split("\n}", 1)[0]
     out = {}
-    pat = re.compile(r'\[(\d+)\] = \{ "([^"]*)", (nil|"[^"]*"), "(\w+)", (\d+), (\d), "([^"]*)", (\d+), (\d+), "([^"]*)" \}')
+    pat = re.compile(r'\[(\d+)\] = \{ "([^"]*)", (nil|"[^"]*"), "(\w+)", (\d+), (\d), "([^"]*)", (\d+), (\d+), "([^"]*)"'
+                     r'(?:, "([A-Z,]+)")? \}')
     for m in pat.finditer(block):
-        iid, name, short, sec, req, q, buff, xp, vend, grp = m.groups()
+        iid, name, short, sec, req, q, buff, xp, vend, grp, cls = m.groups()
         out[int(iid)] = (name, None if short == "nil" else short.strip('"'), sec, int(req), int(q), buff, int(xp),
-                         int(vend), grp)
+                         int(vend), grp, set(cls.split(",")) if cls else None)
+    if len(out) != block.count("\n  ["):
+        raise SystemExit("cs_source_items: %d of %d item lines read" % (len(out), block.count("\n  [")))
+    _CS_ITEMS[path] = out
     return out
 
 
@@ -15730,7 +15741,7 @@ def cs_reopen(w):
 
 def cs_cells(w):
     """What the list shows: section titles [(text, key, rect)] and rows [(id, key, left, right, rect, row)],
-    each top to bottom, then left to right."""
+    each top to bottom, then left to right. Every shown row counts (one left up without an item has id 0)."""
     F = cs_frame(w)
     titles, rows = [], []
     for c in lua_kids(F):
@@ -15738,8 +15749,8 @@ def cs_cells(w):
             continue
         if c.GetObjectType(c) == "FontString" and c.glKey is not None:
             titles.append((c.GetText(c), c.glKey, w.rect(c)))
-        elif c.GetObjectType(c) == "Button" and c.glID is not None:
-            rows.append((int(c.glID), c.glKey, c.text.GetText(c.text), c.right.GetText(c.right), w.rect(c), c))
+        elif c.GetObjectType(c) == "Button" and c.glNoEnchants is True:
+            rows.append((int(c.glID or 0), c.glKey, c.text.GetText(c.text), c.right.GetText(c.right), w.rect(c), c))
     titles.sort(key=lambda t: (-round(t[2][3], 3), t[2][0]))
     rows.sort(key=lambda r: (-round(r[4][3], 3), r[4][0]))
     return titles, rows
@@ -15757,8 +15768,9 @@ def cs_sections(w):
 
 def cs_expect(w, role, cls, level, all_=False, n=4):
     """The sections the list should show, from the data in Consumes.lua: the research's
-    ranking for the level's band (potions: one of each kind first), a group shown once, the
-    best 4; or with all_ every usable one, best first. Nothing above the player's level."""
+    ranking for the level's band, then every usable one of the list (potions: one of each kind
+    first), a group shown once, the best 4; or with all_ every usable one, best first. Nothing
+    above the player's level or for another class."""
     D = w.ns.Consumes.DATA
     it = cs_source_items()
     band = 5 if level >= 60 else 4 if level >= 50 else 3 if level >= 40 else 2 if level >= 20 else 1
@@ -15772,6 +15784,9 @@ def cs_expect(w, role, cls, level, all_=False, n=4):
 
     def lst_of(t):
         return [int(t[i]) for i in range(1, len(t) + 1)] if t is not None else []
+
+    def can(i):
+        return it[i][3] <= level and (it[i][9] is None or cls in it[i][9])
     out = []
     for key, title, lists in CS_SECTIONS:
         if lists is None:
@@ -15781,14 +15796,14 @@ def cs_expect(w, role, cls, level, all_=False, n=4):
             for lst in lists:
                 t = D.all[role][lst] if ok(lst) else None
                 for i in lst_of(t):
-                    if it[i][3] <= level and i not in seen:
+                    if can(i) and i not in seen:
                         seen.add(i)
                         ids.append(i)
         else:
             per = []
             for lst in lists:
                 b = D.best[role][lst]
-                per.append(lst_of(b[band]) if b is not None and ok(lst) else [])
+                per.append(((lst_of(b[band]) if b is not None else []) + lst_of(D.all[role][lst])) if ok(lst) else [])
             ids, groups, pos, more = [], set(), [0] * len(per), True
             while len(ids) < n and more:
                 more = False
@@ -15796,7 +15811,7 @@ def cs_expect(w, role, cls, level, all_=False, n=4):
                     while pos[k] < len(lids):
                         i = lids[pos[k]]
                         pos[k] += 1
-                        if it[i][3] <= level and it[i][8] not in groups:
+                        if can(i) and it[i][8] not in groups:
                             groups.add(it[i][8])
                             ids.append(i)
                             more = True
@@ -15810,6 +15825,25 @@ def cs_expect(w, role, cls, level, all_=False, n=4):
 
 def cs_trim(secs, n):
     return [(t, ids[:n]) for t, ids in secs]
+
+
+def cs_lines(secs, n, cols=2):
+    """How many lines the list takes with n rows a section, sections side by side."""
+    out = 0
+    for k in range(0, len(secs), cols):
+        out += 1 + max(min(n, len(ids)) for _, ids in secs[k:k + cols])
+    return out
+
+
+def cs_mana_only(iid):
+    """A potion that gives mana and no health (a rejuvenation potion heals too)."""
+    b = cs_source_items()[iid][5]
+    return b.endswith(" mana") and not b.startswith("heals")
+
+
+def cs_names(w, title):
+    it = cs_source_items()
+    return [it[i][0] for i in dict(cs_sections(w)).get(title, [])]
 
 
 def cs_price(prices, iid, live=None, data=True):
@@ -15837,13 +15871,17 @@ def cs_left(iid, level):
     return t
 
 
-def cs_rows_ok(sc, w, prices, level, label, counts=None, stale=False, live=None, data=True):
+def cs_rows_ok(sc, w, prices, level, label, counts=None, stale=False, live=None, data=True, cls=None):
     """Every row: the name in its quality colour, the buff, +XP% in green where the data has it
-    (below 60), the count, and the price in its colour (grey: old prices or none)."""
+    (below 60), the count, and the price in its colour (grey: old prices or none); nothing above
+    the player's level or (cls) for another class; no row left up without an item."""
     counts, live = counts or {}, live or {}
     bad = []
     items = cs_source_items()
     for iid, key, left, right, rect, row in cs_cells(w)[1]:
+        if iid not in items:
+            bad.append((iid, "a row up without an item", strip_codes(left or "")))
+            continue
         it = items[iid]
         want_l = cs_left(iid, level)
         words, kind = cs_price(prices, iid, live.get(iid), data)
@@ -15862,15 +15900,18 @@ def cs_rows_ok(sc, w, prices, level, label, counts=None, stale=False, live=None,
             bad.append((iid, "price colour", right, cs_hex(col)))
         if it[3] > level:
             bad.append((iid, "above the player's level", it[3]))
+        if cls and it[9] is not None and cls not in it[9]:
+            bad.append((iid, "not for a " + cls, sorted(it[9])))
     sc.eq(bad, [], "%s: every row's words and colours" % label)
 
 
 def cs_lowest(w):
     """The lowest thing on the character screen's bottom edge (screen units): the frame, the shown
     weapon slots, Pawn's button, GearMatic's arrows and ElvUI's enchant labels with words in them
-    (nothing more than 24 under the frame)."""
+    (nothing more than 24 under the frame, in its scale)."""
     g = w.g
     cf = w.rect(g.CharacterFrame)
+    cap = CS_CAP * g.CharacterFrame.GetEffectiveScale(g.CharacterFrame)
     low = cf[1]
     parts = []
     for n in CS_LOW + ["PawnUI_InventoryPawnButton", "GearMaticPaperdollPrev", "GearMaticPaperdollNext"]:
@@ -15882,7 +15923,7 @@ def cs_lowest(w):
                 parts.append(lab)
     for f in parts:
         r = w.rect(f)
-        if r and cf[1] - CS_CAP <= r[1] < low:
+        if r and cf[1] - cap <= r[1] < low:
             low = r[1]
     return low
 
@@ -15900,15 +15941,16 @@ def cs_place_ok(sc, w, label, side="below", avoid=True):
              "%s: as wide as the character screen (%s, frame %s)" % (label, r, cf))
     sc.check(r[1] >= -0.01 and r[3] <= w.M.screenH + 0.01, "%s: all of it on screen (%s)" % (label, r))
     sc.eq(C.Layout().side, side, "%s: the side" % label)
+    gap = CS_GAP * F.GetEffectiveScale(F)   # 2 in the list's own scale
     if side == "below":
         low = cs_lowest(w)
-        sc.check(abs(r[3] - (low - CS_GAP)) < 0.01, "%s: its top 2 under the lowest part (top %s, lowest %s)" % (label, r[3], low))
+        sc.check(abs(r[3] - (low - gap)) < 0.01, "%s: its top 2 under the lowest part (top %s, lowest %s)" % (label, r[3], low))
     else:
         high = cf[3]
         p = g.CharacterFramePortrait
         if p is not None and p.IsVisible(p):
             high = max(high, w.rect(p)[3])
-        sc.check(abs(r[1] - (high + CS_GAP)) < 0.01, "%s: its bottom 2 over the frame's top (%s, top %s)" % (label, r[1], high))
+        sc.check(abs(r[1] - (high + gap)) < 0.01, "%s: its bottom 2 over the frame's top (%s, top %s)" % (label, r[1], high))
     h = F.GetHeight(F)
     lines = C.Layout().lines
     sc.eq(h, CS_HEAD_H + (1 + lines * CS_ROW_H + 3 if lines > 0 else 0), "%s: the height fits its lines" % label)
@@ -15987,6 +16029,9 @@ def sc_consumes_place(sc, ref, items):
     w.settle(0.3)
     cs_place_ok(sc, w, "place: back in their places")
     sc.check(abs(w.rect(F)[3] - (cf[1] - 2)) < 0.01, "place: back right under the frame")
+    polls = C.polls
+    w.tick(60, 1 / 60.0)
+    sc.check(3 <= C.polls - polls <= 5, "place: one second at 60 fps: the frames read 4 times (%d)" % (C.polls - polls))
     sc.clean(w, "place")
     # Hunters, warriors and rogues have the ammo slot (GearMatic's arrow right of it).
     w = cs_world(ref, items, cls="HUNTER", points=(31, 5, 0), char={"ammo": True})
@@ -16026,6 +16071,7 @@ def sc_consumes_place_elvui(sc, ref, items):
     sc.check(abs(w.rect(F)[3] - (cf[1] - 5)) < 0.01, "elvui: its top 5 under the frame's bottom")
     sc.eq((C.look, F._template), ("elvui", "Transparent"), "elvui: ElvUI's Transparent look, as its character screen")
     sc.eq(sum(1 for i in range(1, len(M.elvTemplates) + 1) if w.same(M.elvTemplates[i], F)), 1, "elvui: skinned once")
+    sc.check(not F.IsMouseWheelEnabled(F), "elvui: nothing to scroll: the wheel zooms the camera")
     # The labels go (no off-hand enchant): back right under the frame.
     M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "", ""]))
     w.settle(0.3)
@@ -16043,6 +16089,26 @@ def sc_consumes_place_elvui(sc, ref, items):
     cs_place_ok(sc, w, "elvui: labels filled after it showed")
     sc.check(abs(w.rect(F)[3] - (cf[1] - 5)) < 0.01, "elvui: moved under the late label")
     sc.clean(w, "elvui")
+    # The player's UI scale (ElvUI 0.62 on a 768 high window): the gap, the labels and the frame
+    # all in that scale; still under the off hand's label, on screen, as wide as the frame.
+    def setup(w_):
+        w_.M.InstallBlizzardBags()
+        w_.M.InstallElvUIAddon(w_.to_lua({}))
+    w = cs_world(ref, items, screen=(1395, 768, 0.62), before=setup)
+    w.M.ElvUICharacterLayout()
+    w.M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "Encha: Crusader", ""]))
+    cs_open(w)
+    g = w.g
+    F = cs_frame(w)
+    e = F.GetEffectiveScale(F)
+    sc.check(abs(e - 0.62) < 1e-6, "elvui 0.62: the list's scale (%s)" % e)
+    cf = w.rect(g.CharacterFrame)
+    oh = w.rect(g.CharacterSecondaryHandSlot.enchantText)
+    sc.check(abs(oh[1] - (cf[1] - 3 * e)) < 0.01, "elvui 0.62: the off hand's label 3 under the frame (%s, %s)" % (oh, cf))
+    cs_place_ok(sc, w, "elvui 0.62: under the off hand's label")
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 5 * e)) < 0.01, "elvui 0.62: its top 5 under the frame's bottom (%s)" % (w.rect(F),))
+    sc.eq(w.ns.Consumes.Layout().n, 4, "elvui 0.62: room for the best 4 under it")
+    sc.clean(w, "elvui 0.62")
     # ElvUI's character skin off: the addon's own flat look, the game's layout.
     w = cs_elv_world(ref, items, layout=False, characterSkin=False)
     cs_open(w)
@@ -16160,12 +16226,18 @@ def sc_consumes_room(sc, ref, items):
     sc.eq((L.side, L.n), ("below", 2), "room: a 768 UI: the best 2 a section, under the frame")
     cs_place_ok(sc, w, "room: 768")
     sc.eq(cs_sections(w), cs_trim(cs_expect(w, "melee", "WARRIOR", 60), 2), "room: 768: the best 2 of each")
-    # Dragged low (bottom at 60): above the frame, 3 a section.
-    cs_move(w, 60)
+    # Dragged low: above the frame, 3 a section (room above for 3 a section, not for 4).
+    want = cs_expect(w, "melee", "WARRIOR", 60)
+    l3, l4 = cs_lines(want, 3), cs_lines(want, 4)
+    sc.check(l3 < l4, "room: the best 3 take fewer lines than the best 4 (%d, %d)" % (l3, l4))
+    g = w.g
+    over = w.rect(g.CharacterFramePortrait)[3] - w.rect(g.CharacterFrame)[3]
+    low = w.M.screenH - 484 - over - CS_GAP - (CS_HEAD_H + 4 + l3 * CS_ROW_H + CS_ROW_H / 2)
+    cs_move(w, low)
     w.settle(0.3)
     L = C.Layout()
-    sc.eq((L.side, L.n), ("above", 3), "room: frame bottom at 60: above it, the best 3")
-    cs_place_ok(sc, w, "room: bottom at 60", side="above")
+    sc.eq((L.side, L.n, L.lines), ("above", 3, l3), "room: frame bottom at %d: above it, the best 3" % low)
+    cs_place_ok(sc, w, "room: bottom at %d" % low, side="above")
     sc.eq(cs_sections(w), cs_trim(cs_expect(w, "melee", "WARRIOR", 60), 3), "room: above: the best 3 of each")
     cs_move(w, 20)
     w.settle(0.3)
@@ -16298,10 +16370,10 @@ def sc_consumes_prices(sc, ref, items):
     """Each row's price: today's AH value, a vendor's price when cheaper, "not on AH"; grey when the
     prices are over 6 hours old; the live listing at the auction house; the bag count; no data."""
     text, prices = cs_data(ref)
-    w = cs_world(ref, items)
+    w = cs_world(ref, items, level=35)
     M, g, ns = w.M, w.g, w.ns
     cs_open(w)
-    cs_rows_ok(sc, w, prices, 60, "prices")
+    cs_rows_ok(sc, w, prices, 35, "prices")
     kinds = {cs_price(prices, r[0])[1] if not cs_price(prices, r[0])[0].startswith("vendor") else "vendor"
              for r in cs_cells(w)[1]}
     sc.check({"price", "vendor", "muted"} <= kinds, "prices: the test shows AH values, vendor prices and not on AH (%s)" % kinds)
@@ -16313,27 +16385,27 @@ def sc_consumes_prices(sc, ref, items):
     w.put_bag(0, 2, b, 20)
     M.fire("BAG_UPDATE_DELAYED")
     w.settle(0.1)
-    cs_rows_ok(sc, w, prices, 60, "prices: bag counts", counts={a: 3, b: 20})
+    cs_rows_ok(sc, w, prices, 35, "prices: bag counts", counts={a: 3, b: 20})
     # The live listing while the auction house shows it.
     w.open_ah_modern()
     w.set_commodity_results(a, [(1234, 5, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", a)
     w.settle(0.3)
     sc.eq(w.live(a), 1234, "prices: the auction house has a live listing")
-    cs_rows_ok(sc, w, prices, 60, "prices: the live listing", counts={a: 3, b: 20}, live={a: 1234})
+    cs_rows_ok(sc, w, prices, 35, "prices: the live listing", counts={a: 3, b: 20}, live={a: 1234})
     w.close_ah_modern()
-    cs_rows_ok(sc, w, prices, 60, "prices: auction house closed", counts={a: 3, b: 20})
+    cs_rows_ok(sc, w, prices, 35, "prices: auction house closed", counts={a: 3, b: 20})
     sc.clean(w, "prices")
     # Over 6 hours old: AH values grey (vendor prices are not).
-    w = cs_world(ref, items, now=ref.updated + 7 * 3600)
+    w = cs_world(ref, items, level=35, now=ref.updated + 7 * 3600)
     cs_open(w)
-    cs_rows_ok(sc, w, prices, 60, "prices: 7 hours old", stale=True)
+    cs_rows_ok(sc, w, prices, 35, "prices: 7 hours old", stale=True)
     sc.clean(w, "prices: stale")
     # No price data at all: vendor prices and "no prices", no error.
-    w = cs_world(ref, items, data_src=PLACEHOLDER)
+    w = cs_world(ref, items, level=35, data_src=PLACEHOLDER)
     cs_open(w)
-    cs_rows_ok(sc, w, prices, 60, "prices: no data", data=False)
-    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "prices: no data: the same lists")
+    cs_rows_ok(sc, w, prices, 35, "prices: no data", data=False)
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 35), "prices: no data: the same lists")
     sc.clean(w, "prices: no data", ok_chat=())
 
 
@@ -16347,7 +16419,9 @@ def sc_consumes_roles(sc, ref, items):
              ("ROGUE", (5, 31, 15), 60, "agility"), ("PRIEST", (31, 20, 0), 60, "healer"), ("HUNTER", (31, 20, 0), 60, "hunter"),
              ("PALADIN", (0, 31, 0), 60, "tank"), ("DRUID", (0, 31, 0), 60, "agility"),
              ("WARRIOR", (25, 5, 0), 35, "melee"), ("MAGE", (0, 0, 20), 25, "caster"), ("WARRIOR", (0, 0, 0), 12, "melee"),
-             ("PRIEST", (0, 20, 0), 44, "healer"), ("ROGUE", (0, 30, 0), 52, "agility")]
+             ("PRIEST", (0, 20, 0), 44, "healer"), ("ROGUE", (0, 30, 0), 52, "agility"),
+             ("PALADIN", (0, 0, 31), 60, "melee"), ("SHAMAN", (0, 31, 5), 60, "melee"), ("WARRIOR", (20, 0, 0), 20, "melee"),
+             ("WARLOCK", (31, 0, 0), 60, "caster"), ("PRIEST", (31, 20, 0), 30, "healer")]
     seen = {}
     for cls, pts, lvl, role in cases:
         en_player(w, cls, pts, "forever", lvl)
@@ -16357,7 +16431,7 @@ def sc_consumes_roles(sc, ref, items):
         want = cs_expect(w, role, cls, lvl)
         got = cs_sections(w)
         sc.eq(got, want, label + ": sections, best 4")
-        cs_rows_ok(sc, w, prices, lvl, label)
+        cs_rows_ok(sc, w, prices, lvl, label, cls=cls)
         sc.check(all(len(ids) <= 4 for _, ids in got) and all(len(ids) == len(set(ids)) for _, ids in got),
                  label + ": at most 4 a section, none twice")
         items_ = cs_source_items()
@@ -16366,8 +16440,10 @@ def sc_consumes_roles(sc, ref, items):
         rage = [i for _, ids in got for i in ids if "rage" in items_[i][5]]
         sc.check(bool(rage) == (cls in ("WARRIOR", "DRUID") and role in ("melee", "tank")),
                  label + ": rage potions only for warriors (%s)" % rage)
-        mana = [i for t, ids in got if t == "POTIONS" for i in ids if items_[i][5].endswith(" mana")]
-        sc.check(not mana or cls not in ("WARRIOR", "ROGUE"), label + ": no mana potions for warriors and rogues")
+        mana = [i for t, ids in got if t == "POTIONS" for i in ids if cs_mana_only(i)]
+        sc.check(not mana or cls not in ("WARRIOR", "ROGUE"), label + ": no mana potions for warriors and rogues (%s)" % mana)
+        if cls in ("PALADIN", "SHAMAN", "MAGE", "PRIEST", "WARLOCK") and lvl >= 20:
+            sc.check(len(mana) == 1, label + ": a mana potion for a mana user (%s)" % mana)
         food = dict(got).get("FOOD", [])
         lefts = {r[0]: strip_codes(r[2]) for r in cs_cells(w)[1]}
         xp = [i for i in food if "+5% XP" in lefts[i]]
@@ -16424,8 +16500,13 @@ def sc_consumes_all(sc, ref, items):
     F = cs_frame(w)
     cs_open(w)
     best = cs_sections(w)
+    rows0 = [r[5] for r in cs_cells(w)[1]]
+    sc.check(not F.IsMouseWheelEnabled(F) and not any(r.IsMouseWheelEnabled(r) for r in rows0),
+             "all: the best 4 do not scroll: the wheel left to the camera")
     M.click(F.allButton)
     sc.eq((S.consumesAll, C.Model().all), (True, True), "all: on, remembered")
+    sc.check(F.IsMouseWheelEnabled(F) and all(r[5].IsMouseWheelEnabled(r[5]) for r in cs_cells(w)[1]),
+             "all: it scrolls: the wheel scrolls it")
     want = cs_expect(w, "melee", "WARRIOR", 60, all_=True)
     model = [(s.title, [int(s.ids[i]) for i in range(1, len(s.ids) + 1)]) for s in
              [C.Model().sections[k] for k in range(1, len(C.Model().sections) + 1)]]
@@ -16455,8 +16536,30 @@ def sc_consumes_all(sc, ref, items):
     M.click(F.allButton)
     sc.eq((S.consumesAll, C.Model().all), (None, False), "all: off again")
     sc.eq(cs_sections(w), best, "all: the best 4 again")
+    cs_rows_ok(sc, w, prices, 60, "all: off again")
+    sc.eq(sum(1 for r in cs_cells(w)[1]), sum(len(ids) for _, ids in best), "all: no spare row left up")
     sc.check(not F.scrollBar.IsVisible(F.scrollBar), "all: no scroll bar")
+    sc.check(not F.IsMouseWheelEnabled(F), "all: off again: the wheel back to the camera")
     sc.clean(w, "all")
+    # Low levels: All shows only what the level and class can use (a level 25 priest: no mage scroll).
+    for cls, pts, lvl, role in (("PRIEST", (31, 20, 0), 25, "healer"), ("MAGE", (0, 0, 20), 25, "caster"),
+                                ("WARRIOR", (20, 0, 0), 22, "melee")):
+        w = cs_world(ref, items, cls=cls, points=pts, level=lvl, saved={"consumesAll": True})
+        cs_open(w)
+        C = w.ns.Consumes
+        model = [(s.title, [int(s.ids[i]) for i in range(1, len(s.ids) + 1)]) for s in
+                 [C.Model().sections[k] for k in range(1, len(C.Model().sections) + 1)]]
+        sc.eq(model, cs_expect(w, role, cls, lvl, all_=True), "all: %s %d: every usable one" % (cls, lvl))
+        it = cs_source_items()
+        sc.eq([i for _, ids in model for i in ids if it[i][3] > lvl or (it[i][9] and cls not in it[i][9])], [],
+              "all: %s %d: nothing above the level or for another class" % (cls, lvl))
+        for _ in range(60):
+            cs_rows_ok(sc, w, prices, lvl, "all: %s %d (scrolled)" % (cls, lvl), cls=cls)
+            if C.Layout().lines >= C.Layout().total:
+                break
+            M2 = w.M
+            M2.fireScript(cs_frame(w), "OnMouseWheel", -1)
+        sc.clean(w, "all: %s %d" % (cls, lvl))
 
 
 def sc_consumes_slash(sc, ref, items):
@@ -16543,6 +16646,134 @@ def sc_consumes_slash(sc, ref, items):
     for toc in ("GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         lines = [l.strip() for l in open(os.path.join(ADDON, toc), "rb").read().decode("ascii").splitlines() if l.strip()]
         sc.eq(lines[-2:], ["Enchants.lua", "Consumes.lua"], "slash: %s loads Consumes.lua last" % toc)
+
+
+def sc_consumes_picks(sc, ref, items):
+    """What the lists pick, checked by name against the game's data (not by the addon's own rule):
+    a level low in its band still gets its usable food; mana potions for paladins and shamans, none
+    for a warrior who picked a caster role; the mage's familiar scrolls and a school's elixir only
+    for the classes that use them; Discolored healing potions (75% of the heal comes back as a poison
+    or disease) never ahead of a clean one; tanks get armor; one stone and one oil of each kind;
+    a 2 min elixir not over a 1 hr one; +5% XP food first while levelling; no Darkmoon Faire or
+    Season of Discovery vendor prices."""
+    it = cs_source_items()
+
+    def row(i):   # a missing item reads as "missing" (each check then fails by itself)
+        return it.get(i) or ("missing", None, "", 0, 1, "missing", 0, -1, "", None)
+    # The data: Darkmoon Faire only vendors are no vendor (Scroll of Agility IV is 88s on the AH,
+    # the Faire sells it for 6s 50c one week a month); Season of Discovery's quartermaster potions out.
+    for iid in (10309, 10310, 10308, 10307, 10306, 4425, 4426, 4419, 4422, 4424, 1477, 2289, 13443):
+        sc.eq(row(iid)[7], 0, "picks: %s has no vendor price (Darkmoon Faire only)" % row(iid)[0])
+    sc.eq(row(3928)[7], 1000, "picks: Superior Healing Potion keeps its vendor price")
+    sc.check(223913 not in it and 223914 not in it, "picks: no Season of Discovery quartermaster potions")
+    sc.eq((row(12218)[0], row(12218)[6]), ("Monster Omelet", 5), "picks: Monster Omelet is Well Fed food with +5% XP")
+    sc.eq((row(286152)[5], row(286152)[6]), ("+150 armor", 5), "picks: Plated Armorfish: +150 armor, +5% XP")
+    sc.check("+500 armor" in row(250329)[5], "picks: Elixir of the Phalanx says its armor (%s)" % row(250329)[5])
+    sc.check("+9 hp5" in row(250336)[5], "picks: Wicked Regeneration says its health (%s)" % row(250336)[5])
+    for iid in (13445, 8951, 3389, 5997, 13455, 4623, 10305, 4421, 1478, 3013, 20746, 20747):
+        sc.check(iid in it, "picks: %d is in the list (%s)" % (iid, it.get(iid, ("missing",))[0]))
+    for iid in (247239, 247240, 247241, 247242, 241650):
+        sc.check(row(iid)[5].endswith("75% back as DoT"), "picks: %s says the heal comes back (%s)" % (row(iid)[0], row(iid)[5]))
+    sc.eq(sorted(i for i in it if it[i][9] == {"MAGE"} and it[i][2] == "scroll"), [275069, 277483, 277493],
+          "picks: the familiar scrolls are for mages")
+    sc.eq([(row(i)[0], sorted(row(i)[9] or [])) for i in (9264, 6373, 250343, 21546)],
+          [("Elixir of Shadow Power", ["PRIEST", "WARLOCK"]), ("Elixir of Fire Power", ["MAGE", "WARLOCK"]),
+           ("Elixir of Nature Power", ["DRUID", "SHAMAN"]), ("Elixir of Holy Power", ["PALADIN", "PRIEST"])],
+          "picks: school elixirs for the classes with that school")
+    shown = {}
+    for iid, r_ in it.items():
+        shown.setdefault((r_[2], r_[1] or r_[0]), []).append(iid)
+    sc.eq([k for k, v in shown.items() if len(v) > 1], [], "picks: no two items of a section show the same name")
+    w = cs_world(ref, items)
+
+    def look(cls, pts, lvl, pick=None):
+        en_player(w, cls, pts, "forever", lvl)
+        if pick:
+            w.slash("/gl enchants " + pick)
+        cs_reopen(w)
+        return dict(cs_sections(w))
+    # A level low in its band: the food it can eat (not just the one of the band's top ones).
+    secs = look("WARRIOR", (20, 0, 0), 20)
+    sc.eq(cs_names(w, "FOOD"), ["Longjaw Mud Snapper", "Succulent Pork Ribs", "Crocolisk Gumbo"],
+          "picks: a level 20 warrior's food")
+    secs = look("PRIEST", (31, 20, 0), 20)
+    sc.check(len(secs.get("FOOD", [])) == 4, "picks: a level 20 healer: 4 foods (%s)" % cs_names(w, "FOOD"))
+    # Mana potions: paladins and shamans in every role, never a warrior or a rogue (even as a caster).
+    for cls, pts, lvl in (("PALADIN", (0, 0, 31), 60), ("PALADIN", (0, 31, 0), 60), ("SHAMAN", (0, 31, 5), 60),
+                          ("PALADIN", (0, 0, 31), 25), ("SHAMAN", (0, 31, 5), 30)):
+        secs = look(cls, pts, lvl)
+        mana = [it[i][0] for i in secs.get("POTIONS", []) if cs_mana_only(i)]
+        sc.check(len(mana) == 1, "picks: %s %s level %d: a mana potion (%s)" % (cls, pts, lvl, cs_names(w, "POTIONS")))
+    for cls, pts in (("WARRIOR", (31, 5, 0)), ("ROGUE", (5, 31, 15))):
+        secs = look(cls, pts, 60, "caster")
+        sc.eq(cs_header(w), "Consumes for caster, level 60", "picks: a %s picked caster" % cls)
+        sc.eq([it[i][0] for i in secs.get("POTIONS", []) if cs_mana_only(i)], [], "picks: a %s as a caster: no mana potion" % cls)
+        w.slash("/gl enchants auto")
+    # Class: the familiar scrolls only for mages, a school's elixir only for its classes.
+    secs = look("PRIEST", (31, 20, 0), 30)
+    sc.check(not any(it[i][9] == {"MAGE"} for i in secs.get("SCROLLS", [])), "picks: a level 30 healer priest: no mage scroll")
+    sc.check(any(it[i][0] == "Scroll of Intellect II" for i in secs.get("SCROLLS", [])),
+             "picks: a level 30 healer priest: Scroll of Intellect II (%s)" % cs_names(w, "SCROLLS"))
+    secs = look("MAGE", (0, 0, 20), 25)
+    sc.check("Scroll of Cat Familiar" in cs_names(w, "SCROLLS"), "picks: a level 25 mage: the cat familiar")
+    secs = look("MAGE", (0, 31, 20), 60)
+    sc.check("Elixir of Shadow Power" not in cs_names(w, "ELIXIRS"), "picks: a mage: no Shadow Power (%s)" % cs_names(w, "ELIXIRS"))
+    secs = look("WARLOCK", (31, 0, 0), 60)
+    sc.check("Elixir of Shadow Power" in cs_names(w, "ELIXIRS"), "picks: a warlock: Shadow Power (%s)" % cs_names(w, "ELIXIRS"))
+    # Healing potions: a Discolored one never first while a clean one is there.
+    for cls, pts, lvl in (("WARRIOR", (31, 5, 0), 12), ("WARRIOR", (31, 5, 0), 25), ("WARRIOR", (25, 5, 0), 35),
+                          ("ROGUE", (5, 31, 15), 45), ("PRIEST", (31, 20, 0), 55), ("WARRIOR", (31, 5, 0), 60)):
+        look(cls, pts, lvl)
+        heal = [n for n in cs_names(w, "POTIONS") if "Healing" in n or "Rejuvenation" in n]
+        sc.check(heal and "Discolored" not in heal[0], "picks: %s level %d: a clean healing potion first (%s)" % (cls, lvl, heal))
+    look("WARRIOR", (25, 5, 0), 35)
+    sc.eq([n for n in cs_names(w, "POTIONS") if "Healing" in n], ["Superior Healing Potion"],
+          "picks: a level 35 warrior's healing potion")
+    # Tanks: armor (elixir, scroll; the stoneshield potion in All).
+    look("WARRIOR", (0, 5, 31), 60)
+    sc.check({"Elixir of the Phalanx", "Elixir of Greater Defense"} <= set(cs_names(w, "ELIXIRS")),
+             "picks: a tank's armor elixirs (%s)" % cs_names(w, "ELIXIRS"))
+    sc.check("Scroll of Protection IV" in cs_names(w, "SCROLLS"), "picks: a tank's armor scroll (%s)" % cs_names(w, "SCROLLS"))
+    C = w.ns.Consumes
+    w.ns.settings.consumesAll = True
+    C.Refresh()
+    allpot = [it[i][0] for s_ in [C.Model().sections[k] for k in range(1, len(C.Model().sections) + 1)] if s_.title == "POTIONS"
+              for i in [int(s_.ids[j]) for j in range(1, len(s_.ids) + 1)]]
+    sc.check("Greater Stoneshield Potion" in allpot, "picks: a tank's All: Greater Stoneshield Potion")
+    # Rage potions in All for a druid (bear form), never for a rogue.
+    for cls, pts, want in (("DRUID", (0, 31, 0), True), ("ROGUE", (5, 31, 15), False)):
+        en_player(w, cls, pts, "forever", 60)
+        C.Refresh()
+        pots = [int(s_.ids[j]) for s_ in [C.Model().sections[k] for k in range(1, len(C.Model().sections) + 1)]
+                if s_.title == "POTIONS" for j in range(1, len(s_.ids) + 1)]
+        sc.eq(any(" rage" in it[i][5] for i in pots), want, "picks: a %s's All: rage potions %s" % (cls, "in" if want else "out"))
+    w.ns.settings.consumesAll = None
+    # Stones and oils: one of each kind, the best one.
+    look("WARRIOR", (31, 5, 0), 60)
+    sc.eq(sorted(cs_names(w, "STONES AND OILS")), ["Dense Sharpening Stone", "Dense Weightstone"], "picks: melee: one stone of each kind")
+    look("MAGE", (0, 31, 20), 60)
+    sc.eq(cs_names(w, "STONES AND OILS"), ["Wizard Oil", "Lesser Mana Oil"], "picks: a mage: one oil of each kind")
+    look("MAGE", (0, 31, 20), 35)
+    sc.check("Lesser Wizard Oil" in cs_names(w, "STONES AND OILS"), "picks: a level 35 mage: Lesser Wizard Oil (%s)"
+             % cs_names(w, "STONES AND OILS"))
+    look("PRIEST", (31, 20, 0), 45)
+    sc.check("Lesser Mana Oil" in cs_names(w, "STONES AND OILS"), "picks: a level 45 healer: Lesser Mana Oil (%s)"
+             % cs_names(w, "STONES AND OILS"))
+    # A 1 hr elixir over a 2 min one of the same stat.
+    look("WARRIOR", (5, 0, 0), 10)
+    el = cs_names(w, "ELIXIRS")
+    sc.check("Elixir of Minor Strength" in el and "Elixir of Giant Growth" not in el, "picks: a level 10 warrior: the 1 hr elixir (%s)" % el)
+    # Levelling: +5% XP food before any food without it.
+    for cls, pts, lvl in (("WARRIOR", (0, 5, 31), 15), ("PRIEST", (31, 20, 0), 16), ("WARRIOR", (0, 5, 31), 45),
+                          ("MAGE", (0, 0, 20), 25)):
+        secs = look(cls, pts, lvl)
+        xp = [it[i][6] > 0 for i in secs.get("FOOD", [])]
+        sc.check(xp and xp[0] and xp == sorted(xp, reverse=True), "picks: %s level %d: +5%% XP food first (%s)"
+                 % (cls, lvl, cs_names(w, "FOOD")))
+    look("WARRIOR", (0, 5, 31), 52)
+    sc.check("Plated Armorfish" in [it[i][0] for i in cs_expect(w, "tank", "WARRIOR", 52, all_=True)[0][1]],
+             "picks: Plated Armorfish in a tank's food")
+    sc.clean(w, "picks")
 
 
 # --- consumes: end ---
@@ -16666,6 +16897,7 @@ SCENARIOS = [
     ("consumes-roles", sc_consumes_roles),
     ("consumes-all", sc_consumes_all),
     ("consumes-slash", sc_consumes_slash),
+    ("consumes-picks", sc_consumes_picks),
 ]
 
 

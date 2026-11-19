@@ -21,7 +21,7 @@ local type, tonumber, tostring, ipairs, pcall = type, tonumber, tostring, ipairs
 local floor, min, max = math.floor, math.min, math.max
 local smatch, slower, sformat = string.match, string.lower, string.format
 
-local C = { lastError = nil, builds = 0, places = 0, draws = 0 }   -- state for /gl consumes and the tests
+local C = { lastError = nil, builds = 0, places = 0, draws = 0, polls = 0 }   -- state for /gl consumes and the tests
 ns.Consumes = C
 
 -- BEGIN DATA
@@ -36,7 +36,9 @@ ns.Consumes = C
 -- quest XP aura 291 = 0) below level 60: https://wago.tools/db2/SpellEffect?build=1.60.1.70959&filter[SpellID]=1243969
 -- No potion, elixir, flask or scroll you can get gives XP.
 -- id = { name, short name (nil: the name), section, level needed, quality, buff, % XP from kills,
---        vendor price in copper (0: no vendor), group (two of the best in one group: only the better one) }
+--        vendor price in copper (0: no vendor; the Darkmoon Faire's do not count), group (two of the
+--        best in one group: only the better one), classes (nil: all; the item's class mask, school
+--        elixirs only for the classes with that school) }
 -- Each item's line ends with its use spell: https://wago.tools/db2/Spell?build=1.60.1.70959&filter[ID]=<spell>
 local ITEMS = {
   [118] = { "Minor Healing Potion", "Minor Healing", "potion", 1, 1, "heals 70-90", 0, 0, "name:Minor Healing Potion" },   -- spell 439
@@ -44,17 +46,18 @@ local ITEMS = {
   [787] = { "Slitherskin Mackerel", nil, "food", 1, 1, "+6 AP", 5, 25, "food:ap,rap" },   -- spell 1249503
   [858] = { "Lesser Healing Potion", "Lesser Healing", "potion", 3, 1, "heals 140-180", 0, 100, "name:Lesser Healing Potion" },   -- spell 440
   [929] = { "Healing Potion", "Healing", "potion", 12, 1, "heals 280-360", 0, 300, "name:Healing Potion" },   -- spell 441
-  [954] = { "Scroll of Strength", "Strength", "scroll", 10, 1, "+5 Str, 30 min", 0, 200, "scroll-str" },   -- spell 8118
-  [955] = { "Scroll of Intellect", "Intellect", "scroll", 5, 1, "+4 Int, 30 min", 0, 150, "scroll-int" },   -- spell 8096
+  [954] = { "Scroll of Strength", nil, "scroll", 10, 1, "+5 Str, 30 min", 0, 200, "scroll-str" },   -- spell 8118
+  [955] = { "Scroll of Intellect", nil, "scroll", 5, 1, "+4 Int, 30 min", 0, 150, "scroll-int" },   -- spell 8096
   [1017] = { "Seasoned Wolf Kabob", nil, "food", 15, 1, "+5 Agi", 5, 0, "food:agi" },   -- spell 1248387
   [1082] = { "Redridge Goulash", nil, "food", 5, 1, "+3 Int", 5, 0, "food:int" },   -- spell 1248383
   [1180] = { "Scroll of Stamina", "Stamina", "scroll", 5, 1, "+4 Sta, 30 min", 0, 150, "scroll-sta" },   -- spell 8099
-  [1181] = { "Scroll of Spirit", "Spirit", "scroll", 1, 1, "+3 Spi, 30 min", 0, 100, "scroll-spi" },   -- spell 8112
-  [1477] = { "Scroll of Agility II", "Agility II", "scroll", 25, 1, "+9 Agi, 30 min", 0, 350, "scroll-agi" },   -- spell 8116
+  [1181] = { "Scroll of Spirit", nil, "scroll", 1, 1, "+3 Spi, 30 min", 0, 100, "scroll-spi" },   -- spell 8112
+  [1477] = { "Scroll of Agility II", "Agility II", "scroll", 25, 1, "+9 Agi, 30 min", 0, 0, "scroll-agi" },   -- spell 8116
+  [1478] = { "Scroll of Protection II", "Protection II", "scroll", 15, 1, "+120 armor, 30 min", 0, 250, "scroll-armor" },   -- spell 8094
   [1710] = { "Greater Healing Potion", "Greater Healing", "potion", 21, 1, "heals 455-585", 0, 500, "name:Greater Healing Potion" },   -- spell 2024
   [1711] = { "Scroll of Stamina II", "Stamina II", "scroll", 20, 1, "+8 Sta, 30 min", 0, 300, "scroll-sta" },   -- spell 8100
   [1712] = { "Scroll of Spirit II", "Spirit II", "scroll", 15, 1, "+7 Spi, 30 min", 0, 250, "scroll-spi" },   -- spell 8113
-  [2289] = { "Scroll of Strength II", "Strength II", "scroll", 25, 1, "+9 Str, 30 min", 0, 350, "scroll-str" },   -- spell 8119
+  [2289] = { "Scroll of Strength II", "Strength II", "scroll", 25, 1, "+9 Str, 30 min", 0, 0, "scroll-str" },   -- spell 8119
   [2290] = { "Scroll of Intellect II", "Intellect II", "scroll", 20, 1, "+8 Int, 30 min", 0, 300, "scroll-int" },   -- spell 8097
   [2454] = { "Elixir of Minor Strength", "Minor Strength", "elixir", 1, 1, "+4 Str, 1 hr", 0, 0, "elixir-str" },   -- spell 2367
   [2455] = { "Minor Mana Potion", "Minor Mana", "potion", 5, 1, "140-180 mana", 0, 40, "name:Minor Mana Potion" },   -- spell 437
@@ -69,19 +72,23 @@ local ITEMS = {
   [2684] = { "Coyote Steak", nil, "food", 5, 1, "+3 Agi", 5, 0, "food:agi" },   -- spell 1248382
   [2685] = { "Succulent Pork Ribs", nil, "food", 15, 1, "+5 Str", 5, 0, "food:str" },   -- spell 1248389
   [2687] = { "Dry Pork Ribs", nil, "food", 5, 1, "+3 Str", 5, 0, "food:str" },   -- spell 1248384
-  [2862] = { "Rough Sharpening Stone", nil, "weapon", 1, 1, "+2 weapon dmg, 30 min", 0, 0, "id2862" },   -- spell 2828
-  [2863] = { "Coarse Sharpening Stone", nil, "weapon", 5, 1, "+3 weapon dmg, 30 min", 0, 0, "id2863" },   -- spell 2829
-  [2871] = { "Heavy Sharpening Stone", nil, "weapon", 15, 1, "+4 weapon dmg, 30 min", 0, 0, "id2871" },   -- spell 2830
+  [2862] = { "Rough Sharpening Stone", nil, "weapon", 1, 1, "+2 weapon dmg, 30 min", 0, 0, "weapon:bladed (sword, axe, dagger, polearm):weapon_dmg" },   -- spell 2828
+  [2863] = { "Coarse Sharpening Stone", nil, "weapon", 5, 1, "+3 weapon dmg, 30 min", 0, 0, "weapon:bladed (sword, axe, dagger, polearm):weapon_dmg" },   -- spell 2829
+  [2871] = { "Heavy Sharpening Stone", nil, "weapon", 15, 1, "+4 weapon dmg, 30 min", 0, 0, "weapon:bladed (sword, axe, dagger, polearm):weapon_dmg" },   -- spell 2830
   [2888] = { "Beer Basted Boar Ribs", nil, "food", 1, 1, "+1 Str", 5, 0, "food:str" },   -- spell 1248380
-  [3012] = { "Scroll of Agility", "Agility", "scroll", 10, 1, "+5 Agi, 30 min", 0, 200, "scroll-agi" },   -- spell 8115
+  [3012] = { "Scroll of Agility", nil, "scroll", 10, 1, "+5 Agi, 30 min", 0, 200, "scroll-agi" },   -- spell 8115
+  [3013] = { "Scroll of Protection", "Protection", "scroll", 1, 1, "+60 armor, 30 min", 0, 100, "scroll-armor" },   -- spell 8091
   [3220] = { "Blood Sausage", nil, "food", 5, 1, "+3 Str", 5, 0, "food:str" },   -- spell 1248384
-  [3239] = { "Rough Weightstone", nil, "weapon", 1, 1, "+2 weapon dmg, 30 min", 0, 0, "id3239" },   -- spell 3112
-  [3240] = { "Coarse Weightstone", nil, "weapon", 5, 1, "+3 weapon dmg, 30 min", 0, 0, "id3240" },   -- spell 3113
-  [3241] = { "Heavy Weightstone", nil, "weapon", 15, 1, "+4 weapon dmg, 30 min", 0, 0, "id3241" },   -- spell 3114
+  [3239] = { "Rough Weightstone", nil, "weapon", 1, 1, "+2 weapon dmg, 30 min", 0, 0, "weapon:blunt (mace, staff, fist):weapon_dmg" },   -- spell 3112
+  [3240] = { "Coarse Weightstone", nil, "weapon", 5, 1, "+3 weapon dmg, 30 min", 0, 0, "weapon:blunt (mace, staff, fist):weapon_dmg" },   -- spell 3113
+  [3241] = { "Heavy Weightstone", nil, "weapon", 15, 1, "+4 weapon dmg, 30 min", 0, 0, "weapon:blunt (mace, staff, fist):weapon_dmg" },   -- spell 3114
+  [3382] = { "Minor Troll's Blood Elixir", nil, "elixir", 1, 1, "+2 hp5, 1 hr", 0, 0, "elixir-hp5" },   -- spell 3219
   [3383] = { "Elixir of Wisdom", "Wisdom", "elixir", 10, 1, "+3 Int, 30 min", 0, 0, "elixir-int" },   -- spell 3166
   [3384] = { "Minor Magic Resistance Potion", "Minor Magic Resistance", "potion", 12, 1, "+25 all res, 3 min", 0, 0, "name:Minor Magic Resistance Potion" },   -- spell 2380
   [3385] = { "Lesser Mana Potion", "Lesser Mana", "potion", 14, 1, "280-360 mana", 0, 120, "name:Lesser Mana Potion" },   -- spell 438
   [3387] = { "Limited Invulnerability Potion", "Limited Invulnerability", "potion", 45, 1, "immune to physical, 6 sec", 0, 0, "name:Limited Invulnerability Potion" },   -- spell 3169
+  [3388] = { "Lesser Troll's Blood Elixir", nil, "elixir", 15, 1, "+6 hp5, 1 hr", 0, 0, "elixir-hp5" },   -- spell 3222
+  [3389] = { "Elixir of Lesser Defense", "Lesser Defense", "elixir", 16, 1, "+150 armor, 1 hr", 0, 0, "elixir-armor" },   -- spell 3220
   [3390] = { "Elixir of Lesser Agility", "Lesser Agility", "elixir", 18, 1, "+8 Agi, 1 hr", 0, 0, "elixir-agi" },   -- spell 3160
   [3391] = { "Elixir of Ogre Strength", "Ogre Strength", "elixir", 20, 1, "+8 Str, 1 hr", 0, 0, "elixir-str" },   -- spell 3164
   [3662] = { "Crocolisk Steak", nil, "food", 5, 1, "+3 Agi", 5, 0, "food:agi" },   -- spell 1248382
@@ -94,16 +101,19 @@ local ITEMS = {
   [3728] = { "Tasty Lion Steak", nil, "food", 25, 1, "+10 Agi", 5, 0, "food:agi" },   -- spell 1248391
   [3729] = { "Soothing Turtle Bisque", nil, "food", 15, 1, "+5 Sta", 5, 0, "food:sta" },   -- spell 1248386
   [3825] = { "Elixir of Lesser Fortitude", "Lesser Fortitude", "elixir", 25, 1, "+120 HP, 1 hr", 0, 0, "elixir-hp" },   -- spell 3593
+  [3826] = { "Troll's Blood Elixir", nil, "elixir", 26, 1, "+12 hp5, 1 hr", 0, 0, "elixir-hp5" },   -- spell 3223
   [3827] = { "Mana Potion", "Mana", "potion", 22, 1, "455-585 mana", 0, 480, "name:Mana Potion" },   -- spell 2023
   [3928] = { "Superior Healing Potion", "Superior Healing", "potion", 35, 1, "heals 700-900", 0, 1000, "name:Superior Healing Potion" },   -- spell 4042
-  [4419] = { "Scroll of Intellect III", "Intellect III", "scroll", 35, 1, "+12 Int, 30 min", 0, 450, "scroll-int" },   -- spell 8098
-  [4422] = { "Scroll of Stamina III", "Stamina III", "scroll", 35, 1, "+12 Sta, 30 min", 0, 450, "scroll-sta" },   -- spell 8101
-  [4424] = { "Scroll of Spirit III", "Spirit III", "scroll", 30, 1, "+11 Spi, 30 min", 0, 400, "scroll-spi" },   -- spell 8114
-  [4425] = { "Scroll of Agility III", "Agility III", "scroll", 40, 1, "+13 Agi, 30 min", 0, 500, "scroll-agi" },   -- spell 8117
-  [4426] = { "Scroll of Strength III", "Strength III", "scroll", 40, 1, "+13 Str, 30 min", 0, 500, "scroll-str" },   -- spell 8120
+  [4419] = { "Scroll of Intellect III", "Intellect III", "scroll", 35, 1, "+12 Int, 30 min", 0, 0, "scroll-int" },   -- spell 8098
+  [4421] = { "Scroll of Protection III", "Protection III", "scroll", 30, 1, "+180 armor, 30 min", 0, 0, "scroll-armor" },   -- spell 8095
+  [4422] = { "Scroll of Stamina III", "Stamina III", "scroll", 35, 1, "+12 Sta, 30 min", 0, 0, "scroll-sta" },   -- spell 8101
+  [4424] = { "Scroll of Spirit III", "Spirit III", "scroll", 30, 1, "+11 Spi, 30 min", 0, 0, "scroll-spi" },   -- spell 8114
+  [4425] = { "Scroll of Agility III", "Agility III", "scroll", 40, 1, "+13 Agi, 30 min", 0, 0, "scroll-agi" },   -- spell 8117
+  [4426] = { "Scroll of Strength III", "Strength III", "scroll", 40, 1, "+13 Str, 30 min", 0, 0, "scroll-str" },   -- spell 8120
   [4457] = { "Barbecued Buzzard Wing", nil, "food", 25, 1, "+10 Int", 5, 0, "food:int" },   -- spell 1248392
   [4592] = { "Longjaw Mud Snapper", nil, "food", 5, 1, "+10 AP", 5, 20, "food:ap,rap" },   -- spell 1249506
-  [4596] = { "Minor Discolored Healing Potion", "Minor Discolored Healing", "potion", 5, 1, "heals 150-170", 0, 0, "name:Minor Discolored Healing Potion" },   -- spell 1244863
+  [4596] = { "Minor Discolored Healing Potion", "Minor Discolored Healing", "potion", 5, 1, "heals 150-170, 75% back as DoT", 0, 0, "name:Minor Discolored Healing Potion" },   -- spell 1244863
+  [4623] = { "Lesser Stoneshield Potion", "Lesser Stoneshield", "potion", 33, 1, "+1000 armor, 90 sec", 0, 0, "name:Lesser Stoneshield Potion" },   -- spell 4941
   [5095] = { "Rainbow Fin Albacore", nil, "food", 5, 1, "+1 spell dmg", 5, 0, "food:sp" },   -- spell 1249501
   [5205] = { "Sprouted Frond", nil, "potion", 5, 1, "heals 86-102", 0, 0, "name:Sprouted Frond" },   -- spell 2052
   [5472] = { "Kaldorei Spider Kabob", nil, "food", 1, 1, "+1 Sta", 5, 0, "food:sta" },   -- spell 1248377
@@ -111,9 +121,10 @@ local ITEMS = {
   [5479] = { "Crispy Lizard Tail", nil, "food", 5, 1, "+3 Sta", 5, 0, "food:sta" },   -- spell 1248381
   [5480] = { "Lean Venison", nil, "food", 15, 1, "+5 Str", 5, 0, "food:str" },   -- spell 1248389
   [5527] = { "Goblin Deviled Clams", nil, "food", 15, 1, "+6 Sta, +6 Spi", 0, 0, "food:spi,sta" },   -- spell 5006
-  [5631] = { "Rage Potion", "Rage", "potion", 4, 1, "20-40 rage", 0, 0, "name:Rage Potion" },   -- spell 6612
-  [5633] = { "Great Rage Potion", "Great Rage", "potion", 25, 1, "30-60 rage", 0, 0, "name:Great Rage Potion" },   -- spell 6613
+  [5631] = { "Rage Potion", "Rage", "potion", 4, 1, "20-40 rage", 0, 0, "name:Rage Potion", "DRUID,WARRIOR" },   -- spell 6612
+  [5633] = { "Great Rage Potion", "Great Rage", "potion", 25, 1, "30-60 rage", 0, 0, "name:Great Rage Potion", "DRUID,WARRIOR" },   -- spell 6613
   [5634] = { "Free Action Potion", "Free Action", "potion", 20, 1, "no root or stun, 30 sec", 0, 0, "name:Free Action Potion" },   -- spell 6615
+  [5997] = { "Elixir of Minor Defense", "Minor Defense", "elixir", 1, 1, "+50 armor, 1 hr", 0, 0, "spell-673" },   -- spell 673
   [6038] = { "Giant Clam Scorcho", nil, "food", 25, 1, "+10 Sta", 5, 0, "food:sta" },   -- spell 1248390
   [6048] = { "Shadow Protection Potion", "Shadow Protection", "potion", 17, 1, "absorbs 900 shadow, 2 min", 0, 0, "name:Shadow Protection Potion" },   -- spell 7242
   [6049] = { "Fire Protection Potion", "Fire Protection", "potion", 23, 1, "absorbs 1300 fire, 2 min", 0, 0, "name:Fire Protection Potion" },   -- spell 7233
@@ -122,27 +133,29 @@ local ITEMS = {
   [6052] = { "Nature Protection Potion", "Nature Protection", "potion", 28, 1, "absorbs 1800 nature, 2 min", 0, 0, "name:Nature Protection Potion" },   -- spell 7254
   [6149] = { "Greater Mana Potion", "Greater Mana", "potion", 31, 1, "700-900 mana", 0, 480, "name:Greater Mana Potion" },   -- spell 11903
   [6290] = { "Brilliant Smallfish", nil, "food", 1, 1, "+2 AP", 5, 0, "food:ap,rap" },   -- spell 1249500
-  [6373] = { "Elixir of Fire Power", "Fire Power", "elixir", 18, 1, "+10 fire dmg, 30 min", 0, 0, "elixir-sp_fire" },   -- spell 7844
+  [6373] = { "Elixir of Fire Power", "Fire Power", "elixir", 18, 1, "+10 fire dmg, 30 min", 0, 0, "elixir-sp_fire", "MAGE,WARLOCK" },   -- spell 7844
   [6662] = { "Elixir of Giant Growth", "Giant Growth", "elixir", 8, 1, "+8 Str, 2 min", 0, 0, "elixir-str" },   -- spell 8212
   [6887] = { "Spotted Yellowtail", nil, "food", 35, 1, "+22 spell dmg", 5, 2000, "food:sp" },   -- spell 1249513
   [6888] = { "Herb Baked Egg", nil, "food", 1, 1, "+1 Sta", 5, 0, "food:sta" },   -- spell 1248377
   [6890] = { "Smoked Bear Meat", nil, "food", 1, 1, "+1 Str", 5, 0, "food:str" },   -- spell 1248380
-  [7964] = { "Solid Sharpening Stone", nil, "weapon", 25, 1, "+6 weapon dmg, 30 min", 0, 0, "id7964" },   -- spell 9900
-  [7965] = { "Solid Weightstone", nil, "weapon", 25, 1, "+6 weapon dmg, 30 min", 0, 0, "id7965" },   -- spell 9903
+  [7964] = { "Solid Sharpening Stone", nil, "weapon", 25, 1, "+6 weapon dmg, 30 min", 0, 0, "weapon:bladed (sword, axe, dagger, polearm):weapon_dmg" },   -- spell 9900
+  [7965] = { "Solid Weightstone", nil, "weapon", 25, 1, "+6 weapon dmg, 30 min", 0, 0, "weapon:blunt (mace, staff, fist):weapon_dmg" },   -- spell 9903
   [8364] = { "Mithril Head Trout", nil, "food", 25, 1, "+20 AP", 5, 0, "food:ap,rap" },   -- spell 1249509
-  [8949] = { "Elixir of Agility", "Agility", "elixir", 27, 1, "+15 Agi, 1 hr", 0, 0, "elixir-agi" },   -- spell 11328
+  [8949] = { "Elixir of Agility", nil, "elixir", 27, 1, "+15 Agi, 1 hr", 0, 0, "elixir-agi" },   -- spell 11328
+  [8951] = { "Elixir of Defense", "Defense", "elixir", 29, 1, "+250 armor, 1 hr", 0, 0, "elixir-armor" },   -- spell 11349
   [9036] = { "Magic Resistance Potion", "Magic Resistance", "potion", 32, 1, "+50 all res, 3 min", 0, 0, "name:Magic Resistance Potion" },   -- spell 11364
   [9144] = { "Wildvine Potion", "Wildvine", "potion", 35, 1, "heals 1-1499, 1-1499 mana", 0, 0, "name:Wildvine Potion" },   -- spell 11387
   [9155] = { "Arcane Elixir", nil, "elixir", 37, 1, "+20 spell dmg, 30 min", 0, 0, "elixir-sp" },   -- spell 11390
   [9179] = { "Elixir of Greater Intellect", "Greater Intellect", "elixir", 37, 1, "+25 Int, 1 hr", 0, 0, "elixir-int" },   -- spell 11396
   [9187] = { "Elixir of Greater Agility", "Greater Agility", "elixir", 38, 1, "+25 Agi, 1 hr", 0, 0, "elixir-agi" },   -- spell 11334
   [9206] = { "Elixir of Greater Strength", "Greater Strength", "elixir", 48, 1, "+25 Str, 1 hr", 0, 0, "elixir-str" },   -- spell 11405
-  [9264] = { "Elixir of Shadow Power", "Shadow Power", "elixir", 40, 1, "+40 shadow dmg, 30 min", 0, 0, "elixir-sp_shadow" },   -- spell 11474
-  [10306] = { "Scroll of Spirit IV", "Spirit IV", "scroll", 45, 1, "+15 Spi, 30 min", 0, 550, "scroll-spi" },   -- spell 12177
-  [10307] = { "Scroll of Stamina IV", "Stamina IV", "scroll", 50, 1, "+16 Sta, 30 min", 0, 600, "scroll-sta" },   -- spell 12178
-  [10308] = { "Scroll of Intellect IV", "Intellect IV", "scroll", 50, 1, "+16 Int, 30 min", 0, 600, "scroll-int" },   -- spell 12176
-  [10309] = { "Scroll of Agility IV", "Agility IV", "scroll", 55, 1, "+17 Agi, 30 min", 0, 650, "scroll-agi" },   -- spell 12174
-  [10310] = { "Scroll of Strength IV", "Strength IV", "scroll", 55, 1, "+17 Str, 30 min", 0, 650, "scroll-str" },   -- spell 12179
+  [9264] = { "Elixir of Shadow Power", "Shadow Power", "elixir", 40, 1, "+40 shadow dmg, 30 min", 0, 0, "elixir-sp_shadow", "PRIEST,WARLOCK" },   -- spell 11474
+  [10305] = { "Scroll of Protection IV", "Protection IV", "scroll", 45, 1, "+240 armor, 30 min", 0, 0, "scroll-armor" },   -- spell 12175
+  [10306] = { "Scroll of Spirit IV", "Spirit IV", "scroll", 45, 1, "+15 Spi, 30 min", 0, 0, "scroll-spi" },   -- spell 12177
+  [10307] = { "Scroll of Stamina IV", "Stamina IV", "scroll", 50, 1, "+16 Sta, 30 min", 0, 0, "scroll-sta" },   -- spell 12178
+  [10308] = { "Scroll of Intellect IV", "Intellect IV", "scroll", 50, 1, "+16 Int, 30 min", 0, 0, "scroll-int" },   -- spell 12176
+  [10309] = { "Scroll of Agility IV", "Agility IV", "scroll", 55, 1, "+17 Agi, 30 min", 0, 0, "scroll-agi" },   -- spell 12174
+  [10310] = { "Scroll of Strength IV", "Strength IV", "scroll", 55, 1, "+17 Str, 30 min", 0, 0, "scroll-str" },   -- spell 12179
   [12209] = { "Lean Wolf Steak", nil, "food", 15, 1, "+5 Agi", 5, 0, "food:agi" },   -- spell 1248387
   [12210] = { "Roast Raptor", nil, "food", 15, 1, "+5 Int", 5, 0, "food:int" },   -- spell 1248388
   [12212] = { "Jungle Stew", nil, "food", 35, 1, "+15 Agi", 5, 0, "food:agi" },   -- spell 1248395
@@ -150,18 +163,21 @@ local ITEMS = {
   [12214] = { "Mystery Stew", nil, "food", 15, 1, "+5 Sta", 5, 0, "food:sta" },   -- spell 1248386
   [12215] = { "Heavy Kodo Stew", nil, "food", 25, 1, "+10 Sta", 5, 0, "food:sta" },   -- spell 1248390
   [12216] = { "Spiced Chili Crab", nil, "food", 25, 1, "+10 Int", 5, 0, "food:int" },   -- spell 1248392
+  [12218] = { "Monster Omelet", nil, "food", 35, 1, "+15 Sta", 5, 0, "food:sta" },   -- spell 1248394
   [12224] = { "Crispy Bat Wing", nil, "food", 1, 1, "+1 Int", 5, 0, "food:int" },   -- spell 1248379
-  [12404] = { "Dense Sharpening Stone", nil, "weapon", 35, 1, "+8 weapon dmg, 30 min", 0, 0, "id12404" },   -- spell 16138
-  [12643] = { "Dense Weightstone", nil, "weapon", 35, 1, "+8 weapon dmg, 30 min", 0, 0, "id12643" },   -- spell 16622
+  [12404] = { "Dense Sharpening Stone", nil, "weapon", 35, 1, "+8 weapon dmg, 30 min", 0, 0, "weapon:bladed (sword, axe, dagger, polearm):weapon_dmg" },   -- spell 16138
+  [12643] = { "Dense Weightstone", nil, "weapon", 35, 1, "+8 weapon dmg, 30 min", 0, 0, "weapon:blunt (mace, staff, fist):weapon_dmg" },   -- spell 16622
   [12820] = { "Winterfall Firewater", nil, "elixir", 45, 1, "+35 AP, 20 min", 0, 0, "firewater-ap" },   -- spell 17038
-  [13442] = { "Mighty Rage Potion", "Mighty Rage", "potion", 46, 1, "45-75 rage, +60 Str, 20 sec", 0, 0, "name:Mighty Rage Potion" },   -- spell 17528
-  [13443] = { "Superior Mana Potion", "Superior Mana", "potion", 41, 1, "900-1500 mana", 0, 1600, "name:Superior Mana Potion" },   -- spell 17530
+  [13442] = { "Mighty Rage Potion", "Mighty Rage", "potion", 46, 1, "45-75 rage, +60 Str, 20 sec", 0, 0, "name:Mighty Rage Potion", "DRUID,WARRIOR" },   -- spell 17528
+  [13443] = { "Superior Mana Potion", "Superior Mana", "potion", 41, 1, "900-1500 mana", 0, 0, "name:Superior Mana Potion" },   -- spell 17530
   [13444] = { "Major Mana Potion", "Major Mana", "potion", 49, 1, "1350-2250 mana", 0, 0, "name:Major Mana Potion" },   -- spell 17531
+  [13445] = { "Elixir of Greater Defense", "Greater Defense", "elixir", 43, 1, "+450 armor, 1 hr", 0, 0, "elixir-armor" },   -- spell 11348
   [13446] = { "Major Healing Potion", "Major Healing", "potion", 45, 1, "heals 1050-1750", 0, 0, "name:Major Healing Potion" },   -- spell 17534
-  [13447] = { "Elixir of the Sages", "Sages", "elixir", 38, 1, "+18 Int, +18 Spi, 1 hr", 0, 0, "elixir-int" },   -- spell 17535
+  [13447] = { "Elixir of the Sages", nil, "elixir", 38, 1, "+18 Int, +18 Spi, 1 hr", 0, 0, "elixir-int" },   -- spell 17535
   [13452] = { "Elixir of the Mongoose", "Mongoose", "elixir", 46, 1, "+25 Agi, +2% crit, 30 min", 0, 0, "elixir-agi" },   -- spell 17538
   [13453] = { "Elixir of Brute Force", "Brute Force", "elixir", 45, 1, "+18 Str, +18 Sta, 1 hr", 0, 0, "elixir-str" },   -- spell 17537
   [13454] = { "Greater Arcane Elixir", nil, "elixir", 47, 1, "+35 spell dmg, 1 hr", 0, 0, "elixir-sp" },   -- spell 17539
+  [13455] = { "Greater Stoneshield Potion", "Greater Stoneshield", "potion", 46, 1, "+2000 armor, 2 min", 0, 0, "name:Greater Stoneshield Potion" },   -- spell 17540
   [13456] = { "Greater Frost Protection Potion", "Greater Frost Protection", "potion", 48, 1, "absorbs 2600 frost, 2 min", 0, 0, "name:Greater Frost Protection Potion" },   -- spell 17544
   [13457] = { "Greater Fire Protection Potion", "Greater Fire Protection", "potion", 48, 1, "absorbs 2600 fire, 2 min", 0, 0, "name:Greater Fire Protection Potion" },   -- spell 17543
   [13459] = { "Greater Shadow Protection Potion", "Greater Shadow Protection", "potion", 48, 1, "absorbs 2600 shadow, 2 min", 0, 0, "name:Greater Shadow Protection Potion" },   -- spell 17548
@@ -192,20 +208,20 @@ local ITEMS = {
   [18841] = { "Combat Mana Potion", "Combat Mana", "potion", 41, 1, "900-1500 mana", 0, 1100, "name:Combat Mana Potion" },   -- spell 17530
   [20074] = { "Heavy Crocolisk Stew", nil, "food", 25, 1, "+10 Agi", 5, 0, "food:agi" },   -- spell 1248391
   [20452] = { "Smoked Desert Dumplings", nil, "food", 45, 1, "+20 Str", 5, 0, "food:str" },   -- spell 1248401
-  [20744] = { "Minor Wizard Oil", nil, "weapon", 5, 1, "+8 spell dmg, +8 healing, 30 min", 0, 0, "id20744" },   -- spell 25117
-  [20745] = { "Minor Mana Oil", nil, "weapon", 20, 1, "+10 healing, +5 mp5, 30 min", 0, 0, "id20745" },   -- spell 25118
-  [20750] = { "Wizard Oil", nil, "weapon", 40, 1, "+24 spell dmg, +24 healing, 30 min", 0, 0, "id20750" },   -- spell 25121
+  [20744] = { "Minor Wizard Oil", nil, "weapon", 5, 1, "+8 spell dmg, +8 healing, 30 min", 0, 0, "weapon:any weapon:heal,sp" },   -- spell 25117
+  [20745] = { "Minor Mana Oil", nil, "weapon", 20, 1, "+10 healing, +5 mp5, 30 min", 0, 0, "weapon:any weapon:heal,mp5" },   -- spell 25118
+  [20746] = { "Lesser Wizard Oil", nil, "weapon", 30, 1, "+16 spell dmg, +16 healing, 30 min", 0, 0, "weapon:any weapon:heal,sp" },   -- spell 25119
+  [20747] = { "Lesser Mana Oil", nil, "weapon", 40, 1, "+20 healing, +10 mp5, 30 min", 0, 0, "weapon:any weapon:heal,mp5" },   -- spell 25120
+  [20750] = { "Wizard Oil", nil, "weapon", 40, 1, "+24 spell dmg, +24 healing, 30 min", 0, 0, "weapon:any weapon:heal,sp" },   -- spell 25121
   [21072] = { "Smoked Sagefish", nil, "food", 10, 1, "+4 spell dmg", 5, 0, "food:sp" },   -- spell 1249504
   [21217] = { "Sagefish Delight", nil, "food", 30, 1, "+7 spell dmg", 5, 0, "food:sp" },   -- spell 1249507
-  [21546] = { "Elixir of Holy Power", "Holy Power", "elixir", 40, 1, "+40 holy dmg, 30 min", 0, 0, "elixir-sp_holy" },   -- spell 1310077
-  [223913] = { "Major Healing Potion", "Major Healing", "potion", 40, 2, "heals 1350-1650", 0, 2500, "name:Major Healing Potion" },   -- spell 450106
-  [223914] = { "Greater Healing Potion", "Greater Healing", "potion", 20, 2, "heals 585-715", 0, 500, "name:Greater Healing Potion" },   -- spell 450107
-  [241650] = { "Major Discolored Healing Potion", "Major Discolored Healing", "potion", 60, 1, "heals 2625-2975", 0, 0, "name:Major Discolored Healing Potion" },   -- spell 1231578
+  [21546] = { "Elixir of Holy Power", "Holy Power", "elixir", 40, 1, "+40 holy dmg, 30 min", 0, 0, "elixir-sp_holy", "PALADIN,PRIEST" },   -- spell 1310077
+  [241650] = { "Major Discolored Healing Potion", "Major Discolored Healing", "potion", 60, 1, "heals 2625-2975, 75% back as DoT", 0, 0, "name:Major Discolored Healing Potion" },   -- spell 1231578
   [246948] = { "Distilled Firewater", nil, "elixir", 45, 1, "+35 AP, 20 min", 0, 0, "firewater-ap" },   -- spell 17038
-  [247239] = { "Lesser Discolored Healing Potion", "Lesser Discolored Healing", "potion", 3, 1, "heals 300-340", 0, 0, "name:Lesser Discolored Healing Potion" },   -- spell 1244864
-  [247240] = { "Discolored Healing Potion", "Discolored Healing", "potion", 12, 1, "heals 600-680", 0, 0, "name:Discolored Healing Potion" },   -- spell 1244865
-  [247241] = { "Greater Discolored Healing Potion", "Greater Discolored Healing", "potion", 21, 1, "heals 975-1105", 0, 0, "name:Greater Discolored Healing Potion" },   -- spell 1244866
-  [247242] = { "Superior Discolored Healing Potion", "Superior Discolored Healing", "potion", 35, 1, "heals 1500-1700", 0, 0, "name:Superior Discolored Healing Potion" },   -- spell 1244867
+  [247239] = { "Lesser Discolored Healing Potion", "Lesser Discolored Healing", "potion", 3, 1, "heals 300-340, 75% back as DoT", 0, 0, "name:Lesser Discolored Healing Potion" },   -- spell 1244864
+  [247240] = { "Discolored Healing Potion", "Discolored Healing", "potion", 12, 1, "heals 600-680, 75% back as DoT", 0, 0, "name:Discolored Healing Potion" },   -- spell 1244865
+  [247241] = { "Greater Discolored Healing Potion", "Greater Discolored Healing", "potion", 21, 1, "heals 975-1105, 75% back as DoT", 0, 0, "name:Greater Discolored Healing Potion" },   -- spell 1244866
+  [247242] = { "Superior Discolored Healing Potion", "Superior Discolored Healing", "potion", 35, 1, "heals 1500-1700, 75% back as DoT", 0, 0, "name:Superior Discolored Healing Potion" },   -- spell 1244867
   [247754] = { "Minor Arcane Elixir", nil, "elixir", 1, 1, "+5 spell dmg, 30 min", 0, 0, "elixir-sp" },   -- spell 1245244
   [249865] = { "Peace Tea", nil, "food", 1, 1, "+2 healing", 5, 0, "food:heal" },   -- spell 1249920
   [249866] = { "Royal Tea", nil, "food", 5, 1, "+7 healing", 5, 0, "food:heal" },   -- spell 1249921
@@ -234,31 +250,31 @@ local ITEMS = {
   [250079] = { "Tasty Raptor Bites", nil, "food", 1, 1, "+1 Int", 5, 0, "food:int" },   -- spell 1248379
   [250080] = { "Breakfast Omelette", nil, "food", 5, 1, "+3 Sta", 5, 0, "food:sta" },   -- spell 1248381
   [250328] = { "Elixir of Cunning", "Cunning", "elixir", 55, 1, "+25 Agi, +25 Int, 30 min", 0, 0, "elixir-agi" },   -- spell 1250918
-  [250329] = { "Elixir of the Phalanx", "Phalanx", "elixir", 55, 1, "+400 HP, 30 min", 0, 0, "elixir-hp" },   -- spell 1250920
+  [250329] = { "Elixir of the Phalanx", "Phalanx", "elixir", 55, 1, "+400 HP, +500 armor, 30 min", 0, 0, "elixir-hp" },   -- spell 1250920
   [250330] = { "Minor Cleric's Elixir", nil, "elixir", 5, 1, "+10 healing, 30 min", 0, 0, "elixir-heal" },   -- spell 1250922
   [250331] = { "Lesser Cleric's Elixir", nil, "elixir", 25, 1, "+20 healing, 30 min", 0, 0, "elixir-heal" },   -- spell 1250924
   [250332] = { "Cleric's Elixir", nil, "elixir", 45, 1, "+30 healing, 30 min", 0, 0, "elixir-heal" },   -- spell 1250925
   [250333] = { "Greater Cleric's Elixir", nil, "elixir", 55, 1, "+40 healing, 30 min", 0, 0, "elixir-heal" },   -- spell 1250926
   [250334] = { "Elixir of Fortitude", "Fortitude", "elixir", 45, 1, "+200 HP, 30 min", 0, 0, "elixir-hp" },   -- spell 1250928
   [250335] = { "Elixir of Greater Fortitude", "Greater Fortitude", "elixir", 55, 1, "+400 HP, 30 min", 0, 0, "elixir-hp" },   -- spell 1250931
-  [250336] = { "Elixir of Wicked Regeneration", "Wicked Regeneration", "elixir", 55, 1, "+10 mp5, 30 min", 0, 0, "elixir-mp5" },   -- spell 1250932
+  [250336] = { "Elixir of Wicked Regeneration", "Wicked Regeneration", "elixir", 55, 1, "+10 mp5, +9 hp5, 30 min", 0, 0, "elixir-hp5" },   -- spell 1250932
   [250337] = { "Elixir of the Owl", "Owl", "elixir", 55, 1, "+25 Int, +2% crit, 30 min", 0, 0, "elixir-int" },   -- spell 1250940
-  [250338] = { "Elixir of Sages", "Sages", "elixir", 55, 1, "+25 Spi, +2% crit, 30 min", 0, 0, "elixir-spi" },   -- spell 1250941
+  [250338] = { "Elixir of Sages", nil, "elixir", 55, 1, "+25 Spi, +2% crit, 30 min", 0, 0, "elixir-spi" },   -- spell 1250941
   [250339] = { "Minor Mageblood Elixir", nil, "elixir", 5, 1, "+3 mp5, 30 min", 0, 0, "elixir-mp5" },   -- spell 1250942
   [250340] = { "Lesser Mageblood Elixir", nil, "elixir", 25, 1, "+6 mp5, 30 min", 0, 0, "elixir-mp5" },   -- spell 1250944
   [250341] = { "Greater Mageblood Elixir", nil, "elixir", 55, 1, "+20 mp5, 30 min", 0, 0, "elixir-mp5" },   -- spell 1250948
   [250342] = { "Lesser Arcane Elixir", nil, "elixir", 25, 1, "+15 spell dmg, 30 min", 0, 0, "elixir-sp" },   -- spell 1250971
-  [250343] = { "Elixir of Nature Power", "Nature Power", "elixir", 55, 1, "+40 nature dmg, 30 min", 0, 0, "elixir-sp_nature" },   -- spell 1250972
+  [250343] = { "Elixir of Nature Power", "Nature Power", "elixir", 55, 1, "+40 nature dmg, 30 min", 0, 0, "elixir-sp_nature", "DRUID,SHAMAN" },   -- spell 1250972
   [250344] = { "Elixir of Minor Spirit", "Minor Spirit", "elixir", 5, 1, "+3 Spi, 30 min", 0, 0, "elixir-spi" },   -- spell 1250974
   [250345] = { "Elixir of Lesser Spirit", "Lesser Spirit", "elixir", 25, 1, "+6 Spi, 30 min", 0, 0, "elixir-spi" },   -- spell 1250976
-  [250346] = { "Elixir of Spirit", "Spirit", "elixir", 45, 1, "+10 Spi, 30 min", 0, 0, "elixir-spi" },   -- spell 1250978
+  [250346] = { "Elixir of Spirit", nil, "elixir", 45, 1, "+10 Spi, 30 min", 0, 0, "elixir-spi" },   -- spell 1250978
   [250347] = { "Elixir of Greater Spirit", "Greater Spirit", "elixir", 55, 1, "+18 Spi, 30 min", 0, 0, "elixir-spi" },   -- spell 1250979
   [250348] = { "Elixir of the Whale", "Whale", "elixir", 55, 1, "+25 Spi, +2% crit, 30 min", 0, 0, "elixir-spi" },   -- spell 1250981
-  [250349] = { "Elixir of Strength", "Strength", "elixir", 45, 1, "+10 Str, 30 min", 0, 0, "elixir-str" },   -- spell 1250984
+  [250349] = { "Elixir of Strength", nil, "elixir", 45, 1, "+10 Str, 30 min", 0, 0, "elixir-str" },   -- spell 1250984
   [250350] = { "Elixir of Ferocity", "Ferocity", "elixir", 55, 1, "+18 Str, +18 Agi, 30 min", 0, 0, "elixir-str" },   -- spell 1250985
   [250351] = { "Elixir of the Grizzly", "Grizzly", "elixir", 55, 1, "+25 Str, +2% crit, 30 min", 0, 0, "elixir-str" },   -- spell 1250986
   [250353] = { "Elixir of Lesser Intellect", "Lesser Intellect", "elixir", 25, 1, "+6 Int, 30 min", 0, 0, "elixir-int" },   -- spell 1250988
-  [250354] = { "Elixir of Intellect", "Intellect", "elixir", 45, 1, "+10 Int, 30 min", 0, 0, "elixir-int" },   -- spell 1250989
+  [250354] = { "Elixir of Intellect", nil, "elixir", 45, 1, "+10 Int, 30 min", 0, 0, "elixir-int" },   -- spell 1250989
   [250932] = { "Minor Spellblasting Potion", "Minor Spellblasting", "potion", 5, 1, "+7 spell dmg, 30 sec", 0, 0, "name:Minor Spellblasting Potion" },   -- spell 1251919
   [250933] = { "Lesser Spellblasting Potion", "Lesser Spellblasting", "potion", 15, 1, "+11 spell dmg, 30 sec", 0, 0, "name:Lesser Spellblasting Potion" },   -- spell 1251922
   [250934] = { "Spellblasting Potion", "Spellblasting", "potion", 25, 1, "+16 spell dmg, 30 sec", 0, 0, "name:Spellblasting Potion" },   -- spell 1251923
@@ -281,9 +297,10 @@ local ITEMS = {
   [263512] = { "Pincer Bites", nil, "food", 5, 1, "+1 Int", 5, 0, "food:int" },   -- spell 1248379
   [274971] = { "Briny Seafood Stew", nil, "food", 25, 1, "+14 spell dmg", 5, 0, "food:sp" },   -- spell 1249510
   [274976] = { "Plain Ol' Paletusk", nil, "food", 25, 1, "+10 Str", 5, 0, "food:str" },   -- spell 1248393
-  [275069] = { "Scroll of Rat Familiar", "Rat Familiar", "scroll", 5, 1, "+2 Int, 1 hr", 0, 0, "scroll-int" },   -- spell 1296202
-  [277483] = { "Scroll of Frog Familiar", "Frog Familiar", "scroll", 16, 1, "+6 Int, 1 hr", 0, 0, "scroll-int" },   -- spell 1302285
-  [277493] = { "Scroll of Cat Familiar", "Cat Familiar", "scroll", 25, 1, "+12 Int, 1 hr", 0, 0, "scroll-int" },   -- spell 1302303
+  [275069] = { "Scroll of Rat Familiar", "Rat Familiar", "scroll", 5, 1, "+2 Int, 1 hr", 0, 0, "scroll-int", "MAGE" },   -- spell 1296202
+  [277483] = { "Scroll of Frog Familiar", "Frog Familiar", "scroll", 16, 1, "+6 Int, 1 hr", 0, 0, "scroll-int", "MAGE" },   -- spell 1302285
+  [277493] = { "Scroll of Cat Familiar", "Cat Familiar", "scroll", 25, 1, "+12 Int, 1 hr", 0, 0, "scroll-int", "MAGE" },   -- spell 1302303
+  [286152] = { "Plated Armorfish", nil, "food", 35, 1, "+150 armor", 5, 0, "food:armor" },   -- spell 1319311
 }
 
 -- The best for a role, strongest first (ties: cheaper), per level band (1-19, 20-39, 40-49, 50-59, 60).
@@ -298,11 +315,18 @@ local BEST = {
       { 13932, 20452, 13927, 250065, 13928, 8364, 274976, 250069 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 3928, 9144, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 3928, 9144, 223914 },   -- 40-49
-      { 247242, 18253, 223913, 13446, 17348, 247241, 3928, 9144 },   -- 50-59
-      { 241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 3928, 9144, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 3928, 9144, 17349, 17747, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 3928, 9144, 17349, 17747, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 3928, 9144, 241650, 17349, 17747 },   -- 60
+    },
+    ["potion-mana"] = {
+      { 3385, 2455, 2456, 255663 },   -- 1-19
+      { 6149, 9144, 17352, 3827, 3385, 2455, 2456, 255663 },   -- 20-39
+      { 13444, 18841, 17351, 6149, 9144, 17352, 17747, 3827 },   -- 40-49
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 50-59
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 60
     },
     ["potion-rage"] = {
       { 5631 },   -- 1-19
@@ -320,10 +344,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -333,11 +357,11 @@ local BEST = {
       { 3387, 5634, 2459 },   -- 60
     },
     ["elixir"] = {
-      { 6662, 2454, 3390, 2457 },   -- 1-19
-      { 9187, 3391, 6662, 8949, 2454, 3390, 2457 },   -- 20-39
-      { 13452, 9206, 13453, 12820, 9187, 3391, 6662, 8949 },   -- 40-49
-      { 250351, 13452, 9206, 13453, 12820, 9187, 3391, 6662 },   -- 50-59
-      { 250351, 13452, 9206, 13453, 12820, 9187, 3391, 6662 },   -- 60
+      { 2454, 3390, 2457 },   -- 1-19
+      { 9187, 3391, 8949, 2454, 3390, 2457 },   -- 20-39
+      { 13452, 9206, 13453, 9187, 12820, 3391, 8949, 2454 },   -- 40-49
+      { 250351, 13452, 9206, 13453, 9187, 12820, 3391, 8949 },   -- 50-59
+      { 250351, 13452, 9206, 13453, 9187, 12820, 3391, 8949 },   -- 60
     },
     ["scroll"] = {
       { 954, 3012 },   -- 1-19
@@ -363,11 +387,25 @@ local BEST = {
       { 13932, 250069, 13927, 18045, 13928, 8364, 3728, 20452 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 3928, 9144, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 3928, 9144, 223914 },   -- 40-49
-      { 247242, 18253, 223913, 13446, 17348, 247241, 3928, 9144 },   -- 50-59
-      { 241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 3928, 9144, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 3928, 9144, 17349, 17747, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 3928, 9144, 17349, 17747, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 3928, 9144, 241650, 17349, 17747 },   -- 60
+    },
+    ["potion-mana"] = {
+      { 3385, 2455, 2456, 255663 },   -- 1-19
+      { 6149, 9144, 17352, 3827, 3385, 2455, 2456, 255663 },   -- 20-39
+      { 13444, 18841, 17351, 6149, 9144, 17352, 17747, 3827 },   -- 40-49
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 50-59
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 60
+    },
+    ["potion-rage"] = {
+      { 5631 },   -- 1-19
+      { 5633, 5631 },   -- 20-39
+      { 13442, 5633, 5631 },   -- 40-49
+      { 13442, 5633, 5631 },   -- 50-59
+      { 13442, 5633, 5631 },   -- 60
     },
     ["potion-buff"] = {
       { 250938 },   -- 1-19
@@ -378,10 +416,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -391,11 +429,11 @@ local BEST = {
       { 3387, 5634, 2459 },   -- 60
     },
     ["elixir"] = {
-      { 3390, 6662, 2457, 2454 },   -- 1-19
-      { 9187, 8949, 3390, 3391, 6662, 2457, 2454 },   -- 20-39
-      { 13452, 9187, 12820, 8949, 13453, 3390, 3391, 6662 },   -- 40-49
-      { 13452, 250351, 9187, 12820, 8949, 13453, 3390, 3391 },   -- 50-59
-      { 13452, 250351, 9187, 12820, 8949, 13453, 3390, 3391 },   -- 60
+      { 3390, 2457, 2454 },   -- 1-19
+      { 9187, 8949, 3390, 3391, 2457, 2454 },   -- 20-39
+      { 13452, 9187, 8949, 13453, 12820, 3390, 3391, 2457 },   -- 40-49
+      { 13452, 250351, 9187, 8949, 13453, 12820, 3390, 3391 },   -- 50-59
+      { 13452, 250351, 9187, 8949, 13453, 12820, 3390, 3391 },   -- 60
     },
     ["scroll"] = {
       { 3012, 954 },   -- 1-19
@@ -414,18 +452,25 @@ local BEST = {
   },
   tank = {
     ["food"] = {
-      { 5527, 3666, 250080, 3664, 2685, 4592, 3662, 5472 },   -- 1-19
-      { 17222, 6038, 5527, 18045, 3666, 13932, 250065, 3728 },   -- 20-39
-      { 250068, 17222, 16971, 6038, 250069, 20452, 5527, 18045 },   -- 40-49
-      { 250068, 17222, 16971, 6038, 250069, 20452, 5527, 18045 },   -- 50-59
-      { 250068, 17222, 16971, 6038, 250069, 20452, 5527, 18045 },   -- 60
+      { 3666, 250080, 3664, 2685, 4592, 3662, 5472, 3220 },   -- 1-19
+      { 17222, 6038, 286152, 18045, 3666, 13932, 250065, 3728 },   -- 20-39
+      { 250068, 17222, 6038, 250069, 20452, 286152, 18045, 3666 },   -- 40-49
+      { 250068, 17222, 6038, 250069, 20452, 286152, 18045, 3666 },   -- 50-59
+      { 250068, 17222, 16971, 6038, 250069, 20452, 5527, 286152 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 3928, 9144, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 3928, 9144, 223914 },   -- 40-49
-      { 247242, 18253, 223913, 13446, 17348, 247241, 3928, 9144 },   -- 50-59
-      { 241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 3928, 9144, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 3928, 9144, 17349, 17747, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 3928, 9144, 17349, 17747, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 3928, 9144, 241650, 17349, 17747 },   -- 60
+    },
+    ["potion-mana"] = {
+      { 3385, 2455, 2456, 255663 },   -- 1-19
+      { 6149, 9144, 17352, 3827, 3385, 2455, 2456, 255663 },   -- 20-39
+      { 13444, 18841, 17351, 6149, 9144, 17352, 17747, 3827 },   -- 40-49
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 50-59
+      { 13444, 18253, 18841, 17351, 6149, 9144, 17352, 17747 },   -- 60
     },
     ["potion-rage"] = {
       { 5631 },   -- 1-19
@@ -443,10 +488,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -456,11 +501,11 @@ local BEST = {
       { 3387, 5634, 2459 },   -- 60
     },
     ["elixir"] = {
-      { 3390, 2458, 6662, 2457, 2454 },   -- 1-19
-      { 3825, 9187, 8949, 3390, 2458, 3391, 6662, 2457 },   -- 20-39
-      { 13453, 250334, 13452, 3825, 9187, 8949, 12820, 3390 },   -- 40-49
-      { 250335, 13453, 250334, 13452, 3825, 9187, 8949, 12820 },   -- 50-59
-      { 250335, 13453, 250334, 13452, 3825, 9187, 8949, 12820 },   -- 60
+      { 3389, 3388, 3390, 2458, 5997, 2457, 2454, 3382 },   -- 1-19
+      { 3825, 8951, 9187, 3826, 3389, 8949, 3388, 3390 },   -- 20-39
+      { 13453, 250334, 13445, 13452, 3825, 8951, 9187, 3826 },   -- 40-49
+      { 250329, 13453, 250334, 13445, 13452, 3825, 8951, 9187 },   -- 50-59
+      { 250329, 13453, 250334, 13445, 13452, 3825, 8951, 9187 },   -- 60
     },
     ["flask"] = {
       {},   -- 1-19
@@ -470,11 +515,11 @@ local BEST = {
       { 13510, 13513 },   -- 60
     },
     ["scroll"] = {
-      { 1180, 3012, 954 },   -- 1-19
-      { 4422, 1711, 1180, 1477, 2289, 3012, 954 },   -- 20-39
-      { 4422, 1711, 4425, 4426, 1180, 1477, 2289, 3012 },   -- 40-49
-      { 10307, 4422, 1711, 10309, 10310, 4425, 4426, 1180 },   -- 50-59
-      { 10307, 4422, 1711, 10309, 10310, 4425, 4426, 1180 },   -- 60
+      { 1478, 1180, 3013, 3012, 954 },   -- 1-19
+      { 4422, 1711, 4421, 1478, 1180, 1477, 2289, 3013 },   -- 20-39
+      { 4422, 10305, 1711, 4421, 4425, 1478, 4426, 1180 },   -- 40-49
+      { 10307, 4422, 10305, 1711, 4421, 10309, 10310, 4425 },   -- 50-59
+      { 10307, 4422, 10305, 1711, 4421, 10309, 10310, 4425 },   -- 60
     },
     ["weapon"] = {
       { 2871, 3241, 2863, 3240, 2862, 3239 },   -- 1-19
@@ -486,18 +531,18 @@ local BEST = {
   },
   caster = {
     ["food"] = {
-      { 21072, 12210, 5527, 1082, 5095, 249873, 2682, 249872 },   -- 1-19
+      { 21072, 12210, 1082, 5095, 249873, 2682, 249872, 249871 },   -- 1-19
       { 6887, 274971, 13928, 18254, 21217, 4457, 21072, 12210 },   -- 20-39
       { 13933, 6887, 274971, 13928, 250067, 18254, 21217, 4457 },   -- 40-49
       { 13933, 6887, 274971, 13928, 250067, 18254, 21217, 4457 },   -- 50-59
       { 13933, 6887, 274971, 13928, 250067, 18254, 21217, 4457 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 9144, 3928, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 9144, 3928, 17747 },   -- 40-49
-      { 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928 },   -- 50-59
-      { 241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 9144, 3928, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 9144, 3928, 17747, 17349, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 9144, 3928, 17747, 17349, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 9144, 3928, 17747, 241650, 17349 },   -- 60
     },
     ["potion-mana"] = {
       { 3385, 2455, 2456, 255663 },   -- 1-19
@@ -515,10 +560,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -550,26 +595,26 @@ local BEST = {
     },
     ["weapon"] = {
       { 20744 },   -- 1-19
-      { 20744 },   -- 20-39
-      { 20750, 20744 },   -- 40-49
-      { 20750, 20744 },   -- 50-59
-      { 20750, 20744 },   -- 60
+      { 20746, 20744 },   -- 20-39
+      { 20750, 20746, 20744 },   -- 40-49
+      { 20750, 20746, 20744 },   -- 50-59
+      { 20750, 20746, 20744 },   -- 60
     },
   },
   healer = {
     ["food"] = {
-      { 249867, 249866, 5527, 12210, 249873, 249865, 1082, 249872 },   -- 1-19
+      { 249867, 249866, 12210, 249873, 249865, 1082, 249872, 2682 },   -- 1-19
       { 249869, 249868, 249867, 18254, 249875, 249866, 4457, 249874 },   -- 20-39
-      { 249870, 249869, 249868, 250067, 249867, 249876, 18254, 16971 },   -- 40-49
-      { 249870, 249869, 249868, 250067, 249867, 249876, 18254, 16971 },   -- 50-59
+      { 249870, 249869, 249868, 250067, 249867, 249876, 18254, 249875 },   -- 40-49
+      { 249870, 249869, 249868, 250067, 249867, 249876, 18254, 249875 },   -- 50-59
       { 249870, 249869, 249868, 250067, 249867, 249876, 18254, 16971 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 9144, 3928, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 9144, 3928, 17747 },   -- 40-49
-      { 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928 },   -- 50-59
-      { 241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 9144, 3928, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 9144, 3928, 17747, 17349, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 9144, 3928, 17747, 17349, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 9144, 3928, 17747, 241650, 17349 },   -- 60
     },
     ["potion-mana"] = {
       { 3385, 2455, 2456, 255663 },   -- 1-19
@@ -587,10 +632,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -623,9 +668,9 @@ local BEST = {
     ["weapon"] = {
       { 20744 },   -- 1-19
       { 20745, 20744 },   -- 20-39
-      { 20750, 20745, 20744 },   -- 40-49
-      { 20750, 20745, 20744 },   -- 50-59
-      { 20750, 20745, 20744 },   -- 60
+      { 20747, 20745, 20744 },   -- 40-49
+      { 20747, 20745, 20744 },   -- 50-59
+      { 20747, 20745, 20744 },   -- 60
     },
   },
   hunter = {
@@ -637,11 +682,11 @@ local BEST = {
       { 13932, 250069, 13927, 18045, 13928, 8364, 3728, 4592 },   -- 60
     },
     ["potion-heal"] = {
-      { 247240, 247239, 929, 858, 4596, 2456, 5205, 118 },   -- 1-19
-      { 247242, 247241, 9144, 3928, 223914, 247240, 17349, 1710 },   -- 20-39
-      { 247242, 223913, 13446, 17348, 247241, 9144, 3928, 17747 },   -- 40-49
-      { 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928 },   -- 50-59
-      { 241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144 },   -- 60
+      { 929, 858, 247240, 2456, 5205, 118, 247239, 255663 },   -- 1-19
+      { 9144, 3928, 17349, 1710, 247242, 929, 247241, 858 },   -- 20-39
+      { 13446, 17348, 9144, 3928, 17747, 17349, 1710, 247242 },   -- 40-49
+      { 18253, 13446, 17348, 9144, 3928, 17747, 17349, 1710 },   -- 50-59
+      { 18253, 13446, 17348, 9144, 3928, 17747, 241650, 17349 },   -- 60
     },
     ["potion-mana"] = {
       { 3385, 2455, 2456, 255663 },   -- 1-19
@@ -659,10 +704,10 @@ local BEST = {
     },
     ["potion-protection"] = {
       { 6048, 6051, 3384 },   -- 1-19
-      { 6052, 6050, 6049, 6048, 9036, 6051, 3384 },   -- 20-39
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 40-49
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 50-59
-      { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048 },   -- 60
+      { 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },   -- 20-39
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 40-49
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 50-59
+      { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049 },   -- 60
     },
     ["potion-utility"] = {
       { 2459 },   -- 1-19
@@ -704,14 +749,15 @@ local ALL = {
       6290, 2681, 6890, 2888, 2680,
     },
     ["potion-heal"] = {
-      241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928, 18839, 9144, 223914, 247240, 17349, 17747, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 3928, 18839, 9144, 241650, 17349, 17747, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
+    ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
     ["potion-rage"] = { 13442, 5633, 5631 },
     ["potion-buff"] = { 250943, 250942, 250941, 250940, 250938 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
-    ["elixir"] = { 250351, 13452, 250350, 9206, 13453, 12820, 246948, 9187, 250328, 250349, 3391, 6662, 8949, 2454, 3390, 2457 },
+    ["elixir"] = { 250351, 13452, 250350, 9206, 13453, 9187, 250328, 12820, 246948, 250349, 3391, 8949, 2454, 3390, 2457, 6662 },
     ["scroll"] = { 10310, 4426, 2289, 10309, 4425, 954, 1477, 3012 },
     ["weapon"] = { 12643, 12404, 7964, 7965, 2871, 3241, 2863, 3240, 2862, 3239 },
   },
@@ -722,52 +768,55 @@ local ALL = {
       6290, 2680, 2681, 6890, 2888,
     },
     ["potion-heal"] = {
-      241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928, 18839, 9144, 223914, 247240, 17349, 17747, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 3928, 18839, 9144, 241650, 17349, 17747, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
+    ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
+    ["potion-rage"] = { 13442, 5633, 5631 },
     ["potion-buff"] = { 250943, 250942, 250941, 250940, 250938 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
-    ["elixir"] = { 13452, 250351, 250350, 9187, 250328, 12820, 246948, 8949, 13453, 9206, 3390, 250349, 3391, 6662, 2457, 2454 },
+    ["elixir"] = { 13452, 250351, 250350, 9187, 250328, 8949, 13453, 9206, 12820, 246948, 3390, 250349, 3391, 2457, 2454, 6662 },
     ["scroll"] = { 10309, 4425, 1477, 10310, 4426, 3012, 2289, 954 },
     ["weapon"] = { 12643, 12404, 7964, 7965, 2871, 3241, 2863, 3240, 2862, 3239 },
   },
   tank = {
     ["food"] = {
-      250068, 17222, 16971, 6038, 12215, 250069, 250072, 20452, 250070, 250071, 5527, 18045, 12212, 3666, 3665, 3729,
+      250068, 17222, 12218, 6038, 12215, 250069, 250072, 20452, 250070, 250071, 286152, 18045, 12212, 3666, 3665, 3729,
       12214, 13932, 250065, 13934, 3728, 13851, 20074, 13927, 274976, 250074, 250080, 12213, 5479, 8364, 3664, 1017,
       12209, 3727, 2685, 5480, 4592, 3662, 2684, 5472, 6888, 3663, 263509, 3220, 2687, 724, 3726, 787,
-      2680, 2681, 6890, 2888, 6290,
+      2680, 2681, 6890, 2888, 6290, 16971, 5527,
     },
     ["potion-heal"] = {
-      241650, 247242, 18253, 223913, 13446, 17348, 247241, 3928, 18839, 9144, 223914, 247240, 17349, 17747, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 3928, 18839, 9144, 241650, 17349, 17747, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
+    ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
     ["potion-rage"] = { 13442, 5633, 5631 },
     ["potion-buff"] = { 250943, 250942, 250941, 250940, 250938 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
     ["elixir"] = {
-      250335, 250329, 13453, 250334, 13452, 250350, 3825, 250351, 9187, 250328, 9206, 8949, 12820, 246948, 3390, 250349,
-      2458, 3391, 6662, 2457, 2454,
+      250329, 250335, 13453, 250334, 13445, 13452, 250350, 3825, 250351, 8951, 9187, 250328, 9206, 3826, 3389, 8949,
+      250336, 3388, 3390, 250349, 12820, 246948, 2458, 3391, 5997, 2457, 2454, 3382, 6662,
     },
     ["flask"] = { 13510, 13513 },
-    ["scroll"] = { 10307, 4422, 1711, 10309, 10310, 4425, 4426, 1180, 1477, 2289, 3012, 954 },
+    ["scroll"] = { 10307, 4422, 10305, 1711, 4421, 10309, 10310, 4425, 1478, 4426, 1180, 1477, 2289, 3013, 3012, 954 },
     ["weapon"] = { 12643, 12404, 7964, 7965, 2871, 3241, 2863, 3240, 2862, 3239 },
   },
   caster = {
     ["food"] = {
-      13933, 13935, 6887, 13931, 274971, 13928, 250067, 250075, 18254, 250076, 21217, 4457, 12216, 250073, 16971, 21072,
-      249876, 12210, 249875, 5527, 1082, 2683, 250077, 249874, 5095, 249873, 2682, 5477, 250079, 263512, 12224, 249872,
-      249871,
+      13933, 13935, 6887, 13931, 274971, 13928, 250067, 250075, 18254, 250076, 21217, 4457, 12216, 250073, 21072, 249876,
+      12210, 249875, 1082, 2683, 250077, 249874, 5095, 249873, 2682, 5477, 250079, 263512, 12224, 249872, 249871, 16971,
+      5527,
     },
     ["potion-heal"] = {
-      241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928, 18839, 17747, 223914, 247240, 17349, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 9144, 3928, 18839, 17747, 241650, 17349, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
     ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
     ["potion-buff"] = { 250937, 250936, 250935, 250934, 250933, 250932 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
     ["elixir"] = {
       13454, 250337, 250341, 9264, 250348, 250338, 9155, 250343, 250342, 250336, 9179, 250328, 21546, 13447, 250340, 6373,
@@ -775,20 +824,20 @@ local ALL = {
     },
     ["flask"] = { 13512, 13511 },
     ["scroll"] = { 10308, 4419, 277493, 2290, 277483, 10306, 955, 4424, 1712, 275069, 1181 },
-    ["weapon"] = { 20750, 20744, 20745 },
+    ["weapon"] = { 20750, 20746, 20747, 20744, 20745 },
   },
   healer = {
     ["food"] = {
-      249870, 249869, 249868, 250067, 250075, 249867, 249876, 18254, 250076, 16971, 249875, 249866, 4457, 12216, 250073, 249874,
-      5527, 12210, 249873, 249865, 1082, 2683, 250077, 249872, 2682, 5477, 250079, 263512, 12224, 249871,
+      249870, 249869, 249868, 250067, 250075, 249867, 249876, 18254, 250076, 249875, 249866, 4457, 12216, 250073, 249874, 12210,
+      249873, 249865, 1082, 2683, 250077, 249872, 2682, 5477, 250079, 263512, 12224, 249871, 16971, 5527,
     },
     ["potion-heal"] = {
-      241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928, 18839, 17747, 223914, 247240, 17349, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 9144, 3928, 18839, 17747, 241650, 17349, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
     ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
     ["potion-buff"] = { 250949, 250948, 250947, 250946, 250945, 250944 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
     ["elixir"] = {
       250341, 250333, 250332, 250337, 250336, 250348, 250338, 250331, 13447, 250340, 9179, 250328, 250330, 250347, 250339, 250354,
@@ -796,7 +845,7 @@ local ALL = {
     },
     ["flask"] = { 13511 },
     ["scroll"] = { 10308, 10306, 4419, 277493, 4424, 2290, 277483, 1712, 955, 1181, 275069 },
-    ["weapon"] = { 20750, 20745, 20744 },
+    ["weapon"] = { 20747, 20750, 20745, 20746, 20744 },
   },
   hunter = {
     ["food"] = {
@@ -804,12 +853,12 @@ local ALL = {
       3727, 787, 3662, 2684, 6290, 2680,
     },
     ["potion-heal"] = {
-      241650, 18253, 247242, 223913, 13446, 17348, 247241, 9144, 3928, 18839, 17747, 223914, 247240, 17349, 1710, 247239,
-      929, 858, 4596, 2456, 5205, 118, 255663,
+      18253, 13446, 17348, 9144, 3928, 18839, 17747, 241650, 17349, 1710, 247242, 929, 247241, 858, 247240, 2456,
+      5205, 118, 247239, 255663, 4596,
     },
     ["potion-mana"] = { 13444, 18253, 18841, 13443, 17351, 6149, 9144, 17352, 17747, 3827, 3385, 2455, 2456, 255663 },
     ["potion-buff"] = { 250943, 250942, 250941, 250940, 250938 },
-    ["potion-protection"] = { 13461, 13456, 13457, 13459, 6052, 6050, 6049, 6048, 9036, 6051, 3384 },
+    ["potion-protection"] = { 13461, 13456, 13457, 13459, 13455, 6052, 6050, 6049, 4623, 6048, 9036, 6051, 3384 },
     ["potion-utility"] = { 3387, 5634, 2459 },
     ["elixir"] = { 13452, 250328, 9187, 250350, 8949, 3390, 2457 },
     ["flask"] = { 13511 },
@@ -819,9 +868,9 @@ local ALL = {
 
 -- The potion lists a role sees, in order (one of each in the best 4).
 local POTIONS = {
-  melee = { "potion-heal", "potion-buff", "potion-rage", "potion-utility", "potion-protection" },
-  agility = { "potion-heal", "potion-buff", "potion-utility", "potion-protection" },
-  tank = { "potion-heal", "potion-rage", "potion-utility", "potion-protection", "potion-buff" },
+  melee = { "potion-heal", "potion-buff", "potion-rage", "potion-mana", "potion-utility", "potion-protection" },
+  agility = { "potion-heal", "potion-buff", "potion-mana", "potion-utility", "potion-protection", "potion-rage" },
+  tank = { "potion-heal", "potion-rage", "potion-mana", "potion-utility", "potion-protection", "potion-buff" },
   caster = { "potion-mana", "potion-heal", "potion-buff", "potion-utility", "potion-protection" },
   healer = { "potion-mana", "potion-heal", "potion-buff", "potion-utility", "potion-protection" },
   hunter = { "potion-heal", "potion-mana", "potion-buff", "potion-utility", "potion-protection" },
@@ -952,14 +1001,35 @@ local function listAllowed(list, class)
   return true
 end
 
--- The best ones: from the research's ranking for the level's band, the next usable one of
--- each list in turn (potions: one of each kind first), skipping one whose group was shown
--- (two elixirs of one stat line, two foods of one stat, a potion of a name already in).
+-- Can this class and level use it? An item's classes: nil = all, else e.g. "PRIEST,WARLOCK"
+-- (the mage's familiar scrolls; a school's elixir only for the classes that cast that school).
+local function usable(it, level, class)
+  if not it or it[4] > level then return false end
+  local who = it[10]
+  if who == nil or class == nil then return true end
+  return (("," .. who .. ","):find("," .. class .. ",", 1, true)) ~= nil
+end
+
+local function append(out, ids)
+  if type(ids) == "table" then
+    for _, id in ipairs(ids) do out[#out + 1] = id end
+  end
+  return out
+end
+
+-- The best ones: from the research's ranking for the level's band (then every usable one, for a
+-- level low in its band), the next usable one of each list in turn (potions: one of each kind
+-- first), skipping one whose group was shown (two elixirs of one stat line, two foods of one
+-- stat, two stones of one kind, a potion of a name already in).
 local function bestIds(role, lists, level, class)
   local band, per, pos, out, seen = bandOf(level), {}, {}, {}, {}
   for i, list in ipairs(lists) do
     local b = BEST[role] and BEST[role][list]
-    per[i] = (b and listAllowed(list, class) and b[band]) or {}
+    per[i] = {}
+    if listAllowed(list, class) then
+      append(per[i], b and b[band])
+      append(per[i], ALL[role] and ALL[role][list])
+    end
     pos[i] = 1
   end
   local more = true
@@ -971,7 +1041,7 @@ local function bestIds(role, lists, level, class)
         local id = ids[p]
         p = p + 1
         local it = ITEMS[id]
-        if it and it[4] <= level and not seen[it[9]] then
+        if usable(it, level, class) and not seen[it[9]] then
           seen[it[9]] = true
           out[#out + 1] = id
           more = true
@@ -991,8 +1061,7 @@ local function allIds(role, lists, level, class)
   for _, list in ipairs(lists) do
     local ids = listAllowed(list, class) and ALL[role] and ALL[role][list] or {}
     for _, id in ipairs(ids) do
-      local it = ITEMS[id]
-      if it and it[4] <= level and not seen[id] then
+      if usable(ITEMS[id], level, class) and not seen[id] then
         seen[id] = true
         out[#out + 1] = id
       end
@@ -1253,7 +1322,6 @@ local function newRow(i)
   r:SetScript("OnEnter", guarded(rowEnter))
   r:SetScript("OnLeave", guarded(rowLeave))
   r:SetScript("OnClick", guarded(rowClick))
-  if r.EnableMouseWheel then r:EnableMouseWheel(true) end
   r:SetScript("OnMouseWheel", guarded(function(_, delta) onWheel(F, delta) end))
   rows[i] = r
   return r
@@ -1284,6 +1352,9 @@ local function draw()
   if offset > total - vis then offset = total - vis end
   if offset < 0 then offset = 0 end
   local stale, nt, nr = stalePrices(), 0, 0
+  -- The wheel scrolls the list only while there is more to see; else it zooms the camera as always.
+  local wheel = not L.collapsed and vis > 0 and total > vis
+  if F.EnableMouseWheel then F:EnableMouseWheel(wheel) end
   if not L.collapsed and vis > 0 then
     local x0, colW, top = PAD, L.colW, -(HEAD_H + BODY_TOP)
     for _, cell in ipairs(L.cells) do
@@ -1311,6 +1382,7 @@ local function draw()
           r:SetPoint("TOPLEFT", F, "TOPLEFT", x, y)
           r:SetWidth(colW)
           r.glKey = cell.key
+          if r.EnableMouseWheel then r:EnableMouseWheel(wheel) end
           fillRow(r, cell.id, stale)
           r:Show()
         end
@@ -1581,6 +1653,7 @@ local function onUpdate(self, elapsed)
   pollWait = pollWait - (tonumber(elapsed) or 0)
   if pollWait > 0 then return end
   pollWait = 0.25
+  C.polls = C.polls + 1
   local key = keyOf(measure())
   if key ~= pollKey then
     pollKey = key
@@ -1611,7 +1684,6 @@ local function build()
   C.builds = C.builds + 1
   F:SetHeight(HEAD_H)
   F:EnableMouse(true)
-  if F.EnableMouseWheel then F:EnableMouseWheel(true) end
   if F.SetClampedToScreen then F:SetClampedToScreen(true) end
   backdrop()
   C.look = "plain"
