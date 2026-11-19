@@ -51,7 +51,7 @@ local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes yo
 local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
                             -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-18i"   -- /gl bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-19a"   -- /gl bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -608,15 +608,25 @@ end
 --           scrying bowl the item calls up) and you have not taken that one.
 --           An item a quest gave you is kept while a quest after that one is
 --           in your log (the quests between done; for a tool, up to where a
---           quest starts at an object the one before is handed in at)
+--           quest starts at an object the one before is handed in at).
+--           And whenever a quest you can still do asks for it and does not
+--           give you one when you take it (later = true): a book you find in
+--           the world and hand in to a librarian, a token, an item for a
+--           quest you dropped. Such a quest is never in your log before you
+--           hand the item in, so closed headers do not change this, and a
+--           quest above your level is for later.
 --   starts  it starts a quest you have not done
 --   maybe   not sure, so never "can drop": the quest that gave you a note
 --           (one you read, not use) is done but the one right after it is
 --           for you and not done (why "next"), closed quest log headers
 --           hide quests (why "hidden"), or a quest's own text is not in
 --           yet (why "reading")
---   done    they are all done: you can drop it
---   open    you have not started them (none is in your quest log)
+--   done    they are all done, or shut for you (shut = true: you did one
+--           that excludes it or the quest its breadcrumb leads to, or you
+--           are past its top level): you can drop it
+--   open    left over: only quests that give you the item when you take
+--           them (fresh = true: taking one gives you a new one), none of
+--           them done or in your log
 -- Your quest log beats QuestieDB (which may not know every quest on Forever,
 -- and has items of the same name mixed up): a quest in your log whose title,
 -- objectives or own text name the item keeps it, whatever QuestieDB says;
@@ -857,6 +867,10 @@ local function QuestInfo(L, q)
     -- It can no longer be taken once you did one of these.
     ex = ex,
     untilQ = Num(Q.Get(q, "availableUntilCompleted")),
+    -- A breadcrumb shuts once the quest it leads to is done; a quest with a
+    -- top level shuts once you are past it.
+    crumbFor = Num(Q.Get(q, "breadcrumbForQuestId")),
+    maxLevel = Num(Q.Get(q, "requiredMaxLevel")),
     pre = pre,
   }
   QI.info[q] = c
@@ -879,7 +893,8 @@ local function Overlaps(a, b)
 end
 
 -- Your race's bit (QuestieDB's own mapping), your faction's races and your
--- class's bit; each nil when it cannot be read.
+-- class's bit; each nil when it cannot be read. side: "A" or "H", as
+-- QuestieDB marks the NPCs friendly to you.
 local function PlayerMasks(L)
   if QI.player then return QI.player end
   local p, E = {}, type(L.Enum) == "table" and L.Enum or {}
@@ -889,7 +904,10 @@ local function PlayerMasks(L)
   end
   if type(_G.UnitFactionGroup) == "function" and type(E.factionRaceMasks) == "table" then
     local ok, f = pcall(_G.UnitFactionGroup, "player")
-    if ok and Str(f) then p.faction = Num(E.factionRaceMasks[f]) end
+    if ok and Str(f) then
+      p.faction = Num(E.factionRaceMasks[f])
+      p.side = (f == "Alliance" and "A") or (f == "Horde" and "H") or nil
+    end
   end
   if type(_G.UnitClass) == "function" then
     local ok, _, _, classID = pcall(_G.UnitClass, "player")
@@ -914,10 +932,16 @@ local function ForPlayer(L, info)
 end
 
 -- Done, or shut for good because you did a quest that excludes it (or the
--- one it is only available until).
+-- one it is only available until, or the one a breadcrumb leads to), or you
+-- are past its top level.
 local function Closed(info, q)
   if QuestDone(q) then return true end
   if info.untilQ and info.untilQ > 0 and QuestDone(info.untilQ) then return true end
+  if info.crumbFor and info.crumbFor > 0 and QuestDone(info.crumbFor) then return true end
+  if info.maxLevel and info.maxLevel > 0 then
+    local lv = PlayerLevel()
+    if lv and lv > info.maxLevel then return true end
+  end
   for _, x in ipairs(info.ex) do
     if QuestDone(x) then return true end
   end
@@ -1047,12 +1071,68 @@ function QX.LogTitle(log, q)
   return nil
 end
 
+-- Whether quest q only needs you to carry the item (QuestieDB's
+-- requiredSourceItems: a tool, a lamp) rather than hand it in as one of its
+-- objectives. The objectives are not read again: the index has them.
+function QX.Carried(L, q, id)
+  local need = L.Quest.Get(q, "requiredSourceItems")
+  if type(need) == "table" then
+    for _, it in pairs(need) do
+      if Num(it) == id then return true end
+    end
+  end
+  return false
+end
+
+-- Who takes quest q in, in a few words: its NPC (one friendly to your
+-- faction first), else its object; nil when QuestieDB names neither. Read
+-- once a session; a read that fails only leaves the name out.
+function QX.HandIn(L, q, info)
+  if info.at == nil then
+    local ok, at = pcall(QX.HandInName, L, q)
+    info.at = ok and at or false
+  end
+  return info.at or nil
+end
+
+function QX.HandInName(L, q)
+  local at, t = false, L.Quest.Get(q, "finishedBy")
+  if type(t) == "table" then
+    local N, O, side = L.Npc, L.Object, PlayerMasks(L).side
+    if type(t[1]) == "table" and type(N) == "table" and type(N.Get) == "function" then
+      local first
+      for _, n in ipairs(t[1]) do
+        n = Num(n)
+        local name = n and Str(N.Get(n, "name"))
+        if name then
+          local f = side and Str(N.Get(n, "friendlyToFaction"))
+          if f and string.find(f, side, 1, true) then at = name break end
+          first = first or name
+        end
+      end
+      at = at or first or false
+    end
+    if not at and type(t[2]) == "table" and type(O) == "table" and type(O.Get) == "function" then
+      for _, o in ipairs(t[2]) do
+        o = Num(o)
+        local name = o and Str(O.Get(o, "name"))
+        if name then at = name break end
+      end
+    end
+  end
+  return at or false
+end
+
 -- QuestieDB's verdict on a quest item (see above): { kind = "keep",
 -- "starts", "maybe", "done" or "open", quest = id, name = its name, rep =
 -- true when it is kept for a repeatable quest, why = "next", "hidden" or
 -- "reading" for maybe, log = how a quest in your log names it ("title",
 -- "objective", "text") when that is what keeps it, given = true when a
--- quest for you gives you the item (it cannot be had again) }. nil when
+-- quest for you gives you the item (it cannot be had again), later = true
+-- when it is kept for a quest you have not taken (turnin = true when that
+-- quest asks for it, at = who takes it in), shut = true for done when the
+-- quest it names is shut for you rather than done, fresh = true for open
+-- when taking the quest it names gives you a new one }. nil when
 -- there is none: QuestieDB is not loaded or not usable, the index is still
 -- being made, or no quest for you uses the item (and none in your log
 -- names it). log: ReadQuestLog() when the caller has it. startQ: the quest
@@ -1085,9 +1165,9 @@ local function QuestieVerdict(id, log, startQ)
   else
     codes[1] = entry
   end
-  -- givers: the quests that hand it to you. from: the quest after a giver
-  -- (the one the item is for) -> that giver.
-  local givers, from = {}, {}
+  -- givers: the quests that hand it to you (gives: as a set). from: the
+  -- quest after a giver (the one the item is for) -> that giver.
+  local givers, from, gives = {}, {}, {}
   for i = 1, #codes do
     local c = Num(codes[i])
     if c and c > 0 then
@@ -1096,6 +1176,7 @@ local function QuestieVerdict(id, log, startQ)
         add(q, "use")
       elseif role == ROLE_GIVE and q ~= s1 and q ~= s2 then
         givers[#givers + 1] = q
+        gives[q] = true
         -- The quest after the one that gives it is the one a tool you use (a
         -- phial that calls someone) is for. A note you read may be for any
         -- quest after that one: see Chain below.
@@ -1194,7 +1275,11 @@ local function QuestieVerdict(id, log, startQ)
         if s == nil and not wait then wait = verdict("maybe", n, nil, "hidden") end
       end
     end
-    return final(after or wait or verdict("done", pick(any)))
+    -- Named by one you did; when you did none, they are shut for you.
+    local d = pick(function(x) return QuestDone(x) end)
+    local v = verdict("done", d or pick(any))
+    v.shut = not d
+    return final(after or wait or v)
   end
   -- Halfway along a chain, where a dropped item is gone for good: a quest
   -- you finished gave it to you or rewarded you with it, or a quest that
@@ -1220,8 +1305,24 @@ local function QuestieVerdict(id, log, startQ)
     return false
   end)
   if mid then return verdict("keep", mid) end
-  -- Not started; while closed headers hide whether it is, not sure.
-  return final(verdict("open", q))
+  -- A quest you can still do asks for it, and taking that quest does not
+  -- give you one: kept for it, whatever your quest log shows. A book you
+  -- find in the world and hand in to a librarian is never in your log
+  -- before you hand it in; a quest above your level is for later.
+  local t = pick(function(x) return R[x].role == "use" and not closed[x] and not gives[x] end)
+  if t then
+    local v = verdict("keep", t)
+    v.later, v.turnin = true, not QX.Carried(L, t, id)
+    if v.turnin then v.at = QX.HandIn(L, t, R[t].info) end
+    return v
+  end
+  -- Left over: only quests that give you the item when you take them (or
+  -- the one after such a quest), none done or in your log: taking one gives
+  -- you a new one. While closed headers hide whether one is, not sure.
+  local g = pick(function(x) return not closed[x] and (R[x].role == "give" or gives[x]) end)
+  local v = verdict("open", g or q)
+  v.fresh = g ~= nil
+  return final(v)
 end
 
 -- QuestieDB's verdict on one item as a tooltip sees it (the tests read it).
@@ -1250,8 +1351,14 @@ end
 -- The tooltip line for a verdict, and its colour.
 local function QuestLineText(v)
   local n = v.name
-  if v.kind == "done" then return "Can drop: done with " .. (n or "its quests"), "pos" end
-  if v.kind == "open" then return "Only for " .. (n or "a quest") .. ", not in your quest log", "muted" end
+  if v.kind == "done" then
+    if v.shut then return "Can drop: " .. (n or "its quest") .. " is no longer open to you", "pos" end
+    return "Can drop: done with " .. (n or "its quests"), "pos"
+  end
+  if v.kind == "open" then
+    if v.fresh then return "Can drop: taking " .. (n or "its quest") .. " gives you a new one", "muted" end
+    return "Only for " .. (n or "a quest") .. ", not in your quest log", "muted"
+  end
   if v.kind == "maybe" then
     if v.why == "hidden" then return "Not sure: some quest log headers are closed", "muted" end
     if v.why == "reading" then return "Not sure yet: still reading your quest log", "muted" end
@@ -1259,6 +1366,7 @@ local function QuestLineText(v)
   end
   if v.kind == "starts" then return "Starts " .. (n or "a quest"), "buy" end
   if v.rep then return "Keep: for " .. (n and (n .. " (repeatable)") or "a repeatable quest"), "buy" end
+  if v.turnin then return "Keep: turn in for " .. (n or "its quest") .. (v.at and (" at " .. v.at) or ""), "buy" end
   return "Keep: needed for " .. (n or "a quest in your log"), "buy"
 end
 
@@ -1416,6 +1524,7 @@ local WHY_ORDER = { done = 1, open = 2, none = 3, maybe = 4 }
 QX.LISTED = { done = true, open = true, maybe = true }
 function QX.Entry(e, v)
   e.why, e.sure, e.quest, e.qdb, e.maybe = v.kind, v.kind ~= "maybe", v.name, true, v.why
+  e.shut, e.fresh = v.shut, v.fresh
 end
 
 function ns.BagScan()
@@ -1522,12 +1631,17 @@ function ns.BagScan()
             -- drop or sell, whatever it is worth. Not sure (maybe) holds one
             -- a quest gave you, which cannot be had again; one a quest only
             -- asks for (cloth, ore) can, so it stays on the list as before.
+            -- Kept for a quest you have not taken (later): held unless it
+            -- can be had again (not bound, and the auction house trades it:
+            -- cloth or ore some quest asks for stays on the list). A book
+            -- you found is held.
             local held, v = false, nil
             if QuestieLinked(id) then
               v = ScanVerdict(id, log, qi)
               if v then
                 local kind = v.kind
-                held = kind == "starts" or (kind == "keep" and not v.rep) or (kind == "maybe" and v.given == true)
+                local again = v.later and not bound and bind ~= BIND_PICKUP and HasAuctionData(PriceID(id, link))
+                held = kind == "starts" or (kind == "keep" and not v.rep and not again) or (kind == "maybe" and v.given == true)
                 if held then e.questItem = true end
                 if (kind == "maybe" and held) or (e.value <= 0 and QX.LISTED[kind]) then
                   e.questItem = true
@@ -1978,8 +2092,8 @@ local function RowTooltip(row)
   elseif kind == "quest" then
     QI.lastItem = e.id
     tt:AddLine(Paint("Old quest item", "buy"))
-    if e.qdb and e.why == "done" then
-      tt:AddLine("Can drop: done with " .. (e.quest or "its quests") .. ".", 0.8, 0.8, 0.8, true)
+    if e.qdb and (e.why == "done" or e.why == "open") then
+      tt:AddLine(QuestLineText({ kind = e.why, name = e.quest, shut = e.shut, fresh = e.fresh }) .. ".", 0.8, 0.8, 0.8, true)
     elseif e.qdb and e.why == "maybe" and e.maybe == "hidden" then
       tt:AddLine("Not sure: some quest log headers are closed. Open them so it can be checked.", 0.8, 0.8, 0.8, true)
     elseif e.qdb and e.why == "maybe" and e.maybe == "reading" then
@@ -1987,8 +2101,6 @@ local function RowTooltip(row)
     elseif e.qdb and e.why == "maybe" then
       tt:AddLine("May be needed for " .. (e.quest or "the next quest") .. ". Keep it until that quest is done.",
         0.8, 0.8, 0.8, true)
-    elseif e.qdb then
-      tt:AddLine("Only for " .. (e.quest or "a quest") .. ", not in your quest log.", 0.8, 0.8, 0.8, true)
     elseif e.sure then
       tt:AddLine(QUEST_TEXT[e.why] or "It may be left over.", 0.8, 0.8, 0.8, true)
     else
@@ -2140,8 +2252,9 @@ function BP:FillRow(r, e, kind)
     r.right:SetText(e.maybe == "hidden" and "check log" or (e.maybe == "reading" and "wait" or "maybe"))
     SetFSColor(r.right, "buy")
   elseif kind == "quest" and e.qdb then
-    -- From QuestieDB: green when its quests are done, grey when not started.
-    r.right:SetText(e.why == "done" and "done" or "not started")
+    -- From QuestieDB: green when its quests are done (or shut for you), grey
+    -- when the quest that gives it is not started.
+    r.right:SetText(e.why == "done" and (e.shut and "shut" or "done") or "not started")
     SetFSColor(r.right, e.why == "done" and "pos" or "muted")
   elseif kind == "quest" then
     r.right:SetText(e.why == "done" and "quest done" or (e.sure and "not needed" or "check log"))
@@ -2959,7 +3072,8 @@ local function Report()
         if e.maybe == "reading" then return ItemText(e) .. " (still reading your quest log)" end
         return ItemText(e) .. " (maybe needed for " .. (e.quest or "the next quest") .. ")"
       elseif e.qdb then
-        return ItemText(e) .. " (" .. (e.why == "done" and "done" or "not started") .. (e.quest and (": " .. e.quest) or "") .. ")"
+        local why = e.why == "done" and (e.shut and "no longer open" or "done") or "not started"
+        return ItemText(e) .. " (" .. why .. (e.quest and (": " .. e.quest) or "") .. ")"
       end
       return ItemText(e) .. " (" .. (e.why == "done" and "quest done" or (e.sure and "no quest needs it" or "check your quest log")) .. ")"
     end))
@@ -3201,6 +3315,15 @@ end
 ---------------------------------------------------------------------------
 QX.ROLE_TEXT = { use = "needs it", give = "gives it", start = "starts it" }
 
+-- The last line for an item kept for a quest you have not taken: which
+-- quest, that it is not done, and why that keeps it.
+function QX.Why(L, v)
+  local ql, lv = Num(L.Quest.Get(v.quest, "questLevel")), PlayerLevel()
+  local later = (ql and lv and ql > lv) and sformat(" (level %d: for later)", ql) or ""
+  return sformat("why: %d %s is not done and you can still do it%s, so it is kept; your quest log does not change that",
+    v.quest, v.name or "?", later)
+end
+
 -- One quest's state for you: in your log (that counts first, as for the
 -- verdict, even when the game says it is done), done, not started, and so on.
 function QX.State(L, q, ctx)
@@ -3210,7 +3333,7 @@ function QX.State(L, q, ctx)
   if not info then return QuestDone(q) and "done (not in QuestieDB)" or "not in QuestieDB" end
   if not ForPlayer(L, info) then return "not for you" end
   if QuestDone(q) then return "done" end
-  if Closed(info, q) then return "shut by one you did" end
+  if Closed(info, q) then return "no longer open to you" end
   if s == nil then return "headers closed" end
   return "not started"
 end
@@ -3248,6 +3371,11 @@ function QX.Check(rest)
     use == true and "yes" or (use == false and "no" or "not loaded"), BAGS_BUILD))
   local log = ReadQuestLog()
   local ctx = { log = log }
+  local v
+  if L and QI.state ~= "off" then
+    local ok, r = pcall(QuestieVerdict, id, log, nil)
+    if ok then v = r else QI.Fail(r) end
+  end
   if not L then
     Print("QuestieDB: " .. (QuestIndexText() or "not loaded"))
   else
@@ -3267,8 +3395,9 @@ function QX.Check(rest)
       if c % 4 == ROLE_USE then quest(floor(c / 4), "use") elseif c % 4 == ROLE_GIVE then quest(floor(c / 4), "give") end
     end
     Print("QuestieDB: " .. (#parts > 0 and ListText(parts, 4, function(p) return p end) or "no quest uses it"))
-    -- The quests after one that gave it, up to the first you have not done.
-    for i = 1, min(#givers, 2) do
+    -- The quests after one that gave it, up to the first you have not done
+    -- (one line of them when a last line says why it is kept).
+    for i = 1, min(#givers, (v and v.later) and 1 or 2) do
       local g = givers[i]
       local info, chain, been = QuestInfo(L, g), {}, { [g] = true }
       local n = info and info.nextQ
@@ -3278,7 +3407,7 @@ function QX.Check(rest)
         local ni = QuestInfo(L, n)
         local st = QX.State(L, n, ctx)
         chain[#chain + 1] = sformat("%d %s: %s", n, ni and ni.name or "?", st)
-        if not ni or (st ~= "done" and st ~= "shut by one you did") then break end
+        if not ni or (st ~= "done" and st ~= "no longer open to you") then break end
         n = ni.nextQ
       end
       Print(sformat("after %d: %s", g, #chain > 0 and tconcat(chain, ", ") or "no quest"))
@@ -3292,13 +3421,9 @@ function QX.Check(rest)
   Print(sformat("quest log: %s; %d quest%s read%s%s", #hp > 0 and ("named by " .. tconcat(hp, ", ")) or "no quest names it",
     log.count, log.count == 1 and "" or "s", log.complete and "" or ", some headers closed",
     log.pending and ", some quest text not in yet" or ""))
-  local v
-  if L and QI.state ~= "off" then
-    local ok, r = pcall(QuestieVerdict, id, log, nil)
-    if ok then v = r else QI.Fail(r) end
-  end
   if v then
     Print("verdict: " .. (QuestLineText(v)))
+    if v.later then Print(QX.Why(L, v)) end
     return
   end
   local why, sure = QuestVerdict({ id = id, name = name }, nil, log)
