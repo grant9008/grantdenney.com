@@ -14706,6 +14706,7 @@ EN_GEAR = {
     990137: ("Test Low Gloves", "INVTYPE_HAND", 4, 2, 2, 10),
     990138: ("Test Bonebiter", "INVTYPE_2HWEAPON", 2, 1, 2, 16),
     990139: ("Test Blunderbuss", "INVTYPE_RANGEDRIGHT", 2, 3, 2, 18),
+    990140: ("Test Main Dagger", "INVTYPE_WEAPON", 2, 15, 2, 16),
 }
 # The test gear's item level (GetItemInfo's 4th value): 60 unless named here. Armor kits need items of
 # their level or higher (Heavy 15, Thick 25, Rugged 35). Triprunner Dungarees is item 9624's 37
@@ -14718,7 +14719,7 @@ EN_GROUP_ITEM = [("weapon", 990101), ("weapon2h", 990102), ("shield", 990105), (
                  ("neck", 990112), ("head", 990113), ("legs", 990114), ("ranged", 990115),
                  ("ranged", 990116), ("ranged", 990128), ("weapon", 990104), ("weapon2h", 990103),
                  ("weapon", 990130), ("weapon", 990131), ("legs", 990132), ("legs", 990135), ("chest", 990136),
-                 ("hands", 990137), ("weapon2h", 990138), ("ranged", 990139)]
+                 ("hands", 990137), ("weapon2h", 990138), ("ranged", 990139), ("weapon", 990140)]
 # Weapon skills each class can learn (weapon subclass ids) and who can dual wield (an off-hand-only
 # weapon). Classic Era's, plus one-hand axes for rogues: Forever's SkillRaceClassInfo (wowf 1.60.1.70959)
 # gives Axes (skill 44) to class mask 9 (warrior, rogue) where Classic Era's gives mask 1. Shamans
@@ -15441,7 +15442,10 @@ EN_LISTS = {'chest': {'agility': ['s20025', 'k252488', 's13941', 'k252463', 'k25
  'ranged': {'agility': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
             'hunter': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
             'melee': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
-            'tank': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405']},
+            'tank': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
+            'melee/HUNTER': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
+            'agility/HUNTER': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405'],
+            'tank/HUNTER': ['i10548', 'i10546', 'i4407', 'i4406', 'i4405']},
  'shield': {'caster': ['s20017', 's13817', 's13631', 's13378'],
             'healer': ['s20017', 's13817', 's13631', 's13378'],
             'melee': ['s20017', 's13817', 's13631', 's13378'],
@@ -15455,6 +15459,10 @@ EN_LISTS = {'chest': {'agility': ['s20025', 'k252488', 's13941', 'k252463', 'k25
             'healer/SHAMAN': ['s23804', 's1248757'],
             'hunter': ['s23800'],
             'melee': ['s13898', 's20034', 's20032', 's23799', 's20031', 's13943', 's13693', 's13503', 's7788'],
+            'melee/dagger': ['s13898', 's20034', 's20032', 's20031', 's13943', 's23799', 's13693', 's13503', 's7788'],
+            'agility/dagger': ['s13898', 's20032', 's20031', 's13943', 's23800', 's13693', 's20034', 's13503', 's7788'],
+            'tank/dagger': ['s13898', 's20034', 's20032', 's23799', 's20031', 's1248760', 's13943', 's23800', 's13693',
+                            's13503'],
             'tank': ['s13898', 's20034', 's20032', 's23799', 's23800', 's20031', 's1248760', 's13943', 's13693',
                      's13503'],
             'tank/DRUID': ['s13898', 's20032', 's20034', 's23799', 's23800']},
@@ -15493,7 +15501,8 @@ EN_UP = {'chest': {'tank': [8719]},
  'holdable': {'caster': [7659], 'healer': [7659]},
  'legs': {'tank': [8719]},
  'neck': {'tank': [925]},
- 'ranged': {'agility': [2523, 8720], 'hunter': [2523, 8720], 'melee': [2523, 8720], 'tank': [2523, 8720]},
+ 'ranged': {'agility': [2523, 8720], 'hunter': [2523, 8720], 'melee': [2523, 8720], 'tank': [2523, 8720],
+            'melee/HUNTER': [2523, 8720], 'agility/HUNTER': [2523, 8720], 'tank/HUNTER': [2523, 8720]},
  'shield': {'caster': [7663], 'healer': [7663], 'melee': [7663], 'tank': [7663]},
  'weapon': {'caster': [2504],
             'caster/MAGE3': [2504, 2443],
@@ -15541,6 +15550,9 @@ EN_AT = {'chest': {'caster': {866: 9, 928: 8, 1891: 7, 1892: 9},
  'weapon': {'agility': {36: 9, 2563: 8},
             'agility/DRUID': {36: 6},
             'melee': {36: 9, 2564: 8, 2568: 9},
+            'melee/dagger': {36: 9, 2564: 9, 2568: 9},
+            'agility/dagger': {36: 9, 2563: 8},
+            'tank/dagger': {36: 10},
             'tank': {36: 10},
             'tank/DRUID': {36: 6}},
  'weapon2h': {'agility': {36: 7, 2564: 6},
@@ -15812,9 +15824,19 @@ EN_PROCS = {
     37: ("none",),                        # Steel Weapon Chain (Blacksmithing): immune to disarm
 }
 # The weapon speed the weights' weapon damage is for (14 / 2.6 = 5.4, 14 / 3.6 = 3.89) and the
-# speeds a list must stay in value order over (melee role: weapon damage = 14 / speed).
+# speeds a list must stay in value order over (every role: weapon damage x reference / speed). Daggers
+# that can go in the main hand (role/dagger lists): 1.7 to 2.0 sec, valued at 1.8 when no speed is given
+# (Forever's daggers are 1.5 to 2.0, most 1.7 to 1.8; an off-hand-only one keeps the 1H list: off-hand
+# hits do half damage, so its weapon damage is worth about a 2.6 sec main hand's).
 EN_REF_SPEED = {"weapon": 2.6, "weapon2h": 3.6}
 EN_SPEEDS = {"weapon": [x / 10.0 for x in range(23, 30)], "weapon2h": [x / 10.0 for x in range(29, 40)]}
+EN_DAGGER_SPEEDS = [x / 10.0 for x in range(17, 21)]
+EN_DAGGER_REF = 1.8
+
+
+def en_speeds(group, rk):
+    """The speeds a weapon list must stay in value order over."""
+    return EN_DAGGER_SPEEDS if rk.endswith("/dagger") else EN_SPEEDS.get(group, [])
 
 
 def en_proc_stats(eid, speed):
@@ -15871,9 +15893,10 @@ def en_fits(key, subs):
 EN_PULL = {("ranged", "melee"), ("ranged", "agility"), ("ranged", "tank")}
 EN_PULL_NOTE = "(pulling only)"
 
-def en_pick(group, role, cls, tab):
-    """The reviewed list for a slot group and role: role/CLASStab, then role/CLASS, then the role's
-    own (as Enchants.lua's pickFor). (list, up, at) or None."""
+def en_pick(group, role, cls, tab, sub=None, loc=None):
+    """The reviewed list for a slot group and role: role/CLASStab, then role/CLASS, then role/dagger
+    (a dagger, subclass 15, that is not off-hand only), then the role's own (as Enchants.lua's
+    pickFor). (list, up, at, key) or None."""
     g = EN_LISTS.get(group)
     if not g:
         return None
@@ -15882,6 +15905,8 @@ def en_pick(group, role, cls, tab):
         keys.append("%s/%s%s" % (role, cls, tab))
     if cls:
         keys.append("%s/%s" % (role, cls))
+    if sub == 15 and loc != "INVTYPE_WEAPONOFFHAND":
+        keys.append(role + "/dagger")
     keys.append(role)
     for rk in keys:
         if rk in g:
@@ -15904,11 +15929,11 @@ def en_usable(key, level, skills, sub, ilvl=None):
     return True
 
 
-def en_spec(group, role, cls, tab, level=60, skills=None, sub=None, current=None, ilvl=None):
+def en_spec(group, role, cls, tab, level=60, skills=None, sub=None, current=None, ilvl=None, loc=None):
     """The options the product asks for, best first, before any cut to Top 2 or Top 5: the usable
     entries of the role's list above the item's enchant (current), nothing for an "up" enchant or
     the first entry, an "at" enchant cuts before its place, any other: the whole list."""
-    rec = en_pick(group, role, cls, tab)
+    rec = en_pick(group, role, cls, tab, sub, loc)
     if rec is None:
         return []
     lst, up, at, _ = rec
@@ -15936,10 +15961,51 @@ def en_note(group, role, cls, tab):
     return EN_PULL_NOTE if rec and (group, rec[3]) in EN_PULL else None
 
 
-def en_top(group, role, cls, tab, n=2, **kw):
-    if en_note(group, role, cls, tab) and n < 5:
-        return []   # a pull list: Top 5 only
-    return en_spec(group, role, cls, tab, **kw)[:n]
+def en_copper(prices, key):
+    """(copper, every mat priced) as Enchants.lua's costOf: an upgrade item's own AH value, else (a
+    blacksmith's item nobody lists, an enchant) its mats' and fee."""
+    item = EN_ITEM_OF.get(key)
+    if item is not None:
+        v = prices.get(item, 0)
+        if v > 0 or key not in EN_M:
+            return max(v, 0), True
+    copper, full = EN_FEE.get(key, 0), True
+    for mid, n in EN_M.get(key, []):
+        v = prices.get(mid, 0)
+        if v > 0:
+            copper += v * n
+        else:
+            full = False
+    return copper, full
+
+
+def en_five(keys, prices, n=5):
+    """Top n of the options (best first): Top 2 the first two; Top 5 the first two, then up to three
+    later ones that cost less than the best with every mat priced (budget options), while the best has
+    an AH price. prices False: no price data (the list order)."""
+    if prices is None:
+        raise AssertionError("en_five: pass the world's prices (False: no price data)")
+    if n <= 2 or not prices or not keys:
+        return keys[:n]
+    limit = en_copper(prices, keys[0])[0]
+    if limit <= 0:
+        return keys[:n]
+    out = keys[:2]
+    for k in keys[2:]:
+        c, full = en_copper(prices, k)
+        if len(out) < n and full and 0 < c < limit:
+            out.append(k)
+    return out
+
+
+def en_top(group, role, cls, tab, n=2, prices=None, **kw):
+    """What the tooltip shows: a pull list its best only, else en_five of the options (Top 5 needs
+    the prices)."""
+    spec = en_spec(group, role, cls, tab, **kw)
+    rec = en_pick(group, role, cls, tab, kw.get("sub"), kw.get("loc"))
+    if rec and (group, rec[3]) in EN_PULL:
+        return spec[:1]
+    return spec[:n] if n <= 2 else en_five(spec, prices, n)
 
 
 def en_source_mats():
@@ -16230,7 +16296,9 @@ def en_value_families(keys):
 # 0.06 a point (Superior Defense's 70 armor scores 3.43). Weapon damage: 14 / weapon speed (2H 3.6s:
 # 3.89, rankedboost's Superior Impact 35 for 9), rogues 5.19 (rankedboost). Weapon procs: proc_dps
 # (EN_PROCS, 14 attack power a damage a second). Haste, dodge, resistances and spikes have no weight:
-# they are placed by hand and not checked here.
+# they are placed by hand and not checked here. Tanks keep rankedboost's weapon damage 1.0 (at 2.6 sec;
+# 14 x 0.25 / 2.6 = 1.35 by the attack power model) and the 2H tank list (mostly bears) 0: nothing a
+# Top 5 shows changes with it.
 EN_WEIGHTS = {
     "melee": {"str": 2.05, "agi": 0.92, "int": 0.37, "spi": 0.015, "sta": 0.2, "ap": 1, "armor": 0, "health": 0.02,
               "mana": 0, "sp": 0, "heal": 0, "spelldmg": 0, "def": 0, "weapondmg": 5.4, "rangeddmg": 0},
@@ -16249,8 +16317,8 @@ EN_TOL = 1.10   # the weights are estimates: an entry may trail one below it by 
 
 
 def en_weights(group, rk, speed=None):
-    """The role's weights for a slot group; speed: the melee role's weapon damage on a weapon of
-    this speed (14 / speed) instead of the group's usual one."""
+    """The role's weights for a slot group; speed: weapon damage on a weapon of this speed (the
+    weight x the group's reference speed / speed: +N weapon damage adds N / speed a second)."""
     role = rk.split("/")[0]
     w = dict(EN_WEIGHTS[role])
     if group == "weapon2h":
@@ -16267,8 +16335,8 @@ def en_weights(group, rk, speed=None):
     # too: Blizzard said on September 30, 2026 that weapon procs work while shapeshifted). Hunters,
     # casters and healers: 0 (their weapon damage counts 0 as well).
     w["proc_dps"] = EN_AP_PER_DPS * w["ap"] if role in ("melee", "agility", "tank") else 0
-    if speed is not None and role == "melee" and w["weapondmg"]:
-        w["weapondmg"] = EN_AP_PER_DPS / speed
+    if speed is not None and w["weapondmg"] and group in EN_REF_SPEED:
+        w["weapondmg"] *= EN_REF_SPEED[group] / speed
     return w
 
 
@@ -16287,7 +16355,10 @@ def en_value_problems(group, rk, keys, up, at, speed=None):
     """Where a list breaks value order for its role (EN_WEIGHTS, with EN_TOL slack): a later entry worth
     more than an earlier one, an at place on the wrong side of an entry, an up enchant worth less than
     the best, or an enchant the slot can take (EN_KNOWN) that is not placed and beats a listed one.
-    speed: a weapon list valued on a weapon of this speed (weapon damage and per-hit procs)."""
+    speed: a weapon list valued on a weapon of this speed (weapon damage and per-hit procs); a
+    dagger list without one: on a 1.8 sec dagger."""
+    if speed is None and rk.endswith("/dagger"):
+        speed = EN_DAGGER_REF
     w = en_weights(group, rk, speed)
     known = en_known(group, speed)
     ids = [EN_IDS[k] for k in keys]
@@ -16387,7 +16458,7 @@ def sc_enchants_data(sc, ref, items):
     for g, recs in D.picks.items():
         sc.check(g in EN_GROUPS, "enchants data: group %s" % g)
         for rk, rec in recs.items():
-            m = re.match(r"^([a-z]+)(?:/([A-Z]+)([1-3])?)?$", rk)
+            m = re.match(r"^([a-z]+)(?:/([A-Z]+)([1-3])?|/dagger)?$", rk)
             sc.check(m and m.group(1) in EN_ROLES and (m.group(2) is None or m.group(2) in EN_CLASS),
                      "enchants data: %s.%s is a role (and class, tree)" % (g, rk))
             keys = en_lua_list(rec)
@@ -16412,11 +16483,16 @@ def sc_enchants_data(sc, ref, items):
                 need = {"weapon": EN_1H_SUBS, "weapon2h": EN_2H_SUBS, "ranged": (2, 3, 18)}[g]
                 sc.eq([k for k in keys if not en_fits(k, need) and EN_REQ.get(k, (0, 0, 0, None))[3] is None], [],
                       "enchants data: %s.%s: every recipe takes these weapons (SpellEquippedItems)" % (g, rk))
-            for speed in EN_SPEEDS.get(g, []):
+            sc.check(not rk.endswith("/dagger") or (g == "weapon" and rk.split("/")[0] in EN_WEIGHTS),
+                     "enchants data: %s.%s: dagger lists are one-hand weapon lists for a role" % (g, rk))
+            for speed in en_speeds(g, rk):
                 sc.eq(en_value_problems(g, rk, keys, up, at, speed), [],
                       "enchants data: %s.%s is in value order on a %.1f sec weapon" % (g, rk, speed))
     sc.eq(sorted(used), sorted(ench), "enchants data: every enchant is a pick")
     sc.eq(sorted(D.picks.keys()), sorted(EN_LISTS), "enchants data: every slot group")
+    for g in sorted(EN_LISTS):
+        sc.eq(sorted(D.picks[g].keys()) if D.picks[g] else [], sorted(EN_LISTS[g]),
+              "enchants data: %s has every reviewed list (and no other)" % g)
     # Every slot group and role picks the list the product asks for (one class per role and tree).
     pick = w.lua.eval("function(E, g, r, c, t) local P = E.DATA.picks[g]; if not P then return nil end "
                       "return P[r .. '/' .. c .. t] or P[r .. '/' .. c] or P[r] end")
@@ -16588,7 +16664,7 @@ def sc_enchants_equipped(sc, ref, items):
                 pts[tab % 3] = 11
                 en_player(w, cls, pts)
                 for g, iid in EN_GROUP_ITEM:
-                    want = en_top(g, role, cls, tab, top, sub=en_sub(iid), ilvl=en_ilvl(iid))
+                    want = en_top(g, role, cls, tab, top, prices=prices, sub=en_sub(iid), ilvl=en_ilvl(iid), loc=EN_GEAR[iid][1])
                     if g == "ranged" and EN_GEAR[iid][3] not in (2, 3, 18):
                         want = []
                     if not en_can_use(cls, iid):
@@ -16633,10 +16709,10 @@ def sc_enchants_equipped(sc, ref, items):
             (990103, 1904, ["s1248636", "s1219580"], "Major Intellect on (the 3rd)"),
             (990103, 723, ["s1248636", "s1219580", "s20036"], "Lesser Intellect on (the 4th)"),
             (990103, 1903, ["s1248636", "s1219580", "s20036", "s7793"], "Major Spirit on (the 5th)")):
-        sc.eq(en_top("weapon2h" if iid == 990103 else "weapon", "healer", "PRIEST", 2, 5, sub=en_sub(iid), current=enchant),
-              want, "enchants worn: the rule's own answer, Holy priest %s, %s" % (EN_GEAR[iid][0], why))
+        spec = en_spec("weapon2h" if iid == 990103 else "weapon", "healer", "PRIEST", 2, sub=en_sub(iid), current=enchant)
+        sc.eq(spec[:5], want, "enchants worn: the rule's own answer, Holy priest %s, %s" % (EN_GEAR[iid][0], why))
         tt = en_hover(w, "equipped", iid, enchant)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "enchants worn: Holy priest %s, %s" % (EN_GEAR[iid][0], why))
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "enchants worn: Holy priest %s, %s" % (EN_GEAR[iid][0], why))
     w.slash("/gl enchants top2")
     # A tank's necklace: Strength +5, then Agility +5; one with Deflection on is left alone (its value is not known).
     en_player(w, "WARRIOR", (5, 5, 31))
@@ -16671,7 +16747,7 @@ def sc_enchants_rule(sc, ref, items):
           "rule: an Arms warrior's 2H list (no blacksmith)")
     for k in range(1, len(full) + 1):
         cur = EN_IDS[full[k - 1]]
-        want = full[:k - 1][:5]
+        want = en_five(full[:k - 1], prices)
         tt = en_hover(w, "equipped", 990102, cur)
         sc.eq(w.lines(tt), en_want(w, prices, want), "rule: 2H with the %d. option on (%s): the %d before it" % (k, EN_NAMES[full[k - 1]], k - 1))
     tt = en_hover(w, "equipped", 990102, 1900)
@@ -16691,7 +16767,7 @@ def sc_enchants_rule(sc, ref, items):
     sc.eq(en_arms(990102, current=36), full, "rule: Enchant: Fiery Blaze on (at 11): the whole list")
     for cur in (2646, 2564, 36):
         tt = en_hover(w, "equipped", 990102, cur)
-        sc.eq(w.lines(tt), en_want(w, prices, full[:5]), "rule: enchant %d on: Top 5, the first five" % cur)
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(en_arms(990102, current=cur), prices)), "rule: enchant %d on: Top 5 of the entries above it" % cur)
     # Every at place in every list, for one class per role: the entries before the place.
     w.slash("/gl enchants top5")
     for cls, tab, role in (("WARRIOR", 1, "melee"), ("ROGUE", 2, "agility"), ("WARRIOR", 3, "tank"),
@@ -16700,12 +16776,13 @@ def sc_enchants_rule(sc, ref, items):
         pts[tab - 1] = 31
         en_player(w, cls, pts)
         for g, iid in EN_GROUP_ITEM:
-            rec = en_pick(g, role, cls, tab)
+            rec = en_pick(g, role, cls, tab, en_sub(iid), EN_GEAR[iid][1])
             if not rec or not en_can_use(cls, iid) or (g == "ranged" and EN_GEAR[iid][3] not in (2, 3, 18)):
                 continue
             lst, up, at, rk = rec
             for cur in sorted(at) + sorted(up):
-                want = en_top(g, role, cls, tab, 5, sub=en_sub(iid), current=cur, ilvl=en_ilvl(iid))
+                want = en_top(g, role, cls, tab, 5, prices=prices, sub=en_sub(iid), current=cur, ilvl=en_ilvl(iid),
+                              loc=EN_GEAR[iid][1])
                 if cur in at:
                     sc.check(all(lst.index(k) + 1 < at[cur] for k in want), "rule: %s %s at %d cuts before %d" % (g, rk, cur, at[cur]))
                 tt = en_hover(w, "equipped", iid, cur)
@@ -16713,12 +16790,14 @@ def sc_enchants_rule(sc, ref, items):
     # Level gates drop entries and the labels stay in order (Best, 2nd, 3rd...).
     w.slash("/gl enchants top5")
     en_player(w, "WARRIOR", (31, 0, 0), level=35)
-    want = en_top("legs", "melee", "WARRIOR", 1, 5, level=35, sub=1)
-    sc.eq(want, ["k252453", "k252437", "k8173", "k4265", "k2313"], "rule: level 35 warrior legs: the kits a 35 can use")
+    sc.eq(en_spec("legs", "melee", "WARRIOR", 1, level=35, sub=1)[:5], ["k252453", "k252437", "k8173", "k4265", "k2313"],
+          "rule: level 35 warrior legs: the kits a 35 can use")
+    want = en_top("legs", "melee", "WARRIOR", 1, 5, prices=prices, level=35, sub=1)
     tt = en_hover(w, "equipped", 990114)
     got = [l for l, _ in w.lines(tt)][0::2]
-    sc.eq(got, ["Best enchant: Forceful Heavy Armor Kit", "2nd: Forceful Medium Armor Kit", "3rd: Thick Armor Kit",
-                "4th: Heavy Armor Kit", "5th: Medium Armor Kit"], "rule: level 35 legs: the labels number what a 35 can use")
+    sc.eq(got[:2], ["Best enchant: Forceful Heavy Armor Kit", "2nd: Forceful Medium Armor Kit"],
+          "rule: level 35 legs: the two best a 35 can use")
+    sc.eq(got, [EN_LABELS[i] + EN_NAMES[k] for i, k in enumerate(want)], "rule: level 35 legs: the labels number what is shown")
     sc.eq(w.lines(tt), en_want(w, prices, want), "rule: level 35 legs, their costs and lines")
     w.slash("/gl enchants top2")
     sc.clean(w)
@@ -16779,7 +16858,7 @@ def sc_enchants_levels(sc, ref, items):
                         if not en_can_use(cls, iid) or (iid == 990132 and cls in ("PRIEST", "MAGE", "WARLOCK")):
                             continue
                         g = "head" if iid == 990113 else "legs"
-                        want = en_top(g, role, cls, tab, top, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
+                        want = en_top(g, role, cls, tab, top, prices=prices, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
                         tt = en_hover(w, "equipped", iid)
                         sc.eq(w.lines(tt), en_want(w, prices, want), "enchants levels: Top %d, %s %s level %d %s" % (top, cls, tname, level, EN_GEAR[iid][0]))
     w.slash("/gl enchants top2")
@@ -16807,7 +16886,8 @@ def sc_enchants_levels(sc, ref, items):
     sc.eq(en_count(w, tt), 0, "enchants levels: a wand: nothing")
     en_player(w, "WARRIOR", (31, 0, 0))
     tt = en_hover(w, "equipped", 990116)
-    sc.eq(en_count(w, tt), 0, "enchants levels: a warrior's gun in Top 2: nothing (its scopes are Top 5 only)")
+    sc.eq(w.lines(tt), en_want(w, prices, ["i10548"], note=EN_PULL_NOTE),
+          "enchants levels: a warrior's gun in Top 2: the best scope, then the pull note")
     sc.clean(w)
 
 
@@ -16980,7 +17060,7 @@ def sc_enchants_slash(sc, ref, items):
     sc.eq((out, S.enchants, S.enchantsTop), (["Goblin Ledger: enchant tips follow your talents: melee (Arms, 31 points)."], None, 5),
           "enchants slash: auto keeps Top 5")
     tt = en_hover(w, "equipped", 990102)
-    sc.eq(w.lines(tt), en_want(w, prices, en_arms(990102)[:5]), "enchants slash: auto, Top 5: five options")
+    sc.eq(w.lines(tt), en_want(w, prices, en_five(en_arms(990102), prices)), "enchants slash: auto, Top 5")
     out = [strip_codes(x) for x in w.slash("/gl enchants")]
     sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP5_TAIL], "enchants slash: status says Top 5")
     for word, n in (("top2", 2), ("5", 5), ("2", 2), ("TOP5", 5), ("top 2", 2)):
@@ -16989,7 +17069,7 @@ def sc_enchants_slash(sc, ref, items):
                else "enchant tips show the top 2: the two best.")
         sc.eq((out, S.enchantsTop, S.enchants), (["Goblin Ledger: " + msg], n, None), "enchants slash: /gl enchants %s" % word)
         tt = en_hover(w, "equipped", 990102)
-        sc.eq(w.lines(tt), en_want(w, prices, en_arms(990102)[:n]), "enchants slash: /gl enchants %s: %d options" % (word, n))
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(en_arms(990102), prices, n)), "enchants slash: /gl enchants %s: Top %d" % (word, n))
     w.slash("/gl enchants tank")
     w.slash("/gl enchants top5")
     sc.eq((S.enchants, S.enchantsTop), ("tank", 5), "enchants slash: top5 keeps a role picked by hand")
@@ -17039,7 +17119,7 @@ def sc_enchants_modes(sc, ref, items):
     """Compact mode: the name lines only (Shift shows the mats); prices with and without AH values; no data."""
     w, prices = en_world(ref, items)
     two = ["s13898", "s20034"]
-    for top, keys in ((2, two), (5, en_arms(990102)[:5])):
+    for top, keys in ((2, two), (5, en_five(en_arms(990102), prices))):
         w.slash("/gl enchants top%d" % top)
         w.slash("/gl compact")
         tt = en_hover(w, "equipped", 990102)
@@ -17083,7 +17163,7 @@ def sc_enchants_modes(sc, ref, items):
     tt = en_hover(w, "equipped", 990102)
     got = w.lines(tt)
     names = en_source_mats()
-    for key, (l, r) in zip(en_arms(990102)[:5], got[0::2]):
+    for key, (l, r) in zip(en_five(en_arms(990102), prices), got[0::2]):
         copper = sum(prices[mid] * n for mid, n in EN_M[key])
         sc.eq(r, "~" + money_icons(en_round(copper)), "enchants modes: %s costs its mats (%s)" % (EN_NAMES[key], en_mats(key)))
     w.slash("/gl enchants top2")
@@ -17238,7 +17318,7 @@ def sc_enchants_legacy(sc, ref, items):
         sc.eq(en_block(w, tt), en_want(w, prices, want), "enchants legacy: worn %s (the same as in a bag)" % EN_GEAR[iid][0])
     w.slash("/gl enchants top5")
     tt = en_hover(w, "bag", 990102)
-    sc.eq(en_block(w, tt), en_want(w, prices, en_arms(990102)[:5]), "enchants legacy: Top 5")
+    sc.eq(en_block(w, tt), en_want(w, prices, en_five(en_arms(990102), prices)), "enchants legacy: Top 5")
     w.slash("/gl enchants top2")
     tt = en_hover(w, "bag", 990102, 803)
     sc.eq(en_count(w, tt), 0, "enchants legacy: Fiery Weapon on")
@@ -17296,9 +17376,36 @@ def sc_enchants_missing(sc, ref, items):
     sc.clean(w, ok_chat=())
 
 
+def en_prices_set(w, prices, changes):
+    """New price data where these items (id: copper, 0 = not on the AH) have changed AH values, for the
+    addon (its ns.GetItem) and the harness: returns the prices the addon now reads."""
+    if getattr(w, "_en_over", None) is None:
+        w._en_over = w.lua.table()
+        w.lua.eval("function(ns, over) local base = ns.GetItem; ns.GetItem = function(id) local v = over[id] "
+                   "if v == nil then return base(id) end local t, b = {}, base(id) "
+                   "if type(b) == 'table' then for k, x in pairs(b) do t[k] = x end end t.market = v return t end end")(
+            w.ns, w._en_over)
+    new = dict(prices)
+    for mid, v in changes.items():
+        w._en_over[mid] = v
+        new[mid] = v
+    w.ns.db.updated = w.ns.db.updated + 1
+    return new
+
+
+# Made-up AH values (copper) for the weapon mats, so the budget options are known: Fiery Weapon 10g,
+# Crusader 30g, Lifestealing 42g, Superior Impact 30g (dearer than the best), Lesser Strength +15 2g,
+# Greater Impact +7 3g, Impact +6 1g 50s, Lesser Impact +5 20s, Minor Impact +4 2s 50c, the
+# counterweight 8s (its own AH value).
+EN_BUDGET = {11177: 40000, 7078: 20000, 14344: 50000, 12811: 50000, 12808: 10000, 12803: 10000, 16204: 10000,
+             11137: 5000, 11139: 5000, 11174: 5000, 11178: 20000, 11176: 10000, 11083: 1000, 11084: 1000,
+             10940: 100, 10978: 150, 6043: 800}
+
+
 def sc_enchants_top(sc, ref, items):
-    """Top 2 (the default) shows the two best; Top 5 up to five, the best first, then cheaper budget
-    options; fewer where fewer exist; the same on worn gear, in the bags and on links."""
+    """Top 2 (the default) shows the two best; Top 5 the two best, then up to three budget options (each
+    costs less than the best, every mat on the AH), in value order; the next ones while the best has no AH
+    price or there is no price data; fewer where fewer exist; the same on worn gear, in the bags and on links."""
     w, prices = en_world(ref, items)
     S = w.ns.settings
     sc.eq((S.enchantsTop, w.ns.Enchants.TopN()), (None, 2), "top: the default is Top 2")
@@ -17308,24 +17415,83 @@ def sc_enchants_top(sc, ref, items):
         w.slash("/gl enchants top%d" % top)
         for how in ("equipped", "bag", "link"):
             tt = en_hover(w, how, 990102)
-            want = en_arms(990102)[:top]
-            sc.eq(len(want), top, "top: an Arms warrior's 2H has %d options or more" % top)
-            sc.eq(en_block(w, tt), en_want(w, prices, want), "top: Top %d on a %s 2H: %d options, each with its mats" % (top, how, top))
-            sc.eq(en_count(w, tt), top, "top: Top %d (%s): %d name lines" % (top, how, top))
-            sc.eq(len(en_block(w, tt)), 2 * top, "top: Top %d (%s): a mats line under each" % (top, how))
-    # Fewer where fewer exist: a hunter's melee weapon (one), a necklace (two), an off-hand (one).
+            want = en_five(en_arms(990102), prices, top)
+            sc.check(len(want) >= 2, "top: an Arms warrior's 2H has two options or more (Top %d)" % top)
+            sc.eq(en_block(w, tt), en_want(w, prices, want), "top: Top %d on a %s 2H, each with its mats" % (top, how))
+            sc.eq(en_count(w, tt), len(want), "top: Top %d (%s): %d name lines" % (top, how, len(want)))
+            sc.eq(len(en_block(w, tt)), 2 * len(want), "top: Top %d (%s): a mats line under each" % (top, how))
+    # The budget options, with known prices: Lifestealing and Superior Impact cost more than Fiery Weapon,
+    # so Top 5 skips them for Lesser Strength +15, Greater Impact +7 and Impact +6 (in value order).
+    p2 = en_prices_set(w, prices, EN_BUDGET)
+    full = en_arms(990102)
+    sc.eq(full[:5], ["s13898", "s20034", "s20032", "s20030", "s1248511"], "top: the 2H list's first five")
+    budget = ["s13898", "s20034", "s1248511", "s13937", "s13695"]
+    sc.eq(en_five(full, p2), budget, "top: the harness's budget rule on the known prices")
+    for how in ("equipped", "bag", "link"):
+        tt = en_hover(w, how, 990102)
+        sc.eq(en_block(w, tt), en_want(w, p2, budget), "top: Top 5 (%s): the two best, then three cheaper than the best" % how)
+    sc.eq([l for l, _ in en_block(w, tt)][0::2], ["Best enchant: Fiery Weapon", "2nd: Crusader", "3rd: Lesser Strength +15",
+                                                  "4th: Greater Impact +7", "5th: Impact +6"], "top: the budget options' labels")
+    # New prices are new picks: Greater Impact's Large Radiant Shard at 20g (it costs more than the best now).
+    p3 = en_prices_set(w, p2, {11178: 200000})
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_block(w, tt), en_want(w, p3, ["s13898", "s20034", "s1248511", "s13695", "s13529"]),
+          "top: new price data: Greater Impact out, Lesser Impact in (the costs are read again)")
+    # A mat not on the AH: not a budget option (its cost is not known in full).
+    p4 = en_prices_set(w, p3, {11178: 20000, 11176: 0})
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_block(w, tt), en_want(w, p4, ["s13898", "s20034", "s1248511", "s13695", "s13529"]),
+          "top: Greater Impact with its Dream Dust not on the AH: left out")
+    # The best with no AH price (its mats are not listed): the next ones, as the list orders them.
+    p5 = en_prices_set(w, p4, {11177: 0, 7078: 0, 11176: 10000})
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_block(w, tt), en_want(w, p5, full[:5]), "top: the best has no AH price: the first five")
+    # No price data at all: the first five, no costs.
+    p6 = en_prices_set(w, p5, {11177: 40000, 7078: 20000})
+    stamp = w.ns.db.updated
+    w.ns.db.updated = 0
+    try:
+        sc.eq(en_five(full, False), full[:5], "top: the rule without price data: the list order")
+        tt = en_hover(w, "equipped", 990102)
+        sc.eq(en_block(w, tt), en_want(w, None, full[:5]), "top: no price data: the first five, no costs")
+    finally:
+        w.ns.db.updated = stamp + 1
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_block(w, tt), en_want(w, p6, budget), "top: price data back: the budget options again")
+    # An upgrade item nobody lists ("not on AH") is not a budget option either: a hunter's Accurate Scope.
+    en_player(w, "HUNTER", (0, 31, 0))
+    p7 = en_prices_set(w, p6, {10548: 50000, 10546: 20000, 4407: 0, 4406: 1000, 4405: 500})
+    sc.eq(en_top("ranged", "hunter", "HUNTER", 2, 5, prices=p7, sub=3), ["i10548", "i10546", "i4406", "i4405"],
+          "top: the rule, a hunter's scopes with the Accurate Scope not on the AH")
+    tt = en_hover(w, "equipped", 990116)
+    sc.eq(en_block(w, tt), en_want(w, p7, ["i10548", "i10546", "i4406", "i4405"]), "top: a scope not on the AH: left out of Top 5")
+    en_player(w, "WARRIOR", (31, 5, 0))
+    # Top 2 is never cut by price: the two best.
+    w.slash("/gl enchants top2")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_block(w, tt), en_want(w, p6, full[:2]), "top: Top 2: the two best, whatever they cost")
+    w.slash("/gl enchants top5")
+    # Fewer where fewer exist: a hunter's melee weapon (one), a necklace (two), an off-hand (one), a cloak,
+    # a druid's staff, a priest's mace (the rule's lengths; Top 5 drops what costs more than the best).
     for cls, pts, iid, n in (("HUNTER", (0, 31, 0), 990101, 1), ("WARRIOR", (31, 0, 0), 990112, 2),
                              ("MAGE", (31, 0, 0), 990106, 1), ("MAGE", (31, 0, 0), 990108, 3),
                              ("DRUID", (0, 31, 0), 990103, 5), ("PRIEST", (0, 31, 0), 990131, 3)):
         en_player(w, cls, pts)
+        tab = pts.index(max(pts)) + 1
+        role = w.ns.Enchants.DetectRole()[0]
+        g = w.ns.Enchants.SlotGroup(iid)
+        spec = en_spec(g, role, cls, tab, sub=en_sub(iid), ilvl=en_ilvl(iid), loc=EN_GEAR[iid][1])
+        sc.eq(len(spec[:5]), n, "top: the rule, %s %s: %d" % (cls, EN_GEAR[iid][0], n))
         for how in ("equipped", "bag"):
             tt = en_hover(w, how, iid)
-            sc.eq(en_count(w, tt), n, "top: Top 5, %s %s (%s): %d" % (cls, EN_GEAR[iid][0], how, n))
-    # An Arms warrior's 2H, 1H, bracers and gloves have five options or more.
+            sc.eq(en_count(w, tt), len(en_five(spec, p6)), "top: Top 5, %s %s (%s)" % (cls, EN_GEAR[iid][0], how))
+    # An Arms warrior's 2H, 1H, bracers and gloves have five options or more in the list.
     en_player(w, "WARRIOR", (31, 5, 0))
     for iid in (990102, 990101, 990109, 990110):
+        spec = en_arms(iid)
+        sc.check(len(spec) >= 5, "top: an Arms warrior's %s: five options or more" % EN_GEAR[iid][0])
         tt = en_hover(w, "equipped", iid)
-        sc.eq(en_count(w, tt), 5, "top: Top 5, an Arms warrior's %s: five options" % EN_GEAR[iid][0])
+        sc.eq(en_count(w, tt), len(en_five(spec, p6)), "top: Top 5, an Arms warrior's %s" % EN_GEAR[iid][0])
     w.slash("/gl enchants top2")
     tt = en_hover(w, "equipped", 990102)
     sc.eq(en_count(w, tt), 2, "top: back to Top 2")
@@ -17374,7 +17540,7 @@ def sc_enchants_kits(sc, ref, items):
                 pts = [0, 0, 0]
                 pts[tab - 1] = 31
                 en_player(w, cls, pts, level=level)
-                want = en_top("legs", role, cls, tab, top, level=level, sub=1)
+                want = en_top("legs", role, cls, tab, top, prices=prices, level=level, sub=1)
                 sc.check(len(want) >= 1, "kits: %s level %d bare legs get an option" % (role, level))
                 tt = en_hover(w, "equipped", 990114)
                 sc.eq(w.lines(tt), en_want(w, prices, want), "kits: Top %d, %s level %d bare legs" % (top, role, level))
@@ -17395,8 +17561,10 @@ def sc_enchants_kits(sc, ref, items):
             ("WARRIOR", (0, 0, 31), 990126, ["s20026", "s13858", "k15564", "s20025", "s13640"])):
         en_player(w, cls, pts)
         w.slash("/gl enchants top5")
+        spec = en_spec(w.ns.Enchants.SlotGroup(iid), w.ns.Enchants.DetectRole()[0], cls, pts.index(max(pts)) + 1, sub=en_sub(iid), ilvl=en_ilvl(iid))
+        sc.eq(spec[:5], want, "kits: the rule, %s %s" % (cls, EN_GEAR[iid][0]))
         tt = en_hover(w, "equipped", iid)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "kits: Top 5, %s %s" % (cls, EN_GEAR[iid][0]))
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "kits: Top 5, %s %s" % (cls, EN_GEAR[iid][0]))
         w.slash("/gl enchants top2")
     # A tank's legs with a kit: only better ones; with the Wild Leather Armor Kit (not in the game yet, better): nothing.
     en_player(w, "WARRIOR", (0, 0, 31), level=45)
@@ -17404,8 +17572,10 @@ def sc_enchants_kits(sc, ref, items):
     for enchant, want, why in ((8487, ["k15564"], "Thick on: Rugged"), (8490, [], "Rugged on (the best a 45 can use)"),
                                (8719, [], "Wild Leather Armor Kit on"), (8491, ["k15564", "k8173"], "Forceful Rugged on (placed above Heavy)"),
                                (8483, ["k15564", "k8173", "k4265", "k2313"], "Forceful Medium on (placed above Light)")):
+        spec = en_spec("legs", "tank", "WARRIOR", 3, level=45, sub=en_sub(990114), current=enchant)
+        sc.eq(spec[:5], want, "kits: the rule, Protection warrior 45 legs, %s" % why)
         tt = en_hover(w, "equipped", 990114, enchant)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "kits: Protection warrior 45 legs, %s" % why)
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "kits: Protection warrior 45 legs, %s" % why)
     w.slash("/gl enchants top2")
     # Item-level floors: Heavy-tier kits need item level 15, Thick 25, Rugged 35 (the game refuses them on
     # lower items). Leather legs of item level 34 (Barbaric Leggings) at player level 50 and 45, and
@@ -17421,14 +17591,15 @@ def sc_enchants_kits(sc, ref, items):
             ("WARRIOR", (31, 0, 0), 60, 990132, ["a18329", "a11645", "k252488", "k252463", "k252453"], "Arms 60, item level 37 legs (all kits fit)")):
         en_player(w, cls, pts, level=level)
         role = w.ns.Enchants.DetectRole()[0]
-        rule = en_top(w_group(iid), role, cls, pts.index(max(pts)) + 1, 5, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
+        spec = en_spec(w_group(iid), role, cls, pts.index(max(pts)) + 1, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
+        shown = en_five(spec, prices) if en_can_use(cls, iid) else []
         if en_can_use(cls, iid):
-            sc.eq(rule, want, "kits: the rule's own answer, %s" % why)
+            sc.eq(spec[:5], want, "kits: the rule's own answer, %s" % why)
         for how in ("equipped", "bag"):
             tt = en_hover(w, how, iid)
-            sc.eq(en_block(w, tt), en_want(w, prices, want), "kits: %s (%s)" % (why, how))
+            sc.eq(en_block(w, tt), en_want(w, prices, shown), "kits: %s (%s)" % (why, how))
         tt = en_hover(w, "link", iid)
-        sc.eq(en_block(w, tt), en_want(w, prices, want), "kits: %s (a chat link)" % why)
+        sc.eq(en_block(w, tt), en_want(w, prices, shown), "kits: %s (a chat link)" % why)
     # The rule's side: an item level under every floor takes only the Medium and Light kits.
     sc.eq([k for k in EN_LISTS["legs"]["melee"] if en_usable(k, 60, None, 2, 14) and k[0] == "k"],
           ["k252437", "k2313", "k2304"], "kits: item level 14: only the Medium and Light kits")
@@ -17438,21 +17609,24 @@ def sc_enchants_kits(sc, ref, items):
     w.g.C_Item.GetItemInfo = None
     try:
         tt = en_hover(w, "equipped", 990135)
-        sc.eq(en_block(w, tt), en_want(w, prices, en_top("legs", "melee", "WARRIOR", 1, 5, level=50, sub=2)),
+        sc.eq(en_block(w, tt), en_want(w, prices, en_top("legs", "melee", "WARRIOR", 1, 5, prices=prices, level=50, sub=2)),
               "kits: item level not known: every kit the player's level allows")
     finally:
         w.g.C_Item.GetItemInfo = info
     # Once the game knows it, the floor applies (the level is read again, not remembered as missing).
+    spec = en_spec("legs", "melee", "WARRIOR", 1, level=50, sub=en_sub(990135), ilvl=en_ilvl(990135))
+    sc.eq(spec[:5], ["a11645", "k252463", "k252453", "k252437", "k8173"], "kits: the rule, item level 34 at level 50")
     tt = en_hover(w, "equipped", 990135)
-    sc.eq(en_block(w, tt), en_want(w, prices, ["a11645", "k252463", "k252453", "k252437", "k8173"]),
-          "kits: item level known again: the floor applies")
+    sc.eq(en_block(w, tt), en_want(w, prices, en_five(spec, prices)), "kits: item level known again: the floor applies")
     # A Misc robe (like Simple Black Dress, Forever item 10053: Armor, Miscellaneous): enchants, never a kit.
     for cls, pts, want in (("WARRIOR", (31, 0, 0), ["s20025", "s13941", "s13700", "s13626"]),
                            ("MAGE", (31, 0, 0), ["s20028", "s13917", "s13663", "s13607", "s7776"]),
                            ("WARRIOR", (0, 0, 31), ["s20026", "s13858", "s20025", "s13640", "s7857"])):
         en_player(w, cls, pts, level=60)
+        spec = en_spec("chest", w.ns.Enchants.DetectRole()[0], cls, pts.index(max(pts)) + 1, sub=en_sub(990136), ilvl=en_ilvl(990136))
+        sc.eq(spec[:5], want, "kits: the rule, %s on a Misc robe" % cls)
         tt = en_hover(w, "equipped", 990136)
-        sc.eq(en_block(w, tt), en_want(w, prices, want), "kits: %s on a Misc robe: the enchants, no kit" % cls)
+        sc.eq(en_block(w, tt), en_want(w, prices, en_five(spec, prices)), "kits: %s on a Misc robe: the enchants, no kit" % cls)
         sc.check(not any("Armor Kit" in (l or "") for l, _ in w.all_lines(tt)), "kits: %s Misc robe: no armor kit" % cls)
     en_player(w, "WARRIOR", (31, 0, 0), level=60)
     w.slash("/gl enchants top2")
@@ -17469,8 +17643,9 @@ def sc_enchants_profs(sc, ref, items):
     w, prices = en_world(ref, items, cls="WARRIOR", points=(0, 0, 31))
     E, M = w.ns.Enchants, w.M
     w.slash("/gl enchants top5")
-    tank_shield = lambda skills: en_top("shield", "tank", "WARRIOR", 3, 5, skills=skills, sub=6)
-    sc.eq(tank_shield({}), ["s20017", "s13817", "s13631", "s13378"], "profs: a tank's shield, no blacksmith")
+    shield_spec = lambda skills, cur=None: en_spec("shield", "tank", "WARRIOR", 3, skills=skills, sub=6, current=cur)
+    tank_shield = lambda skills, cur=None: en_five(shield_spec(skills, cur), prices)
+    sc.eq(shield_spec({}), ["s20017", "s13817", "s13631", "s13378"], "profs: a tank's shield, no blacksmith")
     tt = en_hover(w, "equipped", 990105)
     sc.eq(w.lines(tt), en_want(w, prices, tank_shield({})), "profs: no professions: no spikes")
     for rank, want, why in ((250, ["s20017", "b12645", "s13817", "b7967", "s13631"], "Blacksmithing 250: Thorium and Mithril spikes"),
@@ -17479,19 +17654,20 @@ def sc_enchants_profs(sc, ref, items):
                             (150, ["s20017", "s13817", "s13631", "b6042", "s13378"], "Blacksmithing 150: the Iron Shield Spike only"),
                             (149, ["s20017", "s13817", "s13631", "s13378"], "Blacksmithing 149: none yet")):
         en_skills(w, {164: rank, 202: 300})
-        sc.eq(tank_shield({164: rank}), want, "profs: the rule's own answer, %s" % why)
+        sc.eq(shield_spec({164: rank})[:5], want, "profs: the rule's own answer, %s" % why)
         tt = en_hover(w, "equipped", 990105)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "profs: a tank's shield, %s" % why)
+        sc.eq(w.lines(tt), en_want(w, prices, tank_shield({164: rank})), "profs: a tank's shield, %s" % why)
         tt = en_hover(w, "bag", 990105)
-        sc.eq(en_block(w, tt), en_want(w, prices, want), "profs: a tank's shield in a bag, %s" % why)
+        sc.eq(en_block(w, tt), en_want(w, prices, tank_shield({164: rank})), "profs: a tank's shield in a bag, %s" % why)
     en_skills(w, {164: 300})
     tt = en_hover(w, "equipped", 990105)
     got = [l for l, _ in w.lines(tt)]
     sc.eq(got[3], "  Your Blacksmithing: use it on the item", "profs: the spike's grey line says it is your Blacksmithing")
     # A spike on the shield: only what beats it.
     for enchant, want in ((1704, ["s20017"]), (463, ["s20017", "b12645", "s13817"]), (43, ["s20017", "b12645", "s13817", "b7967", "s13631"])):
+        sc.eq(shield_spec({164: 300}, enchant)[:5], want, "profs: the rule, blacksmith's shield with enchant %d on" % enchant)
         tt = en_hover(w, "equipped", 990105, enchant)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "profs: blacksmith's shield with enchant %d on" % enchant)
+        sc.eq(w.lines(tt), en_want(w, prices, tank_shield({164: 300}, enchant)), "profs: blacksmith's shield with enchant %d on" % enchant)
     # Other tanks never see them; a blacksmith in another role neither (spikes are for tanks).
     en_skills(w, {202: 300, 165: 300, 333: 300})
     tt = en_hover(w, "equipped", 990105)
@@ -17500,16 +17676,20 @@ def sc_enchants_profs(sc, ref, items):
     en_player(w, "PALADIN", (31, 0, 0))
     en_skills(w, {164: 300})
     tt = en_hover(w, "equipped", 990105)
-    sc.eq(w.lines(tt), en_want(w, prices, ["s20017", "s13817", "s13631", "s13378"]), "profs: a Holy paladin blacksmith: no spikes")
+    sc.eq(en_spec("shield", EN_TREES["PALADIN"][0][1], "PALADIN", 1, skills={164: 300}, sub=6), ["s20017", "s13817", "s13631", "s13378"],
+          "profs: the rule, a Holy paladin blacksmith's shield")
+    sc.eq(w.lines(tt), en_want(w, prices, en_top("shield", EN_TREES["PALADIN"][0][1], "PALADIN", 1, 5, prices=prices, skills={164: 300}, sub=6)),
+          "profs: a Holy paladin blacksmith: no spikes")
     # Iron Counterweight: a blacksmith's 2H axes, maces, polearms and swords (not staves), right after Crusader.
     en_player(w, "WARRIOR", (31, 5, 0))
     for rank, iid, want in ((165, 990102, ["s13898", "s20034", "b6043", "s20032", "s20030"]),
                             (164, 990102, ["s13898", "s20034", "s20032", "s20030", "s1248511"]),
                             (300, 990103, ["s13898", "s20034", "s20032", "s20030", "s1248511"])):
         en_skills(w, {164: rank})
-        sc.eq(en_top("weapon2h", "melee", "WARRIOR", 1, 5, skills={164: rank}, sub=en_sub(iid)), want, "profs: rule, counterweight %d %s" % (rank, EN_GEAR[iid][0]))
+        spec = en_spec("weapon2h", "melee", "WARRIOR", 1, skills={164: rank}, sub=en_sub(iid))
+        sc.eq(spec[:5], want, "profs: rule, counterweight %d %s" % (rank, EN_GEAR[iid][0]))
         tt = en_hover(w, "equipped", iid)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "profs: Blacksmithing %d, %s" % (rank, EN_GEAR[iid][0]))
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "profs: Blacksmithing %d, %s" % (rank, EN_GEAR[iid][0]))
     en_skills(w, {164: 300})
     tt = en_hover(w, "equipped", 990102, 34)
     sc.eq(w.lines(tt), en_want(w, prices, ["s13898", "s20034"]), "profs: a Greatsword with the counterweight on: Fiery Weapon, Crusader")
@@ -17575,10 +17755,11 @@ def sc_enchants_profs(sc, ref, items):
 
 def sc_enchants_weapons(sc, ref, items):
     """Weapons: the 2H lists weigh the "Enchant Weapon" recipes (procs valued by what they add a second,
-    weapon damage by the weapon's speed) against the Impact ones; Enchant: Fiery Blaze is placed under
-    what beats it; a 1H and a 2H; no level limits on weapon enchants; a warrior's or rogue's gun, bow or
-    crossbow: nothing in Top 2, the scopes in Top 5 with a grey "(pulling only)"; hunters as before."""
-    BONE, GUN = 990138, 990139
+    weapon damage by the weapon's speed, for every role) against the Impact ones; Enchant: Fiery Blaze is
+    placed under what beats it; a 1H and a 2H; daggers that can go in the main hand have their own lists;
+    no level limits on weapon enchants; a warrior's or rogue's gun, bow or crossbow: the best scope with a
+    grey "(pulling only)", in Top 2 and Top 5; hunters as before, a role picked by hand too."""
+    BONE, GUN, MH = 990138, 990139, 990140
     # The proc values (EN_PROCS): per second, and as weapon damage on a 3.4 sec 2H (the Bonebiter), a 3.6
     # sec 2H (the weights') and a 2.6 sec 1H.
     rnd = lambda d: {k: round(v, 3) for k, v in d.items()}
@@ -17592,13 +17773,21 @@ def sc_enchants_weapons(sc, ref, items):
     def as_damage(eid, speed):   # an enchant's value as weapon damage on a weapon of this speed
         w_ = w2h(speed)
         return round(en_score(en_known("weapon2h", speed)[eid], w_) / w_["weapondmg"], 2)
-    sc.eq([as_damage(803, x) for x in (3.4, 3.6, 2.6)], [13.06, 13.82, 9.98],
+    sc.eq([as_damage(803, x) for x in (3.4, 3.6, 2.6)], [13.05, 13.82, 9.98],
           "weapons: Fiery Weapon as weapon damage: +13.1 on the 3.4 sec Bonebiter, +13.8 on 3.6, +10 on a 2.6 sec 1H")
     sc.eq([as_damage(1900, x) for x in (3.4, 3.6)], [11.01, 11.66], "weapons: Crusader as weapon damage on 3.4 and 3.6 sec")
     sc.eq([as_damage(1898, x) for x in (3.4, 3.6)], [9.79, 10.37], "weapons: Lifestealing as weapon damage")
     sc.eq([as_damage(36, x) for x in (3.4, 3.6)], [1.58, 1.58], "weapons: Fiery Blaze as weapon damage: +1.6 (15% of hits: any speed)")
     sc.check(as_damage(803, 3.6) > as_damage(1898, 3.6) > 9 > as_damage(1898, 2.6),
              "weapons: on a 3.6 sec 2H Fiery Weapon and Lifestealing beat Superior Impact +9 (on 2.6 sec Lifestealing would not)")
+    # Every role's weapon damage follows the speed (a proc a minute does not): +N weapon damage x speed
+    # is the same at any speed, and Fiery Blaze (per hit) keeps its ratio to Lesser Striking +2.
+    for g, rk in (("weapon", "melee"), ("weapon", "agility"), ("weapon", "tank"), ("weapon2h", "melee")):
+        r = [en_weights(g, rk, s)["weapondmg"] * s for s in (1.7, 2.3, 2.9, 3.6)]
+        sc.check(r[0] > 0 and max(r) - min(r) < 1e-9, "weapons: %s %s: weapon damage x speed is constant (%s)" % (g, rk, r))
+        ratio = [en_score(en_known(g, s)[36], en_weights(g, rk, s)) / en_score({"weapondmg": 2}, en_weights(g, rk, s))
+                 for s in (1.7, 2.9)]
+        sc.check(abs(ratio[0] - ratio[1]) < 1e-9, "weapons: %s %s: Fiery Blaze against +2 the same at 1.7 and 2.9 sec (%s)" % (g, rk, ratio))
     # The 2H list: "Enchant Weapon" recipes (they take two-handers) next to the Impact ones; Lesser and
     # Minor Impact are the 2H's cheap tiers (Lesser Impact +5 costs Lesser Striking's +2 mats).
     lst2 = EN_LISTS["weapon2h"]["melee"]
@@ -17609,11 +17798,11 @@ def sc_enchants_weapons(sc, ref, items):
     sc.check(all(en_fits(k, EN_2H_SUBS) for k in lst2 if k != "b6043"), "weapons: every 2H entry's recipe takes two-handers")
     sc.eq((EN_M["s13529"], EN_M["s13503"], EN_IDS["s13529"], EN_IDS["s7745"]), (EN_M["s13503"], [(11083, 1), (11084, 1)], 1897, 805),
           "weapons: Lesser Impact (+5) costs what Lesser Striking (+2) does; Minor Impact is +4")
-    # Value order on every 2H speed from 2.9 to 3.9 sec (and 1H 2.3 to 2.9), every role; a list out of
-    # order, or Fiery Blaze placed above what beats it, is caught.
+    # Value order on every 2H speed from 2.9 to 3.9 sec, 1H 2.3 to 2.9 and daggers 1.7 to 2.0, every role;
+    # a list out of order, or Fiery Blaze placed above what beats it, is caught.
     for g in ("weapon", "weapon2h"):
         for rk, keys in sorted(EN_LISTS[g].items()):
-            for speed in [None] + EN_SPEEDS[g]:
+            for speed in [None] + en_speeds(g, rk):
                 sc.eq(en_value_problems(g, rk, keys, EN_UP.get(g, {}).get(rk, []), EN_AT.get(g, {}).get(rk, {}), speed), [],
                       "weapons: %s %s in value order (speed %s)" % (g, rk, speed))
     at2 = EN_AT["weapon2h"]["melee"]
@@ -17624,23 +17813,86 @@ def sc_enchants_weapons(sc, ref, items):
         sc.check(en_value_problems("weapon2h", "melee", bad, [8215], bat) != [], "weapons: the value check catches %s" % why)
     sc.check(en_value_problems("weapon", "melee", EN_LISTS["weapon"]["melee"], [], {**EN_AT["weapon"]["melee"], 36: 10}) != [],
              "weapons: the value check catches Fiery Blaze put under Minor Striking on a 1H")
-    # Fiery Blaze's place in every list where procs count: just above the first entry worth less.
+    # Fiery Blaze's place in every list where procs count: just above the first entry worth less (a
+    # dagger list's on a 1.8 sec dagger).
     for g in ("weapon", "weapon2h"):
         for rk, keys in sorted(EN_LISTS[g].items()):
-            w_ = en_weights(g, rk)
+            spd = EN_DAGGER_REF if rk.endswith("/dagger") else None
+            w_ = en_weights(g, rk, spd)
             if not w_["proc_dps"]:
                 sc.check(36 not in EN_AT.get(g, {}).get(rk, {}), "weapons: %s %s: Fiery Blaze is worth nothing, not placed" % (g, rk))
                 continue
-            fb = en_score(en_known(g)[36], w_)
-            vals = [en_score(en_known(g).get(EN_IDS[k]) or EN_STATS.get(k), w_) for k in keys]
+            fb = en_score(en_known(g, spd)[36], w_)
+            vals = [en_score(en_known(g, spd).get(EN_IDS[k]) or EN_STATS.get(k), w_) for k in keys]
             place = next((i + 1 for i, v in enumerate(vals) if v is not None and v < fb), len(keys) + 1)
             sc.eq(EN_AT[g][rk].get(36), place, "weapons: %s %s: Fiery Blaze (%.2f) ranks at %d" % (g, rk, fb, place))
+    # Daggers (subclass 15) are fast (Forever's 1.5 to 2.0 sec): one that can go in the main hand has its
+    # own list per role, where weapon damage is worth more (a rogue's Greater Striking +4 beats Crusader
+    # and Agility +15 on a 1.8 sec dagger); an off-hand-only one keeps the 1H list (half damage there);
+    # class lists (feral druids) come first; casters have none.
+    agd, ag1 = EN_LISTS["weapon"]["agility/dagger"], EN_LISTS["weapon"]["agility"]
+    sc.eq(agd[:5], ["s13898", "s20032", "s20031", "s13943", "s23800"], "weapons: a rogue's dagger: Greater Striking +4 before Agility +15")
+    sc.eq(ag1[:5], ["s13898", "s20032", "s20031", "s20034", "s23800"], "weapons: a rogue's other 1H: Crusader 4th")
+    sc.check(en_value_problems("weapon", "agility", ag1, [], EN_AT["weapon"]["agility"], 1.8) != [],
+             "weapons: the rogue's 1H list is out of order on a 1.8 sec dagger")
+    sc.check(en_value_problems("weapon", "agility/dagger", agd, [], EN_AT["weapon"]["agility/dagger"], 2.6) != [],
+             "weapons: the dagger list is out of order on a 2.6 sec sword")
+    sc.check(en_value_problems("weapon", "melee", EN_LISTS["weapon"]["melee"], [], EN_AT["weapon"]["melee"], 1.8) != [],
+             "weapons: the melee 1H list is out of order on a 1.8 sec dagger (Superior Striking under Strength +15)")
+    for cls, tab, role, sub, loc, rk in (("ROGUE", 2, "agility", 15, "INVTYPE_WEAPON", "agility/dagger"),
+                                         ("ROGUE", 2, "agility", 15, "INVTYPE_WEAPONMAINHAND", "agility/dagger"),
+                                         ("ROGUE", 2, "agility", 15, "INVTYPE_WEAPONOFFHAND", "agility"),
+                                         ("ROGUE", 2, "agility", 7, "INVTYPE_WEAPON", "agility"),
+                                         ("WARRIOR", 1, "melee", 15, "INVTYPE_WEAPON", "melee/dagger"),
+                                         ("WARRIOR", 3, "tank", 15, "INVTYPE_WEAPON", "tank/dagger"),
+                                         ("DRUID", 2, "agility", 15, "INVTYPE_WEAPON", "agility/DRUID"),
+                                         ("MAGE", 1, "caster", 15, "INVTYPE_WEAPON", "caster")):
+        sc.eq(en_pick("weapon", role, cls, tab, sub, loc)[3], rk, "weapons: %s %s, subclass %d %s: the %s list" % (cls, role, sub, loc, rk))
+    sc.eq(en_pick("weapon2h", "melee", "WARRIOR", 1, 15, "INVTYPE_WEAPON")[3], "melee", "weapons: dagger lists are one-hand only")
+    # The tooltips: a rogue's main-hand dagger and off-hand dagger, a warrior's and a tank's dagger, a feral
+    # druid's and a mage's (no price data: Top 5 is the list order).
+    w, prices = en_world(ref, items, cls="ROGUE", points=(0, 31, 20))
+    w.slash("/gl enchants top5")
+    stamp = w.ns.db.updated
+    w.ns.db.updated = 0
+    try:
+        for cls, pts, iid in (("ROGUE", (0, 31, 20), MH), ("ROGUE", (0, 31, 20), 990104), ("WARRIOR", (31, 5, 0), MH),
+                              ("WARRIOR", (5, 5, 31), MH), ("DRUID", (0, 31, 0), MH), ("MAGE", (31, 0, 0), MH)):
+            en_player(w, cls, pts)
+            role, tab = w.ns.Enchants.DetectRole()[0], pts.index(max(pts)) + 1
+            want = en_spec("weapon", role, cls, tab, sub=15, loc=EN_GEAR[iid][1])[:5]
+            tt = en_hover(w, "equipped", iid)
+            sc.eq(en_block(w, tt), en_want(w, None, want), "weapons: %s %s, %s: Top 5 without prices" % (cls, role, EN_GEAR[iid][0]))
+        en_player(w, "ROGUE", (0, 31, 20))
+        tt = en_hover(w, "equipped", MH)
+        sc.eq([l for l, _ in en_block(w, tt)][0::2], ["Best enchant: Fiery Weapon", "2nd: Lifestealing", "3rd: Superior Striking +5",
+                                                     "4th: Greater Striking +4", "5th: Agility +15"], "weapons: a rogue's main-hand dagger, Top 5")
+        tt = en_hover(w, "equipped", 990104)
+        sc.eq([l for l, _ in en_block(w, tt)][0::2], ["Best enchant: Fiery Weapon", "2nd: Lifestealing", "3rd: Superior Striking +5",
+                                                     "4th: Crusader", "5th: Agility +15"], "weapons: a rogue's off-hand dagger, Top 5")
+        tt = en_hover(w, "equipped", MH, 1900)
+        sc.eq(en_block(w, tt), en_want(w, None, agd[:5]), "weapons: a rogue's dagger with Crusader (its 7th): the five best")
+        tt = en_hover(w, "equipped", 990104, 1900)
+        sc.eq(en_block(w, tt), en_want(w, None, ag1[:3]), "weapons: a rogue's off-hand dagger with Crusader (its 4th): three")
+    finally:
+        w.ns.db.updated = stamp + 1
+    for top in (2, 5):
+        w.slash("/gl enchants top%d" % top)
+        for iid in (MH, 990104):
+            want = en_top("weapon", "agility", "ROGUE", 2, top, prices=prices, sub=15, loc=EN_GEAR[iid][1])
+            for how in ("equipped", "bag", "link"):
+                tt = en_hover(w, how, iid)
+                sc.eq(en_block(w, tt), en_want(w, prices, want), "weapons: rogue, %s (%s), Top %d" % (EN_GEAR[iid][0], how, top))
+    sc.clean(w)
     # The user's case: a level 47 Arms warrior and blacksmith, the Bonebiter with Fiery Blaze on.
     w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 5, 0), level=47)
     en_skills(w, {164: 200})
-    for top, want in ((2, ["s13898", "s20034"]), (5, ["s13898", "s20034", "b6043", "s20032", "s20030"])):
+    spec = en_spec("weapon2h", "melee", "WARRIOR", 1, level=47, skills={164: 200}, sub=1, current=36)
+    sc.eq(spec, lst2, "weapons: the rule, Bonebiter with Fiery Blaze: the whole list (it beats nothing)")
+    for top in (2, 5):
         w.slash("/gl enchants top%d" % top)
-        sc.eq(en_top("weapon2h", "melee", "WARRIOR", 1, top, level=47, skills={164: 200}, sub=1, current=36), want,
+        want = en_five(spec, prices, top)
+        sc.eq(en_top("weapon2h", "melee", "WARRIOR", 1, top, prices=prices, level=47, skills={164: 200}, sub=1, current=36), want,
               "weapons: the rule's own answer, Bonebiter with Fiery Blaze, Top %d" % top)
         for how in ("equipped", "bag", "link"):
             tt = en_hover(w, how, BONE, 36)
@@ -17648,21 +17900,44 @@ def sc_enchants_weapons(sc, ref, items):
         tt = en_hover(w, "equipped", BONE, 36)
         en_styles_ok(sc, w, tt, "weapons: Bonebiter, Top %d" % top)
         sc.eq([l for l, _ in w.lines(tt)][0::2][:2], ["Best enchant: Fiery Weapon", "2nd: Crusader"], "weapons: Top %d labels" % top)
+    # With prices like the live ones (Fiery Weapon 10g, Crusader 30g, the counterweight 8s; Lifestealing and
+    # Superior Impact cost more than Fiery Weapon): Top 5 adds the counterweight, Lesser Strength +15 and
+    # Greater Impact +7; not a blacksmith: Lesser Strength +15, Greater Impact +7 and Impact +6.
+    p2 = en_prices_set(w, prices, EN_BUDGET)
+    w.slash("/gl enchants top5")
+    for skills, want, why in (({164: 200}, ["s13898", "s20034", "b6043", "s1248511", "s13937"], "a blacksmith"),
+                              ({}, ["s13898", "s20034", "s1248511", "s13937", "s13695"], "not a blacksmith")):
+        en_skills(w, skills)
+        sc.eq(en_top("weapon2h", "melee", "WARRIOR", 1, 5, prices=p2, level=47, skills=skills, sub=1, current=36), want,
+              "weapons: the rule, Bonebiter with Fiery Blaze, Top 5 on known prices, %s" % why)
+        tt = en_hover(w, "equipped", BONE, 36)
+        sc.eq(en_block(w, tt), en_want(w, p2, want), "weapons: Bonebiter with Fiery Blaze, Top 5 on known prices, %s" % why)
+    en_skills(w, {164: 200})
+    tt = en_hover(w, "equipped", BONE, 36)
+    sc.eq([l for l, _ in en_block(w, tt)], ["Best enchant: Fiery Weapon", "  2 Small Radiant Shard, 1 Essence of Fire",
+                                            "2nd: Crusader", "  4 Large Brilliant Shard, 2 Righteous Orb",
+                                            "3rd: Iron Counterweight", "  Your Blacksmithing: use it on the item",
+                                            "4th: Lesser Strength +15", "  1 Vision Dust, 1 Large Glowing Shard, 2 Lesser Nether Essence",
+                                            "5th: Greater Impact +7", "  1 Large Radiant Shard, 1 Dream Dust"],
+          "weapons: the Bonebiter's Top 5 lines")
+    prices = p2
     for enchant, want, why in ((803, [], "Fiery Weapon on: nothing"), (1900, ["s13898"], "Crusader on: Fiery Weapon"),
                                (34, ["s13898", "s20034"], "the counterweight on"),
                                (1896, ["s13898", "s20034", "b6043", "s20032"], "Superior Impact on"),
                                (805, ["s13898", "s20034", "b6043", "s20032", "s20030"], "Minor Impact on (the last)"),
                                (241, ["s13898", "s20034", "b6043", "s20032", "s20030"], "Lesser Striking on (Minor Impact beats it)")):
+        spec = en_spec("weapon2h", "melee", "WARRIOR", 1, level=47, skills={164: 200}, sub=1, current=enchant)
+        sc.eq(spec[:5], want, "weapons: the rule, Bonebiter, %s" % why)
         tt = en_hover(w, "equipped", BONE, enchant)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "weapons: Bonebiter, Top 5, %s" % why)
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "weapons: Bonebiter, Top 5, %s" % why)
     sc.eq(en_spec("weapon2h", "melee", "WARRIOR", 1, level=47, skills={164: 200}, sub=1, current=1896),
           ["s13898", "s20034", "b6043", "s20032"], "weapons: with Superior Impact on, the four above it")
     sc.eq(en_spec("weapon2h", "melee", "WARRIOR", 1, level=47, skills={164: 200}, sub=1, current=805),
           lst2[:9], "weapons: with Minor Impact on, Lesser Impact is the cheapest upgrade")
-    # Not a blacksmith: Lesser Strength +15 (1g 64s live) comes in as the 5th.
+    tt = en_hover(w, "equipped", BONE, 805)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["s13898", "s20034", "b6043", "s1248511", "s13937"]),
+          "weapons: with Minor Impact on, Top 5's budget options")
     en_skills(w, {})
-    tt = en_hover(w, "equipped", BONE, 36)
-    sc.eq(w.lines(tt), en_want(w, prices, ["s13898", "s20034", "s20032", "s20030", "s1248511"]), "weapons: Bonebiter, no blacksmith, Top 5")
     # A 1H and a 2H: the 1H's damage tiers are Striking, the 2H's Impact (and the Enchant Weapon ones);
     # Fiery Blaze on a 1H (faster: more hits) beats Minor Striking, so the 1H list stops above it.
     lst1 = EN_LISTS["weapon"]["melee"]
@@ -17672,14 +17947,13 @@ def sc_enchants_weapons(sc, ref, items):
     sc.eq(en_spec("weapon", "melee", "WARRIOR", 1, sub=7, current=36), lst1[:8], "weapons: 1H with Fiery Blaze: all but Minor Striking")
     sc.eq(en_spec("weapon2h", "melee", "WARRIOR", 1, sub=1, current=36), en_spec("weapon2h", "melee", "WARRIOR", 1, sub=1),
           "weapons: 2H with Fiery Blaze: the whole list")
-    tt = en_hover(w, "equipped", 990101, 36)
-    sc.eq(w.lines(tt), en_want(w, prices, lst1[:5]), "weapons: a 1H sword with Fiery Blaze, Top 5")
-    tt = en_hover(w, "equipped", 990101, 943)
-    sc.eq(w.lines(tt), en_want(w, prices, lst1[:5]), "weapons: a 1H sword with Striking, Top 5")
-    tt = en_hover(w, "equipped", 990101, 1897)
-    sc.eq(w.lines(tt), en_want(w, prices, lst1[:4]), "weapons: a 1H sword with Superior Striking: the four above it")
-    tt = en_hover(w, "equipped", BONE, 1897)
-    sc.eq(w.lines(tt), en_want(w, prices, lst2[:2] + lst2[3:6]), "weapons: the same id (+5) on the 2H is Lesser Impact, 9th")
+    for iid, enchant, spec, why in ((990101, 36, lst1[:8], "a 1H sword with Fiery Blaze"), (990101, 943, lst1[:6], "a 1H sword with Striking"),
+                                    (990101, 1897, lst1[:4], "a 1H sword with Superior Striking: the four above it"),
+                                    (BONE, 1897, [k for k in lst2[:8] if k != "b6043"], "the same id (+5) on the 2H is Lesser Impact, 9th")):
+        sc.eq(en_spec(w_group(iid) if iid != BONE else "weapon2h", "melee", "WARRIOR", 1, sub=en_sub(iid), current=enchant), spec,
+              "weapons: the rule, %s" % why)
+        tt = en_hover(w, "equipped", iid, enchant)
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "weapons: %s, Top 5" % why)
     w.slash("/gl enchants top2")
     for iid in (990101, BONE):
         tt = en_hover(w, "equipped", iid, 36)
@@ -17689,46 +17963,52 @@ def sc_enchants_weapons(sc, ref, items):
     w.slash("/gl enchants top5")
     for level in (1, 10, 20, 35, 47, 60):
         en_player(w, "WARRIOR", (31, 0, 0) if level >= 10 else (0, 0, 0), level=level)
-        sc.eq(en_top("weapon2h", "melee", "WARRIOR", 1, 5, level=level, sub=1), lst2[:2] + lst2[3:6], "weapons: level %d, the 2H's Top 5" % level)
+        spec = en_spec("weapon2h", "melee", "WARRIOR", 1, level=level, sub=1)
+        sc.eq(spec, [k for k in lst2 if k != "b6043"], "weapons: level %d, the 2H's whole list" % level)
         tt = en_hover(w, "equipped", BONE)
-        sc.eq(w.lines(tt), en_want(w, prices, lst2[:2] + lst2[3:6]), "weapons: level %d warrior's 2H, Top 5" % level)
-    # A warrior's or rogue's gun, bow or crossbow: nothing in Top 2; Top 5: the scopes its level can use,
-    # their prices and grey lines, then "(pulling only)" in grey; the scopes need no Engineering.
+        sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "weapons: level %d warrior's 2H, Top 5" % level)
+    # A warrior's or rogue's gun, bow or crossbow only pulls: the best scope its level can use, its price
+    # and grey line, then "(pulling only)" in grey, in Top 2 and Top 5 alike; the scopes need no Engineering.
     scopes = ["i10548", "i10546", "i4407", "i4406", "i4405"]
     sc.eq(w.ns.Enchants.PULL_NOTE, EN_PULL_NOTE, "weapons: the note's words")
     for cls, pts, role in (("WARRIOR", (31, 5, 0), "melee"), ("WARRIOR", (5, 5, 31), "tank"), ("ROGUE", (0, 31, 20), "agility")):
-        for level, want in ((47, scopes), (35, scopes[1:]), (20, scopes[2:]), (9, scopes[4:]), (4, [])):
+        for level, usable in ((47, scopes), (35, scopes[1:]), (20, scopes[2:]), (9, scopes[4:]), (4, [])):
             en_player(w, cls, pts, level=level)
+            tab = 1 if pts[0] == 31 else (3 if pts[2] == 31 else 2)
+            sc.eq(en_spec("ranged", role, cls, tab, level=level, sub=3), usable, "weapons: the rule, %s %s level %d: the scopes" % (cls, role, level))
             for top in (2, 5):
                 w.slash("/gl enchants top%d" % top)
-                tab = 1 if pts[0] == 31 else (3 if pts[2] == 31 else 2)
-                sc.eq(en_top("ranged", role, cls, tab, top, level=level, sub=3), want if top == 5 else [],
-                      "weapons: the rule's own answer, %s %s level %d, Top %d" % (cls, role, level, top))
+                sc.eq(en_top("ranged", role, cls, tab, top, prices=prices, level=level, sub=3), usable[:1],
+                      "weapons: the rule's own answer, %s %s level %d, Top %d: the best scope only" % (cls, role, level, top))
                 for iid in (GUN, 990115, 990128):
                     for how in ("equipped", "bag"):
                         tt = en_hover(w, how, iid)
                         got = en_block(w, tt) if how == "bag" else w.lines(tt)
-                        lines = en_want(w, prices, want, note=EN_PULL_NOTE) if top == 5 else []
-                        sc.eq(got, lines, "weapons: %s %s level %d, %s (%s), Top %d" % (cls, role, level, EN_GEAR[iid][0], how, top))
+                        sc.eq(got, en_want(w, prices, usable[:1], note=EN_PULL_NOTE),
+                              "weapons: %s %s level %d, %s (%s), Top %d" % (cls, role, level, EN_GEAR[iid][0], how, top))
+    # The user's gun (Frosty Blunderbuss) at level 47, Top 2 (the default): three short lines.
     en_player(w, "WARRIOR", (31, 5, 0), level=47)
-    w.slash("/gl enchants top5")
-    tt = en_hover(w, "equipped", GUN)
-    got = w.lines(tt)
-    sc.eq(got[-1], (EN_PULL_NOTE, None), "weapons: the note is the last line")
-    sc.eq(sum(1 for l, _ in got if l == EN_PULL_NOTE), 1, "weapons: the note once")
-    en_styles_ok(sc, w, tt, "weapons: a warrior's gun, Top 5 (the note grey)")
-    sc.check(all(l.strip() == "Engineering scope, use it on the item" for l, _ in got[1:-1:2]), "weapons: a scope's grey line")
+    for top in (2, 5):
+        w.slash("/gl enchants top%d" % top)
+        tt = en_hover(w, "equipped", GUN)
+        got = w.lines(tt)
+        sc.eq([l for l, _ in got], ["Best enchant: Sniper Scope +7", "  Engineering scope, use it on the item", EN_PULL_NOTE],
+              "weapons: a warrior's Frosty Blunderbuss, Top %d: the best scope, how, the note" % top)
+        sc.eq(got[0][1], en_cost(prices, "i10548")[0], "weapons: the scope's AH value, Top %d" % top)
+        en_styles_ok(sc, w, tt, "weapons: a warrior's gun, Top %d (the note grey)" % top)
+    w.slash("/gl enchants top2")
     w.slash("/gl compact")
     tt = en_hover(w, "equipped", GUN)
-    sc.eq(w.lines(tt), en_want(w, prices, scopes, full=False, note=EN_PULL_NOTE), "weapons: compact: the names, then the note")
+    sc.eq(w.lines(tt), en_want(w, prices, scopes[:1], full=False, note=EN_PULL_NOTE), "weapons: compact: the name, then the note")
     en_styles_ok(sc, w, tt, "weapons: compact gun")
     w.M.shift = True
     tt = en_hover(w, "equipped", GUN)
-    sc.eq(w.lines(tt), en_want(w, prices, scopes, note=EN_PULL_NOTE), "weapons: compact with Shift: the grey lines too")
+    sc.eq(w.lines(tt), en_want(w, prices, scopes[:1], note=EN_PULL_NOTE), "weapons: compact with Shift: the grey line too")
     w.M.shift = False
     w.slash("/gl compact")
     for enchant, want, why in ((664, [], "Sniper Scope on: nothing, no note"), (8720, [], "SAF-T scope on"),
-                               (2523, [], "Biznicks on"), (33, scopes[:2], "Accurate Scope on"), (30, scopes[:4], "Crude Scope on")):
+                               (2523, [], "Biznicks on"), (33, scopes[:1], "Accurate Scope on: the Sniper Scope"),
+                               (30, scopes[:1], "Crude Scope on: the Sniper Scope")):
         tt = en_hover(w, "equipped", GUN, enchant)
         sc.eq(w.lines(tt), en_want(w, prices, want, note=EN_PULL_NOTE), "weapons: a warrior's gun, %s" % why)
     # Thrown weapons (no scope fits them) and wands: nothing for anyone.
@@ -17737,14 +18017,23 @@ def sc_enchants_weapons(sc, ref, items):
         for iid in (990117, 990118):
             tt = en_hover(w, "equipped", iid)
             sc.eq(en_count(w, tt), 0, "weapons: %s's %s: nothing" % (cls, EN_GEAR[iid][0]))
-    # Hunters as before: the scopes in Top 2 and Top 5, no note.
+    # Hunters as before: the scopes in Top 2 and Top 5, no note; with a role picked by hand
+    # (/gl enchants melee, agility or tank) too: their bow or gun is their weapon, not a puller.
     sc.eq((EN_LISTS["ranged"]["hunter"], EN_UP["ranged"]["hunter"]), (scopes, [2523, 8720]), "weapons: the hunters' list is unchanged")
-    for top, want in ((2, scopes[:2]), (5, scopes)):
-        w.slash("/gl enchants top%d" % top)
-        en_player(w, "HUNTER", (0, 31, 0), level=60)
-        for iid in (GUN, 990115, 990128):
-            tt = en_hover(w, "equipped", iid)
-            sc.eq(w.lines(tt), en_want(w, prices, want), "weapons: hunter, Top %d, %s: no note" % (top, EN_GEAR[iid][0]))
+    en_player(w, "HUNTER", (0, 31, 0), level=60)
+    for pick in ("auto", "melee", "agility", "tank"):
+        w.slash("/gl enchants " + pick)
+        role = "hunter" if pick == "auto" else pick
+        sc.check(en_note("ranged", role, "HUNTER", 2) is None, "weapons: hunter, %s: no pull note" % pick)
+        for top in (2, 5):
+            w.slash("/gl enchants top%d" % top)
+            want = en_top("ranged", role, "HUNTER", 2, top, prices=prices, sub=3)
+            sc.eq(en_spec("ranged", role, "HUNTER", 2, sub=3), scopes, "weapons: the rule, hunter, %s: every scope" % pick)
+            sc.check(want[:2] == scopes[:2], "weapons: hunter, %s, Top %d: the two best scopes first" % (pick, top))
+            for iid in (GUN, 990115, 990128):
+                tt = en_hover(w, "equipped", iid)
+                sc.eq(w.lines(tt), en_want(w, prices, want), "weapons: hunter (%s), Top %d, %s: no note" % (pick, top, EN_GEAR[iid][0]))
+    w.slash("/gl enchants auto")
     # Casters and healers never get a ranged list (wands are not scoped; priests, mages, warlocks no guns).
     for role in ("caster", "healer"):
         sc.check(en_pick("ranged", role, "PRIEST", 1) is None, "weapons: no ranged list for %s" % role)
@@ -18345,14 +18634,14 @@ def sc_enchants_toggle(sc, ref, items):
         M.click(tb)
         sc.eq((S.enchantsTop, tb.Text.GetText(tb.Text)), (5, "Top 5"), "toggle: one click: Top 5")
         sc.eq(tg_state(w), (True, "tank", None), "toggle: the click keeps the box and the role")
-        sc.eq(en_count(w, g.ItemRefTooltip), len(en_top("weapon2h", "tank", "WARRIOR", 1, 5, sub=8)),
+        sc.eq(en_count(w, g.ItemRefTooltip), len(en_top("weapon2h", "tank", "WARRIOR", 1, 5, prices=prices, sub=8)),
               "toggle: the open link's tooltip shows Top 5 at once")
         sc.eq([M.sounds[i] for i in range(snd + 1, len(M.sounds) + 1)], [856], "toggle: the Top button clicks")
         sc.check(w.same(tt.GetOwner(tt), tb) and [l for l, _ in w.all_lines(tt)] == TOP_TIP, "toggle: its hover stays up")
         M.leave(tb)
         sc.check(not tt.IsShown(tt), "toggle: the Top button's hover goes with the mouse")
         tt = en_hover(w, "equipped", 990102)
-        sc.eq(w.lines(tt), en_want(w, prices, en_top("weapon2h", "tank", "WARRIOR", 1, 5, sub=8)), "toggle: Top 5 on the worn 2H")
+        sc.eq(w.lines(tt), en_want(w, prices, en_top("weapon2h", "tank", "WARRIOR", 1, 5, prices=prices, sub=8)), "toggle: Top 5 on the worn 2H")
         M.click(tb)
         sc.eq((S.enchantsTop, tb.Text.GetText(tb.Text), tg_state(w)), (2, "Top 2", (True, "tank", None)), "toggle: a second click: Top 2")
         # The box off: the Top button greys, still switches; on again: Top as it was.
@@ -18550,7 +18839,7 @@ def sc_enchants_toggle_saved(sc, ref, items):
     sc.eq((tb.Text.GetText(tb.Text), tg_state(w3)), ("Top 5", (False, "off", "tank")), "saved: after a second /reload: Top 5, off, tank")
     w3.M.click(tg(w3))
     tt = en_hover(w3, "equipped", 990102)
-    sc.eq(w3.lines(tt), en_want(w3, prices, en_top("weapon2h", "tank", "WARRIOR", 1, 5, sub=8)), "saved: on again: tank's Top 5")
+    sc.eq(w3.lines(tt), en_want(w3, prices, en_top("weapon2h", "tank", "WARRIOR", 1, 5, prices=prices, sub=8)), "saved: on again: tank's Top 5")
     sc.clean(w3, "saved: after the second reload")
     # Saved values from before this version, or odd ones.
     for saved, at_login, after_click, label in (

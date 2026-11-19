@@ -2,16 +2,16 @@ local ADDON_NAME, ns = ...
 -- Goblin Ledger: the best enchants for the gear under the mouse.
 --
 -- Gear in your bags, item links and gear you wear: the two best enchants for
--- your role (Top 2), or up to five with cheaper budget options (Top 5), each
--- with its mats and what they cost at today's AH value. Upgrades you buy and
--- use yourself are options too: Leatherworking armor kits, Engineering scopes,
--- and Blacksmithing spikes and counterweights for a blacksmith. Only upgrades
--- show: an item with the 3rd best gets the best and the 2nd, one with the best
--- gets nothing. A warrior's or rogue's gun, bow or crossbow only pulls: Top 5
--- lists its scopes with a grey "(pulling only)", Top 2 nothing. The role comes
--- from your talents; /gl enchants picks one by hand or turns the lines off, and
--- the Enchant tips box on the character panel (with its Top 2 / Top 5 button)
--- turns them off and on again.
+-- your role (Top 2), or those and up to three budget options that cost less
+-- than the best (Top 5), each with its mats and what they cost at today's AH
+-- value. Upgrades you buy and use yourself are options too: Leatherworking
+-- armor kits, Engineering scopes, and Blacksmithing spikes and counterweights
+-- for a blacksmith. Only upgrades show: an item with the 3rd best gets the best
+-- and the 2nd, one with the best gets nothing. A warrior's or rogue's gun, bow
+-- or crossbow only pulls: it gets the best scope only, with a grey "(pulling
+-- only)". The role comes from your talents; /gl enchants picks one by hand or
+-- turns the lines off, and the Enchant tips box on the character panel (with
+-- its Top 2 / Top 5 button) turns them off and on again.
 --
 -- Core.lua calls ns.EnchantLines after its price lines (and the quest line),
 -- so these lines are made under a normal-size line and keep the normal font.
@@ -411,13 +411,23 @@ local ENCHANTS = {
 -- (spell 20007) once a minute, up 22% of the time = +22 Strength, 45 AP. A proc a minute adds the same
 -- on any weapon, +N weapon damage adds N / speed: on a 3.6 sec 2H Fiery Weapon is worth +13.8 weapon
 -- damage (more than Superior Impact +9), on a 2.6 sec 1H +10 (Superior Striking is +5). The 2H order
--- holds for 2H speeds 2.9 to 3.9 sec, the 1H one for 2.3 to 2.9 sec. Enchant: Fiery Blaze (36, quest
+-- holds for 2H speeds 2.9 to 3.9 sec, the 1H one for 2.3 to 2.9 sec. Daggers are faster (most of
+-- Forever's are 1.5 to 2.0 sec), so a dagger you can hold in the main hand has its own lists
+-- (role/dagger, in order for 1.7 to 2.0 sec: Greater Striking +4 beats Crusader for a rogue there).
+-- An off-hand-only weapon keeps the 1H list: off-hand hits do half damage (5/8 with Dual Wield
+-- Specialization), so a fast off-hand's weapon damage is worth what a 2.6 sec main hand's is.
+-- Crusader's rate decides it against Fiery Weapon: at the 1 a minute used here Fiery Weapon leads by
+-- about 19% on mobs of your level; from 1.2 a minute (or against raid bosses, who resist spells) the
+-- two are level. Fiery Weapon stays first: as good or better, and its mats cost far less.
+-- The 2H tank list is mostly for bears (a druid's tank role on a staff): weapon damage counts 0 there.
+-- Enchant: Fiery Blaze (36, quest
 -- 706's reward) hits 15% of swings (its own table entry) for 9 to 13 fire: 0.47 a second on a 3.4 sec
 -- 2H (+1.6 weapon damage), so every 2H entry beats it; on a 1H it beats Minor Striking +1 only (a
 -- tank's Lesser Striking +2).
 -- Icy Chill, Unholy Weapon, Demonslaying and the Steel Weapon Chain deal no damage to most targets: not
 -- listed (an item with one gets the whole list). Lesser Striking +2 costs what Lesser Impact +5 does.
--- Ranged for a warrior or rogue (pull = true): the scopes in Top 5 only, with a grey "(pulling only)".
+-- Ranged for a warrior or rogue (pull = true): the best scope they can use, in Top 2 and Top 5, with a
+-- grey "(pulling only)". A hunter who picks a role by hand keeps the hunter's scopes (role/HUNTER).
 -- Scopes ask their item's level, not Engineering (ItemSparse.RequiredSkill 0), and fit bows, guns and
 -- crossbows only (SpellEquippedItems): thrown weapons and wands get nothing.
 local PICKS = {
@@ -425,6 +435,9 @@ local PICKS = {
     ["melee"] = { "s13898", "s20034", "s20032", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 8, [2568] = 9 } },
     ["agility"] = { "s13898", "s20032", "s20031", "s20034", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2563] = 8 } },
     ["tank"] = { "s13898", "s20034", "s20032", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503", at = { [36] = 10 } },
+    ["melee/dagger"] = { "s13898", "s20034", "s20032", "s20031", "s13943", "s23799", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 9, [2568] = 9 } },
+    ["agility/dagger"] = { "s13898", "s20032", "s20031", "s13943", "s23800", "s13693", "s20034", "s13503", "s7788", at = { [36] = 9, [2563] = 8 } },
+    ["tank/dagger"] = { "s13898", "s20034", "s20032", "s23799", "s20031", "s1248760", "s13943", "s23800", "s13693", "s13503", at = { [36] = 10 } },
     ["agility/DRUID"] = { "s13898", "s20034", "s20032", "s23799", "s23800", at = { [36] = 6 } },
     ["tank/DRUID"] = { "s13898", "s20032", "s20034", "s23799", "s23800", at = { [36] = 6 } },
     ["hunter"] = { "s23800" },
@@ -530,6 +543,9 @@ local PICKS = {
     ["melee"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
     ["agility"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
     ["tank"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
+    ["melee/HUNTER"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
+    ["agility/HUNTER"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
+    ["tank/HUNTER"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
   },
 }
 -- END DATA
@@ -1044,11 +1060,15 @@ end
 ---------------------------------------------------------------------------
 -- The picks for an item, and which of them to show
 ---------------------------------------------------------------------------
--- role/CLASStab (top talent tree), then role/CLASS, then the role's own.
-local function pickFor(group, role, class, tab)
+-- role/CLASStab (top talent tree), then role/CLASS, then role/dagger (a dagger that can go in the
+-- main hand), then the role's own.
+local SUB_DAGGER = 15
+local function pickFor(group, role, class, tab, f)
   local g = PICKS[group]
   if not g then return nil end
-  return (class and tab and g[role .. "/" .. class .. tab]) or (class and g[role .. "/" .. class]) or g[role]
+  local dagger = f and f.sub == SUB_DAGGER and f.loc ~= "INVTYPE_WEAPONOFFHAND"
+  return (class and tab and g[role .. "/" .. class .. tab]) or (class and g[role .. "/" .. class])
+    or (dagger and g[role .. "/dagger"]) or g[role]
 end
 
 local function listHas(list, v)
@@ -1086,23 +1106,6 @@ local function stopAt(rec, current)
   return type(at) == "table" and at[current] or nil
 end
 
--- The options to show, best first: the usable entries before the stop, at most `most`.
-local function pickKeys(rec, f, level, current, most)
-  local stop = stopAt(rec, current)
-  if stop == 0 then return nil end
-  local out
-  for i, key in ipairs(rec) do
-    if stop and i >= stop then break end
-    local e = ENCHANTS[key]
-    if e and usable(e, f, level) then
-      out = out or {}
-      out[#out + 1] = key
-      if #out >= most then break end
-    end
-  end
-  return out
-end
-
 ---------------------------------------------------------------------------
 -- Costs (the mats at AH value) and the lines
 ---------------------------------------------------------------------------
@@ -1119,6 +1122,13 @@ local function marketOf(id)
 end
 
 local costMemo = {}
+-- New price data: the costs and lines are made again.
+local function freshMemos()
+  local stamp = dataStamp()
+  if lineStamp ~= stamp then
+    lineMemo, costMemo, lineStamp = {}, {}, stamp
+  end
+end
 -- { copper = mats with an AH value (and a quest fee), missing = { "2 Skin of Shadow", ... },
 --   by = "item" (an upgrade's own AH value, or none) or "mats" }
 local function costOf(key)
@@ -1146,6 +1156,38 @@ local function costOf(key)
   end
   costMemo[key] = c
   return c
+end
+
+-- A budget option costs less than the best, with every mat on the AH (a full price).
+local function cheaper(key, limit)
+  local c = costOf(key)
+  return c.copper > 0 and #c.missing == 0 and c.copper < limit
+end
+
+-- The options to show, best first: the usable entries before the stop, at most `most`. Past the two
+-- best (Top 5) only budget options, while the best has an AH price; without prices, the next ones.
+local function pickKeys(rec, f, level, current, most)
+  local stop = stopAt(rec, current)
+  if stop == 0 then return nil end
+  local out, limit
+  for i, key in ipairs(rec) do
+    if stop and i >= stop then break end
+    local e = ENCHANTS[key]
+    if e and usable(e, f, level) then
+      local n = out and #out or 0
+      if n < 2 or not limit or cheaper(key, limit) then
+        out = out or {}
+        out[n + 1] = key
+        if n + 1 >= most then break end
+        if n == 0 and most > 2 and dataStamp() > 0 then
+          freshMemos()
+          local c = costOf(key).copper
+          limit = c > 0 and c or nil
+        end
+      end
+    end
+  end
+  return out
 end
 
 -- Whole gold from 10g, whole silver under it: it is an estimate (1g 47s stays 1g 47s).
@@ -1220,10 +1262,7 @@ local function buildLines(keys, full, stale, note)
 end
 
 local function linesFor(keys, full, note)
-  local stamp = dataStamp()
-  if lineStamp ~= stamp then
-    lineMemo, costMemo, lineStamp = {}, {}, stamp
-  end
+  freshMemos()
   -- The age grows while the data stays the same: whether it is old is part of the key.
   local stale = stalePrices()
   local k = tconcat(keys, "|") .. (full and "|f" or "|c") .. (stale and "|s" or "") .. (note and "|n" or "")
@@ -1263,7 +1302,7 @@ local function quietOwner(tt)
   return ok and type(owner) == "table" and owner.glNoEnchants == true
 end
 
--- A ranged weapon for a class that only pulls with it (a pull = true list): Top 5 only, with this note.
+-- A ranged weapon for a class that only pulls with it (a pull = true list): the best only, with this note.
 local PULL_NOTE = "(pulling only)"
 E.PULL_NOTE = PULL_NOTE
 
@@ -1275,11 +1314,9 @@ local function optionsFor(itemID, link, where)
   if quality(itemID, link) == 0 then return nil end   -- grey junk
   local role, _, d = currentRole()
   if not role or not canWear(d.class, f) then return nil end
-  local rec = pickFor(f.g, role, d.class, d.tab)
+  local rec = pickFor(f.g, role, d.class, d.tab, f)
   if not rec then return nil end
-  local most = topN()
-  if rec.pull and most < 5 then return nil end
-  local keys = pickKeys(rec, f, d.level or 60, linkEnchant(link), most)
+  local keys = pickKeys(rec, f, d.level or 60, linkEnchant(link), rec.pull and 1 or topN())
   return keys, keys and rec.pull and PULL_NOTE or nil
 end
 E.OptionsFor = optionsFor
