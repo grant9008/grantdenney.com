@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
--- Forever AH: price advice. Pure Lua: it only reads prices through ns.GetItem
+-- Goblin Ledger: price advice. Pure Lua: it only reads prices through ns.GetItem
 -- and ns.GetSeries, so it can be tested outside the game.
 --
 -- For a timeframe window it works out:

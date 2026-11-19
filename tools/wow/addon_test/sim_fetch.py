@@ -1,5 +1,5 @@
 """Runs tools/wow/fetch_ah.py against SIMULATED auctions to test the pipeline
-and the page locally. Output goes to wow/_localdata (gitignored). Not real data.
+and the page locally. Output goes to goblin-ledger/prices/_localdata (gitignored). Not real data.
 
 What it simulates, for 240 hourly snapshots:
   - stackable goods on the commodities list (unit_price), and green gear on
@@ -29,7 +29,7 @@ What it simulates, for 240 hourly snapshots:
     against it. This market has its own random numbers, so every other
     item's data is the same as without it.
   - tooltip details (the item API's preview_item) for the site's details
-    block in wow/_localdata/details/: trade goods, armor, weapons, a set, a
+    block in goblin-ledger/prices/_localdata/details/: trade goods, armor, weapons, a set, a
     Chance on hit line and flavor text; Iron Bar has none (the block stays
     hidden). The flavor text and the set are made up.
 The simulated collector always had the sold floor, so every simulated hour
@@ -48,7 +48,7 @@ _HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(_HERE))
 import fetch_ah as f  # noqa: E402
 
-OUT = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "wow", "_localdata"))
+OUT = os.path.normpath(os.path.join(_HERE, "..", "..", "..", "goblin-ledger", "prices", "_localdata"))
 shutil.rmtree(OUT, ignore_errors=True)
 I = "https://render.worldofwarcraft.com/us/icons/56/"
 TG = ("Trade Goods", 7)

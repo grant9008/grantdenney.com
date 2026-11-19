@@ -1,5 +1,5 @@
 """
-WoW Forever auction-house collector for grantdenney.com/wow.
+WoW Forever auction-house collector for Goblin Ledger (grantdenney.com/goblin-ledger/prices).
 
 Pulls one auction house from Blizzard's API (namespace dynamic-forever-<region>)
 and writes files shaped exactly like the OSRS Wiki price API, so the PocketGE
@@ -27,10 +27,12 @@ app on /wow/ can read them with almost no changes:
   houses.json    every house the API lists, with auction counts (for checking IDs)
   status.json    when Blizzard made the data, when this ran and what it saw
   ForeverAH_Data.lua
-                 the same prices packed for the Forever AH in-game addon
-                 (wow-addon/ForeverAH). Addons cannot use the internet, so
-                 Update-WoW-Prices.bat downloads this file into the addon
-                 folder as Data.lua. Format: see write_addon_data below.
+                 the same prices packed for the Goblin Ledger in-game addon
+                 (wow-addon/GoblinLedger, formerly Forever AH). Addons cannot
+                 use the internet, so the price updater (update_prices.ps1)
+                 downloads this file into the addon folder as Data.lua. The
+                 file keeps its old name and header line: installed updaters
+                 check both. Format: see write_addon_data below.
 
 "Sold" is an estimate. The API only shows what is listed, never sales. An
 auction that was listed with hours left and is gone at the next snapshot was

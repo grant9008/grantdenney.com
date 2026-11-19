@@ -1,0 +1,14 @@
+## Interface: 16001
+## Title: Goblin Ledger
+## Notes: Auction house prices, charts and price advice. Price data from Blizzard Entertainment.
+## X-Credits: Price data from Blizzard Entertainment
+## X-Website: https://grantdenney.com/goblin-ledger/
+## SavedVariables: ForeverAH_Settings
+## Version: 1.0.0
+Data.lua
+Core.lua
+Recommend.lua
+Chart.lua
+AH.lua
+Sidebar.lua
+Bags.lua

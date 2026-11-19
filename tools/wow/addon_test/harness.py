@@ -1,8 +1,8 @@
-"""Integration harness for the ForeverAH addon.
+"""Integration harness for the Goblin Ledger addon (wow-addon/GoblinLedger).
 
 Loads the five addon files in TOC order inside Lua 5.1 (lupa), with a mock of
 the WoW API surface the addon touches, and the real generated (simulated)
-price file wow/_localdata/ForeverAH_Data.lua as Data.lua. Then it plays the
+price file goblin-ledger/prices/_localdata/ForeverAH_Data.lua as Data.lua. Then it plays the
 addon the way a player would: login, slash commands, item tooltips, the
 standalone chart, the modern auction house (search, select, sell, Use List At,
 close), the legacy auction house and Auctionator's tabs.
@@ -39,25 +39,29 @@ import rec_model  # noqa: E402
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
 # FAH_ADDON_DIR lets a copy of the addon be tested (used for mutation checks of this harness).
-ADDON = os.environ.get("FAH_ADDON_DIR") or os.path.join(ROOT, "wow-addon", "ForeverAH")
-LOCAL_DIR = os.path.join(ROOT, "wow", "_localdata")
+ADDON = os.environ.get("FAH_ADDON_DIR") or os.path.join(ROOT, "wow-addon", "GoblinLedger")
+# The addon folder name the game gives the addon (its ADDON_LOADED name).
+ADDON_NAME = "GoblinLedger"
+LOCAL_DIR = os.path.join(ROOT, "goblin-ledger", "prices", "_localdata")
 SIM_DATA_FILE = os.path.join(LOCAL_DIR, "ForeverAH_Data.lua")
 SIM_ITEMS_FILE = os.path.join(LOCAL_DIR, "items.json")
 # The data under test: the simulated file unless --data / FAH_DATA_FILE says otherwise (see main).
 DATA_FILE = SIM_DATA_FILE
 ITEMS_FILE = SIM_ITEMS_FILE
-SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in wow/_localdata
+SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in goblin-ledger/prices/_localdata
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
 TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
-    "## Title: Forever AH",
-    "## Notes: Auction house prices, charts and price advice from grantdenney.com/wow",
+    "## Title: Goblin Ledger",
+    "## Notes: Auction house prices, charts and price advice. Price data from Blizzard Entertainment.",
+    "## X-Credits: Price data from Blizzard Entertainment",
+    "## X-Website: https://grantdenney.com/goblin-ledger/",
     "## SavedVariables: ForeverAH_Settings",
     "## Version: 1.0.0",
 ]
-PLACEHOLDER = ("-- ForeverAH price data placeholder. Run Update-WoW-Prices.bat.\n"
+PLACEHOLDER = ("-- Goblin Ledger price data placeholder. Run Install-Goblin-Ledger.bat.\n"
                "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }")
 TFS = ["1D", "5D", "1W", "1M", "1Y"]
 TF_SPEC = {"1D": ("H", 24, 3600), "5D": ("H", 120, 3600), "1W": ("H", 168, 3600),
@@ -526,14 +530,14 @@ function M.call(where, fn, ...)
 end
 
 -- Who called a restricted or query API? The first Lua frame that is not mock
--- plumbing. ForeverAH must never be that frame.
+-- plumbing. The addon (GoblinLedger) must never be that frame.
 local function guard(name, kind)
   for lvl = 3, 60 do
     local info = dbg.getinfo(lvl, "S")
     if not info then return end
     local src = info.source or ""
     if info.what ~= "C" and src:sub(1, 6) ~= "@MOCK/" then
-      if src:find("ForeverAH", 1, true) then
+      if src:find("/AddOns/GoblinLedger/", 1, true) then
         M.violations[#M.violations + 1] = kind .. " " .. name .. " called from " .. src .. ":" .. tostring(info.linedefined)
       end
       return
@@ -1798,7 +1802,7 @@ function GetCursorInfo()
 end
 function ClearCursor() M.held = nil; M.cursorItem = nil end
 -- DeleteCursorItem needs a hardware event and destroys one item per event:
--- ForeverAH may call it only inside a player click on the drop box's Drop it
+-- The addon may call it only inside a player click on the drop box's Drop it
 -- button, once. deleteMode: "ok" (destroyed: the slot locks, then empties
 -- after deleteDelay seconds, the server's round trip), "blocked" (the game
 -- refuses, the item stays on the cursor), "refused" (the cursor is cleared
@@ -2100,7 +2104,7 @@ function M.InstallBlizzardBags()
   function CloseAllBags(frame) for id = 0, 4 do CloseBag(id) end end
 end
 
--- ElvUI the addon (v16.01), loaded before ForeverAH as in the game: the
+-- ElvUI the addon (v16.01), loaded before GoblinLedger as in the game: the
 -- engine table _G.ElvUI (ElvUI[1] is E) and its Bags module. B:Initialize
 -- runs when you log in (o.buildOn: a later event instead). It builds the bag
 -- window (M.InstallElvUIBagsReal, o.window), parks the game's bags the way
@@ -2171,7 +2175,7 @@ function C_AddOns.IsAddOnLoaded(name) return M.loaded[name] == true, M.loaded[na
 -- TOC fields of other addons a scenario installs (QuestieDB's Version and X-BUILD-COMMIT).
 M.addonMeta = {}
 function C_AddOns.GetAddOnMetadata(name, key)
-  if name == "ForeverAH" and key == "Version" then return "1.0.0" end
+  if name == "GoblinLedger" and key == "Version" then return "1.0.0" end
   local t = M.addonMeta[name]
   if t then return t[key] end
 end
@@ -2816,9 +2820,9 @@ class World:
         else:
             self.loader(BLIZZ_LEGACY_LUA, "@Interface/AddOns/Blizzard_AuctionUI/Mock.lua")
         M._sandbox()
-        if before_addon:   # e.g. ElvUI, which loads before ForeverAH
+        if before_addon:   # e.g. ElvUI, which loads before GoblinLedger
             before_addon(self)
-        if auctionator:   # loads before ForeverAH (alphabetical), its ADDON_LOADED fires before ours
+        if auctionator:   # loads before GoblinLedger (alphabetical), its ADDON_LOADED fires before ours
             self.loader(ATR_LUA, "@Interface/AddOns/Auctionator/Mock.lua")
             M.loaded["Auctionator"] = True
             M.fire("ADDON_LOADED", "Auctionator")
@@ -2829,14 +2833,14 @@ class World:
                 src = data_src if data_src is not None else open(DATA_FILE, "rb").read().decode("utf-8")
             else:
                 src = open(os.path.join(ADDON, fname), "rb").read().decode("utf-8")
-            ok = M.LoadChunk(src, "@Interface/AddOns/ForeverAH/" + fname, "ForeverAH", self.ns)
+            ok = M.LoadChunk(src, "@Interface/AddOns/%s/%s" % (ADDON_NAME, fname), ADDON_NAME, self.ns)
             if not ok:
                 self.load_errors.append(fname)
         # SavedVariables are restored after the addon's files run and before ADDON_LOADED.
         if saved is not None:
             self.g.ForeverAH_Settings = self.to_lua(saved)
-        M.loaded["ForeverAH"] = True
-        M.fire("ADDON_LOADED", "ForeverAH")
+        M.loaded[ADDON_NAME] = True
+        M.fire("ADDON_LOADED", ADDON_NAME)
         M.fire("VARIABLES_LOADED")
         M.fire("PLAYER_LOGIN")
         M.fire("PLAYER_ENTERING_WORLD", True, False)
@@ -3104,7 +3108,7 @@ TT_RGB = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "text": (0.90
 
 def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None, own=False, tf="1D", cover="auto",
                      verdict=True, styles=False):
-    """The Forever AH lines of an item tooltip. mult > 1: Shift held on a stack of
+    """The Goblin Ledger lines of an item tooltip. mult > 1: Shift held on a stack of
     that many (count defaults to it). cover: "version", "all", None, or "auto"
     (plain link: "all" for an item whose versions the data lists). verdict=False:
     a bound item or another market (no verdict, no stack line).
@@ -3112,7 +3116,7 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     names; big is True for the verdict line shown bigger (fresh data, full mode)."""
     it = ref.items.get(iid)
     if it is None:
-        lines, st = [("Forever AH: no recent listings", None)], [("muted", None, False)]
+        lines, st = [("Goblin Ledger: no recent listings", None)], [("muted", None, False)]
         return (lines, st) if styles else lines
     if count is None:
         count = mult if mult > 1 else 1
@@ -3141,7 +3145,7 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
             add(("AH value%s: %s" % (tag, mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now",
                 None, "text", None)
     else:
-        add("Forever AH", age_text(age), "sell", "muted")
+        add("Goblin Ledger", age_text(age), "sell", "muted")
         if V:
             add(V["left"], V["right"], V["lc"], V["rc"], V["kind"] in ("auction", "vendor") and age <= 6 * 3600)
         mk = m(it["market"])
@@ -3167,7 +3171,7 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     elif cover == "all":
         add("Price covers all versions of this item", None, "muted", None)
     if age > 6 * 3600:
-        add("Prices are %dh old: run Update-WoW-Prices.bat, then /reload" % (age // 3600), None, "muted", None)
+        add("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload" % (age // 3600), None, "muted", None)
     lines = [x[0] for x in out]
     return (lines, [x[1] for x in out]) if styles else lines
 
@@ -3606,7 +3610,7 @@ def partial_term(ref, name):
 # ===========================================================================
 def sc_static(sc, ref, items):
     """Source checks for text and calls the scenarios cannot reach."""
-    files = TOC_FILES + ["ForeverAH.toc", "ForeverAH_Forever.toc"]
+    files = TOC_FILES + ["GoblinLedger.toc", "GoblinLedger_Forever.toc"]
     for fname in files:
         raw = open(os.path.join(ADDON, fname), "rb").read()
         sc.check(all(b < 128 for b in raw), "%s is plain ASCII" % fname)
@@ -3628,12 +3632,51 @@ def sc_static(sc, ref, items):
                 fname, "once (the drop box)" if fname == "Bags.lua" else "nowhere"))
             for api in ("DeleteItem", "ConfirmDeleteItem", "RunScript"):
                 sc.check(not re.search(r"\b" + api + r"\b", code), "%s never uses %s" % (fname, api))
+    check_rename_leftovers(sc)
+
+
+# The addon was called Forever AH before it was renamed Goblin Ledger. Text a
+# player can see must use the new names; comments may keep the history.
+OLD_NAMES = ("Forever AH", "Update-WoW-Prices.bat", "Install-WoW-Addon.bat", "Uninstall-WoW-Addon.bat",
+             "grantdenney.com/wow")
+
+
+def lua_strings(code):
+    """The string literals of Lua source (comments already removed)."""
+    out = []
+    for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"|\'((?:[^\'\\\n]|\\.)*)\'|\[(=*)\[(.*?)\]\3\]', code, re.S):
+        out.append(m.group(1) if m.group(1) is not None else m.group(2) if m.group(2) is not None else m.group(4))
+    return out
+
+
+def check_rename_leftovers(sc):
+    """No old name in anything a player sees: strings in the Lua, the TOC
+    files and the price file placeholder. /fah only as the old alias."""
+    for fname in TOC_FILES + ["GoblinLedger.toc", "GoblinLedger_Forever.toc"]:
+        txt = open(os.path.join(ADDON, fname), "rb").read().decode("latin-1")
+        if fname.endswith(".lua"):
+            code = re.sub(r"--\[(=*)\[.*?\]\1\]", "", txt, flags=re.S)
+            code = re.sub(r"--[^\n]*", "", code)
+            strings = lua_strings(code)
+        else:
+            strings = [txt]
+        bad = [(old, s[:80]) for s in strings for old in OLD_NAMES if old in s]
+        sc.eq(bad, [], "%s: no player-visible old name (%s)" % (fname, ", ".join(OLD_NAMES)))
+        fah = [s for s in strings if fname.endswith(".lua") and re.search(r"/fah\b", s) and s != "/fah"]
+        sc.eq(fah, [], "%s: /fah only as the old slash alias, never in help or messages" % fname)
+    toc = open(os.path.join(ADDON, "GoblinLedger.toc"), "rb").read().decode("ascii")
+    sc.check("## Title: Goblin Ledger" in toc, "TOC title is Goblin Ledger")
+    sc.check("## SavedVariables: ForeverAH_Settings" in toc, "TOC keeps the ForeverAH_Settings saved variable")
+    # The comment-stripping and string finding above really see strings.
+    probe = lua_strings('P("a /fah b") x = \'Forever AH\' y = [[Update-WoW-Prices.bat]]')
+    sc.eq(probe, ["a /fah b", "Forever AH", "Update-WoW-Prices.bat"], "rename check finds every kind of Lua string")
 
 
 def sc_load(sc, ref, items):
-    toc = open(os.path.join(ADDON, "ForeverAH.toc"), "rb").read()
-    toc2 = open(os.path.join(ADDON, "ForeverAH_Forever.toc"), "rb").read()
-    sc.eq(toc, toc2, "ForeverAH_Forever.toc identical to ForeverAH.toc")
+    toc = open(os.path.join(ADDON, "GoblinLedger.toc"), "rb").read()
+    toc2 = open(os.path.join(ADDON, "GoblinLedger_Forever.toc"), "rb").read()
+    sc.eq(toc, toc2, "GoblinLedger_Forever.toc identical to GoblinLedger.toc")
+    sc.check(not os.path.exists(os.path.join(ADDON, "ForeverAH.toc")), "no old ForeverAH.toc left in the addon folder")
     lines = [l.strip() for l in toc.decode("ascii").splitlines()]
     sc.eq([l for l in lines if l and not l.startswith("#")], TOC_FILES, "TOC file order")
     sc.eq([l for l in lines if l.startswith("##")], TOC_HEADER, "TOC header lines")
@@ -3651,8 +3694,9 @@ def sc_load(sc, ref, items):
     sc.check(S.tooltip is True and S.chart is True and S.chartTF == "1D" and S.compact is False,
              "default settings")
     sc.check(w.same(w.g.ForeverAH_Settings, S), "ForeverAH_Settings points at ns.settings")
-    sc.eq(w.g.SLASH_FOREVERAH1, "/fah", "SLASH_FOREVERAH1")
-    sc.eq(w.g.SLASH_FOREVERAH2, "/foreverah", "SLASH_FOREVERAH2")
+    sc.eq([w.g["SLASH_GOBLINLEDGER%d" % i] for i in range(1, 6)], ["/gl", "/goblinledger", "/fah", "/foreverah", None],
+          "slash names: /gl, /goblinledger, and the old /fah and /foreverah")
+    sc.check(w.g.SLASH_FOREVERAH1 is None and w.g.SlashCmdList["FOREVERAH"] is None, "no second slash command list entry")
     sc.check(not w.g.ForeverAHChartFrame, "chart is not built at login (lazy)")
     sc.eq(ns.stats.series, 0, "no series decoded at login")
     sc.check(w.g.AuctionHouseFrame is None, "Blizzard AH not loaded at login")
@@ -3705,22 +3749,24 @@ def sc_decode(sc, ref, items):
 
 def sc_status(sc, ref, items):
     w = World(ref, items)
-    out = w.slash("/fah")
+    out = w.slash("/gl")
     txt = "\n".join(out)
     # The count is written the addon's way: 6,641
     sc.check(("prices for %s items from the %s" % (commas(ref.base_count()), ref.houseName)) in txt,
              "status names item count and house (%s)" % out[:1])
     sc.check("(US, PvP)" in txt, "status names region and ruleset")
     sc.check("updated 25m ago" in txt, "status shows data age")
-    sc.check("Type /fah help" in txt, "status points at help")
+    sc.check("Type /gl help" in txt, "status points at help")
     nv = len(ref.base_of)
     sc.eq(any(("%s versions of gear" % commas(nv)) in l for l in out), nv > 0,
           "status says how many gear versions have their own prices (%d)" % nv)
     sc.check("old" not in txt, "no stale warning for fresh data")
-    sc.eq(w.slash("/foreverah status"), out, "/foreverah alias gives the same status")
-    h = w.slash("/fah help")
-    sc.check(len(h) >= 6 and any("/fah chart" in l for l in h), "help lists commands")
-    u = w.slash("/fah bogus")
+    sc.eq(w.slash("/goblinledger status"), out, "/goblinledger gives the same status")
+    sc.eq(w.slash("/fah"), out, "/fah (the old name) still works")
+    sc.eq(w.slash("/foreverah status"), out, "/foreverah (the old name) still works")
+    h = w.slash("/gl help")
+    sc.check(len(h) >= 6 and any("/gl chart" in l for l in h), "help lists commands")
+    u = w.slash("/gl bogus")
     sc.check(any("unknown command" in l for l in u), "unknown command message")
     sc.clean(w)
 
@@ -3748,8 +3794,8 @@ def sc_tooltip(sc, ref, items):
     tt.RefreshData(tt)
     sc.eq(w.lines(tt), lines, "2589 rebuild gives one copy")
     tooltip_style_ok(sc, w, tt, want_st, "2589 rebuild")
-    heads = [l for l in w.all_lines(tt) if l[0] == "Forever AH"]
-    sc.eq(len(heads), 1, "one Forever AH header")
+    heads = [l for l in w.all_lines(tt) if l[0] == "Goblin Ledger"]
+    sc.eq(len(heads), 1, "one Goblin Ledger header")
     # Black Lotus by id
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, R.LOTUS)
@@ -3763,7 +3809,7 @@ def sc_tooltip(sc, ref, items):
     # Unknown item
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, R.NO_GEAR)
-    sc.eq(w.lines(tt), [("Forever AH: no recent listings", None)], "unknown item tooltip")
+    sc.eq(w.lines(tt), [("Goblin Ledger: no recent listings", None)], "unknown item tooltip")
     tooltip_style_ok(sc, w, tt, [("muted", None, False)], "unknown item")
     # Shift held on a stack of 20
     w.M.shift = True
@@ -3817,8 +3863,8 @@ def sc_tooltip(sc, ref, items):
     w.ns.SetChartTF("1D")
     if R.SIM:
         sc.check(differ > 0, "the test data has tooltips that change with the timeframe (%d)" % differ)
-    out = w.slash("/fah compact")
-    sc.check(any("one line" in l for l in out), "/fah compact message")
+    out = w.slash("/gl compact")
+    sc.check(any("one line" in l for l in out), "/gl compact message")
     for iid in ids:
         tt.SetItemByID(tt, iid)
         want, want_st = expected_tooltip(ref, iid, age, compact=True, styles=True)
@@ -3828,15 +3874,15 @@ def sc_tooltip(sc, ref, items):
     tt.SetBagItem(tt, 0, 1)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, mult=20, compact=True), "compact x20 tooltip")
     w.M.shift = False
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     tt.SetItemByID(tt, R.LINEN)
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "full tooltip again after second /fah compact")
+    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "full tooltip again after second /gl compact")
     # Tooltip off and on
-    out = w.slash("/fah tooltip")
-    sc.check(any("off" in l for l in out), "/fah tooltip off message")
+    out = w.slash("/gl tooltip")
+    sc.check(any("off" in l for l in out), "/gl tooltip off message")
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), [], "tooltip off: no lines")
-    w.slash("/fah tooltip")
+    w.slash("/gl tooltip")
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age), "tooltip on again")
     # Other tooltips: a chat link's ItemRefTooltip gets the bigger verdict too,
@@ -3977,7 +4023,7 @@ def sc_stale(sc, ref, items):
     lines = w.lines(tt)
     want, want_st = expected_tooltip(ref, R.LINEN, age, styles=True)
     sc.eq(lines, want, "stale tooltip lines")
-    sc.check(lines[-1][0] == "Prices are 7h old: run Update-WoW-Prices.bat, then /reload", "stale line text")
+    sc.check(lines[-1][0] == "Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload", "stale line text")
     sc.check(not any(big for _, _, big in want_st), "stale: the model never makes the verdict bigger")
     tooltip_style_ok(sc, w, tt, want_st, "stale (the verdict at the normal size)")
     for iid in sample_ids(ref, SAMPLE):
@@ -3985,13 +4031,13 @@ def sc_stale(sc, ref, items):
         want, want_st = expected_tooltip(ref, iid, age, styles=True)
         sc.eq(w.lines(tt), want, "stale tooltip %d" % iid)
         tooltip_style_ok(sc, w, tt, want_st, "stale tooltip %d" % iid)
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, compact=True), "stale compact tooltip keeps the stale line")
-    out = "\n".join(w.slash("/fah"))
+    out = "\n".join(w.slash("/gl"))
     sc.check("updated 7h ago" in out, "status shows 7h")
-    sc.check("Prices are 7h old: run Update-WoW-Prices.bat, then /reload." in out, "status stale warning")
-    w.slash("/fah chart " + N(R.LINEN))
+    sc.check("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload." in out, "status stale warning")
+    w.slash("/gl chart " + N(R.LINEN))
     sc.eq(w.ns.ChartPanel.age._text, "Data: 7h ago \u00b7 " + ref.houseName, "chart footer shows 7h")
     sc.clean(w)
 
@@ -4006,20 +4052,20 @@ def sc_placeholder(sc, ref, items):
     sc.check(ns.DataAge() is None, "DataAge nil")
     sc.eq(ns.ItemCount(), 0, "no items")
     sc.check(any("no price data yet" in c for c in w.chat()), "login hint about missing data")
-    out = w.slash("/fah")
-    sc.check(any("Update-WoW-Prices.bat" in l for l in out) and any("/reload" in l for l in out), "status explains the updater")
+    out = w.slash("/gl")
+    sc.check(any("Install-Goblin-Ledger.bat" in l for l in out) and any("/reload" in l for l in out), "status explains the updater")
     tt = w.g.GameTooltip
     tt.SetItemByID(tt, R.LINEN)
     sc.eq(w.lines(tt), [], "no tooltip lines without data")
-    out = w.slash("/fah chart Linen Cloth")
-    sc.check(any("no price data" in l for l in out), "/fah chart item: no data message")
-    w.slash("/fah chart")
+    out = w.slash("/gl chart Linen Cloth")
+    sc.check(any("no price data" in l for l in out), "/gl chart item: no data message")
+    w.slash("/gl chart")
     C = ns.ChartPanel
-    sc.check(C.frame.IsShown(C.frame), "/fah chart opens the empty chart")
+    sc.check(C.frame.IsShown(C.frame), "/gl chart opens the empty chart")
     sc.check(C.msg._shown and "No price data yet" in (C.msg._text or ""), "empty chart message (%s)" % C.msg._text)
     sc.eq(C.age._text, "Data: none yet", "empty chart age")
-    w.slash("/fah chart")
-    sc.check(not C.frame.IsShown(C.frame), "/fah chart toggles it off")
+    w.slash("/gl chart")
+    sc.check(not C.frame.IsShown(C.frame), "/gl chart toggles it off")
     # Whole AH flow with no data
     w.put_bag(0, 1, R.LINEN, 20)
     w.open_ah_modern()
@@ -4054,9 +4100,9 @@ def sc_saved_settings(sc, ref, items):
     sc.eq(S.tooltip, True, "bad saved tooltip type falls back to the default")
     sc.eq(S.chart, False, "saved chart=false kept")
     sc.check(w.same(w.g.ForeverAH_Settings, S), "ForeverAH_Settings is ns.settings")
-    w.slash("/fah chart")
+    w.slash("/gl chart")
     C = w.ns.ChartPanel
-    sc.eq(w.ns.ChartItem(), R.RUNE, "/fah chart reopens the last item")
+    sc.eq(w.ns.ChartItem(), R.RUNE, "/gl chart reopens the last item")
     p = C.frame._points[1]
     sc.check(p[1] == "TOPLEFT" and w.same(p[2], w.g.UIParent) and p[4] == 100 and p[5] == -200, "saved chart position used")
     chart_check(sc, w, ref, R.RUNE, "1W", "saved 1W")
@@ -4066,10 +4112,10 @@ def sc_saved_settings(sc, ref, items):
 def sc_chart_standalone(sc, ref, items):
     w = World(ref, items)
     ns = w.ns
-    out = w.slash("/fah chart " + N(R.RUNE))
+    out = w.slash("/gl chart " + N(R.RUNE))
     C = ns.ChartPanel
     F = C.frame
-    sc.check(F.IsShown(F), "/fah chart Runecloth shows the chart")
+    sc.check(F.IsShown(F), "/gl chart Runecloth shows the chart")
     sc.eq(ns.ChartSource(), "slash", "chart source")
     sc.check(not ns.ChartIsDocked(), "standalone chart is not docked")
     sc.eq(C.placement, "float", "placement float")
@@ -4081,11 +4127,11 @@ def sc_chart_standalone(sc, ref, items):
     hover_check(sc, w, ref, R.RUNE, "1D", 5, "Runecloth 1D")
     hover_check(sc, w, ref, R.RUNE, "1D", ref.window(R.RUNE, "1D")["n"] - 1, "Runecloth 1D last")
     # Link and id forms
-    w.slash("/fah chart " + w.M.ItemLink(R.LOTUS))
-    sc.eq(ns.ChartItem(), R.LOTUS, "/fah chart with an item link")
-    w.slash("/fah chart %d" % R.LINEN)
-    sc.eq(ns.ChartItem(), R.LINEN, "/fah chart with an item id")
-    out = w.slash("/fah chart Not A Real Item")
+    w.slash("/gl chart " + w.M.ItemLink(R.LOTUS))
+    sc.eq(ns.ChartItem(), R.LOTUS, "/gl chart with an item link")
+    w.slash("/gl chart %d" % R.LINEN)
+    sc.eq(ns.ChartItem(), R.LINEN, "/gl chart with an item id")
+    out = w.slash("/gl chart Not A Real Item")
     sc.check(any("no price data for Not A Real Item" in l for l in out), "unknown name message")
     sc.eq(ns.ChartItem(), R.LINEN, "unknown name leaves the chart alone")
     # Drag saves the position, Escape closes
@@ -4096,8 +4142,8 @@ def sc_chart_standalone(sc, ref, items):
              "chart closes with Escape")
     sc.eq(w.M.pressEscape(), "ForeverAHChartFrame", "Escape hides the chart")
     sc.check(not F.IsShown(F), "chart hidden after Escape")
-    w.slash("/fah chart")
-    sc.check(F.IsShown(F) and ns.ChartItem() == R.LINEN, "/fah chart reopens the last item")
+    w.slash("/gl chart")
+    sc.check(F.IsShown(F) and ns.ChartItem() == R.LINEN, "/gl chart reopens the last item")
     # Close button while standalone keeps settings.chart
     M = w.M
     M.click(C.closeButton)
@@ -4109,7 +4155,7 @@ def sc_chart_standalone(sc, ref, items):
 def sc_chart_timeframes(sc, ref, items):
     w = World(ref, items)
     ns, M = w.ns, w.M
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     C = ns.ChartPanel
     for tf in TFS:
         M.click(C.tfButtons[tf])
@@ -4145,7 +4191,7 @@ def sc_chart_timeframes(sc, ref, items):
 def sc_chart_no_setowner_clear(sc, ref, items):
     """If SetOwner does not clear the tooltip on this client, hover lines must still not stack."""
     w = World(ref, items, set_owner_clears=False)
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     hover_check(sc, w, ref, R.RUNE, "1D", 3, "no-clear SetOwner")
     sc.clean(w)
 
@@ -4374,28 +4420,28 @@ def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default scree
         M.click(toggle)
         sc.check(C.frame.IsShown(C.frame) and ns.ChartItem() == R.RUNE, "%s: Chart button shows it again with the last item" % label)
         sc.eq(ns.settings.chart, True, "%s: Chart button turns the setting back on" % label)
-    # /fah chart at the AH after closing it with x: follows searches again
+    # /gl chart at the AH after closing it with x: follows searches again
     M.click(C.closeButton)
-    w.slash("/fah chart")
-    sc.check(C.frame.IsShown(C.frame), "%s: /fah chart at the AH shows the chart" % label)
+    w.slash("/gl chart")
+    sc.check(C.frame.IsShown(C.frame), "%s: /gl chart at the AH shows the chart" % label)
     sb.SearchBox.SetText(sb.SearchBox, N(R.LOTUS))
     M.fireScript(sb.SearchBox, "OnEnterPressed")
     w.settle(0.4)
-    sc.eq(ns.ChartItem(), R.LOTUS, "%s: chart opened with /fah chart at the AH follows searches" % label)
-    w.slash("/fah chart")
-    sc.check(not C.frame.IsShown(C.frame), "%s: /fah chart hides the docked chart" % label)
-    sc.eq(ns.settings.chart, False, "%s: /fah chart hide at the AH turns the AH chart off" % label)
+    sc.eq(ns.ChartItem(), R.LOTUS, "%s: chart opened with /gl chart at the AH follows searches" % label)
+    w.slash("/gl chart")
+    sc.check(not C.frame.IsShown(C.frame), "%s: /gl chart hides the docked chart" % label)
+    sc.eq(ns.settings.chart, False, "%s: /gl chart hide at the AH turns the AH chart off" % label)
     sb.SearchBox.SetText(sb.SearchBox, N(R.RUNE))
     M.fireScript(sb.SearchBox, "OnEnterPressed")
     w.settle(0.4)
     sc.check(not C.frame.IsShown(C.frame), "%s: hidden chart stays hidden on search" % label)
-    w.slash("/fah chart " + N(R.LINEN))
+    w.slash("/gl chart " + N(R.LINEN))
     sc.check(C.frame.IsShown(C.frame) and ns.ChartIsDocked() and ns.ChartItem() == R.LINEN,
-             "%s: /fah chart Linen Cloth at the AH shows it docked" % label)
+             "%s: /gl chart Linen Cloth at the AH shows it docked" % label)
     sb.SearchBox.SetText(sb.SearchBox, N(R.LOTUS))
     M.fireScript(sb.SearchBox, "OnEnterPressed")
     w.settle(0.4)
-    sc.eq(ns.ChartItem(), R.LOTUS, "%s: /fah chart <item> at the AH follows searches afterwards" % label)
+    sc.eq(ns.ChartItem(), R.LOTUS, "%s: /gl chart <item> at the AH follows searches afterwards" % label)
 
     # Close the AH
     w.close_ah_modern()
@@ -4412,7 +4458,7 @@ def sc_ah_modern(sc, ref, items, screen=None, ah_width=800, label="default scree
     sc.check(C.frame.IsShown(C.frame) and ns.ChartIsDocked() and ns.ChartItem() == R.LOTUS, "%s: reopen restores the docked chart" % label)
     w.close_ah_modern()
     # Standalone chart after the AH is closed floats again
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     sc.check(C.frame.IsShown(C.frame) and not ns.ChartIsDocked(), "%s: standalone chart after close floats" % label)
     chart_check(sc, w, ref, R.RUNE, "1D", "%s: standalone after AH" % label)
     sc.clean(w, label)
@@ -4607,12 +4653,12 @@ def sc_auctionator(sc, ref, items):
 
 def sc_horde(sc, ref, items):
     w = World(ref, items, faction="Horde")
-    out = "\n".join(w.slash("/fah"))
+    out = "\n".join(w.slash("/gl"))
     sc.check("may not match the auction house you use" in out, "Horde: status warns about the Alliance prices")
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     chart_check(sc, w, ref, R.RUNE, "1D", "Horde chart")
     w.M.hardcore = True
-    out = "\n".join(w.slash("/fah"))
+    out = "\n".join(w.slash("/gl"))
     sc.check("not Hardcore" in out, "Hardcore note")
     sc.clean(w)
 
@@ -4808,8 +4854,8 @@ def sc_chart_drag_docked(sc, ref, items):
     w.close_ah_modern()
     w.open_ah_modern()
     sc.check(abs(F.GetLeft(F) - (left0 + 40)) < 1e-6, "drag: offset kept when the AH opens again")
-    out = "\n".join(w.slash("/fah chart reset"))
-    sc.check("normal place" in out and ns.settings.chartDock is None, "drag: /fah chart reset clears it")
+    out = "\n".join(w.slash("/gl chart reset"))
+    sc.check("normal place" in out and ns.settings.chartDock is None, "drag: /gl chart reset clears it")
     sc.check(abs(F.GetLeft(F) - left0) < 1e-6 and abs(F.GetTop(F) - top0) < 1e-6, "drag: back under the AH")
     w.close_ah_modern()
     sc.clean(w)
@@ -5239,7 +5285,7 @@ def flip_profit(x):
 
 
 def flip_line_text(x, name):
-    """Sidebar.lua FlipLine: one /fah flips chat line (without the colour codes)."""
+    """Sidebar.lua FlipLine: one /gl flips chat line (without the colour codes)."""
     fit = x.get("fit")
     if x.get("data"):
         head = "%s: buy up to %s (%s), " % (name, money_text(x["buyMax"]), flip_units_text(x))
@@ -5273,19 +5319,19 @@ def gold_line(x):
 
 
 def slash_head(gold):
-    """The /fah flips header: sized to your gold when the game says."""
+    """The /gl flips header: sized to your gold when the game says."""
     return (FLIP_SLASH_GOLD_HEAD % money_text(gold)) if gold is not None else FLIP_SLASH_HEAD
 
 
 def slash_flips_ok(sc, out, ideas, ref, items, gold, label):
-    """/fah flips: the header (sized to your gold when the game says), then one exact line per idea."""
+    """/gl flips: the header (sized to your gold when the game says), then one exact line per idea."""
     head = slash_head(gold)
-    sc.eq(len(out), len(ideas) + 1, "%s: /fah flips prints a header and a line per idea" % label)
+    sc.eq(len(out), len(ideas) + 1, "%s: /gl flips prints a header and a line per idea" % label)
     if out:
-        sc.check(strip_codes(out[0]).endswith(head), "%s: /fah flips header (%s)" % (label, strip_codes(out[0])))
+        sc.check(strip_codes(out[0]).endswith(head), "%s: /gl flips header (%s)" % (label, strip_codes(out[0])))
     for i, (line, x) in enumerate(zip(out[1:], ideas), start=1):
         want = "  %d. %s" % (i, flip_line_text(x, item_name(ref, items, x["id"])))
-        sc.check(strip_codes(line).endswith(want), "%s: /fah flips line %d: got %r, want %r" % (label, i, strip_codes(line), want))
+        sc.check(strip_codes(line).endswith(want), "%s: /gl flips line %d: got %r, want %r" % (label, i, strip_codes(line), want))
 
 
 def flip_row_ok(sc, r, x, ref, items, lab):
@@ -5451,13 +5497,13 @@ def sc_sidebar(sc, ref, items):
         M.fireScript(SB.watchBox, "OnMouseWheel", 5)
         sc.eq(shown_rows(SB, "watchRows")[0].itemID, SIDEBAR_WATCH[0], "scrolling up stops at the top")
 
-    # Hover: the game's item tooltip with the Forever AH lines, plus the flip numbers
+    # Hover: the game's item tooltip with the Goblin Ledger lines, plus the flip numbers
     tt = w.g.GameTooltip
     if got:
         M.enter(got[0])
         lines = w.all_lines(tt)
         flat = [strip_codes(a or "") + " | " + strip_codes(b or "") for a, b in lines]
-        sc.check(any("Forever AH" in f for f in flat), "flip hover: Forever AH price lines are there")
+        sc.check(any("Goblin Ledger" in f for f in flat), "flip hover: Goblin Ledger price lines are there")
         x0 = want[0]
         if x0.get("data"):
             pl, pv = (("Profit over the cost", x0["profit"]) if x0["kind"] == "vendor"
@@ -5605,32 +5651,32 @@ def sc_sidebar(sc, ref, items):
 
     # Slash commands
     rune = N(R.RUNE)
-    out = w.slash("/fah watch " + rune)
-    sc.check(any(("watching " + rune) in c or "already on your watchlist" in c for c in out), "/fah watch Runecloth")
-    sc.eq(watch_ids(w).count(R.RUNE), 1, "/fah watch: on the list once")
-    out = w.slash("/fah unwatch " + rune.lower())
-    sc.check(any(("stopped watching " + rune) in c for c in out), "/fah unwatch")
-    sc.check(R.RUNE not in watch_ids(w), "/fah unwatch removed it")
-    out = w.slash("/fah unwatch " + rune)
-    sc.check(any("not on your watchlist" in c for c in out), "/fah unwatch twice")
-    out = w.slash("/fah watch Nope Nothing")
-    sc.check(any("no price data for Nope Nothing" in c for c in out), "/fah watch unknown")
-    out = w.slash("/fah watchlist")
-    sc.check(any(("watching %d items:" % len(watch_ids(w))) in c for c in out), "/fah watchlist lists it")
-    out = w.slash("/fah watchlist reset")
-    sc.eq(watch_ids(w), SIDEBAR_WATCH, "/fah watchlist reset brings back the starter list")
-    out = w.slash("/fah flips")
+    out = w.slash("/gl watch " + rune)
+    sc.check(any(("watching " + rune) in c or "already on your watchlist" in c for c in out), "/gl watch Runecloth")
+    sc.eq(watch_ids(w).count(R.RUNE), 1, "/gl watch: on the list once")
+    out = w.slash("/gl unwatch " + rune.lower())
+    sc.check(any(("stopped watching " + rune) in c for c in out), "/gl unwatch")
+    sc.check(R.RUNE not in watch_ids(w), "/gl unwatch removed it")
+    out = w.slash("/gl unwatch " + rune)
+    sc.check(any("not on your watchlist" in c for c in out), "/gl unwatch twice")
+    out = w.slash("/gl watch Nope Nothing")
+    sc.check(any("no price data for Nope Nothing" in c for c in out), "/gl watch unknown")
+    out = w.slash("/gl watchlist")
+    sc.check(any(("watching %d items:" % len(watch_ids(w))) in c for c in out), "/gl watchlist lists it")
+    out = w.slash("/gl watchlist reset")
+    sc.eq(watch_ids(w), SIDEBAR_WATCH, "/gl watchlist reset brings back the starter list")
+    out = w.slash("/gl flips")
     ideas_now = ref_flips(ref, limit=10, hidden={fid} if got else (), gold=w.gold)
-    sc.eq(len(out), len(ideas_now) + 1 if ideas_now else 1, "/fah flips prints a line per idea (up to 10)")
+    sc.eq(len(out), len(ideas_now) + 1 if ideas_now else 1, "/gl flips prints a line per idea (up to 10)")
     if ideas_now:
         slash_flips_ok(sc, out, ideas_now, ref, items, w.gold, "sidebar")
-    out = w.slash("/fah help")
-    sc.check(any("/fah watch" in c for c in out) and any("/fah chart" in c for c in out), "/fah help has both lists")
-    out = w.slash("/fah sidebar")
-    sc.check(any("now off" in c for c in out) and not F.IsVisible(F), "/fah sidebar tucks it away")
-    out = w.slash("/fah sidebar")
-    sc.check(any("now on" in c for c in out) and F.IsVisible(F), "/fah sidebar shows it")
-    out = w.slash("/fah nonsense")
+    out = w.slash("/gl help")
+    sc.check(any("/gl watch" in c for c in out) and any("/gl chart" in c for c in out), "/gl help has both lists")
+    out = w.slash("/gl sidebar")
+    sc.check(any("now off" in c for c in out) and not F.IsVisible(F), "/gl sidebar tucks it away")
+    out = w.slash("/gl sidebar")
+    sc.check(any("now on" in c for c in out) and F.IsVisible(F), "/gl sidebar shows it")
+    out = w.slash("/gl nonsense")
     sc.check(any("unknown command" in c for c in out), "other commands still reach Core")
 
     w.close_ah_modern()
@@ -5674,8 +5720,8 @@ def sc_sidebar_nodata(sc, ref, items):
     rows = shown_rows(SB, "watchRows")
     sc.check(len(rows) > 0 and all(strip_codes(r.right._text) == "no data" for r in rows),
              "no data: watch rows show no data")
-    out = w.slash("/fah flips")
-    sc.check(any("no price data yet" in c for c in out), "no data: /fah flips says so")
+    out = w.slash("/gl flips")
+    sc.check(any("no price data yet" in c for c in out), "no data: /gl flips says so")
     sc.check(SB.lastError is None, "no data: no swallowed error (%s)" % SB.lastError)
     sc.clean(w)
 
@@ -5714,8 +5760,8 @@ def sc_sidebar_first_snapshot(sc, ref, items):
     sc.check(SB.flipMsg._shown and SB.flipMsg._text == FLIP_MESSAGES.get(why),
              "first snapshot: flip area says it is collecting history (%r)" % SB.flipMsg._text)
     sc.eq(len(shown_rows(SB, "flipRows")), 0, "first snapshot: no flip rows")
-    out = w.slash("/fah flips")
-    sc.check(any(FLIP_SLASH.get(why, "?") in c for c in out), "first snapshot: /fah flips says so (%s)" % out)
+    out = w.slash("/gl flips")
+    sc.check(any(FLIP_SLASH.get(why, "?") in c for c in out), "first snapshot: /gl flips says so (%s)" % out)
     rows = shown_rows(SB, "watchRows")
     sc.check(len(rows) > 0 and all(strip_codes(r.right._text) != "no data" for r in rows if r.itemID in ref.items),
              "first snapshot: watchlist still shows prices")
@@ -5760,12 +5806,12 @@ def sc_edge(sc, ref_unused, items_unused):
     tt = w.g.GameTooltip
     for compact in (False, True):
         if compact:
-            w.slash("/fah compact")
+            w.slash("/gl compact")
         for iid in sorted(ref.items):
             tt.SetItemByID(tt, iid)
             sc.eq(w.lines(tt), expected_tooltip(ref, iid, age, compact=compact),
                   "edge tooltip %d%s" % (iid, " compact" if compact else ""))
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     # Chart for every item and timeframe, including windows with nothing listed
     for iid in sorted(ref.items):
         for tf in TFS:
@@ -5941,8 +5987,8 @@ def check_sidebar_flips(sc, w, ref, label):
     if not want:
         sc.check(SB.flipMsg._shown and SB.flipMsg._text == FLIP_MESSAGES[why],
                  "%s: flip message for %s (%r)" % (label, why, SB.flipMsg._text))
-        out = w.slash("/fah flips")
-        sc.check(any(FLIP_SLASH[why] in c for c in out), "%s: /fah flips says the same (%s)" % (label, out))
+        out = w.slash("/gl flips")
+        sc.check(any(FLIP_SLASH[why] in c for c in out), "%s: /gl flips says the same (%s)" % (label, out))
     else:
         sc.check(not SB.flipMsg._shown, "%s: ideas shown, no message" % label)
     return want, why
@@ -5977,7 +6023,7 @@ def sc_sales_hours(sc, ref, items):
                 # (the tooltip is kept short: sales show on the chart)
                 sc.eq(ns.SoldText(ns.GetItem(iid)), "sales: measuring", "%s: the sold text says measuring (%d)" % (label, iid))
                 sc.check(not any((a or "").startswith("Listed ") for a, _ in lines), "%s: no sold line in the tooltip (%d)" % (label, iid))
-        w.slash("/fah chart " + N(R.LINEN))
+        w.slash("/gl chart " + N(R.LINEN))
         chart_check(sc, w, r2, R.LINEN, "1D", label + " chart")
         w.open_ah_modern()
         want, why = check_sidebar_flips(sc, w, r2, label)
@@ -6129,7 +6175,7 @@ def sc_short_history(sc, ref, items):
     text = set_header(rewrite_items(ref.text, fn), "salesHours", 24)
     r2 = RefData(text=text)
     w = World(r2, items, data_src=text)
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     chart_check(sc, w, r2, R.RUNE, "1D", "two prices")
     hover_check(sc, w, r2, R.RUNE, "1D", 1, "two prices")
     w.open_ah_modern()
@@ -6298,20 +6344,20 @@ def sc_names(sc, ref, items):
     sc.eq(ns.ItemName(y), "Item %d" % y, "names: shown as Item <id> until the game has it")
     sc.eq(ns.FindItemID("Item %d" % y), None, "names: the placeholder is not searchable")
     sc.eq(ns.FindItemID(x_name.upper()), x, "names: found by the game's name")
-    out = w.slash("/fah chart " + x_name)
-    sc.eq(ns.ChartItem(), x, "names: /fah chart with the game's name")
+    out = w.slash("/gl chart " + x_name)
+    sc.eq(ns.ChartItem(), x, "names: /gl chart with the game's name")
     sc.eq(ns.ChartPanel.name._text, x_name if len(x_name) <= 34 else x_name[:33] + "...", "names: chart header uses the game's name")
     chart_check(sc, w, r2, x, "1D", "names: unnamed item chart")
     ns.ShowChart(y, "slash")
     sc.eq(ns.ChartPanel.name._text, "Item %d" % y, "names: header for an item nobody has a name for")
     # typing that shown name back works like typing the number
     ns.ShowChart(R.LINEN, "slash")
-    out = [strip_codes(o) for o in w.slash("/fah chart Item %d" % y)]
-    sc.check(ns.ChartItem() == y and not any("no price data" in o for o in out), "names: /fah chart Item <id> (%s)" % out)
-    out = [strip_codes(o) for o in w.slash("/fah watch [item %d]" % y)]
-    sc.check(y in watch_ids(w) and any("watching Item %d" % y in o for o in out), "names: /fah watch [item <id>] (%s)" % out)
-    w.slash("/fah unwatch Item %d" % y)
-    sc.check(y not in watch_ids(w), "names: /fah unwatch Item <id>")
+    out = [strip_codes(o) for o in w.slash("/gl chart Item %d" % y)]
+    sc.check(ns.ChartItem() == y and not any("no price data" in o for o in out), "names: /gl chart Item <id> (%s)" % out)
+    out = [strip_codes(o) for o in w.slash("/gl watch [item %d]" % y)]
+    sc.check(y in watch_ids(w) and any("watching Item %d" % y in o for o in out), "names: /gl watch [item <id>] (%s)" % out)
+    w.slash("/gl unwatch Item %d" % y)
+    sc.check(y not in watch_ids(w), "names: /gl unwatch Item <id>")
     sc.eq(ns.ResolveItem("Item 999999999"), None, "names: Item <id> without price data is not found")
     sc.eq(ns.ResolveItem("item %d" % y), y, "names: ResolveItem takes Item <id> in any case")
     M["items"][y].name = y_name        # the game loads it
@@ -6406,7 +6452,7 @@ def sc_chart_lines(sc, ref, items):
     lit box again hides it. The choice is kept in the settings."""
     w = World(ref, items)
     ns, M = w.ns, w.M
-    w.slash("/fah chart " + N(R.RUNE))
+    w.slash("/gl chart " + N(R.RUNE))
     C = ns.ChartPanel
     panel = [0.07, 0.08, 0.10]
     sc.eq(ns.settings.chartLine, None, "lines: none by default")
@@ -6471,7 +6517,7 @@ def sc_chart_lines(sc, ref, items):
     # saved settings: the choice comes back after a reload; a bad value is dropped
     w2 = World(ref, items, saved={"chartLine": "sell"})
     sc.eq(w2.ns.settings.chartLine, "sell", "lines: saved choice kept")
-    w2.slash("/fah chart " + N(R.RUNE))
+    w2.slash("/gl chart " + N(R.RUNE))
     chart_check(sc, w2, ref, R.RUNE, "1D", "lines: saved sell")
     w3 = World(ref, items, saved={"chartLine": "both"})
     sc.eq(w3.ns.settings.chartLine, None, "lines: a bad saved value is dropped")
@@ -6497,7 +6543,7 @@ def sc_chart_lines(sc, ref, items):
     sc.clean(w4, "lines short")
     # a client where SetOwner does not clear: the box help does not stack up with each click
     w5 = World(ref, items, set_owner_clears=False)
-    w5.slash("/fah chart " + N(R.RUNE))
+    w5.slash("/gl chart " + N(R.RUNE))
     C5 = w5.ns.ChartPanel
     tt5 = w5.g.GameTooltip
     w5.M.enter(C5.buyBox)
@@ -6667,8 +6713,8 @@ def sc_versions(sc, ref, items):
         chart_check(sc, w, r2, base, "1D", "versions: chart of the item, %s line" % line)
         sc.eq(int(C.pools.tag.used), 0, "versions: no %s line for the whole item" % line)
     ns.SetChartLine(None)
-    w.slash("/fah chart " + gear_link(base, keys[0]))
-    sc.eq(ns.ChartItem(), v1, "versions: /fah chart with a version's link")
+    w.slash("/gl chart " + gear_link(base, keys[0]))
+    sc.eq(ns.ChartItem(), v1, "versions: /gl chart with a version's link")
     # names: a version without a name in the data
     nm_text = rewrite_items(text, lambda iid, f: ([""] + f[1:]) if iid == v2 else None)
     w5 = World(RefData(text=nm_text), items, data_src=nm_text)
@@ -7021,7 +7067,7 @@ def data_flip_hover_ok(sc, w, row, x, ref, lab):
           lab + ": a Watch out only for gear versions")
     if x["id"] in ref.base_of:
         sc.check(any(f.startswith("Prices for this version only") for f in flat), lab + ": the item tooltip is the version's")
-    sc.check(any("Forever AH" in f for f in flat[:max(0, i)]), lab + ": the Forever AH price lines come first")
+    sc.check(any("Goblin Ledger" in f for f in flat[:max(0, i)]), lab + ": the Goblin Ledger price lines come first")
     sc.check(any("Click: open it in the auction house" in f for f in flat), lab + ": says what a click does")
     w.M.leave(row)
     return flat
@@ -7070,9 +7116,9 @@ def sc_data_flips(sc, ref, items):
     menu_pick(w, "Not interested (hide for a day)")
     want2 = ref_flips(r2, hidden={fid}, gold=w.gold)
     sc.eq([r.itemID for r in shown_rows(SB, "flipRows")], [x["id"] for x in want2], "collector flips: a hidden flip is replaced")
-    out = w.slash("/fah flips")
+    out = w.slash("/gl flips")
     ideas = ref_flips(r2, limit=10, hidden={fid}, gold=w.gold)
-    sc.eq(len(out), len(ideas) + 1, "collector flips: /fah flips prints them")
+    sc.eq(len(out), len(ideas) + 1, "collector flips: /gl flips prints them")
     slash_flips_ok(sc, out, ideas, r2, items, w.gold, "collector flips")
     for line, x in zip(out[1:], ideas):
         s = strip_codes(line)
@@ -7239,7 +7285,7 @@ def sc_flip_gold(sc, ref, items):
     sc.eq([x["fit"]["profit"] for x in rhist], [day(x) for x in byday[:len(rhist)]],
           "gold rich: a history idea makes a day's profit")
     sc.eq(w.ns.SidebarPanel.flipGold._text, "for your 200000g", "gold rich: FLIP IDEAS says the gold")
-    slash_flips_ok(sc, w.slash("/fah flips"), ref_flips(r2, limit=10, gold=w.gold), r2, items, w.gold, "gold rich")
+    slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(r2, limit=10, gold=w.gold), r2, items, w.gold, "gold rich")
     w.close_ah_modern()
     sc.clean(w, "rich")
 
@@ -7267,7 +7313,7 @@ def sc_flip_gold(sc, ref, items):
     sc.check(all(x["fit"]["cost"] <= 20000 for x in want), "gold 2g: every idea costs at most 2g")
     if R.SIM:
         sc.check(any(x["fit"]["limited"] for x in hist), "gold 2g: a history idea 2g buys only part of (%s)" % hist)
-    out = w.slash("/fah flips")
+    out = w.slash("/gl flips")
     slash_flips_ok(sc, out, ref_flips(r2, limit=10, gold=20000), r2, items, 20000, "gold 2g")
     # the ideas stay put until something they depend on changes ...
     w.set_gold(5000)
@@ -7283,15 +7329,15 @@ def sc_flip_gold(sc, ref, items):
     sc.check(cx is not None and (cx["fit"]["units"], cx["fit"]["cost"], cx["fit"]["profit"]) == (1, 3751, 2424),
              "gold 50s: 1 of c's 4 costs 37s 51c (rounded up), making 24s 24c (rounded down)")
     sc.eq(SB.flipGold._text, "for your 50s", "gold 50s: FLIP IDEAS says the new gold")
-    # no gold at all: the sidebar and /fah flips say so
+    # no gold at all: the sidebar and /gl flips say so
     w.set_gold(0)
     w.M.fire("PLAYER_MONEY")
     w.settle(0.5)
     want0, why0 = check_sidebar_flips(sc, w, r2, "gold 0")
     sc.eq((len(want0), why0), (0, "gold"), "gold 0: no ideas, because of the gold")
     sc.eq(SB.flipGold._text, "for your 0c", "gold 0: FLIP IDEAS says the gold")
-    out = [strip_codes(o) for o in w.slash("/fah flips")]
-    sc.eq(out, ["Forever AH: not enough gold on this character for the current flip ideas (you have 0c)."], "gold 0: /fah flips says so")
+    out = [strip_codes(o) for o in w.slash("/gl flips")]
+    sc.eq(out, ["Goblin Ledger: not enough gold on this character for the current flip ideas (you have 0c)."], "gold 0: /gl flips says so")
     # a gold change while the auction house is closed is picked up when it opens again
     w.close_ah_modern()
     w.set_gold(RICH_GOLD)
@@ -7383,7 +7429,7 @@ def sc_flip_deals(sc, ref, items):
     """Deals: green, blue or epic items the collector found listed well under their
     usual price. Rows: Buy up to X (n), Relist R, +the profit within a day and the
     sales per day (never a risk note or how far under); the hover explains it with
-    the usual price; /fah flips too. A deal is solid (it can take the kept place)
+    the usual price; /gl flips too. A deal is solid (it can take the kept place)
     unless the collector is unsure of its usual price; the addon's own doubt about
     today's listings adds nothing."""
     made = deal_data(ref, items)
@@ -7443,7 +7489,7 @@ def sc_flip_deals(sc, ref, items):
     sc.check("Watch out" in flat and SUFFIX_TEXT in flat and SUFFIX_TEXT == ns.RISK_TEXT.suffix,
              "deals: the version's hover warns about versions (%s)" % flat[-6:])
     M.leave(rows[ids["ver"]])
-    out = w.slash("/fah flips")
+    out = w.slash("/gl flips")
     ideas = ref_flips(ra, limit=10, gold=w.gold)
     slash_flips_ok(sc, out, ideas, ra, items, w.gold, "deals")
     s = [strip_codes(o) for o in out]
@@ -7475,7 +7521,7 @@ def sc_flip_deals(sc, ref, items):
     if r is not None:
         flat = data_flip_hover_ok(sc, w, r, next(x for x in want if x["id"] == ids["gap10"]), rb, "deals B: hover gap")
         sc.check(not any(f.startswith(("Usual price", "Listed well under")) for f in flat), "deals B: a gap flip says nothing about a usual price")
-    slash_flips_ok(sc, w.slash("/fah flips"), ref_flips(rb, limit=10, gold=w.gold), rb, items, w.gold, "deals B")
+    slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(rb, limit=10, gold=w.gold), rb, items, w.gold, "deals B")
     w.close_ah_modern()
     sc.clean(w, "deals B")
 
@@ -7541,7 +7587,7 @@ def sc_flip_deal_room(sc, ref, items):
     epic item listed well under its usual price, counted at its own relist price
     and without the collector's unsure), so one shows on every scan that has one:
     when bigger flips fill the list, the best solid deal the gold buys takes the
-    sidebar's last row and the best two the last of the 10 /fah flips lines, in
+    sidebar's last row and the best two the last of the 10 /gl flips lines, in
     rank order. A hidden deal, or one the gold cannot buy, gives its place to the
     next one; a deal already among the best keeps its own place."""
     made = deal_room_data(ref, items)
@@ -7572,8 +7618,8 @@ def sc_flip_deal_room(sc, ref, items):
                  "has been selling for. | " in flat, lab + ": the deal's hover says where to relist it (%s)" % flat[-12:])
         M.leave(rows[4])
         ideas = ref_flips(r2, limit=10, gold=gold)
-        sc.eq([x["id"] for x in ideas], g[:8] + d[:2], lab + ": /fah flips keeps 2 of its 10 lines for the best deals")
-        slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, gold, lab)
+        sc.eq([x["id"] for x in ideas], g[:8] + d[:2], lab + ": /gl flips keeps 2 of its 10 lines for the best deals")
+        slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, gold, lab)
         # not interested in the best deal: the next one takes its place
         install_menu_mock(w)
         M.click(rows[4], "RightButton")
@@ -7582,8 +7628,8 @@ def sc_flip_deal_room(sc, ref, items):
         sc.eq([x["id"] for x in hid], g[:4] + d[1:2], lab + ", best deal hidden: the next deal takes the last row")
         sc.eq([r.itemID for r in shown_rows(SB, "flipRows")], [x["id"] for x in hid], lab + ", best deal hidden: the rows")
         ideas = ref_flips(r2, limit=10, hidden={d[0]}, gold=gold)
-        sc.eq([x["id"] for x in ideas], g[:8] + d[1:3], lab + ", best deal hidden: /fah flips, the next two deals")
-        slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, gold, lab + ", best deal hidden")
+        sc.eq([x["id"] for x in ideas], g[:8] + d[1:3], lab + ", best deal hidden: /gl flips, the next two deals")
+        slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, gold, lab + ", best deal hidden")
         w.close_ah_modern()
         sc.clean(w, lab)
     # 1g 30s: the best deal (1g 50s) and the two dearest gap flips are out of reach
@@ -7593,8 +7639,8 @@ def sc_flip_deal_room(sc, ref, items):
     sc.eq([x["id"] for x in want], g[:4] + d[1:2], "deal room, 1g 30s: the best deal 1g 30s buys takes the last row")
     ideas = ref_flips(r2, limit=10, gold=13000)
     sc.eq([x["id"] for x in ideas if x.get("data")], g[:7] + d[1:],
-          "deal room, 1g 30s: /fah flips: every flip 1g 30s buys fits, each in its place")
-    slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, 13000, "deal room, 1g 30s")
+          "deal room, 1g 30s: /gl flips: every flip 1g 30s buys fits, each in its place")
+    slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, 13000, "deal room, 1g 30s")
     w.close_ah_modern()
     sc.clean(w, "deal room, 1g 30s")
     # a deal that makes more than most of the gap flips keeps its own place
@@ -7604,8 +7650,8 @@ def sc_flip_deal_room(sc, ref, items):
     want, _ = sized_rows_ok(sc, w, rb, "deal room B")
     sc.eq([x["id"] for x in want], g[:3] + d[:1] + g[3:4], "deal room B: the deal in its own place, no other deal pulled in")
     ideas = ref_flips(rb, limit=10, gold=w.gold)
-    sc.eq([x["id"] for x in ideas], g[:3] + d[:1] + g[3:8] + d[1:2], "deal room B: /fah flips: the next deal takes the last line")
-    slash_flips_ok(sc, w.slash("/fah flips"), ideas, rb, items, w.gold, "deal room B")
+    sc.eq([x["id"] for x in ideas], g[:3] + d[:1] + g[3:8] + d[1:2], "deal room B: /gl flips: the next deal takes the last line")
+    slash_flips_ok(sc, w.slash("/gl flips"), ideas, rb, items, w.gold, "deal room B")
     w.close_ah_modern()
     sc.clean(w, "deal room B")
 
@@ -7678,7 +7724,7 @@ def sc_flip_deal_words(sc, ref, items):
              and "Relist at (each) | 8g 99s 98c" in tips[under90]
              and "You could ask up to 8g 99s 99c, but it has not been selling that high. | " in tips[under90],
              "deal words: sold at 7g 19s 99c, 1 copper short of the relist: says so (%s)" % tips[under90][-14:])
-    slash_flips_ok(sc, w.slash("/fah flips"), ref_flips(r2, limit=10, gold=w.gold), r2, items, w.gold, "deal words")
+    slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(r2, limit=10, gold=w.gold), r2, items, w.gold, "deal words")
     w.close_ah_modern()
     sc.clean(w, "deal words")
 
@@ -7747,7 +7793,7 @@ def sc_flip_history_rank(sc, ref, items):
 def sc_flip_no_gold(sc, ref, items):
     """A client with no GetMoney (or one that gives no number): the flip ideas are
     not sized to any gold, exactly as before gold sizing: the same rows, profits
-    and hovers, no gold next to FLIP IDEAS, the /fah flips header without gold."""
+    and hovers, no gold next to FLIP IDEAS, the /gl flips header without gold."""
     text, r2, picks = gold_flip_data(ref, items)
     made = deal_data(ref, items)
     if not sc.check(text is not None and made is not None, "no gold: enough items to test with"):
@@ -7762,7 +7808,7 @@ def sc_flip_no_gold(sc, ref, items):
         rows = shown_rows(ns.SidebarPanel, "flipRows")
         sc.check(all(r.idea.fit is None for r in rows), "no gold %s: the addon sizes nothing either" % label)
         sc.check(all(" of " not in strip_codes(r.sub._text) for r in rows), "no gold %s: no 'n of m'" % label)
-        slash_flips_ok(sc, w.slash("/fah flips"), ref_flips(rr, limit=10, gold=None), rr, items, None, "no gold " + label)
+        slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(rr, limit=10, gold=None), rr, items, None, "no gold " + label)
         # PLAYER_MONEY changes nothing
         w.M.fire("PLAYER_MONEY")
         w.settle(0.5)
@@ -7925,7 +7971,7 @@ def sc_flip_day_value(sc, ref, items):
 
 
 def sc_flip_day_drops(sc, ref, items):
-    """A gap or deal flip is left out (of the rows, /fah flips, and its item's
+    """A gap or deal flip is left out (of the rows, /gl flips, and its item's
     price-history idea) when the dearest unit bought loses at the price it is
     counted at, when its sales show in only one hour or none, or when it makes
     under 20s in a day. Another collector flip of the same item (a vendor flip)
@@ -7989,11 +8035,11 @@ def sc_flip_day_drops(sc, ref, items):
     edge = next((r for r in rows if r.itemID == M), None)
     if sc.check(edge is not None, "day drops: a flip making exactly 20s in a day shows"):
         sc.eq((edge.idea.dayValue, row_texts(edge)[3]), (2000, "+20s"), "day drops: the 20s flip's profit in a day")
-    out = [strip_codes(o) for o in w.slash("/fah flips")]
+    out = [strip_codes(o) for o in w.slash("/gl flips")]
     ideas = ref_flips(r2, limit=10, gold=None)
-    slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, None, "day drops")
+    slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, None, "day drops")
     names = [item_name(r2, items, i) for i in gone]
-    sc.check(not any(n and (". " + n + ":") in o for n in names for o in out), "day drops: /fah flips names none of them")
+    sc.check(not any(n and (". " + n + ":") in o for n in names for o in out), "day drops: /gl flips names none of them")
     w.close_ah_modern()
     sc.clean(w, "day drops")
     # flips that cannot pay on the best price-history items (and no other collector
@@ -8073,7 +8119,7 @@ def sc_flip_day_deals(sc, ref, items):
 def sc_flip_day_place(sc, ref, items):
     """The kept deal place goes to a solid deal only. Five gap flips (+20g 84s down to
     +19g 39s in a day), an unsure deal U (+7g 55s) and the solid deal C (+4g 87s): the
-    sidebar shows gaps 1 to 4, then C; U is left out. /fah flips (10): the 5 gaps, U,
+    sidebar shows gaps 1 to 4, then C; U is left out. /gl flips (10): the 5 gaps, U,
     C, then price-history ideas. With C hidden the 5 gaps fill the sidebar, and with
     C gone from the data U is not given its place."""
     p = day_picks(ref, items)
@@ -8096,9 +8142,9 @@ def sc_flip_day_place(sc, ref, items):
           "deal place: the model's profits in a day, by hand")
     sc.eq([(int(x.id), x.dayProfit, bool(x.solid)) for x in lua_ideas(w, 10, None) if x.data], top, "deal place: the addon's")
     ideas = ref_flips(r2, limit=10, gold=None)
-    sc.eq([x["id"] for x in ideas][:7], gaps + [U, C], "deal place: /fah flips, the 5 gaps, U, then C")
+    sc.eq([x["id"] for x in ideas][:7], gaps + [U, C], "deal place: /gl flips, the 5 gaps, U, then C")
     sc.check(all(not x.get("data") for x in ideas[7:]), "deal place: then price-history ideas")
-    slash_flips_ok(sc, w.slash("/fah flips"), ideas, r2, items, None, "deal place")
+    slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, None, "deal place")
     w.ns.HideIdea(C)
     sc.eq([r.itemID for r in shown_rows(w.ns.SidebarPanel, "flipRows")], gaps, "deal place, C hidden: the 5 gaps")
     sc.eq([x["id"] for x in ref_flips(r2, hidden={C}, gold=None)], gaps, "deal place, C hidden: the model too")
@@ -8341,7 +8387,7 @@ def sc_flip_day_hover(sc, ref, items):
 
 
 def sc_flip_day_slash(sc, ref, items):
-    """/fah flips: "most profit within a day first" in the header; a gap or deal line
+    """/gl flips: "most profit within a day first" in the header; a gap or deal line
     says where to relist (the price counted at), the profit in a day and the sales a
     day ("sells under 1 a day" under one); a vendor line its profit on what the gold
     buys. No risks and no usual price in any line; price-history lines as before."""
@@ -8364,12 +8410,12 @@ def sc_flip_day_slash(sc, ref, items):
               "%s: buy up to 50c (10), sell to vendor, +3s" % nv])):
         lab = "day slash, %s" % (("gold " + money_text(gold)) if gold is not None else "no gold API")
         w = World(r2, items, data_src=text, gold=gold)
-        out = [strip_codes(o).replace("Forever AH: ", "", 1) for o in w.slash("/fah flips")]
+        out = [strip_codes(o).replace("Goblin Ledger: ", "", 1) for o in w.slash("/gl flips")]
         sc.eq(out[0] if out else None, head, lab + ": the header")
         sc.eq(slash_head(gold), head, lab + ": the model's header")
         sc.eq(out[1:1 + len(lines)], ["  %d. %s" % (i, s) for i, s in enumerate(lines, 1)], lab + ": the collector's lines, by hand")
         sc.check(not any("(risk:" in o or "(usual" in o for o in out), lab + ": no risks and no usual price")
-        slash_flips_ok(sc, w.slash("/fah flips"), ref_flips(r2, limit=10, gold=gold), r2, items, gold, lab)
+        slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(r2, limit=10, gold=gold), r2, items, gold, lab)
         sc.clean(w, lab)
 
 
@@ -8397,7 +8443,7 @@ FLIP_HELP = ("Flips your gold can buy now, ranked by the profit you can expect w
 def sc_flip_day_first_snapshot(sc, ref, items):
     """No sales measured yet (salesHours 0, a first snapshot or one after a break):
     the collector's gap and deal flips are left out, its vendor flips still show.
-    With no idea at all the sidebar and /fah flips say price history is still being
+    With no idea at all the sidebar and /gl flips say price history is still being
     collected, whatever the gold (not enough gold only for a flip that would show
     with more of it). The words for no ideas and the help tip say "within a day"."""
     p = day_picks(ref, items)
@@ -8427,8 +8473,8 @@ def sc_flip_day_first_snapshot(sc, ref, items):
         want, why = check_sidebar_flips(sc, w, r2, lab)
         sc.eq((len(want), why), (0, "history"), lab + ": no ideas, history is being collected")
         sc.eq(w.ns.SidebarPanel.flipMsg._text, FLIP_MESSAGES["history"], lab + ": the sidebar says so")
-        out = w.slash("/fah flips")
-        sc.check(any(FLIP_SLASH["history"] in o for o in out), lab + ": /fah flips says so (%s)" % out)
+        out = w.slash("/gl flips")
+        sc.check(any(FLIP_SLASH["history"] in o for o in out), lab + ": /gl flips says so (%s)" % out)
         w.close_ah_modern()
         sc.clean(w, lab)
     # a vendor flip more gold would buy (10 at 50s, with 40s on hand) is a lack of gold
@@ -8447,7 +8493,7 @@ def sc_flip_day_model(sc, ref, items):
     ranking spec's own model, not from the Lua) gives the same collector ideas as
     ns.FlipIdeas on the data under test: the same ids in the same order, the same
     profit in a day (whole copper), price counted at and solid deals, for 1g to
-    5000g and with no sizing, at the sidebar's 5 and /fah's 10: 30 of 30."""
+    5000g and with no sizing, at the sidebar's 5 and /gl's 10: 30 of 30."""
     w = World(ref, items)
     same = cases = shown = 0
     for g in (1, 3, 5, 10, 20, 35, 50, 75, 100, 150, 300, 600, 1000, 5000, None):
@@ -8492,7 +8538,7 @@ LIVE_GOLDS = (1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 15, 17, 20, 25, 30, 35, 40, 45,
 
 def sc_flip_day_live(sc, ref, items):
     """Live data only (--data/--items): every collector idea shown with 1g to 5000g
-    (the sidebar's 5 and /fah's 10) has sales in 2 or more hours, is counted at no
+    (the sidebar's 5 and /gl's 10) has sales in 2 or more hours, is counted at no
     more than its relist, 1.25 x the price it sold at (and 1.5 x the usual price
     for a gap flip), still pays after the cut on the dearest unit, makes 20s or
     more in a day, and is solid only as a deal sold at its relist without the
@@ -8574,7 +8620,7 @@ def sc_old_format(sc, ref, items):
     ns, M = w.ns, w.M
     sc.eq((ns.ItemCount(), ns.VariantCount()), (len(r2.items), 0), "old format: item count, no versions")
     sc.eq(ns.DataFlips() and len(ns.DataFlips()), 0, "old format: no collector flips")
-    out = "\n".join(w.slash("/fah"))
+    out = "\n".join(w.slash("/gl"))
     sc.check("versions of gear" not in out, "old format: status has no versions line")
     w.open_ah_modern()
     SB = ns.SidebarPanel
@@ -8696,7 +8742,7 @@ def sc_stack_verdicts(sc, ref, items):
     tooltip_style_ok(sc, w, tt, want_st, "stack live")
     w.close_ah_modern()
     # compact tooltips stay one line
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     for slot, iid in ((1, a), (2, b_), (3, c), (4, d)):
         tt.SetBagItem(tt, 4, slot)
         want, want_st = expected_tooltip(r2, iid, age, compact=True, styles=True)
@@ -8809,13 +8855,13 @@ def sc_tooltip_verdicts(sc, ref, items):
                 sc.eq(got_stack, [], "%s: no stack line" % lab)
         M.shift = False
     # compact: one line, never bigger
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     for key, _, want, _ in VERDICT_FIXTURES:
         tt.SetItemByID(tt, ids[key])
         want_lines, want_st = expected_tooltip(r2, ids[key], age, compact=True, styles=True)
         sc.eq(w.lines(tt), want_lines, "verdicts %s: compact" % key)
         tooltip_style_ok(sc, w, tt, want_st, "verdicts %s compact" % key)
-    w.slash("/fah compact")
+    w.slash("/gl compact")
     silk = ids["silk"]
     # TC19 a bound copy: bind on pickup, or a soulbound bag slot: the prices, no verdict, no stack line
     M["items"][silk].bind = 1
@@ -8969,7 +9015,7 @@ def sc_tooltip_fonts(sc, ref, items):
     tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, silk)
     al = w.all_lines(tt)
-    sc.eq([l for l, _ in al[8:]], ["Forever AH", "Auction it", "AH value", "2-day average", "Sell now", "Suggested price",
+    sc.eq([l for l, _ in al[8:]], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now", "Suggested price",
                                    " ", "ID: %d" % silk], "fonts: lines 9 to 16")
     sc.eq(big_fontstrings(w, tt), [(10, "left", "ForeverAHBigFont1", 15), (10, "right", "ForeverAHBigFont1", 15)],
           "fonts: only line 10 is bigger")
@@ -9225,7 +9271,7 @@ def sc_bag_cleanup(sc, ref, items):
     M.level = 60
 
     # Chat report (bags closed).
-    out = w.slash("/fah bags")
+    out = w.slash("/gl bags")
     txt = [strip_codes(x) for x in out]
     sc.check(any(("bags: %d of 80 slots free." % (80 - len(layout))) in t for t in txt), "bags slash: free slots (%s)" % txt[:2])
     sc.check(any("merge stacks" in t and "Wool Bolt" in t for t in txt), "bags slash: merge line")
@@ -9234,11 +9280,11 @@ def sc_bag_cleanup(sc, ref, items):
     first = want[0]
     sc.check(any(" 1. " in t and ("[%s]" % w.M["items"][first[5]].name) in t for t in txt), "bags slash: cheapest first (%s)" % txt)
     sc.check(any("Open your bags" in t for t in txt), "bags slash: says to open the bags")
-    helpout = [strip_codes(x) for x in w.slash("/fah help")]
-    sc.check(any(t.endswith("/fah bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
-                 for t in helpout), "bags: help lists /fah bags")
-    sc.check(any("/fah watch" in t for t in helpout), "bags: help still has the sidebar commands")
-    sc.check(any("/fah bagcheck : what the bag cleanup sees" in t for t in helpout), "bags: help lists /fah bagcheck")
+    helpout = [strip_codes(x) for x in w.slash("/gl help")]
+    sc.check(any(t.endswith("/gl bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
+                 for t in helpout), "bags: help lists /gl bags")
+    sc.check(any("/gl watch" in t for t in helpout), "bags: help still has the sidebar commands")
+    sc.check(any("/gl bagcheck : what the bag cleanup sees" in t for t in helpout), "bags: help lists /gl bagcheck")
 
     # Tab beside the open bags.
     BP = ns.BagPanel
@@ -9339,16 +9385,16 @@ def sc_bag_cleanup(sc, ref, items):
         s2 = ns.BagScan()
         sc.check(kid not in [s2.drop[i].id for i in range(1, len(s2.drop) + 1)], "bags menu: a kept item is no longer listed")
         sc.check(w.g.ForeverAH_Settings.bagKeep[kid] is True, "bags menu: keep is saved")
-        w.slash("/fah keep %d" % kid)
-    # /fah keep by name, list, undo.
+        w.slash("/gl keep %d" % kid)
+    # /gl keep by name, list, undo.
     p2name = ref.items[p2]["name"]
-    out = [strip_codes(x) for x in w.slash("/fah keep " + p2name)]
+    out = [strip_codes(x) for x in w.slash("/gl keep " + p2name)]
     sc.check(any(("never suggest " + p2name) in t for t in out), "bags keep: by name (%s)" % out)
     s3 = ns.BagScan()
     sc.check(p2 not in [s3.drop[i].id for i in range(1, len(s3.drop) + 1)], "bags keep: not listed")
-    out = [strip_codes(x) for x in w.slash("/fah keep")]
+    out = [strip_codes(x) for x in w.slash("/gl keep")]
     sc.check(any(p2name in t for t in out), "bags keep: listed (%s)" % out)
-    w.slash("/fah keep " + p2name)
+    w.slash("/gl keep " + p2name)
     s4 = ns.BagScan()
     sc.check(p2 in [s4.drop[i].id for i in range(1, len(s4.drop) + 1)], "bags keep: again undoes it")
 
@@ -9403,7 +9449,7 @@ def sc_bag_cleanup_nodata(sc, ref, items):
         s = w.ns.BagScan()
         sc.eq([(s.drop[i].id, s.drop[i].value) for i in range(1, len(s.drop) + 1)], [(900201, 14), (900202, 25)],
               "bags %s %s: vendor prices" % (client, "no data" if data else "data"))
-        out = [strip_codes(x) for x in w.slash("/fah bags")]
+        out = [strip_codes(x) for x in w.slash("/gl bags")]
         sc.check(any("worth the least" in t for t in out), "bags %s: slash works" % client)
         w.M.OpenBags(1)
         w.settle(0.2)
@@ -9463,7 +9509,7 @@ def sc_bag_cleanup_elvui(sc, ref, items):
 
 def sc_bag_cleanup_parked(sc, ref, items):
     """A bag addon that parks the game's bag windows shown but with no position:
-    no tab, and /fah bags still works."""
+    no tab, and /gl bags still works."""
     w = World(ref, items)
     w.lua.execute("ContainerFrame1:SetID(0); ContainerFrame1:ClearAllPoints(); ContainerFrame1:Show()")
     w.settle(0.2)
@@ -9471,8 +9517,8 @@ def sc_bag_cleanup_parked(sc, ref, items):
     sc.check(not BP.built or not BP.tab.IsShown(BP.tab), "parked: no tab for a bag window with no position")
     bag_add_item(w, 900303, "Brittle Bone", 0, 3, classID=15)
     w.put_bag(0, 1, 900303, 1)
-    out = [strip_codes(x) for x in w.slash("/fah bags")]
-    sc.check(any("Brittle Bone" in t for t in out), "parked: /fah bags lists the bags")
+    out = [strip_codes(x) for x in w.slash("/gl bags")]
+    sc.check(any("Brittle Bone" in t for t in out), "parked: /gl bags lists the bags")
     sc.clean(w, "parked")
 
 
@@ -9591,7 +9637,7 @@ def sc_bag_tab_header(sc, ref, items):
 
 # ---------------------------------------------------------------------------
 # Bag cleanup: dropping a stack (asks first), and how the button keeps up with
-# the bags (hooks, unreadable positions, /fah bagcheck)
+# the bags (hooks, unreadable positions, /gl bagcheck)
 # ---------------------------------------------------------------------------
 def bag_rows(BP):
     return [BP.rows[i] for i in range(1, len(BP.rows) + 1) if BP.rows[i].IsShown(BP.rows[i])]
@@ -9784,11 +9830,11 @@ def sc_bag_drop(sc, ref, items):
     sc.eq(len(M.destroyed), nd, "drop moved: nothing destroyed")
     # Kept meanwhile: the fresh check at Drop it leaves it.
     ask(900402)
-    w.slash("/fah keep Broken Fang")
+    w.slash("/gl keep Broken Fang")
     w.settle(0.5)
     if sc.check(C.IsShown(C), "drop kept: box still open to test"):
         no_drop("drop kept", nd, "is not on the list any more, so nothing was dropped")
-    w.slash("/fah keep Broken Fang")
+    w.slash("/gl keep Broken Fang")
     w.settle(0.5)
     # Something on the cursor already: left alone.
     ask(900402)
@@ -10108,7 +10154,7 @@ def sc_bag_drop_elvui(sc, ref, items):
 
 
 def elvui_world(ref, items, build_on=None, window=None):
-    """The game's own bag functions and ElvUI the addon, loaded before ForeverAH,
+    """The game's own bag functions and ElvUI the addon, loaded before GoblinLedger,
     at the player's UI scale."""
     def setup(w):
         w.M.InstallBlizzardBags()
@@ -10302,7 +10348,7 @@ def sc_bag_window_unreadable(sc, ref, items):
     F = g.ForeverAHBagPanel
     pf = F._points[1]
     sc.check(F.IsVisible(F) and w.same(pf[2], elv) and pf[1] == "BOTTOMRIGHT", "secret position: the panel opens beside it")
-    out = [plain(x) for x in w.slash("/fah bagcheck")]
+    out = [plain(x) for x in w.slash("/gl bagcheck")]
     sc.check(any("1. ElvUI bags: open yes, secret position" in t for t in out), "secret position: bagcheck says so (%s)" % out[:3])
     sc.check(BP.lastError is None, "secret position: no error (%s)" % BP.lastError)
     w.lua.execute("issecretvalue = function() return false end")
@@ -10318,15 +10364,15 @@ def sc_bag_window_unreadable(sc, ref, items):
     sc.clean(w2, "parked game bags")
 
 
-# /fah bagcheck lines that name errors only to say there are none, or that
+# /gl bagcheck lines that name errors only to say there are none, or that
 # the game hides them: not error messages (Scenario.clean ok_chat).
 BAGCHECK_LINES = ("7. last error: none", "9. Lua errors on screen: ")
 
 
-def bagcheck(sc, w, label, cmd="/fah bagcheck"):
-    """Runs /fah bagcheck; checks its form; returns {number: text} and all lines."""
+def bagcheck(sc, w, label, cmd="/gl bagcheck"):
+    """Runs /gl bagcheck; checks its form; returns {number: text} and all lines."""
     out = [plain(x) for x in w.slash(cmd)]
-    body = [t.split("Forever AH: ", 1)[-1] for t in out]
+    body = [t.split("Goblin Ledger: ", 1)[-1] for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
     sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18g", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
@@ -10340,7 +10386,7 @@ def bagcheck(sc, w, label, cmd="/fah bagcheck"):
 
 
 def sc_bag_check(sc, ref, items):
-    """/fah bagcheck (also /fah bags check): what the bag cleanup sees, in plain
+    """/gl bagcheck (also /gl bags check): what the bag cleanup sees, in plain
     short lines for one screenshot, with the counters behind it; the button
     flashes gold on top for 10 seconds, then gets its layer and colour back."""
     w = World(ref, items)
@@ -10351,7 +10397,7 @@ def sc_bag_check(sc, ref, items):
     n, body = bagcheck(sc, w, "bagcheck closed")
     sc.eq(n.get(1), "ElvUI bags: not found (ElvUI is not loaded)", "bagcheck closed: no ElvUI")
     sc.eq(n.get(2), "game bag windows open: none", "bagcheck closed: no bag window")
-    sc.eq(n.get(3), "windows the button uses: none (open your bags, then type /fah bagcheck again)", "bagcheck closed: none used")
+    sc.eq(n.get(3), "windows the button uses: none (open your bags, then type /gl bagcheck again)", "bagcheck closed: none used")
     sc.eq(n.get(4), "key hooks: ToggleBag yes, ToggleBackpack yes, ToggleAllBags yes, OpenAllBags yes, CloseAllBags yes, "
           "OpenBackpack no, CloseBackpack no, ElvUI not loaded", "bagcheck closed: hooks")
     sc.check((n.get(5) or "").endswith("last: no bag window open"), "bagcheck closed: last update (%s)" % n.get(5))
@@ -10360,9 +10406,9 @@ def sc_bag_check(sc, ref, items):
     sc.eq(n.get(8), "scan: 79 of 80 slots free, 1 to clear, 1 cheap stack", "bagcheck closed: the scan")
     sc.eq(n.get(9), "Lua errors on screen: off", "bagcheck closed: Lua errors off")
     sc.eq(n.get(10), "button update now: no bag window open", "bagcheck closed: update now")
-    sc.eq(body[-1], "Open your bags, then type /fah bagcheck again and take a screenshot.", "bagcheck closed: what to do")
+    sc.eq(body[-1], "Open your bags, then type /gl bagcheck again and take a screenshot.", "bagcheck closed: what to do")
     M.cvars.scriptErrors = "1"
-    n, _ = bagcheck(sc, w, "bags check alias", "/fah bags check")
+    n, _ = bagcheck(sc, w, "bags check alias", "/gl bags check")
     sc.eq(n.get(9), "Lua errors on screen: on", "bags check alias: Lua errors on")
 
     # The game's backpack open.
@@ -10431,7 +10477,7 @@ def sc_bag_check(sc, ref, items):
     sc.clean(we, "bagcheck elvui", ok_chat=BAGCHECK_LINES)
 
     # The tab cannot be made the first time: the next update makes it, and the
-    # problem is said once in chat and kept for /fah bagcheck.
+    # problem is said once in chat and kept for /gl bagcheck.
     wf = World(ref, items)
     wf.lua.execute("""
         local orig = CreateFrame
@@ -10453,14 +10499,14 @@ def sc_bag_check(sc, ref, items):
     wf.settle(0.2)
     sc.check(BPf.built and BPf.tab.IsVisible(BPf.tab), "build fails once: the next update makes the button")
     said = [plain(x) for x in wf.chat(mark)]
-    sc.eq(len([t for t in said if "/fah bagcheck" in t]), 1, "build fails: said once in chat (%s)" % said)
+    sc.eq(len([t for t in said if "/gl bagcheck" in t]), 1, "build fails: said once in chat (%s)" % said)
     n, _ = bagcheck(sc, wf, "bagcheck after a failure")
     sc.check("no frames today" in (n.get(7) or ""), "bagcheck after a failure: line 7 has the error (%s)" % n.get(7))
 
-    # /fah bags when the scan breaks: one line saying so, not silence.
+    # /gl bags when the scan breaks: one line saying so, not silence.
     ws = World(ref, items)
     ws.ns.BagScan = ws.lua.eval("function() error('scan broke') end")
-    out = [plain(x) for x in ws.slash("/fah bags")]
+    out = [plain(x) for x in ws.slash("/gl bags")]
     sc.check(len(out) == 1 and "bag scan error: " in out[0] and "scan broke" in out[0], "bags scan error: said in chat (%s)" % out)
     n, _ = bagcheck(sc, ws, "bagcheck scan error")
     sc.check((n.get(8) or "").startswith("scan error: ") and "scan broke" in n.get(8), "bagcheck: line 8 has the scan error (%s)" % n.get(8))
@@ -10472,8 +10518,8 @@ def sc_bag_check(sc, ref, items):
         wn = World(ref, items)
     finally:
         TOC_FILES[:] = saved
-    out = [plain(x) for x in wn.slash("/fah bagcheck")]
-    sc.check(any(t.endswith("unknown command. Type /fah help for the list.") for t in out), "no Bags.lua: unknown command (%s)" % out)
+    out = [plain(x) for x in wn.slash("/gl bagcheck")]
+    sc.check(any(t.endswith("unknown command. Type /gl help for the list.") for t in out), "no Bags.lua: unknown command (%s)" % out)
 
 
 # ===========================================================================
@@ -10862,7 +10908,7 @@ def quest_rows(BP):
     return out
 
 
-NO_LISTINGS = ("Forever AH: no recent listings", QDB_COLORS["muted"])
+NO_LISTINGS = ("Goblin Ledger: no recent listings", QDB_COLORS["muted"])
 
 
 def plain_tip(fields):
@@ -10890,7 +10936,7 @@ def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=Tr
 def sc_bag_questie(sc, ref, items):
     """With QuestieDB: a quest item's tooltip says whether it can go (keep,
     starts, done, not started), the cleanup panel lists the done and not
-    started ones with the quest in the row tooltip, /fah bags says the same,
+    started ones with the quest in the row tooltip, /gl bags says the same,
     and the phial the player asked about says done once its quests are."""
     w = World(ref, items)
     M, ns, g = w.M, w.ns, w.g
@@ -10936,12 +10982,12 @@ def sc_bag_questie(sc, ref, items):
         sc.check("Only for Badlands Reagent Run, not in your quest log" not in lines,
                  "questie panel: the item tooltip's own quest line is left out of the row's (%s)" % lines)
         M.leave(row)
-    out = [plain(x) for x in w.slash("/fah bags")]
+    out = [plain(x) for x in w.slash("/gl bags")]
     sc.check(any(t.endswith("old quest items: [Brutal Token] (not started: The Brutal Way), [Crag Coyote Fang] x4 "
                             "(not started: Badlands Reagent Run), [Faded Ledger] (not started: Old Debts), "
                             "[Ogre Tooth] (not started: Ogre Toll), [Gnarled Root] x2 (no quest needs it)") for t in out),
-             "questie /fah bags: quest line (%s)" % out)
-    sc.check(not any("still reading" in t for t in out), "questie /fah bags: nothing about reading once ready")
+             "questie /gl bags: quest line (%s)" % out)
+    sc.check(not any("still reading" in t for t in out), "questie /gl bags: nothing about reading once ready")
 
     # Find the Gems done, Restoring the Necklace (it mentions Talvash) in the log: the phial can go.
     bag_quests(w, LOG_NECKLACE)
@@ -10972,9 +11018,9 @@ def sc_bag_questie(sc, ref, items):
             sc.eq((p[1], p[2]), (0, 1), "questie panel: the phial's slot")
         w.lua.execute("ClearCursor()")
         sc.eq(len(M.destroyed), 0, "questie panel: nothing destroyed")
-    out = [plain(x) for x in w.slash("/fah bags")]
+    out = [plain(x) for x in w.slash("/gl bags")]
     sc.check(any("old quest items: [Talvash's Phial of Scrying] (done: Find the Gems), " in t for t in out),
-             "questie /fah bags: the phial is done (%s)" % out)
+             "questie /gl bags: the phial is done (%s)" % out)
 
     # The letter's quest taken, then done; the scourgestone's quest done; the
     # Alliance reagent run done (the Horde one does not count); one of the two
@@ -11053,9 +11099,9 @@ def sc_bag_questie(sc, ref, items):
     wl.settle(0.5)
     sc.eq(quest_tip(wl, 0, 1), [("Can drop: done with Find the Gems", QDB_COLORS["pos"])], "questie legacy: phial tooltip")
     sc.eq(quest_tip(wl, 0, 5), [NO_LISTINGS], "questie legacy: no quest line for an item QuestieDB does not know")
-    # /fah tooltip off: no quest line either.
-    wl.slash("/fah tooltip")
-    sc.eq(quest_tip(wl, 0, 1), [], "questie: /fah tooltip off hides the quest line too")
+    # /gl tooltip off: no quest line either.
+    wl.slash("/gl tooltip")
+    sc.eq(quest_tip(wl, 0, 1), [], "questie: /gl tooltip off hides the quest line too")
     sc.clean(wl, "questie legacy")
 
 
@@ -11121,8 +11167,8 @@ def sc_bag_questie_chain(sc, ref, items):
     sc.eq(lua_verdict(w, 7666), ("starts", "The Shattered Necklace", False), "chain: the necklace starts its quest")
     sc.eq(quest_tip(w, 0, 1), [("Starts The Shattered Necklace", buy)], "chain: necklace tooltip, gold Starts line")
     sc.check(7666 not in [r[0] for r in rows], "chain: a quest starter is no old quest item (%s)" % rows)
-    out = [plain(x) for x in w.slash("/fah bags")]
-    sc.check(not any("Shattered Necklace" in t for t in out), "chain /fah bags: the necklace is not listed (%s)" % out)
+    out = [plain(x) for x in w.slash("/gl bags")]
+    sc.check(not any("Shattered Necklace" in t for t in out), "chain /gl bags: the necklace is not listed (%s)" % out)
     sc.eq(lua_verdict(w, 6866), None, "chain: the Undead paladin's lessons are not a human warrior's")
     # Carrying it to Talvash, then handed in (a second necklace is just an old one).
     state(qlog(2198, "The Shattered Necklace"), (), "chain, necklace taken")
@@ -11156,19 +11202,19 @@ def sc_bag_questie_chain(sc, ref, items):
     sc.check(7667 not in [r[0] for r in rows], "chain: the phial is still not listed (%s)" % rows)
     sc.eq(quest_rows(BP), [(7666, "done", pos), (900506, "not started", mu)],
           "chain panel: the old necklace, the lamp not started; no phial")
-    out = [plain(x) for x in w.slash("/fah bags")]
+    out = [plain(x) for x in w.slash("/gl bags")]
     sc.check(any(t.endswith("old quest items: [Shattered Necklace] (done: The Shattered Necklace), "
                             "[Miner's Lamp] (not started: Deeper Down)") for t in out),
-             "chain /fah bags: the same, no phial (%s)" % out)
+             "chain /gl bags: the same, no phial (%s)" % out)
     # Taken (the player's case): the phial can go.
     rows = state(LOG_NECKLACE, (2198, 2199, 2200, 2201), "chain, Restoring the Necklace taken")
     sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "chain: Restoring the Necklace in the log: the phial is done")
     sc.eq(quest_tip(w, 0, 2), [("Can drop: done with Find the Gems", pos)], "chain: phial tooltip, green done line")
     sc.eq(quest_rows(BP), [(7666, "done", pos), (7667, "done", pos), (900506, "not started", mu)],
           "chain panel: the phial is listed as done")
-    out = [plain(x) for x in w.slash("/fah bags")]
+    out = [plain(x) for x in w.slash("/gl bags")]
     sc.check(any("[Talvash's Phial of Scrying] (done: Find the Gems)" in t for t in out),
-             "chain /fah bags: the phial is done (%s)" % out)
+             "chain /gl bags: the phial is done (%s)" % out)
     state(qlog(2361, "Restoring the Necklace"), (2198, 2199, 2200, 2201, 2204), "chain, Restoring the Necklace done")
     sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "chain: Restoring the Necklace done: the phial is done")
     # Closed headers and no IsOnQuest: whether it was taken cannot be told, so no verdict.
@@ -11269,11 +11315,11 @@ def sc_bag_questie_slicing(sc, ref, items):
     w2.lua.execute(TICK_LOG)
     w2.M.qdb.cost = 0.02
     quest_bags(w2, LOG_FIND_GEMS, done=(2198, 2199, 2200))
-    # The bag cleanup's first need starts it at once, and /fah bags says it is still reading.
-    out = [plain(x) for x in w2.slash("/fah bags")]
-    sc.eq(w2.ns.QuestIndex.state, "building", "slicing ms: /fah bags started the index before the login delay")
-    sc.check(any("still reading Questie's quests: type /fah bags again in a moment" in t for t in out),
-             "slicing ms: /fah bags says it is still reading (%s)" % out)
+    # The bag cleanup's first need starts it at once, and /gl bags says it is still reading.
+    out = [plain(x) for x in w2.slash("/gl bags")]
+    sc.eq(w2.ns.QuestIndex.state, "building", "slicing ms: /gl bags started the index before the login delay")
+    sc.check(any("still reading Questie's quests: type /gl bags again in a moment" in t for t in out),
+             "slicing ms: /gl bags says it is still reading (%s)" % out)
     w2.settle(6.0)
     sc.eq(w2.ns.QuestIndex.state, "ready", "slicing ms: ready")
     ticks = [(w2.M.tickReads[i].n, w2.M.tickReads[i].ms) for i in range(1, len(w2.M.tickReads) + 1)]
@@ -11283,7 +11329,7 @@ def sc_bag_questie_slicing(sc, ref, items):
              % max(ms for _, ms in ticks))
     sc.check(all(n <= 51 for n, _ in ticks) and max(n for n, _ in ticks) >= 49,
              "slicing ms: about 50 quests a frame (%s)" % sorted(set(n for n, _ in ticks)))
-    out = [plain(x) for x in w2.slash("/fah bags")]
+    out = [plain(x) for x in w2.slash("/gl bags")]
     sc.check(any("(not started: Badlands Reagent Run)" in t for t in out), "slicing ms: QuestieDB verdicts once ready (%s)" % out)
     sc.check(not any("still reading" in t for t in out), "slicing ms: no reading note once ready")
     sc.clean(w2, "slicing ms")
@@ -11465,8 +11511,8 @@ def sc_bag_questie_journal(sc, ref, items):
         lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
         sc.check("Can drop: done with Find the Gems." in lines, "journal panel: the row tooltip says it can go (%s)" % lines)
         M.leave(row)
-    out = [plain(x) for x in w.slash("/fah bags")]
-    sc.check(any("[Bloodstained Journal] (done: Find the Gems)" in t for t in out), "journal /fah bags (%s)" % out)
+    out = [plain(x) for x in w.slash("/gl bags")]
+    sc.check(any("[Bloodstained Journal] (done: Find the Gems)" in t for t in out), "journal /gl bags (%s)" % out)
     # On Restoring the Necklace: both can go.
     state(LOG_NECKLACE, (2198, 2199, 2200, 2201))
     sc.eq(lua_verdict(w, 7668), ("done", "Find the Gems", False), "journal: on Restoring the Necklace: can drop")

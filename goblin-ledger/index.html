@@ -4,34 +4,34 @@
   One static file: inline CSS, no scripts, no analytics. Kept out of search
   on purpose (robots meta below) and NOT listed in sitemap.xml.
 
-  SCREENSHOTS live in goblin-ledger/img/. The PNGs there now are labelled
-  placeholders ("Screenshot coming soon"). Drop the real photos in with the
-  SAME file names and the page uses them, no HTML edit needed:
+  PICTURES. Only real photos are shown as images. Today that is one:
 
-    img/tooltip.png        item tooltip with the Goblin Ledger lines         placeholder 600 x 750
-    img/bags.png           bag window with the Bag cleanup panel open        placeholder 800 x 600
-    img/auction-house.png  selling window + the chart docked under it        REAL PHOTO 710 x 726 (sidebar shot still to come)
-    img/prices-site.png    the price website (goblin-ledger/prices/)         placeholder 1280 x 800
-    img/og.png             link preview for Discord and texts, 1200 x 630   (og:image, absolute URL)
+    img/auction-house.png  selling window + the chart docked under it        REAL PHOTO 710 x 726
+    img/og.png             link preview for Discord and texts, 1200 x 630   (og:image, absolute URL; a graphic, not a screenshot)
+
+  Three spots show a small drawing made in HTML/CSS instead of a photo,
+  each labelled "Drawing, not a screenshot" (class "mock"). When a real
+  photo exists, save it in goblin-ledger/img/ under the name below and
+  swap the drawing's <div class="mock-box ..."> ... </div> for the <img>
+  line given here (keep the <figure>, change the figcaption to describe
+  the photo):
+
+    img/tooltip.png      item tooltip with the Goblin Ledger lines
+      <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, AH value, average, Sell now and Suggested price.">
+    img/bags.png         bag window with the Bag cleanup panel open
+      <img src="img/bags.png" width="800" height="600" loading="lazy" decoding="async" alt="Screenshot of the bag window with the gold Bag cleanup button and its panel: stacks to merge, old quest items and the stacks worth the least, with the Drop cheapest button.">
+    img/prices-site.png  the price website (goblin-ledger/prices/)
+      <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
 
   Any photo size works: each image scales to its column and keeps its own
-  shape. Optional, for a load without a jump: set the width/height on the
-  matching <img> below to the new photo's pixel size. The alt text describes
-  the real screenshots, not these placeholders: when the photos land, check
-  each alt text against its photo (bags.png assumes the panel away from a
-  vendor, with Drop cheapest; at a vendor it shows Sell junk instead). Do
-  not send the link while placeholders are still in place.
+  shape; set width/height to the photo's pixel size for a load without a
+  jump. Check each alt text against its photo (bags.png assumes the panel
+  away from a vendor, with Drop cheapest; at a vendor it shows Sell junk).
 
-  Links that only work after the rename step: prices/ (the price website,
-  moved from /wow/) and the GoblinLedger.zip release download.
-
-  Check against the final friend build before sending the link:
-  - Install-Goblin-Ledger.bat: the page says it asks for the game folder
-    when it cannot find it, and that the zip and unzipped folder can be
-    deleted after installing (so the price updater must live outside that
-    folder). Re-read Install and "Removing it" against the final .bat files.
-  - Questie: Bag cleanup reads your own quest log today. Say it also checks
-    Questie's quest database only once that is in the addon and tested.
+  The install steps below match tools/goblin-ledger/install.ps1 and
+  uninstall.ps1 (the GoblinLedger.zip release, built by make_release.ps1).
+  The Download links work once GoblinLedger.zip is attached to a GitHub
+  release of grant9008/grantdenney.com (releases/latest/download/...).
 -->
 <html lang="en">
 <head>
@@ -357,6 +357,66 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 .foot a:hover { color: var(--accent); }
 .legal { max-width: 75ch; margin: 0; }
 
+/* ---- drawings (not screenshots) ---- */
+/* Like the hero example: dark in both modes, because they picture the game. */
+.mock { width: 100%; margin: 0; justify-self: center; }
+.mock-box {
+  margin: 0 auto; border: 1px solid #2C3A50; border-radius: 10px;
+  background: linear-gradient(180deg, #10141C, #0B0E14);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), var(--shadow); color: #E6E0D6;
+  font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
+}
+.mock-box p { margin: 0; }
+.mock figcaption { max-width: 440px; margin: 12px auto 0; color: var(--muted); font-size: 14px; text-align: center; }
+.mock-tag {
+  display: inline-block; margin-bottom: 10px; padding: 1px 8px; border: 1px solid #3A4458; border-radius: 999px;
+  color: #A39A8A; font-size: 11.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+}
+.gametip { max-width: 400px; padding: 14px 18px 12px; }
+.gametip .tip-item { margin-bottom: 8px; color: #FFFFFF; font-size: 17px; font-weight: 700; }
+.gametip .tip-row { padding: 3px 0; font-size: 15px; font-weight: 600; color: #E6E0D6; }
+.gametip .tip-row.big { padding: 5px 0; font-size: 21px; font-weight: 700; }
+.gametip .tip-row.big span + span { font-size: 16px; }
+.mock-box .t-pos { color: #40CC73; }
+.mock-box .t-mut { color: #A39A8A; }
+.m-g { color: #FFD24D; }
+.m-s { color: #D3D3DB; }
+.m-c { color: #E0915A; }
+.bagbox { max-width: 360px; padding: 12px 14px 14px; font-size: 14px; }
+.bag-title { font-size: 16px; font-weight: 800; }
+.bag-title .b1 { color: #E5B842; }
+.bag-title .b2 { color: #38BDF7; }
+.bag-sub { margin-bottom: 4px; color: #A39A8A; font-size: 13px; }
+.bag-sec { margin: 12px 0 4px; color: #E5B842; font-size: 11.5px; font-weight: 800; letter-spacing: 0.8px; }
+.bag-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-weight: 600; }
+.bag-row .ic { flex: none; width: 18px; height: 18px; border: 1px solid #3A4458; border-radius: 3px; background: #26303F; }
+.bag-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.bag-row .rt { flex: none; }
+.q-grey { color: #9D9D9D; }
+.q-white { color: #FFFFFF; }
+.bag-btn {
+  margin-top: 12px; padding: 5px 0; border: 1px solid #5A4A22; border-radius: 4px; background: #2A2312;
+  color: #E5B842; font-weight: 800; text-align: center;
+}
+.sitecard { max-width: 520px; overflow: hidden; }
+.sc-bar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
+.sc-bar i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #3A4458; }
+.sc-url {
+  flex: 1 1 auto; min-width: 0; margin-left: 6px; padding: 3px 10px; border-radius: 999px; background: #1A2130;
+  color: #C9C2B4; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.sc-body { padding: 18px 18px 20px; }
+.sc-head { margin-bottom: 4px; color: #FFFFFF; font-size: 18px; font-weight: 800; }
+.sc-note { margin-bottom: 16px; color: #A39A8A; font-size: 14px; }
+.sc-spark { display: block; width: 100%; height: 70px; margin-bottom: 16px; }
+
+/* ---- why not just Auctionator ---- */
+.vs { margin-bottom: 28px; }
+.vs .card h3 { margin-bottom: 8px; }
+.adds { max-width: 760px; }
+.adds h3 { margin-top: 4px; }
+.both { max-width: 760px; margin-top: 22px; border-left: 4px solid var(--accent-2); }
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   .btn { transition: none; }
@@ -381,6 +441,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
     <nav aria-label="On this page">
       <ul>
         <li><a href="#features">What you get</a></li>
+        <li><a href="#why">Vs Auctionator</a></li>
         <li><a href="#install">Install</a></li>
         <li><a href="#tips">Using it</a></li>
         <li><a href="#faq">FAQ</a></li>
@@ -449,9 +510,19 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         </ul>
         <p class="note">Tip: hold Shift over a stack to see what the whole stack is worth.</p>
       </div>
-      <figure class="shot tall">
-        <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async"
-             alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, AH value, average, Sell now and Suggested price.">
+      <figure class="mock">
+        <div class="mock-box gametip" role="img" aria-label="Drawing of an item tooltip for a stack of 20 Linen Cloth with the Goblin Ledger lines: Auction it, 3.4 times the vendor price; AH value 44 copper, 2 percent over its average; 7-day average 43 copper; Sell now 41 copper; Suggested price 46 copper; this stack after the auction cut 8 silver 36 copper.">
+          <p class="mock-tag">Drawing, not a screenshot</p>
+          <p class="tip-item">Linen Cloth</p>
+          <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">25m ago</span></p>
+          <p class="tip-row big t-pos"><span>Auction it</span><span>3.4x vendor</span></p>
+          <p class="tip-row"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-pos">+2%</span></span></p>
+          <p class="tip-row"><span>7-day average</span><span class="m-c">43c</span></p>
+          <p class="tip-row"><span>Sell now</span><span class="m-c">41c</span></p>
+          <p class="tip-row"><span>Suggested price</span><span class="m-c">46c</span></p>
+          <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">8s</span> <span class="m-c">36c</span></span></p>
+        </div>
+        <figcaption>What the lines look like, drawn here with example numbers. In the game they sit under the item's own tooltip text.</figcaption>
       </figure>
     </div>
 
@@ -461,7 +532,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <p>Bags full again? A gold <b>Bag cleanup</b> button sits on your bag window, on the game's own bags or on ElvUI's. Click it to see:</p>
         <ul class="ticks">
           <li><b>Worth the least</b>: your stacks, cheapest first, at the better of the vendor price and the auction price</li>
-          <li><b>Old quest items</b>: quest items no quest in your log asks for, and items that start a quest you already finished</li>
+          <li><b>Old quest items</b>: with <b>Questie</b> installed, it checks Questie's quest database and says which quest items you can drop ("Can drop: done with" and the quest). Without Questie, it goes by your quest log: quest items no quest in your log asks for, and items that start a quest you already finished.</li>
           <li><b>Merge stacks</b>: partial stacks that fit in one slot</li>
           <li><b>Sell junk</b>: at a vendor, sells your grey items for you</li>
           <li><b>Sell a stack</b>: at a vendor, click a stack under Worth the least to sell it right away (you can buy it back from the vendor)</li>
@@ -469,9 +540,22 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         </ul>
         <p class="note">Nothing is sold or destroyed without your click, and Rare or better items always go through the game's own check. Your hearthstone, tools, reagents, ammo and keys never show up on the list.</p>
       </div>
-      <figure class="shot mid">
-        <img src="img/bags.png" width="800" height="600" loading="lazy" decoding="async"
-             alt="Screenshot of the bag window with the gold Bag cleanup button and its panel: stacks to merge, old quest items and the stacks worth the least, with the Drop cheapest button.">
+      <figure class="mock">
+        <div class="mock-box bagbox" role="img" aria-label="Drawing of the Bag cleanup panel: 12 of 80 slots free. Merge stacks: Linen Cloth, 2 stacks, frees 1 slot. Old quest items: Bloodstained Journal, done. Worth the least: Broken Fang times 3 for 9 copper, Chipped Claw times 2 for about 14 copper, Light Leather times 4 for 1 silver 20 copper. A Drop cheapest button.">
+          <p class="mock-tag">Drawing, not a screenshot</p>
+          <p class="bag-title"><span class="b1">Bag</span><span class="b2"> cleanup</span></p>
+          <p class="bag-sub">12 of 80 slots free</p>
+          <p class="bag-sec">MERGE STACKS</p>
+          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Linen Cloth (2 stacks)</span><span class="rt t-pos">frees 1</span></p>
+          <p class="bag-sec">OLD QUEST ITEMS</p>
+          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Bloodstained Journal</span><span class="rt t-pos">done</span></p>
+          <p class="bag-sec">WORTH THE LEAST</p>
+          <p class="bag-row"><span class="ic"></span><span class="nm q-grey">Broken Fang x3</span><span class="rt t-mut">9c</span></p>
+          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Chipped Claw x2</span><span class="rt">~14c</span></p>
+          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Light Leather x4</span><span class="rt">1s 20c</span></p>
+          <p class="bag-btn">Drop cheapest</p>
+        </div>
+        <figcaption>The panel beside your bags, drawn here with example items. Hover a row to see why it is listed.</figcaption>
       </figure>
     </div>
 
@@ -504,10 +588,61 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         </ul>
         <p class="note">Prices come from Blizzard's auction house data for the Alliance auction house on the US PvP realms, refreshed about every hour.</p>
       </div>
-      <figure class="shot">
-        <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async"
-             alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
+      <figure class="mock">
+        <div class="mock-box sitecard">
+          <div class="sc-bar" aria-hidden="true"><i></i><i></i><i></i><span class="sc-url">grantdenney.com/goblin-ledger/prices</span></div>
+          <div class="sc-body">
+            <p class="sc-head">The price website</p>
+            <p class="sc-note">Free, no login, works on a phone. The same prices as the addon.</p>
+            <svg class="sc-spark" viewBox="0 0 300 70" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+              <polyline fill="none" stroke="#E5C158" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                        points="2,52 30,48 58,50 86,40 114,44 142,34 170,38 198,26 226,30 254,20 282,24 298,14"/>
+              <line x1="2" y1="40" x2="298" y2="40" stroke="#3A4458" stroke-width="1" stroke-dasharray="4 4"/>
+            </svg>
+            <a class="btn btn-gold btn-sm" href="prices/">Open the price website</a>
+          </div>
+        </div>
+        <figcaption>A drawing with a made-up price line, not a screenshot. Open the site to see the real thing.</figcaption>
       </figure>
+    </div>
+  </div>
+</section>
+
+<!-- ===================== WHY NOT JUST AUCTIONATOR ===================== -->
+<section class="section" id="why" aria-labelledby="why-title">
+  <div class="wrap">
+    <p class="eyebrow">Compared</p>
+    <h2 id="why-title">Why not just Auctionator?</h2>
+    <p class="lede">Auctionator is a great addon, and Goblin Ledger runs right alongside it. They get their prices in different ways and help with different things, so many players will want both.</p>
+
+    <div class="cols vs">
+      <div class="card">
+        <h3>Auctionator</h3>
+        <p>A great helper for posting and buying at the auction house. Its prices come from scans you run yourself, so they are only as fresh and as complete as your last scan.</p>
+        <p class="note">Works on every realm and faction.</p>
+      </div>
+      <div class="card">
+        <h3>Goblin Ledger</h3>
+        <p>Gets the whole auction house from Blizzard's own data every hour. No scanning: the prices and their history are already there, even before you visit the auction house.</p>
+        <p class="note">Covers the Alliance auction house on the US PvP realms.</p>
+      </div>
+    </div>
+
+    <div class="adds">
+      <h3>What Goblin Ledger adds</h3>
+      <ul class="ticks">
+        <li><b>It tells you what to do.</b> A big <b class="c-pos">Auction it</b> or <b class="c-neg">Vendor it</b> on the tooltip, with how much better that choice is.</li>
+        <li><b>Price history charts</b>, and how today's price compares with the usual one.</li>
+        <li><b>Flip ideas</b> sized to the gold on your character, ranked by the profit you can realistically make within a day.</li>
+        <li><b>Deals</b>: greens, blues and epics listed well under their usual price.</li>
+        <li><b>Bag cleanup</b>: what is worth the least, cheapest first, quest items you are done with, and a drop button that asks first.</li>
+        <li><b>A price website</b> for your phone or PC.</li>
+      </ul>
+    </div>
+
+    <div class="card both">
+      <p class="k">Use both if you like</p>
+      <p>The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab. Auctionator does the posting and buying, Goblin Ledger tells you what things are worth.</p>
     </div>
   </div>
 </section>
@@ -546,6 +681,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           <li><code>GoblinLedger</code> <span>the addon</span></li>
           <li><code>Install-Goblin-Ledger.bat</code> <span>the installer</span></li>
           <li><code>Uninstall-Goblin-Ledger.bat</code> <span>removes it again</span></li>
+          <li><code>scripts</code> <span>the installer's steps, plain text</span></li>
           <li><code>README.txt</code> <span>these steps in short</span></li>
         </ul>
         <p class="note">Unzip first: the installer does not work from inside the zip.</p>
@@ -555,12 +691,12 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <h3>Run the installer</h3>
         <p>Double-click <b>Install-Goblin-Ledger.bat</b>. A black window opens and sets everything up:</p>
         <ul class="ticks">
-          <li>finds WoW Forever in <code>C:\Program Files (x86)\World of Warcraft\_forever_</code>, or asks you where it is if your game is somewhere else</li>
+          <li>finds WoW Forever in <code>C:\Program Files (x86)\World of Warcraft\_forever_</code> (or the same folder on another drive), or asks you where it is if your game is somewhere else</li>
           <li>copies the addon into <code>Interface\AddOns\GoblinLedger</code></li>
           <li>downloads the latest prices</li>
-          <li>adds a Windows task called <b>Goblin Ledger Prices</b> that quietly refreshes the prices every 30 minutes while you are logged in to Windows (no window pops up, and Uninstall-Goblin-Ledger.bat removes it)</li>
+          <li>asks <b>"Update prices automatically every 30 minutes?"</b> Press <span class="ui">Y</span> (or just Enter). It then adds a Windows task called <b>Goblin Ledger Prices</b> that quietly refreshes the prices while you are logged in to Windows. No window pops up, and Uninstall-Goblin-Ledger.bat removes it.</li>
         </ul>
-        <p>If it asks whether to update prices automatically, press <span class="ui">Y</span>.</p>
+        <p>No administrator rights needed. When it says <b>All set</b>, press any key to close the window.</p>
         <p><b>Windows may warn you first.</b> It does that for files from the internet that are not from a big-name publisher. You may see one or both of these:</p>
         <div class="warns">
           <div class="warn ss">
@@ -572,8 +708,8 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
             <p>It asks if you want to run the file. Click <span class="ui">Run</span>.</p>
           </div>
         </div>
-        <p class="note">Rather skip the warnings? Before you unzip, right-click GoblinLedger.zip, choose Properties, tick <b>Unblock</b> at the bottom and click OK. Curious what the installer does? It is plain text: right-click it and choose Edit (on Windows 11, Show more options first) to read every line in Notepad.</p>
-        <p class="note">Game in another folder? In the Battle.net app, click the gear next to Play and choose Show in Explorer. Go into the <code>_forever_</code> folder if you are not already in it. Click the address bar at the top and press Ctrl+C. Then click the installer window, press Ctrl+V (or right-click) and press Enter.</p>
+        <p class="note">Rather skip the warnings? Before you unzip, right-click GoblinLedger.zip, choose Properties, tick <b>Unblock</b> at the bottom and click OK. Curious what the installer does? Every step is plain text: open <code>install.ps1</code> in the <code>scripts</code> folder with Notepad to read every line.</p>
+        <p class="note">Game in another folder? The installer asks for it. In the Battle.net app, click the gear next to Play and choose Show in Explorer. Go into the <code>_forever_</code> folder if you are not already in it. Click the address bar at the top and press Ctrl+C. Then click the installer window, press Ctrl+V (or right-click) and press Enter.</p>
       </li>
 
       <li>
@@ -644,17 +780,18 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
     <div class="cols">
       <div class="card">
         <h3>Fresh prices</h3>
-        <p>They update by themselves every 30 minutes while you are logged in to Windows. The game picks them up when you log in or type <code>/reload</code>.</p>
+        <p>They update by themselves every 30 minutes while you are logged in to Windows (if you pressed Y in the installer). The game picks them up when you log in or type <code>/reload</code>.</p>
         <p>Want fresh prices this minute? Run <b>Install-Goblin-Ledger.bat</b> again.</p>
       </div>
       <div class="card">
         <h3>A new version</h3>
-        <p>Download the zip again from this page, unzip it and run <b>Install-Goblin-Ledger.bat</b>. It replaces the old addon files. Then restart the game.</p>
+        <p>Download the zip again from this page, unzip it and run <b>Install-Goblin-Ledger.bat</b>. It replaces the old addon files and keeps your prices and settings. Then restart the game.</p>
+        <p class="note">Had an early copy called Forever AH? The installer swaps it for Goblin Ledger and keeps your settings and watchlist.</p>
       </div>
       <div class="card">
         <h3>Removing it</h3>
-        <p>Double-click <b>Uninstall-Goblin-Ledger.bat</b>, in the folder you unzipped. Deleted that folder? Download the zip again and unzip it. If it asks you to confirm, press <span class="ui">Y</span>. It removes the addon and the Goblin Ledger Prices task.</p>
-        <p class="note">By hand: delete the <code>GoblinLedger</code> folder from your game's <code>Interface\AddOns</code> folder, then delete the Goblin Ledger Prices task in Task Scheduler.</p>
+        <p>Double-click <b>Uninstall-Goblin-Ledger.bat</b>, in the folder you unzipped. Deleted that folder? Download the zip again and unzip it. When it asks to remove Goblin Ledger, press <span class="ui">Y</span>. It removes the addon, the price updater and the Goblin Ledger Prices task. It asks before it deletes your saved settings.</p>
+        <p class="note">By hand: delete the <code>GoblinLedger</code> folder from your game's <code>Interface\AddOns</code> folder, delete the Goblin Ledger Prices task in Task Scheduler, and delete the folder <code>%LOCALAPPDATA%\GoblinLedger</code> (paste that into the File Explorer address bar).</p>
       </div>
     </div>
   </div>
@@ -677,7 +814,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
       <div class="card">
         <h3>Is it safe?</h3>
         <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Suggested buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
-        <p>The installer is a plain text file you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and adds one Windows task that keeps that file fresh. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
+        <p>The installer is plain text you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and, if you say yes, adds one Windows task that keeps that file fresh. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
       </div>
 
       <div class="card">
@@ -690,7 +827,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <ul class="ticks">
           <li><b>ElvUI</b>: yes. The Bag cleanup button shows up in ElvUI's bag window.</li>
           <li><b>Auctionator</b>: yes. The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab.</li>
-          <li><b>Questie</b>: yes, they run side by side. Bag cleanup reads your own quest log to spot old quest items.</li>
+          <li><b>Questie</b>: yes, and it helps. Bag cleanup uses Questie's quest database to say which quest items you can drop ("Can drop: done with" and the quest). Without Questie it goes by your quest log.</li>
         </ul>
         <p>Another bag addon that hides the game's bags? Type <code>/gl bags</code> to get the cleanup list in chat.</p>
       </div>

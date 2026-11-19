@@ -1,0 +1,3 @@
+# test_datafile.py checks this file has LF line ends (fetch_ah.py publishes a copy),
+# so it keeps them on Windows checkouts with core.autocrlf=true too.
+tools/wow/suffix_names.json text eol=lf

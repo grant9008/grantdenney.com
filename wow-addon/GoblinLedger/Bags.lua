@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
--- Forever AH: bag cleanup.
+-- Goblin Ledger: bag cleanup.
 -- When your bags fill up, this says what to get rid of first:
 --   Merge stacks    : partial stacks of the same item that fit in one slot
 --                     (frees a slot and costs nothing)
@@ -13,13 +13,13 @@ local ADDON_NAME, ns = ...
 --                     auction right now (after the 5% cut)
 -- It shows as a Bag cleanup button on your open bags (in the header of
 -- ElvUI's bag window when there is room, else a tab beside the bags) that
--- opens a slim panel, and in chat with /fah bags. Nothing is destroyed or
+-- opens a slim panel, and in chat with /gl bags. Nothing is destroyed or
 -- sold on its own. At an open vendor a click on a row sells the stack when
 -- the vendor buys it. Otherwise a click on a row (or Drop cheapest) only
 -- asks, naming the stack and what it is worth; Drop it in that box checks the
 -- stack and its worth again and destroys that one stack (the game allows one
 -- per click). Rare and better items and quest items are only picked up, so
--- the game's own check (type DELETE, quest warning) applies. /fah bagcheck
+-- the game's own check (type DELETE, quest warning) applies. /gl bagcheck
 -- says what the cleanup sees.
 
 ns = ns or {}
@@ -42,14 +42,14 @@ local FOOTER_H = 26
 local MAX_MERGE = 3
 local MAX_QUEST = 6
 local MAX_DROP = 8
-local SLASH_DROP = 5        -- /fah bags prints this many
+local SLASH_DROP = 5        -- /gl bags prints this many
 local SELL_BATCH = 12       -- junk sold per click (the vendor's buyback holds 12)
 local OUTGROWN = 15         -- food, potions and the like this many levels under you are fair game
 local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes you type DELETE for Rare and up)
 local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
                             -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-18g"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-18g"   -- /gl bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -137,7 +137,7 @@ end
 local function Print(msg)
   if type(ns.Print) == "function" then return ns.Print(msg) end
   local cf = _G.DEFAULT_CHAT_FRAME
-  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Forever AH: " .. tostring(msg)) end
+  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Goblin Ledger: " .. tostring(msg)) end
 end
 
 local function After(sec, fn)
@@ -1010,7 +1010,7 @@ function ns.QuestItemLine(tt, id)
   return (pcall(tt.AddLine, tt, text, c[1], c[2], c[3]))
 end
 
--- For /fah bagcheck: what QuestieDB gives the bag cleanup, or nil without it.
+-- For /gl bagcheck: what QuestieDB gives the bag cleanup, or nil without it.
 local function QuestIndexText()
   QuestieReady()
   local s = QI.state
@@ -1381,7 +1381,7 @@ local function WorthText(e)
 end
 
 local BP = { rows = {}, built = false, merchant = false, hinted = false,
-  -- For /fah bagcheck: updates asked for and run, how the last one ended, and
+  -- For /gl bagcheck: updates asked for and run, how the last one ended, and
   -- which hooks took.
   stats = { asked = 0, ran = 0, result = "never ran", toggles = {}, elv = {} } }
 ns.BagPanel = BP
@@ -1453,7 +1453,7 @@ end
 
 ---------------------------------------------------------------------------
 -- The bag frames: the game's own, and the bag window of bag addons we know.
--- Other bag addons (they hide the game's bags) get /fah bags in chat.
+-- Other bag addons (they hide the game's bags) get /gl bags in chat.
 ---------------------------------------------------------------------------
 -- ElvUI's bags: one window, ElvUI_ContainerFrame. Its slots sit in
 -- frame.Bags[bagID][slotID].
@@ -1698,7 +1698,7 @@ local function OpenMenu(row)
       if type(root.CreateTitle) == "function" then root:CreateTitle(name) end
       root:CreateButton("Always keep (never suggest it)", function()
         ns.ToggleBagKeep(e.id)
-        Print("will not suggest " .. name .. " again. /fah keep " .. name .. " undoes it.")
+        Print("will not suggest " .. name .. " again. /gl keep " .. name .. " undoes it.")
         BP:Refresh()
       end)
       if row.kind == "drop" and CanDrop(e) then
@@ -1713,7 +1713,7 @@ local function OpenMenu(row)
   end
   -- No context menus in this client: right-click keeps the item.
   ns.ToggleBagKeep(e.id)
-  Print("will not suggest " .. name .. " again. /fah keep " .. name .. " undoes it.")
+  Print("will not suggest " .. name .. " again. /gl keep " .. name .. " undoes it.")
   BP:Refresh()
 end
 
@@ -1963,7 +1963,7 @@ function BP:Build()
     local st = S()
     local open = st ~= nil and st.bagPanel == true
     local t = "What to drop or sell first: your cheapest stacks, old quest items and stacks to merge. Click to "
-      .. (open and "close" or "open") .. " the list. /fah bags prints it in chat."
+      .. (open and "close" or "open") .. " the list. /gl bags prints it in chat."
     local first = BP.scan and BP.scan.drop and BP.scan.drop[1]
     if first then
       t = t .. "\nDrop first: " .. (first.name or ("Item " .. tostring(first.id))) .. " (" .. Money(first.value) .. ")"
@@ -2339,7 +2339,7 @@ function BP:DoDrop()
   if type(del) == "function" then pcall(del) end
   if CursorHasItem() then
     -- The game said no: leave it on the cursor so it can be finished by hand.
-    Print("the game did not let Forever AH drop " .. text .. ". It is on your cursor: click the ground to destroy it (the game asks first), or a bag slot to put it back.")
+    Print("the game did not let Goblin Ledger drop " .. text .. ". It is on your cursor: click the ground to destroy it (the game asks first), or a bag slot to put it back.")
     return
   end
   local p = { bag = e.bag, slot = e.slot, id = e.id, count = e.count, text = text, value = e.value, tries = 0 }
@@ -2374,7 +2374,7 @@ local function PanelWanted()
 end
 
 -- Show the tab or the panel while bags are open; hide both when they close.
--- stats.result says how the last update ended (for /fah bagcheck).
+-- stats.result says how the last update ended (for /gl bagcheck).
 function BP:Update()
   local st = self.stats
   st.ran = st.ran + 1
@@ -2421,7 +2421,7 @@ function BP:Fail(err)
   self.lastError = err
   if self.failSaid then return end
   self.failSaid = true
-  Print("the bag cleanup hit a problem (" .. tostring(err) .. "). /fah bags still lists what to clear, /fah bagcheck says more.")
+  Print("the bag cleanup hit a problem (" .. tostring(err) .. "). /gl bags still lists what to clear, /gl bagcheck says more.")
 end
 
 local updateToken, refreshToken = 0, 0
@@ -2578,7 +2578,7 @@ if type(_G.CreateFrame) == "function" then
 end
 
 ---------------------------------------------------------------------------
--- Slash commands: /fah bags, /fah keep, /fah bagcheck
+-- Slash commands: /gl bags, /gl keep, /gl bagcheck
 ---------------------------------------------------------------------------
 local function ListText(list, limit, fn)
   local parts = {}
@@ -2605,7 +2605,7 @@ local function Report()
     end))
   end
   if s.questBuilding then
-    Print("still reading Questie's quests: type /fah bags again in a moment to check every quest item.")
+    Print("still reading Questie's quests: type /gl bags again in a moment to check every quest item.")
   end
   if s.questPartial then
     Print("some quest log headers are closed: open them so old quest items can be checked too.")
@@ -2631,7 +2631,7 @@ end
 ns.BagReport = Report
 
 ---------------------------------------------------------------------------
--- /fah bagcheck: what the bag cleanup sees, in one screenshot
+-- /gl bagcheck: what the bag cleanup sees, in one screenshot
 ---------------------------------------------------------------------------
 local function YN(v) return v and "yes" or "no" end
 
@@ -2727,7 +2727,7 @@ local function BagCheck()
   local names = {}
   for _, f in ipairs(OpenBagFrames()) do names[#names + 1] = FrameName(f) end
   Print("3. windows the button uses: " .. (#names > 0 and tconcat(names, ", ")
-    or "none (open your bags, then type /fah bagcheck again)"))
+    or "none (open your bags, then type /gl bagcheck again)"))
   -- 4. Hooks
   local parts = {}
   for _, fn in ipairs(TOGGLES) do
@@ -2776,7 +2776,7 @@ local function BagCheck()
   elseif BP.built and BP.frame:IsShown() then
     Print("The cleanup panel is open beside your bags. Take a screenshot of your whole screen.")
   elseif #OpenBagFrames() == 0 then
-    Print("Open your bags, then type /fah bagcheck again and take a screenshot.")
+    Print("Open your bags, then type /gl bagcheck again and take a screenshot.")
   else
     Print("The Bag cleanup button did not show. Take a screenshot of these lines.")
   end
@@ -2793,7 +2793,7 @@ local function KeepCommand(rest)
     end
     sort(names)
     if #names == 0 then
-      Print("you keep nothing yet. /fah keep Item Name (or shift-click it) stops the bag cleanup suggesting it.")
+      Print("you keep nothing yet. /gl keep Item Name (or shift-click it) stops the bag cleanup suggesting it.")
     else
       Print("never suggested in bag cleanup: " .. tconcat(names, ", "))
     end
@@ -2855,8 +2855,8 @@ function ns.HandleSlash(msg)
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "help" or cmd == "?" then
-    Print("/fah bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
-    Print("/fah keep Item Name : never suggest dropping an item (again to undo; no name lists them)")
-    Print("/fah bagcheck : what the bag cleanup sees (type it with your bags open if the Bag cleanup button is missing)")
+    Print("/gl bags : what to drop or sell first, old quest items and stacks to merge (also beside your open bags)")
+    Print("/gl keep Item Name : never suggest dropping an item (again to undo; no name lists them)")
+    Print("/gl bagcheck : what the bag cleanup sees (type it with your bags open if the Bag cleanup button is missing)")
   end
 end

@@ -1,5 +1,6 @@
 @echo off
-rem Used by Install-WoW-Addon.bat and Uninstall-WoW-Addon.bat (call it, do not run it).
+rem Used by Uninstall-WoW-Addon.bat (call it, do not run it). The friend
+rem installer (tools\goblin-ledger\install.ps1) has its own search.
 rem Sets FAH_WOW to the WoW Forever game folder (the _forever_ folder that holds
 rem Wow.exe and Interface), or leaves it empty when none is found.
 rem Looks in this order:

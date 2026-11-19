@@ -1,6 +1,6 @@
 local ADDON_NAME, ns = ...
 
--- Forever AH: auction house integration.
+-- Goblin Ledger: auction house integration.
 -- Shows the price chart under the auction house and switches it to whatever
 -- item you search for, click on, or put in the sell slot. Adds two small
 -- buttons to the sell frame that fill in the price box:
@@ -71,7 +71,7 @@ end
 local function Print(msg)
   if type(ns.Print) == "function" then return ns.Print(msg) end
   local cf = _G.DEFAULT_CHAT_FRAME
-  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Forever AH: " .. tostring(msg)) end
+  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Goblin Ledger: " .. tostring(msg)) end
 end
 
 local function MoneyI(c)
@@ -753,7 +753,7 @@ local function CreateToggleButton(parent, kind)
   b:SetText("Chart")
   RaiseAbove(b, nil, parent)
   b:SetScript("OnClick", ToggleClicked)
-  AttachTooltip(b, "Forever AH price chart", "Show or hide the price chart under the auction house.")
+  AttachTooltip(b, "Goblin Ledger price chart", "Show or hide the price chart under the auction house.")
   toggles[parent] = b
   return b
 end

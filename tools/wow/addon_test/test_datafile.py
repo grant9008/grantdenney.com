@@ -3,7 +3,7 @@ history files it was built from, and the collector's own rules.
 
   python tools/wow/addon_test/test_datafile.py [data dir]
 
-data dir defaults to wow/_localdata (simulated test data from sim_fetch.py).
+data dir defaults to goblin-ledger/prices/_localdata (simulated test data from sim_fetch.py).
 It must hold ForeverAH_Data.lua, hist/<id>.json, items.json and status.json.
 
 What it does:
@@ -437,7 +437,7 @@ def load_lua(path):
     first = text.split("\n", 1)[0]
     check(first == HEADER, f"first line is {first!r}")
     check("ForeverAH_Data = {" in text, "no 'ForeverAH_Data = {'")
-    # Update-WoW-Prices.bat (update_prices.ps1) finds the stamp with this exact pattern
+    # The price updater (update_prices.ps1) finds the stamp with this exact pattern
     check(re.search(r"(?m)^\s*updated\s*=\s*(\d+)\s*,", text), "the updater cannot find 'updated = <n>,'")
     lua = lua51.LuaRuntime(unpack_returned_tuples=True)
     lua.execute(LUA_DECODER)
@@ -3221,7 +3221,7 @@ def details_all_tests(data_dir):
 
 
 def main():
-    data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "wow", "_localdata")
+    data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "goblin-ledger", "prices", "_localdata")
     print("ForeverAH_Data.lua check")
     ok = True
     for name, fn in (("generated data", lambda: run_checks(data_dir, os.path.relpath(data_dir, REPO), current=None)),

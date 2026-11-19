@@ -1,17 +1,17 @@
 /* Headless test of wow/app.js: the auto lists in the FAVORITES dropdown and
    the item details block under the item name.
    Loads the REAL app.js (and index.html's #itemDetails host) in a vm with a
-   small, permissive fake DOM, serves wow/_localdata (sim_fetch.py's simulated
+   small, permissive fake DOM, serves goblin-ledger/prices/_localdata (sim_fetch.py's simulated
    data, details chunks included) through a fake fetch, lets the page boot,
    and checks the HTML it writes. The pure helpers (autoFavIds,
    wowDetailLines) are also run on hand-made data.
-   Usage: node tools/wow/addon_test/test_web_details.js [path/to/wow] */
+   Usage: node tools/wow/addon_test/test_web_details.js [path/to/goblin-ledger/prices] */
 'use strict';
 const fs = require('fs');
 const vm = require('vm');
 const path = require('path');
 
-const WOW = process.argv[2] || path.join(__dirname, '..', '..', '..', 'wow');
+const WOW = process.argv[2] || path.join(__dirname, '..', '..', '..', 'goblin-ledger', 'prices');
 const APP = path.join(WOW, 'app.js');
 const DATA = path.join(WOW, '_localdata');
 const APP_SRC = fs.readFileSync(APP, 'utf8');
@@ -189,7 +189,7 @@ function makeEnv(opts) {
     const u = String(url);
     fetched.push(u);
     let body = null;
-    const m = /^\/wow\/_localdata\/(.+)$/.exec(u.split('?')[0]);
+    const m = /^\/goblin-ledger\/prices\/_localdata\/(.+)$/.exec(u.split('?')[0]);
     if (m) {
       if (Object.prototype.hasOwnProperty.call(files, m[1])) body = files[m[1]];
       else {
@@ -307,7 +307,7 @@ function expectedFlipIds() {
 
 (async function main() {
   console.log('app.js under test: ' + APP);
-  check(fs.existsSync(path.join(DATA, 'details')), 'wow/_localdata has details chunks (run sim_fetch.py)');
+  check(fs.existsSync(path.join(DATA, 'details')), 'goblin-ledger/prices/_localdata has details chunks (run sim_fetch.py)');
   const mapping = load('mapping.json');
   const byName = (n) => mapping.find((m) => m.name === n);
   const cloak = byName("Archer's Cloak");
@@ -346,7 +346,7 @@ function expectedFlipIds() {
   check(/idt-g">Chance on hit: /.test(host.innerHTML) && /idt-y">&quot;Simulated flavor text.&quot;<\/div>/.test(host.innerHTML),
     'Chance on hit in green, flavor text in gold with quotes');
   check(host.attrs['aria-label'] === 'Thrash Blade: item details', 'block is labelled for screen readers');
-  check(env.fetched.filter((u) => /\/details\//.test(u)).length === 1 && env.fetched.some((u) => u === '/wow/_localdata/details/17.json'),
+  check(env.fetched.filter((u) => /\/details\//.test(u)).length === 1 && env.fetched.some((u) => u === '/goblin-ledger/prices/_localdata/details/17.json'),
     'only the shown item\'s chunk is read: ' + env.fetched.filter((u) => /\/details\//.test(u)).join(','));
 
   async function open(m) {

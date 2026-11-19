@@ -1,5 +1,5 @@
 <#
-  Sets up the Forever AH price collector on this PC (see collect_prices.ps1):
+  Sets up the Goblin Ledger price collector on this PC (see collect_prices.ps1):
   copies the scripts into %LOCALAPPDATA%\ForeverAH and creates the hidden
   "ForeverAH Collector" scheduled task, which runs every 30 minutes (at :05
   and :35, a few minutes after Blizzard publishes new auction data) while
@@ -8,6 +8,9 @@
     -FetchSource  use this fetch_ah.py instead of the repo's tools\wow\fetch_ah.py
     -NoTask       copy the files only, no scheduled task (testing)
 
+  The collector keeps its old home, %LOCALAPPDATA%\ForeverAH, and its task name;
+  the update_prices.ps1 copied there keeps its notes in %LOCALAPPDATA%\GoblinLedger
+  and finds the addon from the path Install-Goblin-Ledger.bat saved.
   Uninstall-WoW-Addon.bat removes the task and the files again.
 #>
 param(
@@ -61,9 +64,11 @@ $trigger = New-ScheduledTaskTrigger -Once -At $start -RepetitionInterval (New-Ti
 $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable `
     -MultipleInstances IgnoreNew -ExecutionTimeLimit (New-TimeSpan -Minutes 25)
 Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Force `
-    -Description 'Forever AH: takes the hourly WoW Forever auction house snapshot, publishes it to grantdenney.com/wow and updates the addon prices.' | Out-Null
+    -Description 'Goblin Ledger: takes the hourly WoW Forever auction house snapshot, publishes it to grantdenney.com/goblin-ledger/prices and updates the addon prices.' | Out-Null
 # The price download task gets the same battery and catch-up settings.
-if (Get-ScheduledTask -TaskName 'ForeverAH Prices' -ErrorAction SilentlyContinue) {
-    Set-ScheduledTask -TaskName 'ForeverAH Prices' -Settings $settings | Out-Null
+foreach ($pt in @('Goblin Ledger Prices', 'ForeverAH Prices')) {
+    if (Get-ScheduledTask -TaskName $pt -ErrorAction SilentlyContinue) {
+        Set-ScheduledTask -TaskName $pt -Settings $settings | Out-Null
+    }
 }
 Say ("Done: this PC takes the price snapshot every 30 minutes, starting {0}." -f $start.ToString('h:mm tt'))

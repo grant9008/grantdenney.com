@@ -1,5 +1,5 @@
 local ADDON_NAME, ns = ...
--- Forever AH: the auction house sidebar.
+-- Goblin Ledger: the auction house sidebar.
 -- A slim panel attached to the right edge of the game's own auction house
 -- window, PocketGE plugin style. It opens and closes with the auction house
 -- (it is a child of that window), so there is no extra window to manage.
@@ -65,7 +65,7 @@ local DAY_MIN_PROFIT = 2000  -- 20 silver: less expected in a day is not worth a
 local DAY_EXACT = 60         -- expected sales are worked out exactly up to this many units
 local HIDE_SECONDS = 24 * 3600
 
--- Starter watchlist: the same staples as grantdenney.com/wow's default favorites.
+-- Starter watchlist: the same staples as the price website's default favorites.
 local DEFAULT_WATCH = {
   14047, -- Runecloth
   4338,  -- Mageweave Cloth
@@ -126,7 +126,7 @@ end
 local function Print(msg)
   if type(ns.Print) == "function" then return ns.Print(msg) end
   local cf = _G.DEFAULT_CHAT_FRAME
-  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Forever AH: " .. tostring(msg)) end
+  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Goblin Ledger: " .. tostring(msg)) end
 end
 
 local function After(sec, fn)
@@ -740,7 +740,7 @@ ns.ExpectedSold = ExpectedSold
 -- that (most first, then the one that sells soonest, then the collector's
 -- order), still before the price-history ideas.
 -- One place in every DEAL_EVERY (1 of the sidebar's 5 rows, 2 of the 10
--- /fah flips lines) is kept for the solid deals (a green, blue or epic item
+-- /gl flips lines) is kept for the solid deals (a green, blue or epic item
 -- listed well under its usual price, whose usual price is not one listing's
 -- and whose relist price is backed by sales), so the best one shows on every
 -- scan that has one: when bigger flips fill the list, the best solid deals
@@ -834,7 +834,7 @@ ns.RISK_TEXT = RISK_TEXT
 
 -- What the flip area says when there are no ideas (why from ns.FlipIdeas).
 local FLIP_MESSAGES = {
-  nodata = "No price data yet. Run Update-WoW-Prices.bat, then /reload.",
+  nodata = "No price data yet. Run Install-Goblin-Ledger.bat, then /reload.",
   history = "Collecting price history. Flip ideas show up after a few hourly price updates.",
   -- Sales are measured between hourly snapshots, so a new data set has none yet.
   nosales = "Collecting sales history. Flip ideas show up after a few hourly price updates.",
@@ -1124,7 +1124,7 @@ local function DataFlipTooltip(tt, idea)
 end
 
 -- Tooltip for a row: the game's own item tooltip (which already carries the
--- Forever AH price lines), then the flip numbers and what clicks do.
+-- Goblin Ledger price lines), then the flip numbers and what clicks do.
 local function RowTooltip(row)
   local id = row.itemID
   local tt = _G.GameTooltip
@@ -1337,14 +1337,14 @@ function SB:Build(parent)
   ageTip:EnableMouse(true)
   SimpleTip(ageTip, "Price data",
     function()
-      return SB.why or "Prices from the hourly snapshots on grantdenney.com/wow. Update-WoW-Prices.bat keeps them fresh; type /reload to load new ones."
+      return SB.why or "Prices from Blizzard's hourly auction house data, also at grantdenney.com/goblin-ledger/prices. They refresh every 30 minutes (Install-Goblin-Ledger.bat sets that up); type /reload to load new ones."
     end)
 
   local hide = TextButton(F, "<", 18, 18)
   hide:SetPoint("TOPRIGHT", F, "TOPRIGHT", -6, -6)
   SetFSColor(hide.text, "muted")
   hide:SetScript("OnClick", function() ns.SetSidebar(false) end)
-  SimpleTip(hide, "Tuck the sidebar away", "Bring it back with the Forever AH tab on the auction house, or /fah sidebar.")
+  SimpleTip(hide, "Tuck the sidebar away", "Bring it back with the Goblin Ledger tab on the auction house, or /gl sidebar.")
   self.hideButton = hide
 
   -- Flip ideas
@@ -1458,10 +1458,10 @@ function SB:Build(parent)
   F:SetScript("OnSizeChanged", function() if F:IsShown() then SB:Refresh() end end)
 
   -- The tab that brings a tucked-away sidebar back.
-  local tab = TextButton(parent, "Forever AH >", 86, 20)
+  local tab = TextButton(parent, "Goblin Ledger >", 104, 20)
   SetFSColor(tab.text, "buy")
   tab:SetScript("OnClick", function() ns.SetSidebar(true) end)
-  SimpleTip(tab, "Forever AH sidebar", "Show flip ideas and your watchlist next to the auction house.")
+  SimpleTip(tab, "Goblin Ledger sidebar", "Show flip ideas and your watchlist next to the auction house.")
   tab:Hide()
   self.tab = tab
 end
@@ -1858,10 +1858,10 @@ if type(_G.CreateFrame) == "function" then
 end
 
 ---------------------------------------------------------------------------
--- Slash commands: /fah watch, /fah unwatch, /fah watchlist, /fah sidebar
+-- Slash commands: /gl watch, /gl unwatch, /gl watchlist, /gl sidebar
 ---------------------------------------------------------------------------
 local baseSlash = ns.HandleSlash
-local SLASH_FLIPS = 10   -- /fah flips prints this many
+local SLASH_FLIPS = 10   -- /gl flips prints this many
 
 -- One chat line for a flip idea, with what your gold buys of it when the
 -- ideas are sized to your gold.
@@ -1891,7 +1891,7 @@ local function WatchCommand(rest, remove)
   if rest == "" then
     local id = SB:CurrentItem()
     if not id then
-      Print("say which item: /fah " .. (remove and "unwatch" or "watch") .. " Runecloth (or shift-click it).")
+      Print("say which item: /gl " .. (remove and "unwatch" or "watch") .. " Runecloth (or shift-click it).")
       return
     end
     rest = tostring(id)
@@ -1942,7 +1942,7 @@ function ns.HandleSlash(msg)
     end
     local list = ns.GetWatchlist()
     if #list == 0 then
-      Print("your watchlist is empty. /fah watch Runecloth adds one.")
+      Print("your watchlist is empty. /gl watch Runecloth adds one.")
       return
     end
     Print("watching " .. #list .. " items:")
@@ -1959,7 +1959,7 @@ function ns.HandleSlash(msg)
     local ideas, why = ns.FlipIdeas(SLASH_FLIPS, gold or false)
     if #ideas == 0 then
       if why == "nodata" then
-        Print("no price data yet. Type /fah to see how to get it.")
+        Print("no price data yet. Type /gl to see how to get it.")
       elseif why == "history" then
         Print(FLIP_MESSAGES.history)
       elseif why == "nosales" then
@@ -1982,11 +1982,11 @@ function ns.HandleSlash(msg)
   else
     if cmd == "help" or cmd == "?" then
       if type(baseSlash) == "function" then baseSlash(msg) end
-      Print("/fah watch Runecloth : add an item to the auction house watchlist (no name = the item you are looking at)")
-      Print("/fah unwatch Runecloth : take it off")
-      Print("/fah watchlist : list it (/fah watchlist reset brings back the starter list)")
-      Print("/fah flips : print the current flip ideas, sized to the gold on this character")
-      Print("/fah sidebar : show or tuck away the auction house sidebar")
+      Print("/gl watch Runecloth : add an item to the auction house watchlist (no name = the item you are looking at)")
+      Print("/gl unwatch Runecloth : take it off")
+      Print("/gl watchlist : list it (/gl watchlist reset brings back the starter list)")
+      Print("/gl flips : print the current flip ideas, sized to the gold on this character")
+      Print("/gl sidebar : show or tuck away the auction house sidebar")
       return
     end
     if type(baseSlash) == "function" then return baseSlash(msg) end

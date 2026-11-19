@@ -1,5 +1,5 @@
 <#
-  Forever AH price collector for this PC.
+  Goblin Ledger price collector for this PC (the addon was called Forever AH).
 
   GitHub's free scheduler runs hours late, so this PC takes the hourly auction
   house snapshot itself:
@@ -7,7 +7,7 @@
        github.com/grant9008/grantdenney.com),
     2. runs fetch_ah.py with the Battle.net key saved in %USERPROFILE%\.wow-ah\bnet.txt,
     3. when Blizzard had new data: installs the new prices into the addon and
-       publishes them back to GitHub, so grantdenney.com/wow updates.
+       publishes them back to GitHub, so grantdenney.com/goblin-ledger/prices updates.
   GitHub's own (late) runs still work as a backup: both read and write the
   same branch, neither overwrites a snapshot the other published meanwhile,
   and an unchanged Blizzard snapshot is never collected twice.
@@ -224,7 +224,9 @@ try {
         GitData @('commit', '-q', '-m', "WoW Forever prices $stamp (PC)") | Out-Null
 
         # 4. Install the new prices into the addon first (the updater checks
-        #    the file), so the game gets them even if publishing fails.
+        #    the file), so the game gets them even if publishing fails. The
+        #    updater finds the GoblinLedger addon from the path the installer
+        #    saved (see update_prices.ps1).
         $upd = Join-Path $AppDir 'update_prices.ps1'
         if (Test-Path -LiteralPath $upd) {
             $u = Native $PS @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $upd, '-DataUrl', (Join-Path $Data 'ForeverAH_Data.lua'), '-Quiet')

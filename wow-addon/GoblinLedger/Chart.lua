@@ -1,6 +1,6 @@
 local ADDON_NAME, ns = ...
 
--- Forever AH: the price chart panel.
+-- Goblin Ledger: the price chart panel.
 -- A PocketGE-style panel built from plain frames, textures and font strings:
 --   header   : icon, name, market price, change over the timeframe, 1D 5D 1W 1M 1Y
 --   boxes    : Target Buy (gold) and List At (blue). Each is a toggle: click
@@ -124,7 +124,7 @@ end
 local function Print(msg)
   if type(ns.Print) == "function" then return ns.Print(msg) end
   local cf = _G.DEFAULT_CHAT_FRAME
-  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Forever AH: " .. tostring(msg)) end
+  if type(cf) == "table" and cf.AddMessage then cf:AddMessage("Goblin Ledger: " .. tostring(msg)) end
 end
 
 local function AgeText(sec)
@@ -578,7 +578,7 @@ function Chart:Build()
   ch:SetAllPoints(close)
   ch:SetColorTexture(1, 1, 1, 0.10)
   close:SetScript("OnClick", function() Chart:OnCloseClicked() end)
-  SimpleTooltip(close, "Hide chart", "Bring it back with the Chart button on the auction house, or /fah chart.")
+  SimpleTooltip(close, "Hide chart", "Bring it back with the Chart button on the auction house, or /gl chart.")
   self.closeButton = close
 
   self.tfButtons = {}
@@ -939,7 +939,7 @@ end
 
 function Chart:SetHeader(id, name, item, s, tf)
   self.icon:SetTexture(id and ItemIcon(id) or QUESTION)
-  local shown = tostring(name or "Forever AH")
+  local shown = tostring(name or "Goblin Ledger")
   local maxLen = self.narrow and 22 or 34
   if #shown > maxLen then shown = shown:sub(1, maxLen - 1) .. "..." end
   self.name:SetText(shown)
@@ -1342,17 +1342,17 @@ end
 function Chart:Draw(tf)
   local id = self.itemID
   if not HasData() then
-    self:SetHeader(nil, "Forever AH")
+    self:SetHeader(nil, "Goblin Ledger")
     self:SetBoxes(nil, nil)
     self:SetFooter(nil, nil)
-    self:ShowMessage("No price data yet.\nDouble-click Update-WoW-Prices.bat, then type /reload in game.")
+    self:ShowMessage("No price data yet.\nRun Install-Goblin-Ledger.bat again, then type /reload in game.")
     return
   end
   if not id then
-    self:SetHeader(nil, "Forever AH")
+    self:SetHeader(nil, "Goblin Ledger")
     self:SetBoxes(nil, nil)
     self:SetFooter(nil, nil)
-    self:ShowMessage("Search for an item at the auction house, or type /fah chart and an item name.")
+    self:ShowMessage("Search for an item at the auction house, or type /gl chart and an item name.")
     return
   end
   local item = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
@@ -1532,7 +1532,7 @@ function ns.ShowChart(itemID, source)
   Chart.itemID = id
   Chart.source = source or (wasShown and Chart.source) or "standalone"
   if id and type(ns.settings) == "table" then ns.settings.lastItem = id end
-  -- Showing the chart while the auction house is open (Chart button, /fah chart)
+  -- Showing the chart while the auction house is open (Chart button, /gl chart)
   -- turns the AH chart back on, so it follows searches again.
   if type(ns.AH_IsOpen) == "function" and ns.AH_IsOpen() and type(ns.settings) == "table" then
     ns.settings.chart = true

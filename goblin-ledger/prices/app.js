@@ -1685,9 +1685,9 @@ async function jget(url) {
      high = market value, the mean of the cheapest ~15% of listed units (what
             it resells for; under 10 units listed, the second cheapest unit), and
             volumes are ESTIMATED units sold (see wowScaleSales).
-   Local preview reads /wow/_localdata unless ?live=1 is in the URL. */
+   Local preview reads /goblin-ledger/prices/_localdata unless ?live=1 is in the URL. */
 const WOW_DATA = (/^(localhost|127\.0\.0\.1)$/.test(location.hostname) && !/[?&]live=1/.test(location.search))
-  ? '/wow/_localdata'
+  ? '/goblin-ledger/prices/_localdata'
   : 'https://raw.githubusercontent.com/grant9008/grantdenney.com/wow-data';
 const loadMapping = () => jget(WOW_DATA + "/mapping.json");
 const loadLatest = () => jget(WOW_DATA + "/latest.json");
@@ -2940,10 +2940,10 @@ async function buildShareCardCanvas() {
   g.beginPath(); g.moveTo(48, H - 78); g.lineTo(W - 48, H - 78); g.stroke();
   g.fillStyle = '#E5B842';
   g.font = '800 20px -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
-  g.fillText('Forever AH', 48, H - 44);
+  g.fillText('Goblin Ledger', 48, H - 44);
   g.fillStyle = '#8A8274';
   g.font = '600 16px -apple-system, BlinkMacSystemFont, Roboto, sans-serif';
-  g.fillText('WoW Forever Alliance PvP auction house · grantdenney.com/wow', 48, H - 22);
+  g.fillText('WoW Forever Alliance PvP auction house - grantdenney.com/goblin-ledger/prices', 48, H - 22);
   if (lastLiveFetchAt) {
     const stamp = new Date(lastLiveFetchAt * 1000).toLocaleString(undefined, {
       month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
@@ -3023,15 +3023,15 @@ function buildShareText() {
   /* Link lives inside the text rather than navigator.share's separate url
      field — targets that only read one of the two still get both. */
   lines.push('');
-  lines.push(`Live prices & chart → https://grantdenney.com/wow/?q=${encodeURIComponent(selected.name)}`);
+  lines.push(`Live prices & chart: https://grantdenney.com/goblin-ledger/prices/?q=${encodeURIComponent(selected.name)}`);
   return lines.join('\n');
 }
 
 function shareItemUrl() {
-  return `https://grantdenney.com/wow/?q=${encodeURIComponent(selected ? selected.name : '')}`;
+  return `https://grantdenney.com/goblin-ledger/prices/?q=${encodeURIComponent(selected ? selected.name : '')}`;
 }
 function shareFileName() {
-  return `forever-ah-${(selected ? selected.name : 'item').replace(/[^a-z0-9]+/gi, '-')}.png`;
+  return `goblin-ledger-${(selected ? selected.name : 'item').replace(/[^a-z0-9]+/gi, '-')}.png`;
 }
 
 /* ── Our own share sheet ─────────────────────────────────────────────────
@@ -3053,7 +3053,7 @@ function shareCanUseNativeFiles(file) {
 }
 
 async function shareNativeWith(file) {
-  await navigator.share({ files: [file], title: selected.name + ' · Forever AH', text: buildShareText() });
+  await navigator.share({ files: [file], title: selected.name + ' | Goblin Ledger', text: buildShareText() });
 }
 
 async function copyImageToClipboard() {
@@ -3135,7 +3135,7 @@ function shareActions() {
     { key: 'reddit', icon: 'reddit', label: 'Reddit', sub: 'Card becomes the post',
       run: async () => shareHandoff('Reddit',
         'https://www.reddit.com/submit?title='
-          + encodeURIComponent(`${selected.name} — ${shareCardGaugeInfo()?.text || 'WoW Forever flip'} on Forever AH`),
+          + encodeURIComponent(`${selected.name}: ${shareCardGaugeInfo()?.text || 'WoW Forever flip'} on Goblin Ledger`),
         'Paste it into the post with <kbd>Ctrl</kbd>/<kbd>Cmd</kbd>+<kbd>V</kbd> — or use Reddit\'s <b>Images</b> tab.',
         'drag the PNG into the Reddit post') },
     /* X does take prefilled body text, so the caption and link land on their
@@ -3825,15 +3825,15 @@ function countFavoriteBreakouts() {
    PocketGE". isHomepageDefault is true while showing the boot default
    landing (not an explicit item navigation), which keeps the crawler-
    visible title/meta/canonical brand-focused instead of itemising "/". */
-const BRAND_TITLE = 'Forever AH · Alliance PvP Auction House Prices';
+const BRAND_TITLE = 'Goblin Ledger | Alliance PvP Auction House Prices';
 let isHomepageDefault = false;
 /* SERP title, keyword-first ("<Item> Price OSRS") with the live gp figure
    once prices land — numbers in titles measurably lift click-through and
    signal freshness. Googlebot renders JS, so it indexes the gp variant. */
 function itemSeoTitle() {
   if (!selected) return BRAND_TITLE;
-  const gp = (typeof liveSellRaw === 'number' && liveSellRaw > 0) ? `${fmtGp(liveSellRaw)} · ` : '';
-  return `${selected.name} · ${gp}Forever AH`;
+  const gp = (typeof liveSellRaw === 'number' && liveSellRaw > 0) ? `${fmtGp(liveSellRaw)} | ` : '';
+  return `${selected.name} | ${gp}Goblin Ledger`;
 }
 function applyTitleBadge() {
   const base = isHomepageDefault ? BRAND_TITLE : itemSeoTitle();
@@ -3852,10 +3852,10 @@ function restoreBrandMeta() {
   setMetaTag('description', desc);
   setMetaTag('og:title', BRAND_TITLE, true);
   setMetaTag('og:description', desc, true);
-  setMetaTag('og:url', 'https://grantdenney.com/wow/', true);
+  setMetaTag('og:url', 'https://grantdenney.com/goblin-ledger/prices/', true);
   setMetaTag('twitter:title', BRAND_TITLE);
   setMetaTag('twitter:description', desc);
-  setCanonicalLink('https://grantdenney.com/wow/');
+  setCanonicalLink('https://grantdenney.com/goblin-ledger/prices/');
   removeItemJsonLd();
   clearItemSeo();
 }
@@ -4377,7 +4377,7 @@ function clearItemSeo() {
   const host = document.getElementById('itemSeo');
   const h1 = document.getElementById('seoH1');
   if (host) host.hidden = true;
-  if (h1) h1.textContent = 'Forever AH: WoW Forever Alliance PvP auction house prices';
+  if (h1) h1.textContent = 'Goblin Ledger: WoW Forever Alliance PvP auction house prices';
 }
 
 /* Per-item structured data, swapped in place on every item change: ItemPage +
@@ -8837,7 +8837,7 @@ function sendTestNotification() {
     return;
   }
   try {
-    const n = new Notification('🔔 Forever AH test alert', {
+    const n = new Notification('Goblin Ledger test alert', {
       body: 'If you can see this, browser notifications are working. Real alerts fire when a favorite breaks above/below its 24H or 5D extreme, or when a Bank stack crosses its ±% threshold.',
       icon: itemIconUrl(selected?.id || 12389),
       tag: 'pocketge-test'
@@ -10659,7 +10659,7 @@ async function setItem(m, opts = {}) {
            a virtual URL is the documented GA4 SPA pattern. */
         const virtualUrl = `https://pocketge.com/item/${slug}`;
         gtag('event', 'page_view', {
-          page_title: `${m.name} · Forever AH`,
+          page_title: `${m.name} | Goblin Ledger`,
           page_location: virtualUrl,
           page_path: `/item/${slug}`,
           item_id: String(m.id),
@@ -12025,6 +12025,6 @@ let chartCommitH = null;     // persist whatever height it is at now
    works fine without it. */
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => {
-    /* no service worker on grantdenney.com/wow */
+    /* no service worker on grantdenney.com/goblin-ledger/prices */
   });
 }

@@ -1,12 +1,12 @@
 local ADDON_NAME, ns = ...
--- Forever AH: core. Price data access, money text, settings, slash commands
+-- Goblin Ledger: core. Price data access, money text, settings, slash commands
 -- and the item tooltip lines.
 --
 -- Price data comes from Data.lua (ForeverAH_Data), which the Windows updater
 -- refreshes. Each item is one packed string. Nothing is unpacked at login:
 -- an item is read the first time something asks for it, then cached.
 
-ADDON_NAME = ADDON_NAME or "ForeverAH"
+ADDON_NAME = ADDON_NAME or "GoblinLedger"
 ns = ns or {}
 
 local _G = _G
@@ -883,7 +883,7 @@ end
 -- Chat output
 ---------------------------------------------------------------------------
 function ns.Print(msg)
-  local line = "|c" .. ns.Hex(ns.COLORS.sell) .. "Forever AH:|r " .. tostring(msg)
+  local line = "|c" .. ns.Hex(ns.COLORS.sell) .. "Goblin Ledger:|r " .. tostring(msg)
   local cf = _G.DEFAULT_CHAT_FRAME
   if type(cf) == "table" and type(cf.AddMessage) == "function" then
     cf:AddMessage(line)
@@ -1257,7 +1257,7 @@ end
 ns.AverageLabel = averageLabel
 
 -- Adds our lines. Returns true when anything was added. Kept short:
---   the "Forever AH" header (how old the prices are), then the sell verdict
+--   the "Goblin Ledger" header (how old the prices are), then the sell verdict
 --   (ns.SellVerdict: "Auction it", "Vendor it", "Close call" or "Maybe
 --   auction", and by how much), AH value (today's market value) and how far
 --   it is from the average, the 7-day average, Sell now and Suggested price
@@ -1287,7 +1287,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local item = ns.GetItem(itemID)
   if not item then
     if opts.noData == false then return false end
-    tt:AddLine("Forever AH: no recent listings", mu[1], mu[2], mu[3])
+    tt:AddLine("Goblin Ledger: no recent listings", mu[1], mu[2], mu[3])
     return true
   end
   count = floor(tonumber(count) or 1)
@@ -1336,7 +1336,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
       tt:AddLine(line, tx[1], tx[2], tx[3])
     end
   else
-    tt:AddDoubleLine("Forever AH", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
+    tt:AddDoubleLine("Goblin Ledger", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
     if V then
       local lc, rc = C[V.lc], C[V.rc]
       tt:AddDoubleLine(V.left, V.right, lc[1], lc[2], lc[3], rc[1], rc[2], rc[3])
@@ -1380,7 +1380,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     tt:AddLine("Price covers all versions of this item", mu[1], mu[2], mu[3])
   end
   if age > ns.STALE_SECONDS then
-    tt:AddLine(sformat("Prices are %dh old: run Update-WoW-Prices.bat, then /reload", floor(age / 3600)), mu[1], mu[2], mu[3])
+    tt:AddLine(sformat("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload", floor(age / 3600)), mu[1], mu[2], mu[3])
   end
   -- Last: every line after the verdict exists now (see enlargeLine).
   if vline then enlargeLine(tt, vline, C[V.lc], C[V.rc]) end
@@ -1541,7 +1541,7 @@ end
 
 local function printNoData()
   P("there is no price data yet.")
-  P("Double-click Update-WoW-Prices.bat (it downloads the latest prices from grantdenney.com/wow into this addon), then type /reload here.")
+  P("Run Install-Goblin-Ledger.bat again (it downloads the latest prices from grantdenney.com/goblin-ledger/prices into this addon), then type /reload here.")
 end
 
 local function printStatus()
@@ -1565,7 +1565,7 @@ local function printStatus()
     P(sformat("%s versions of gear (like \"of the Bear\") have their own prices.", ns.Num(versions)))
   end
   if age > ns.STALE_SECONDS then
-    P(sformat("Prices are %dh old: run Update-WoW-Prices.bat, then /reload.", floor(age / 3600)))
+    P(sformat("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload.", floor(age / 3600)))
   end
   local faction = playerFaction()
   if faction and faction ~= "Alliance" then
@@ -1574,18 +1574,18 @@ local function printStatus()
   if isHardcore() then
     P("Note: these prices are from the normal realms, not Hardcore.")
   end
-  P("Type /fah help for commands.")
+  P("Type /gl help for commands.")
 end
 
 local function printHelp()
   P("commands:")
-  P("/fah : show how fresh the price data is")
-  P("/fah chart : show or hide the price chart")
-  P("/fah chart Linen Cloth : open the chart for an item (you can also shift-click an item into the chat box)")
-  P("/fah chart reset : put the chart back in its normal place after you dragged it")
-  P("/fah tooltip : turn the prices in item tooltips on or off")
-  P("/fah compact : switch tooltips between full and one-line")
-  P("/fah help : show this list")
+  P("/gl : show how fresh the price data is")
+  P("/gl chart : show or hide the price chart")
+  P("/gl chart Linen Cloth : open the chart for an item (you can also shift-click an item into the chat box)")
+  P("/gl chart reset : put the chart back in its normal place after you dragged it")
+  P("/gl tooltip : turn the prices in item tooltips on or off")
+  P("/gl compact : switch tooltips between full and one-line")
+  P("/gl help : show this list")
 end
 
 local function chartCommand(rest)
@@ -1638,14 +1638,18 @@ function ns.HandleSlash(msg)
   elseif cmd == "help" or cmd == "?" then
     printHelp()
   else
-    P("unknown command. Type /fah help for the list.")
+    P("unknown command. Type /gl help for the list.")
   end
 end
 
 if type(_G.SlashCmdList) == "table" then
-  _G.SLASH_FOREVERAH1 = "/fah"
-  _G.SLASH_FOREVERAH2 = "/foreverah"
-  _G.SlashCmdList["FOREVERAH"] = function(msg) ns.HandleSlash(msg) end
+  -- /gl is the command players are told about. /fah and /foreverah are the
+  -- names from before the rename (the addon was called Forever AH) and keep working.
+  _G.SLASH_GOBLINLEDGER1 = "/gl"
+  _G.SLASH_GOBLINLEDGER2 = "/goblinledger"
+  _G.SLASH_GOBLINLEDGER3 = "/fah"
+  _G.SLASH_GOBLINLEDGER4 = "/foreverah"
+  _G.SlashCmdList["GOBLINLEDGER"] = function(msg) ns.HandleSlash(msg) end
 end
 
 ---------------------------------------------------------------------------
@@ -1667,7 +1671,7 @@ if type(_G.CreateFrame) == "function" then
         if not ns.settingsLoaded then loadSettings() end
         pcall(installTooltipHooks)   -- picks up tooltips created after us
         if (tonumber(db.updated) or 0) <= 0 then
-          P("no price data yet. Type /fah to see how to get it.")
+          P("no price data yet. Type /gl to see how to get it.")
         end
       end
     end)

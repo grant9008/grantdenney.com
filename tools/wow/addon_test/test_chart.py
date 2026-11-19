@@ -1,4 +1,4 @@
-"""Offline tests for the ForeverAH chart panel (Chart.lua) and auction house
+"""Offline tests for the Goblin Ledger chart panel (Chart.lua) and auction house
 integration (AH.lua).
 
 Runs the real addon files inside Lua 5.1 (lupa) against a small mock of the
@@ -15,8 +15,8 @@ from lupa import lua51
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-ADDON = os.path.join(ROOT, "wow-addon", "ForeverAH")
-LOCAL_DATA = os.path.join(ROOT, "wow", "_localdata", "ForeverAH_Data.lua")
+ADDON = os.path.join(ROOT, "wow-addon", "GoblinLedger")
+LOCAL_DATA = os.path.join(ROOT, "goblin-ledger", "prices", "_localdata", "ForeverAH_Data.lua")
 
 # ---------------------------------------------------------------------------
 # Mock WoW API (Lua)
@@ -270,7 +270,7 @@ C_AuctionHouse = {
 function M.LoadSource(src, name, ns)
   local chunk, err = loadstring(src, "@" .. name)
   if not chunk then error(err) end
-  chunk("ForeverAH", ns)
+  chunk("GoblinLedger", ns)
 end
 
 function M.RunScenario(code)
@@ -886,7 +886,7 @@ ns.ShowChart(nil, "slash")
 check(C.lastError == nil, "no error")
 check(ForeverAHChartFrame:IsShown(), "shown")
 check((C.msg:GetText() or ""):find("Search for an item", 1, true), "hint: " .. tostring(C.msg:GetText()))
-check(C.name:GetText() == "Forever AH", "neutral header")
+check(C.name:GetText() == "Goblin Ledger", "neutral header")
 '''
 
 NOLINES_TEST = r'''
@@ -908,7 +908,7 @@ local C = ns.ChartPanel
 section("chart: no data at all")
 ns.ShowChart(2589, "slash")
 check(C.lastError == nil, "no error")
-check((C.msg:GetText() or ""):find("Update-WoW-Prices.bat", 1, true), "tells the user what to run: " .. tostring(C.msg:GetText()))
+check((C.msg:GetText() or ""):find("Install-Goblin-Ledger.bat", 1, true), "tells the user what to run: " .. tostring(C.msg:GetText()))
 check(C.age:GetText() == "Data: none yet", "age says none")
 for _, tf in ipairs({ "1D", "5D", "1W", "1M", "1Y" }) do ns.SetChartTF(tf); check(C.lastError == nil, "no error " .. tf) end
 check(C.pools.dot.used == 0, "nothing drawn")
@@ -1265,7 +1265,7 @@ check(C.lastError == nil, "no draw errors")
 INTEGRATION_TEST = r'''
 local ns, M = TESTNS, MOCK
 section("integration: real Core.lua + Recommend.lua")
-M.Fire("ADDON_LOADED", "ForeverAH")
+M.Fire("ADDON_LOADED", "GoblinLedger")
 M.Fire("PLAYER_LOGIN")
 check(type(ns.GetItem) == "function" and type(ns.Recommend) == "function", "contract API present")
 local item = ns.GetItem(2589)

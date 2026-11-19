@@ -1,5 +1,5 @@
 """
-Tests for the Forever AH addon's Core.lua and Recommend.lua.
+Tests for the Goblin Ledger addon's Core.lua and Recommend.lua.
 
 Runs the real addon files in Lua 5.1 (the same Lua as WoW) through the
 python package lupa, with the WoW functions they use replaced by small fakes.
@@ -21,8 +21,8 @@ import rec_model  # noqa: E402
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-ADDON = os.path.join(REPO, "wow-addon", "ForeverAH")
-LOCALDATA = os.path.join(REPO, "wow", "_localdata")
+ADDON = os.path.join(REPO, "wow-addon", "GoblinLedger")
+LOCALDATA = os.path.join(REPO, "goblin-ledger", "prices", "_localdata")
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -259,7 +259,7 @@ function WRAP(f) return function(...) return f(...) end end
 function LOAD(src, name)
   local f, e = loadstring(src, "@" .. name)
   if not f then error(e) end
-  return f("ForeverAH", NS)
+  return f("GoblinLedger", NS)
 end
 """
 
@@ -416,22 +416,24 @@ def test_recommend_rules():
 # ---------------------------------------------------------------------------
 def test_files():
     print("files")
-    want_toc = ("## Interface: 16001\r\n## Title: Forever AH\r\n"
-                "## Notes: Auction house prices, charts and price advice from grantdenney.com/wow\r\n"
+    want_toc = ("## Interface: 16001\r\n## Title: Goblin Ledger\r\n"
+                "## Notes: Auction house prices, charts and price advice. Price data from Blizzard Entertainment.\r\n"
+                "## X-Credits: Price data from Blizzard Entertainment\r\n"
+                "## X-Website: https://grantdenney.com/goblin-ledger/\r\n"
                 "## SavedVariables: ForeverAH_Settings\r\n## Version: 1.0.0\r\n"
                 "Data.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\n")
     # Git may check these out with either line ending; WoW reads both.
     def text(name):
         with open(os.path.join(ADDON, name), "rb") as fh:
             return fh.read().decode("ascii").replace("\r\n", "\n")
-    for name in ("ForeverAH.toc", "ForeverAH_Forever.toc"):
+    for name in ("GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         eq(text(name), want_toc.replace("\r\n", "\n"), name + " content")
     if True:
         eq(text("Data.lua"),
-           "-- ForeverAH price data placeholder. Run Update-WoW-Prices.bat.\n"
+           "-- Goblin Ledger price data placeholder. Run Install-Goblin-Ledger.bat.\n"
            "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }",
            "Data.lua placeholder")
-    for name in ("Core.lua", "Recommend.lua", "Data.lua", "ForeverAH.toc", "ForeverAH_Forever.toc"):
+    for name in ("Core.lua", "Recommend.lua", "Data.lua", "GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         with open(os.path.join(ADDON, name), "rb") as fh:
             raw = fh.read()
         check(b"\xe2\x80\x94" not in raw and b"\xe2\x80\x93" not in raw, name + " has no long dashes")
@@ -627,7 +629,7 @@ def test_tooltip(G, ns):
     # against a vendor's 13c x 100 = 1,300, 3.4x. This stack of 20 at that price after
     # the 5% cut: 47c x 20 x 95 / 100 = 8s 93c, in white.
     up2 = vs("+2%", POS)
-    eq(got, [("Forever AH", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
+    eq(got, [("Goblin Ledger", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
              ("7-day average", "46c"), ("Sell now", "44c"), ("Suggested price", "52c"),
              ("This stack (20), after AH cut", "8s 93c")], "full tooltip, known item")
     sp = rec_model.sell_prices(py_recommend(ns, 2589, "1D"), None, False, 13)
@@ -644,7 +646,7 @@ def test_tooltip(G, ns):
 
     M.shift = True
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    eq(got, [("Forever AH", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
+    eq(got, [("Goblin Ledger", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
              ("7-day average (x20)", "9s 20c"), ("Sell now (x20)", "8s 80c"), ("Suggested price (x20)", "10s 40c"),
              ("This stack (20), after AH cut", "8s 93c")], "Shift shows stack values (the verdict and stack line stay)")
     got = lines_of(M.ShowItem(tt, 2589, None))
@@ -652,7 +654,7 @@ def test_tooltip(G, ns):
     M.shift = False
 
     got = lines_of(M.ShowItem(tt, 99999, None))
-    eq(got, [("Forever AH: no recent listings",)], "unknown item: one muted line")
+    eq(got, [("Goblin Ledger: no recent listings",)], "unknown item: one muted line")
     eq(round(tt.lines[1].r, 2), 0.55, "unknown item line is muted")
 
     # no-data line only for items that could be on the auction house
@@ -667,7 +669,7 @@ def test_tooltip(G, ns):
     eq(lines_of(M.ShowItem(tt, 6948, None)), [], "bind-on-pickup item (Hearthstone): no line")
     eq(lines_of(M.ShowItem(tt, 5000, None)), [], "quest item: no line")
     eq(lines_of(M.ShowItem(G.ShoppingTooltip1, 99998, None)), [], "comparison tooltip: no no-data line")
-    eq(lines_of(M.ShowItem(tt, 99998, None)), [("Forever AH: no recent listings",)], "tradeable item: no-data line kept")
+    eq(lines_of(M.ShowItem(tt, 99998, None)), [("Goblin Ledger: no recent listings",)], "tradeable item: no-data line kept")
     fn = M.postcalls[G.Enum.TooltipDataType.Item]
     tt.Clear(tt)
     fn(tt, G.loadstring("return { id = 99997, guid = 'bound' }")())
@@ -687,7 +689,7 @@ def test_tooltip(G, ns):
     eq(ns.LinkHasSuffix("item:9789:0:0:0:0:0:0:0"), False, "zero suffix id")
 
     got = lines_of(M.ShowItem(tt, 99001, None))
-    eq(got, [("Forever AH", "2h ago"), ("AH value", "none listed")],
+    eq(got, [("Goblin Ledger", "2h ago"), ("AH value", "none listed")],
        "item with nothing listed: no prices (the game's own line says what a vendor pays)")
 
     got = lines_of(M.ShowItem(tt, 13468, None))
@@ -705,8 +707,8 @@ def test_tooltip(G, ns):
 
     M.now = UPDATED + 7 * 3600 + 5
     got = lines_of(M.ShowItem(tt, 2589, None))
-    eq(got[0], ("Forever AH", "7h ago"), "stale header age")
-    eq(got[-1], ("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "stale warning line")
+    eq(got[0], ("Goblin Ledger", "7h ago"), "stale header age")
+    eq(got[-1], ("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "stale warning line")
     M.now = UPDATED + 2 * 3600 + 100
 
     eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 6, "comparison tooltip gets lines")
@@ -731,22 +733,23 @@ def test_settings_and_slash(G, ns):
     M.FireEvent("ADDON_LOADED", "SomeOtherAddon")
     eq(ns.settingsLoaded, False, "other addon's ADDON_LOADED ignored")
     old = ns.settings
-    M.FireEvent("ADDON_LOADED", "ForeverAH")
+    M.FireEvent("ADDON_LOADED", "GoblinLedger")
     check(G.rawequal(ns.settings, old), "ns.settings table stays the same table")
     check(G.rawequal(G.ForeverAH_Settings, ns.settings), "ForeverAH_Settings is ns.settings")
     eq((ns.settings.compact, ns.settings.chartTF, ns.settings.tooltip, ns.settings.chart, ns.settings.extra),
        (True, "1D", True, True, 5), "saved values merged and fixed")
     ns.settings.compact = False
 
-    slash = G.SlashCmdList["FOREVERAH"]
-    eq((G.SLASH_FOREVERAH1, G.SLASH_FOREVERAH2), ("/fah", "/foreverah"), "slash names")
+    slash = G.SlashCmdList["GOBLINLEDGER"]
+    eq((G.SLASH_GOBLINLEDGER1, G.SLASH_GOBLINLEDGER2, G.SLASH_GOBLINLEDGER3, G.SLASH_GOBLINLEDGER4),
+       ("/gl", "/goblinledger", "/fah", "/foreverah"), "slash names (/fah and /foreverah from before the rename)")
 
     n = len(M.prints)
     slash("")
     out = prints_since(G, n)
     check(any("prices for 6 items from the Alliance Auction House (US, PvP), updated 2h ago" in p for p in out),
-          "/fah status line", out)
-    check(any("/fah help" in p for p in out), "/fah points at help")
+          "/gl status line", out)
+    check(any("/gl help" in p for p in out), "/gl points at help")
 
     n = len(M.prints)
     M.faction = "Horde"
@@ -764,24 +767,24 @@ def test_settings_and_slash(G, ns):
     slash("CHART [Runecloth]")
     slash("chart " + ICE_NAME.upper())
     eq(shown, [(2589, "slash"), (13468, "slash"), (14047, "slash"), (14047, "slash"), (7228, "slash")],
-       "/fah chart <item> opens the chart")
+       "/gl chart <item> opens the chart")
     n = len(M.prints)
     slash("chart Nonexistent Thing")
     check(any("no price data for Nonexistent Thing" in p for p in prints_since(G, n)), "unknown chart item message")
     slash("chart")
-    eq(len(toggles), 1, "/fah chart toggles")
+    eq(len(toggles), 1, "/gl chart toggles")
 
     slash("tooltip")
-    eq(ns.settings.tooltip, False, "/fah tooltip turns off")
+    eq(ns.settings.tooltip, False, "/gl tooltip turns off")
     slash("tooltip")
-    eq(ns.settings.tooltip, True, "/fah tooltip turns on")
+    eq(ns.settings.tooltip, True, "/gl tooltip turns on")
     slash("compact")
-    eq(ns.settings.compact, True, "/fah compact on")
+    eq(ns.settings.compact, True, "/gl compact on")
     slash("compact")
-    eq(ns.settings.compact, False, "/fah compact off")
+    eq(ns.settings.compact, False, "/gl compact off")
     n = len(M.prints)
     slash("help")
-    check(any("/fah chart Linen Cloth" in p for p in prints_since(G, n)), "/fah help lists commands")
+    check(any("/gl chart Linen Cloth" in p for p in prints_since(G, n)), "/gl help lists commands")
     n = len(M.prints)
     slash("wibble")
     check(any("unknown command" in p for p in prints_since(G, n)), "unknown command message")
@@ -806,17 +809,17 @@ def test_placeholder():
     eq(ns.FindItemID("Linen Cloth"), None, "FindItemID nil")
     eq(ns.Recommend(2589, "1D"), None, "Recommend nil")
     eq(len(M.ShowItem(G.GameTooltip, 2589, None)), 0, "no tooltip lines without data")
-    M.FireEvent("ADDON_LOADED", "ForeverAH")
+    M.FireEvent("ADDON_LOADED", "GoblinLedger")
     n = len(M.prints)
     M.FireEvent("PLAYER_LOGIN")
     check(any("no price data yet" in p for p in prints_since(G, n)), "login notice without data")
     n = len(M.prints)
-    G.SlashCmdList["FOREVERAH"]("")
+    G.SlashCmdList["GOBLINLEDGER"]("")
     out = prints_since(G, n)
-    check(any("Update-WoW-Prices.bat" in p and "/reload" in p for p in out), "/fah explains how to get data", out)
+    check(any("Install-Goblin-Ledger.bat" in p and "/reload" in p for p in out), "/gl explains how to get data", out)
     shown = []
     G.NS.ShowChart = G.WRAP(lambda iid, src: shown.append(iid))
-    G.SlashCmdList["FOREVERAH"]("chart Linen Cloth")
+    G.SlashCmdList["GOBLINLEDGER"]("chart Linen Cloth")
     eq(shown, [], "no chart without data")
 
 
@@ -832,7 +835,7 @@ def test_fallback_hooks():
     tt = G.GameTooltip
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(lines_of(tt.lines)[:3], [("Forever AH", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%", POS))],
+    eq(lines_of(tt.lines)[:3], [("Goblin Ledger", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%", POS))],
        "fallback adds lines")
     eq(tt.shown, 1, "fallback resizes the tooltip with Show")
     tt.Fire(tt, "OnTooltipSetItem")
@@ -845,7 +848,7 @@ def test_fallback_hooks():
         return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 15, 0, 1 end }""")()
     tt.Clear(tt)
     tt.Fire(tt, "OnTooltipSetItem")
-    eq([ln[0] for ln in lines_of(tt.lines)], ["Forever AH", "AH value", "7-day average", "Sell now", "Suggested price"],
+    eq([ln[0] for ln in lines_of(tt.lines)], ["Goblin Ledger", "AH value", "7-day average", "Sell now", "Suggested price"],
        "fallback: a bound item gets no verdict")
     G.C_Item = None
     eq(ns.lastError, None, "no fallback errors")
@@ -889,7 +892,7 @@ def test_quest_item_hook():
         got = show(2589)
         check(len(got) > 1 and all("Find the Gems" not in (ln[0] or "") for ln in got), mode + ": a priced item gets its prices only")
         eq(G.QCALLS, 1, mode + ": not asked for a priced item")
-        eq(show(99998), [("Forever AH: no recent listings",)], mode + ": an unpriced item the hook has nothing for")
+        eq(show(99998), [("Goblin Ledger: no recent listings",)], mode + ": an unpriced item the hook has nothing for")
         eq(G.QCALLS, 2, mode + ": asked for an unpriced item")
         G.C_Item = None
         eq(ns.lastError, None, mode + ": no tooltip errors")
@@ -899,7 +902,7 @@ def test_bare_environment():
     print("bare environment (most WoW functions missing)")
     L = lua51.LuaRuntime(unpack_returned_tuples=True)
     L.execute("NS = {}; function LOAD(src, name) local f, e = loadstring(src, '@' .. name); "
-              "if not f then error(e) end; return f('ForeverAH', NS) end")
+              "if not f then error(e) end; return f('GoblinLedger', NS) end")
     G = L.globals()
     try:
         G.LOAD(fixture_lua(), "Data.lua")
@@ -924,7 +927,7 @@ def test_localdata():
     if not os.path.exists(path):
         print("simulated local data: not found, skipped")
         return
-    print("simulated local data (wow/_localdata, simulated, not real)")
+    print("simulated local data (goblin-ledger/prices/_localdata, simulated, not real)")
     L, G, ns = new_env(read(path))
     db = ns.db
     hour_end, day_end = int(db.hourEnd), int(db.dayEnd)
@@ -1782,7 +1785,7 @@ def tc(G, tt, iid, want, big, label, count=1, shift=False):
 
 
 def H(age="1m ago"):
-    return (("Forever AH", age), "sell", "muted")
+    return (("Goblin Ledger", age), "sell", "muted")
 
 
 def AHV(money, pct=None, colour=MUTED, tag=""):
@@ -1910,7 +1913,7 @@ def test_verdict_tooltips():
     tc(G, tt, 9505, [H(), AHV("1c", "0%"), ROW("5-day average", "1c"), ROW("Suggested price", "1c")], False,
        "TC28 Junk: 1 copper, no verdict")
     tc(G, tt, 99001, [H(), ROW("AH value", "none listed", "muted")], False, "TC28 nothing listed, no history")
-    tc(G, tt, 99999, [(("Forever AH: no recent listings",), "muted", None)], False, "TC28 not in the data")
+    tc(G, tt, 99999, [(("Goblin Ledger: no recent listings",), "muted", None)], False, "TC28 not in the data")
     eq((ns.lastError, G.MOCK.lineSetFont), (None, None), "no tooltip errors, no SetFont on a line")
 
 
@@ -1960,7 +1963,7 @@ def test_verdict_cases():
     # TC22 prices 7h old: the verdict at the normal size, the stale line last
     L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
     tc(G2, G2.GameTooltip, 4306, [H("7h ago")] + SILK_LINES[1:] +
-       [(("Prices are 7h old: run Update-WoW-Prices.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
+       [(("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
     # exactly 6h old (ns.STALE_SECONDS) is still fresh: bigger, no stale line
     L2, G2, ns2 = font_env(now_offset=6 * 3600)
     tc(G2, G2.GameTooltip, 4306, [H("6h ago")] + SILK_LINES[1:], True, "TC22 Silk exactly 6h old")
@@ -2052,7 +2055,7 @@ def test_verdict_fonts():
     G2.MOCK.ShowGameItem(tt2, 4306, None, blz)
     tt2.AddLine(tt2, " ")
     tt2.AddDoubleLine(tt2, "ID: 4306", "Bags: 30")
-    eq([tt2.lines[i].left for i in range(9, 17)], ["Forever AH", "Auction it", "AH value", "2-day average", "Sell now",
+    eq([tt2.lines[i].left for i in range(9, 17)], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now",
                                                    "Suggested price", " ", "ID: 4306"], "TC25 lines 9 to 16")
     eq(big_lines(G2, tt2), [(10, "TextLeft", "ForeverAHBigFont1", 15), (10, "TextRight", "ForeverAHBigFont1", 15)],
        "TC25: only line 10 is bigger")
@@ -2156,7 +2159,7 @@ def test_chart_line_setting():
         L, G, ns = new_env(fixture_lua())
         src = "return { chartLine = %s }" % (lua_str(saved) if isinstance(saved, str) else ("nil" if saved is None else saved))
         G.ForeverAH_Settings = G.loadstring(src)()
-        G.MOCK.FireEvent("ADDON_LOADED", "ForeverAH")
+        G.MOCK.FireEvent("ADDON_LOADED", "GoblinLedger")
         eq(ns.settings.chartLine, want, "saved chartLine %r" % (saved,))
 
 

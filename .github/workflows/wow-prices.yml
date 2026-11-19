@@ -2,9 +2,10 @@ name: WoW Forever prices
 
 # Blizzard's auction API shows what is listed right now and keeps no history,
 # so this snapshots the Alliance auction house (PvP ruleset) and keeps the
-# history itself. Output goes to the separate `wow-data` branch, which
-# grantdenney.com/wow reads through raw.githubusercontent.com. Keeping it off
-# `main` means the updates never rebuild the site.
+# history itself. Output goes to the separate `wow-data` branch, which the
+# Goblin Ledger price site (grantdenney.com/goblin-ledger/prices) reads
+# through raw.githubusercontent.com. Keeping it off `main` means the updates
+# never rebuild the site.
 #
 # Blizzard refreshes the data about once an hour. GitHub often drops or delays
 # scheduled runs, so this checks 4 times an hour. A check where Blizzard has

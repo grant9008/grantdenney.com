@@ -15,8 +15,11 @@ tools/_wf.json
 # the game build is committed on purpose (it is what gets served);
 # its source lives in C:\Users\gdenn\ebike-speedrunner
 
-# WoW price page: local test data (simulated); real data lives on the wow-data branch
-wow/_localdata/
+# Goblin Ledger price page: local test data (simulated); real data lives on the wow-data branch
+goblin-ledger/prices/_localdata/
+
+# Goblin Ledger friend release zip (tools/goblin-ledger/make_release.ps1)
+dist/
 
 
 # Python bytecode from the WoW tools and tests

@@ -5,6 +5,8 @@
 #wowDataStatus { font-weight: 700; }
 #wowDataStatus.stale { color: var(--negative, #e05555); }
 #wowHistoryStatus[hidden] { display: none; }
+/* The name is two words: keep "Goblin Ledger" on one line next to the logo. */
+.brand-logo .brand-word { white-space: nowrap; }
 /* WoW prices carry unit letters ("16s 82c"), so keep each one on one line. */
 .wl-item-price, .ins-val, .ins-price, .fc-pval, .live-val, .pv-num, #tickerLivePrice, .res-profit { white-space: nowrap; }
 /* Thin listings: a small muted chip when only 1 or 2 auctions sit behind a price. */
