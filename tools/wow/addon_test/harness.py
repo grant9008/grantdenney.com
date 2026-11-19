@@ -51,7 +51,8 @@ ITEMS_FILE = SIM_ITEMS_FILE
 SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in goblin-ledger/prices/_localdata
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
-TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua"]
+TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua",
+             "Consumes.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -1833,6 +1834,20 @@ function C_Item.GetItemSpell(id)
   return nil
 end
 GetItemSpell = C_Item.GetItemSpell
+-- How many of an item the bags hold (0-4), the bank's too (-1, 5-11) with includeBank.
+function C_Item.GetItemCount(v, includeBank)
+  local id = idOf(v)
+  local n = 0
+  for bag, slots in pairs(M.bags) do
+    if type(bag) == "number" and ((bag >= 0 and bag <= 4) or (includeBank and (bag == -1 or bag >= 5))) then
+      for _, s in pairs(slots) do
+        if type(s) == "table" and s.itemID == id then n = n + (s.count or 1) end
+      end
+    end
+  end
+  return n
+end
+GetItemCount = C_Item.GetItemCount
 
 C_Container = {}
 function C_Container.GetContainerItemInfo(bag, slot)
@@ -2338,6 +2353,17 @@ function M.InstallElvUIAddon(o)
   ElvUI = { E, {}, {}, {}, {} }
   E.private = { skins = { checkBoxSkin = true, blizzard = { enable = true, character = o.characterSkin ~= false } } }
   M.elvChecks, M.elvEarly = {}, 0
+  -- ElvUI's toolkit puts SetTemplate on every frame (its media colours come at login: before
+  -- that it stops with an error). M.elvTemplates lists the frames it was called on.
+  M.elvTemplates, M.elvReady = {}, false
+  function Frame:SetTemplate(t)
+    if not M.elvReady then error("attempt to index field 'backdropcolor' (a nil value)") end
+    self._template = t or "Default"
+    M.elvTemplates[#M.elvTemplates + 1] = self
+  end
+  local media = CreateFrame("Frame")
+  media:RegisterEvent("PLAYER_LOGIN")
+  media:SetScript("OnEvent", function(self) self:UnregisterAllEvents(); M.elvReady = true end)
   if not o.noSkins then
     local S = { db = E.private.skins }   -- E:SetupDB, when ElvUI loads
     E.modules.Skins = S
@@ -3412,6 +3438,9 @@ class Scenario:
         en = ns.Enchants
         if en is not None:
             self.check(en.lastError is None, "%s: Enchants.lastError is nil (%s)" % (label, en.lastError))
+        cs = ns.Consumes
+        if cs is not None:
+            self.check(cs.lastError is None, "%s: Consumes.lastError is nil (%s)" % (label, cs.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
@@ -15003,6 +15032,22 @@ function M.InstallCharacterNeighbours()
   box("MockHandsPopout", 16, 37, "RIGHT", CharacterHandsSlot, "LEFT", -5, 0)
 end
 
+-- ElvUI's Character Info (Modules\Misc\InfoItemLevel.lua 415-429): an enchant label (12pt) on each
+-- weapon slot, the main hand's left of it, the off hand's under it (its top 3 over the slot's
+-- bottom), the ranged slot's right of it. texts: { main hand, off hand, ranged }, "" = no enchant.
+function M.ElvUIEnchantLabels(texts)
+  local function label(slot, text, point, rel, x, y)
+    local fs = slot.enchantText or slot:CreateFontString(nil, "OVERLAY")
+    slot.enchantText = fs
+    fs:ClearAllPoints()
+    fs:SetPoint(point, slot, rel, x, y)
+    fs:SetText(text or "")
+  end
+  label(CharacterMainHandSlot, texts[1], "BOTTOMRIGHT", "BOTTOMRIGHT", -40, 3)
+  label(CharacterSecondaryHandSlot, texts[2], "TOP", "BOTTOM", 0, 3)
+  label(CharacterRangedSlot, texts[3], "BOTTOMLEFT", "BOTTOMLEFT", 40, 3)
+end
+
 -- ElvUI's Forever skin (Skins\Character.lua 894-897, 918-919, 1003, 1018-1024): the slot columns
 -- at the pane's edge, the model boxed in between them, the top strip see-through, no portrait.
 function M.ElvUICharacterLayout()
@@ -15575,6 +15620,933 @@ def sc_enchants_toggle_elvui(sc, ref, items):
 
 # --- enchants: end ---
 
+# --- consumes: the list under the character screen (Consumes.lua) ---
+# The best food, potions, elixirs and scrolls (flasks, stones and oils when there are some) for
+# the player's role and level hang under the character screen while its Character tab is up.
+CS_SECTIONS = [("food", "FOOD", ["food"]), ("potion", "POTIONS", None), ("elixir", "ELIXIRS", ["elixir"]),
+               ("scroll", "SCROLLS", ["scroll"]), ("flask", "FLASKS", ["flask"]),
+               ("weapon", "STONES AND OILS", ["weapon"])]
+CS_HEAD_H, CS_ROW_H, CS_GAP, CS_CAP, CS_MAX_LINES = 18, 16, 2, 24, 16
+# The parts on the character screen's bottom edge the list must not cover.
+CS_LOW = ["CharacterMainHandSlot", "CharacterSecondaryHandSlot", "CharacterRangedSlot", "CharacterAmmoSlot",
+          "MockPawnRight", "MockGearMaticPrev", "MockGearMaticNext"]
+# A UI 1080 units tall (ElvUI's pixel-perfect scale at 1080p, the player's): 480 under the frame.
+CS_SCREEN = (1920, 1080, 1)
+CS_HELP = "/gl consumes : the best food, potions, elixirs and scrolls for you, under the character screen (on or off)"
+CS_OFF = "Goblin Ledger: the consumes list is off. /gl consumes on brings it back."
+CS_ON = "Goblin Ledger: the consumes list is on: it shows under the character screen."
+CS_COLOURS = {"text": (0.90, 0.88, 0.84), "muted": (0.55, 0.51, 0.45), "pos": (0.25, 0.80, 0.45),
+              "buy": (0.898, 0.722, 0.259)}
+CS_QC = {0: (0.62, 0.62, 0.62), 1: (1, 1, 1), 2: (0.12, 1, 0), 3: (0, 0.44, 0.87), 4: (0.64, 0.21, 0.93)}
+
+
+def cs_hex(c):
+    return "ff" + "".join("%02x" % int(math.floor(max(0, min(1, v)) * 255 + 0.5)) for v in c[:3])
+
+
+def cs_source_items():
+    """Consumes.lua's items, read from the source: id -> (name, short name or None, section, level,
+    quality, buff, xp %, vendor copper, group)."""
+    src = open(os.path.join(ADDON, "Consumes.lua"), "rb").read().decode("ascii")
+    block = src.split("local ITEMS = {", 1)[1].split("\n}", 1)[0]
+    out = {}
+    pat = re.compile(r'\[(\d+)\] = \{ "([^"]*)", (nil|"[^"]*"), "(\w+)", (\d+), (\d), "([^"]*)", (\d+), (\d+), "([^"]*)" \}')
+    for m in pat.finditer(block):
+        iid, name, short, sec, req, q, buff, xp, vend, grp = m.groups()
+        out[int(iid)] = (name, None if short == "nil" else short.strip('"'), sec, int(req), int(q), buff, int(xp),
+                         int(vend), grp)
+    return out
+
+
+def cs_test_price(iid):
+    return 300 + (iid * 7919) % 30000   # made up, copper
+
+
+def cs_unlisted(iid):
+    return iid % 5 == 2   # not on the auction house in the test data
+
+
+_CS_DATA = {}
+
+
+def cs_data(ref):
+    """The enchant test data with every consumable priced (made-up AH values), except the
+    unlisted ones (none listed), and {id: AH value as the addon reads it}."""
+    if DATA_FILE in _CS_DATA:
+        return _CS_DATA[DATA_FILE]
+    text = en_data(ref)[0]
+    want = {iid: (0 if cs_unlisted(iid) else cs_test_price(iid)) for iid in cs_source_items()}
+    a, b = block_span(text, "items")
+    seen = set()
+    pat = re.compile(r'(\[(\d+)\]\s*=\s*")((?:[^"\\\n]|\\.)*)"')
+
+    def one(m):
+        iid = int(m.group(2))
+        if iid not in want:
+            return m.group(0)
+        seen.add(iid)
+        f = m.group(3).split("|")
+        f[2] = str(want[iid])
+        if want[iid] == 0:
+            f[1] = "0"
+        return m.group(1) + "|".join(f) + '"'
+    body = pat.sub(one, text[a:b])
+    items = cs_source_items()
+    add = ['[%d] = "%s|%d|%d|5|1|%d|0|;;|;;",' % (iid, items[iid][0], v, v, v)
+           for iid, v in sorted(want.items()) if iid not in seen and v > 0]
+    text = text[:a] + "".join("    %s\n" % ln for ln in add) + body + text[b:]
+    _CS_DATA[DATA_FILE] = (text, dict(want))
+    return _CS_DATA[DATA_FILE]
+
+
+def cs_register(w):
+    """The mock game knows each consumable (name, quality, an icon) as a commodity."""
+    for iid, it in cs_source_items().items():
+        if w.M["items"][iid] is None:
+            bag_add_item(w, iid, it[0], it[4], 0, commodity=True)
+
+
+def cs_world(ref, items, cls="WARRIOR", points=(31, 5, 0), level=60, screen=CS_SCREEN, before=None, **kw):
+    if kw.get("data_src") is None:
+        kw["data_src"] = cs_data(ref)[0]
+    w, _ = char_world(ref, items, cls=cls, points=points, level=level, screen=screen, before=before, **kw)
+    cs_register(w)
+    return w
+
+
+def cs_frame(w):
+    return w.ns.Consumes.Frame()
+
+
+def cs_open(w, tab="PaperDollFrame"):
+    char_show(w, tab)
+    w.settle(0.3)
+
+
+def cs_reopen(w):
+    char_close(w)
+    cs_open(w)
+
+
+def cs_cells(w):
+    """What the list shows: section titles [(text, key, rect)] and rows [(id, key, left, right, rect, row)],
+    each top to bottom, then left to right."""
+    F = cs_frame(w)
+    titles, rows = [], []
+    for c in lua_kids(F):
+        if not c.IsShown(c):
+            continue
+        if c.GetObjectType(c) == "FontString" and c.glKey is not None:
+            titles.append((c.GetText(c), c.glKey, w.rect(c)))
+        elif c.GetObjectType(c) == "Button" and c.glID is not None:
+            rows.append((int(c.glID), c.glKey, c.text.GetText(c.text), c.right.GetText(c.right), w.rect(c), c))
+    titles.sort(key=lambda t: (-round(t[2][3], 3), t[2][0]))
+    rows.sort(key=lambda r: (-round(r[4][3], 3), r[4][0]))
+    return titles, rows
+
+
+def cs_sections(w):
+    """[(title, [ids])] in reading order; each row sits under its title, in its column."""
+    titles, rows = cs_cells(w)
+    out = []
+    for text, key, tr in titles:
+        ids = [r[0] for r in rows if r[1] == key and abs(r[4][0] - (tr[0] - 2)) < 0.01 and r[4][3] <= tr[1] + 8]
+        out.append((text, ids))
+    return out
+
+
+def cs_expect(w, role, cls, level, all_=False, n=4):
+    """The sections the list should show, from the data in Consumes.lua: the research's
+    ranking for the level's band (potions: one of each kind first), a group shown once, the
+    best 4; or with all_ every usable one, best first. Nothing above the player's level."""
+    D = w.ns.Consumes.DATA
+    it = cs_source_items()
+    band = 5 if level >= 60 else 4 if level >= 50 else 3 if level >= 40 else 2 if level >= 20 else 1
+
+    def ok(lst):
+        if lst == "potion-rage":
+            return cls in ("WARRIOR", "DRUID")
+        if lst == "potion-mana":
+            return cls not in ("WARRIOR", "ROGUE")
+        return True
+
+    def lst_of(t):
+        return [int(t[i]) for i in range(1, len(t) + 1)] if t is not None else []
+    out = []
+    for key, title, lists in CS_SECTIONS:
+        if lists is None:
+            lists = [D.potions[role][i] for i in range(1, len(D.potions[role]) + 1)]
+        if all_:
+            ids, seen = [], set()
+            for lst in lists:
+                t = D.all[role][lst] if ok(lst) else None
+                for i in lst_of(t):
+                    if it[i][3] <= level and i not in seen:
+                        seen.add(i)
+                        ids.append(i)
+        else:
+            per = []
+            for lst in lists:
+                b = D.best[role][lst]
+                per.append(lst_of(b[band]) if b is not None and ok(lst) else [])
+            ids, groups, pos, more = [], set(), [0] * len(per), True
+            while len(ids) < n and more:
+                more = False
+                for k, lids in enumerate(per):
+                    while pos[k] < len(lids):
+                        i = lids[pos[k]]
+                        pos[k] += 1
+                        if it[i][3] <= level and it[i][8] not in groups:
+                            groups.add(it[i][8])
+                            ids.append(i)
+                            more = True
+                            break
+                    if len(ids) >= n:
+                        break
+        if ids:
+            out.append((title, ids))
+    return out
+
+
+def cs_trim(secs, n):
+    return [(t, ids[:n]) for t, ids in secs]
+
+
+def cs_price(prices, iid, live=None, data=True):
+    """The price words: the open AH's live listing, else a vendor's when it is cheaper, else
+    today's AH value, else "not on AH" ("no prices" without price data)."""
+    it = cs_source_items()[iid]
+    vend = it[7]
+    if live:
+        return short_money(live), "text"
+    m = prices.get(iid, 0) if data else 0
+    if vend > 0 and (m <= 0 or vend <= m):
+        return "vendor " + short_money(vend), "text"
+    if m > 0:
+        return short_money(m), "price"
+    return ("not on AH" if data else "no prices"), "muted"
+
+
+def cs_left(iid, level):
+    it = cs_source_items()[iid]
+    t = it[1] or it[0]
+    if it[5]:
+        t += "  " + it[5]
+    if it[6] > 0 and level < 60:
+        t += "  +%d%% XP" % it[6]
+    return t
+
+
+def cs_rows_ok(sc, w, prices, level, label, counts=None, stale=False, live=None, data=True):
+    """Every row: the name in its quality colour, the buff, +XP% in green where the data has it
+    (below 60), the count, and the price in its colour (grey: old prices or none)."""
+    counts, live = counts or {}, live or {}
+    bad = []
+    items = cs_source_items()
+    for iid, key, left, right, rect, row in cs_cells(w)[1]:
+        it = items[iid]
+        want_l = cs_left(iid, level)
+        words, kind = cs_price(prices, iid, live.get(iid), data)
+        col = CS_COLOURS["muted"] if kind == "muted" or (kind == "price" and stale) else CS_COLOURS["text"]
+        want_r = ("x%d  " % counts[iid] if counts.get(iid) else "") + words
+        if strip_codes(left) != want_l:
+            bad.append((iid, "left", strip_codes(left), want_l))
+        if not left.startswith("|c%s%s|r" % (cs_hex(CS_QC[it[4]]), it[1] or it[0])):
+            bad.append((iid, "quality colour", left[:40]))
+        xp = "|c%s+%d%% XP|r" % (cs_hex(CS_COLOURS["pos"]), it[6])
+        if (it[6] > 0 and level < 60) != (xp in left):
+            bad.append((iid, "XP in green", left))
+        if strip_codes(right) != want_r:
+            bad.append((iid, "right", strip_codes(right), want_r))
+        if not right.endswith("|c%s%s|r" % (cs_hex(col), words)):
+            bad.append((iid, "price colour", right, cs_hex(col)))
+        if it[3] > level:
+            bad.append((iid, "above the player's level", it[3]))
+    sc.eq(bad, [], "%s: every row's words and colours" % label)
+
+
+def cs_lowest(w):
+    """The lowest thing on the character screen's bottom edge (screen units): the frame, the shown
+    weapon slots, Pawn's button, GearMatic's arrows and ElvUI's enchant labels with words in them
+    (nothing more than 24 under the frame)."""
+    g = w.g
+    cf = w.rect(g.CharacterFrame)
+    low = cf[1]
+    parts = []
+    for n in CS_LOW + ["PawnUI_InventoryPawnButton", "GearMaticPaperdollPrev", "GearMaticPaperdollNext"]:
+        f = g[n]
+        if f is not None and f.IsVisible(f):
+            parts.append(f)
+            lab = f.enchantText
+            if lab is not None and lab.IsVisible(lab) and (lab.GetText(lab) or "") != "":
+                parts.append(lab)
+    for f in parts:
+        r = w.rect(f)
+        if r and cf[1] - CS_CAP <= r[1] < low:
+            low = r[1]
+    return low
+
+
+def cs_place_ok(sc, w, label, side="below", avoid=True):
+    """As wide as the character screen and on screen; below: its top 2 under the lowest thing on the
+    frame's bottom edge; above: its bottom 2 over the frame's top (and the portrait). It covers none
+    of the panel's parts, Pawn's or GearMatic's buttons or the enchant labels."""
+    g, C = w.g, w.ns.Consumes
+    F = cs_frame(w)
+    cf, r = w.rect(g.CharacterFrame), w.rect(F)
+    if not sc.check(r is not None and cf is not None and F.IsVisible(F), "%s: the list is up and has a place" % label):
+        return
+    sc.check(abs(r[0] - cf[0]) < 0.01 and abs(r[2] - cf[2]) < 0.01,
+             "%s: as wide as the character screen (%s, frame %s)" % (label, r, cf))
+    sc.check(r[1] >= -0.01 and r[3] <= w.M.screenH + 0.01, "%s: all of it on screen (%s)" % (label, r))
+    sc.eq(C.Layout().side, side, "%s: the side" % label)
+    if side == "below":
+        low = cs_lowest(w)
+        sc.check(abs(r[3] - (low - CS_GAP)) < 0.01, "%s: its top 2 under the lowest part (top %s, lowest %s)" % (label, r[3], low))
+    else:
+        high = cf[3]
+        p = g.CharacterFramePortrait
+        if p is not None and p.IsVisible(p):
+            high = max(high, w.rect(p)[3])
+        sc.check(abs(r[1] - (high + CS_GAP)) < 0.01, "%s: its bottom 2 over the frame's top (%s, top %s)" % (label, r[1], high))
+    h = F.GetHeight(F)
+    lines = C.Layout().lines
+    sc.eq(h, CS_HEAD_H + (1 + lines * CS_ROW_H + 3 if lines > 0 else 0), "%s: the height fits its lines" % label)
+    if avoid:
+        others = {}
+        for n in TG_AVOID + ["PawnUI_InventoryPawnButton", "GearMaticPaperdollPrev", "GearMaticPaperdollNext"]:
+            f = g[n]
+            if f is not None and f.IsVisible(f):
+                others[n] = w.rect(f)
+                lab = f.enchantText
+                if lab is not None and lab.IsVisible(lab) and (lab.GetText(lab) or "") != "":
+                    others[n + ".enchantText"] = w.rect(lab)
+        sc.eq(sorted(n for n, o in others.items() if o is not None and _overlap(r, o)), [], "%s: covers nothing" % label)
+    # Every row and title is inside the list, and rows of one line do not overlap.
+    titles, rows = cs_cells(w)
+    out = [t[0] for t in titles if not (r[0] <= t[2][0] and t[2][2] <= r[2] + 0.01 and r[1] <= t[2][1] and t[2][3] <= r[3])]
+    out += [x[0] for x in rows if not (r[0] <= x[4][0] and x[4][2] <= r[2] + 0.01 and r[1] <= x[4][1] and x[4][3] <= r[3])]
+    sc.eq(out, [], "%s: every line inside the list" % label)
+    clash = [(a[0], b[0]) for i, a in enumerate(rows) for b in rows[i + 1:] if _overlap(a[4], b[4])]
+    sc.eq(clash, [], "%s: no two rows overlap" % label)
+
+
+def cs_header(w):
+    F = cs_frame(w)
+    return strip_codes(F.title.GetText(F.title))
+
+
+def sc_consumes_place(sc, ref, items):
+    """The list hangs right under the character screen when it opens, as wide as it, under the
+    weapon slots, Pawn's button and GearMatic's arrows (read from the frames each time)."""
+    w = cs_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    C = ns.Consumes
+    F = cs_frame(w)
+    if not sc.check(F is not None and w.same(F, g.GoblinLedgerConsumes), "place: the list is made when the addon loads"):
+        sc.clean(w)
+        return
+    sc.eq(C.builds, 1, "place: made once")
+    sc.check(w.same(F.GetParent(F), g.PaperDollFrame), "place: its parent is PaperDollFrame (the Character tab)")
+    sc.check(not any(w.same(c, F) for c in lua_kids(g.PaperDollItemsFrame)),
+             "place: not one of PaperDollItemsFrame's children (ElvUI skins those as slots)")
+    sc.check(not F.IsVisible(F), "place: not on screen before the character screen opens")
+    sc.check(F._clamped is True and F.IsMouseEnabled(F), "place: kept on screen, takes the mouse")
+    cs_open(w)
+    sc.check(F.IsVisible(F), "place: shown when the character screen opens")
+    cs_place_ok(sc, w, "place: Forever's layout")
+    L = C.Layout()
+    sc.eq((L.side, L.n, L.cols, L.lines), ("below", 4, 2, L.total), "place: under the frame, the best 4, 2 columns, all lines")
+    sc.eq(cs_header(w), "Consumes for melee, level 60", "place: the header")
+    want = cs_expect(w, "melee", "WARRIOR", 60)
+    sc.eq([t for t, _ in want][:4], ["FOOD", "POTIONS", "ELIXIRS", "SCROLLS"], "place: food, potions, elixirs, scrolls first")
+    sc.eq(cs_sections(w), want, "place: the sections and the best 4 of each, in reading order")
+    titles, rows = cs_cells(w)
+    sc.eq(len({round(t[2][1], 3) for t in titles[:2]}), 1, "place: two sections side by side")
+    sc.check(F.header.IsVisible(F.header) and F.allButton.IsVisible(F.allButton), "place: header and All switch up")
+    # The parts on the bottom edge by their real names (Pawn, GearMatic): one hanging under the
+    # frame pushes the list down; one far under it (some other popup) does not.
+    w.lua.execute("PawnUI_InventoryPawnButton = MockPawnRight; GearMaticPaperdollPrev = MockGearMaticPrev; "
+                  "GearMaticPaperdollNext = MockGearMaticNext")
+    pawn = g.MockPawnRight
+    pawn.ClearAllPoints(pawn)
+    pawn.SetPoint(pawn, "TOPRIGHT", g.CharacterFrame, "BOTTOMRIGHT", -250, 14)
+    w.settle(0.3)
+    cf = w.rect(g.CharacterFrame)
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 12)) < 0.01, "place: Pawn's button 10 under the frame: the list 2 under it (%s)" % (w.rect(F),))
+    cs_place_ok(sc, w, "place: Pawn's button under the frame")
+    nxt = g.MockGearMaticNext
+    nxt.ClearAllPoints(nxt)
+    nxt.SetPoint(nxt, "TOPLEFT", g.CharacterFrame, "BOTTOMLEFT", 450, -30)
+    w.settle(0.3)
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 12)) < 0.01, "place: something 30 under the frame is not followed (%s)" % (w.rect(F),))
+    nxt.ClearAllPoints(nxt)
+    nxt.SetPoint(nxt, "LEFT", g.CharacterRangedSlot, "RIGHT", 6, 0)
+    pawn.ClearAllPoints(pawn)
+    pawn.SetPoint(pawn, "TOPRIGHT", g.CharacterTrinket1Slot, "BOTTOMRIGHT", 4, -18)
+    w.settle(0.3)
+    cs_place_ok(sc, w, "place: back in their places")
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 2)) < 0.01, "place: back right under the frame")
+    sc.clean(w, "place")
+    # Hunters, warriors and rogues have the ammo slot (GearMatic's arrow right of it).
+    w = cs_world(ref, items, cls="HUNTER", points=(31, 5, 0), char={"ammo": True})
+    cs_open(w)
+    sc.check(w.g.CharacterAmmoSlot.IsVisible(w.g.CharacterAmmoSlot), "place: ammo slot up")
+    cs_place_ok(sc, w, "place: with the ammo slot")
+    sc.eq(cs_header(w), "Consumes for hunter, level 60", "place: a hunter's header")
+    sc.eq(cs_sections(w), cs_expect(w, "hunter", "HUNTER", 60), "place: a hunter's sections")
+    sc.clean(w, "place: ammo")
+
+
+def cs_elv_world(ref, items, layout=True, **o):
+    def setup(w):
+        w.M.InstallBlizzardBags()
+        w.M.InstallElvUIAddon(w.to_lua(o))
+    w = cs_world(ref, items, before=setup)
+    if layout:
+        w.M.ElvUICharacterLayout()
+    return w
+
+
+def sc_consumes_place_elvui(sc, ref, items):
+    """With ElvUI: the weapon slots 6 over the frame's bottom, its enchant labels (the off hand's
+    hangs 3 under the frame, and may be filled after the list shows): the list goes under them,
+    in ElvUI's own panel look."""
+    w = cs_elv_world(ref, items)
+    M, g, C = w.M, w.g, w.ns.Consumes
+    F = cs_frame(w)
+    M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "Encha: Crusader", ""]))
+    cs_open(w)
+    cf = w.rect(g.CharacterFrame)
+    mh = w.rect(g.CharacterMainHandSlot)
+    sc.check(abs(mh[1] - (cf[1] + 6)) < 0.01, "elvui: the weapon row 6 over the frame's bottom (%s)" % (mh,))
+    oh = w.rect(g.CharacterSecondaryHandSlot.enchantText)
+    sc.check(abs(oh[1] - (cf[1] - 3)) < 0.01, "elvui: the off hand's label hangs 3 under the frame (%s)" % (oh,))
+    cs_place_ok(sc, w, "elvui: under the off hand's enchant label")
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 5)) < 0.01, "elvui: its top 5 under the frame's bottom")
+    sc.eq((C.look, F._template), ("elvui", "Transparent"), "elvui: ElvUI's Transparent look, as its character screen")
+    sc.eq(sum(1 for i in range(1, len(M.elvTemplates) + 1) if w.same(M.elvTemplates[i], F)), 1, "elvui: skinned once")
+    # The labels go (no off-hand enchant): back right under the frame.
+    M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "", ""]))
+    w.settle(0.3)
+    cs_place_ok(sc, w, "elvui: no off-hand enchant")
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 2)) < 0.01, "elvui: an empty label is not avoided")
+    cs_reopen(w)
+    sc.eq(sum(1 for i in range(1, len(M.elvTemplates) + 1) if w.same(M.elvTemplates[i], F)), 1, "elvui: still skinned once")
+    # ElvUI fills the labels after the list showed (its own OnShow hook): the list moves under them.
+    char_close(w)
+    M.ElvUIEnchantLabels(w.to_lua(["", "", ""]))
+    cs_open(w)
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 2)) < 0.01, "elvui: right under the frame while the labels are empty")
+    M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "Encha: Crusader", "Encha: Biznicks"]))
+    w.settle(0.3)
+    cs_place_ok(sc, w, "elvui: labels filled after it showed")
+    sc.check(abs(w.rect(F)[3] - (cf[1] - 5)) < 0.01, "elvui: moved under the late label")
+    sc.clean(w, "elvui")
+    # ElvUI's character skin off: the addon's own flat look, the game's layout.
+    w = cs_elv_world(ref, items, layout=False, characterSkin=False)
+    cs_open(w)
+    F = cs_frame(w)
+    sc.eq((w.ns.Consumes.look, F._template), ("plain", None), "elvui: character skin off: the plain look")
+    sc.check(F._backdrop is not None, "elvui: character skin off: its own backdrop")
+    cs_place_ok(sc, w, "elvui: character skin off")
+    sc.clean(w, "elvui: skin off")
+    # The list up before login (before ElvUI is set up): the plain look then, ElvUI's the next time.
+    w = cs_elv_world(ref, items, layout=False)
+    F = cs_frame(w)
+    w.lua.execute("MOCK.elvReady = false; ElvUI[1].modules.Skins.Initialized = false")
+    F.glLookDone = None
+    cs_open(w)
+    sc.eq((w.ns.Consumes.look, F._template), ("plain", None), "elvui early: the plain look before ElvUI is set up")
+    char_close(w)
+    w.lua.execute("MOCK.elvReady = true; ElvUI[1].modules.Skins.Initialized = true")
+    cs_open(w)
+    sc.eq((w.ns.Consumes.look, F._template), ("elvui", "Transparent"), "elvui early: ElvUI's look once it is set up")
+    sc.clean(w, "elvui early")
+
+
+def sc_consumes_fold(sc, ref, items):
+    """The stats pane folded away (398 wide): the list follows the width by itself."""
+    w = cs_world(ref, items)
+    g, C = w.g, w.ns.Consumes
+    F = cs_frame(w)
+    cs_open(w)
+    cf = g.CharacterFrame
+    wide = C.Layout().colW
+    cf.SetWidth(cf, 398)
+    g.CharacterFrameRightPaneHost.Hide(g.CharacterFrameRightPaneHost)
+    w.settle(0.3)
+    sc.eq(round(F.GetWidth(F), 3), 398, "fold: 398 wide with the stats pane folded")
+    L = C.Layout()
+    sc.check(L.cols == 2 and L.colW < wide, "fold: still 2 columns, narrower (%s, %s)" % (L.cols, L.colW))
+    cs_place_ok(sc, w, "fold: folded")
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "fold: the same lists")
+    cf.SetWidth(cf, 631)
+    g.CharacterFrameRightPaneHost.Show(g.CharacterFrameRightPaneHost)
+    w.settle(0.3)
+    sc.eq((round(F.GetWidth(F), 3), C.Layout().colW), (631, wide), "fold: back to 631")
+    cs_place_ok(sc, w, "fold: open again")
+    sc.clean(w, "fold")
+
+
+def sc_consumes_tabs(sc, ref, items):
+    """Only with the Character tab: not on the other tabs, gone with the character screen, back when
+    it opens; the game's frames keep their scripts; made once, no new rows when it opens again."""
+    w = cs_world(ref, items)
+    M, g, C = w.M, w.g, w.ns.Consumes
+    F = cs_frame(w)
+    kept, which = M.CharScriptsKept()
+    sc.check(kept, "tabs: the game's frames keep their own scripts (%s)" % which)
+    hooks = {n: sum(len(g[n]._hooks[k] or {}) for k in ("OnShow", "OnHide"))
+             for n in ("CharacterFrame", "PaperDollFrame", "PaperDollItemsFrame")}
+    cs_open(w)
+    sc.check(F.IsVisible(F), "tabs: on the Character tab")
+    buttons = int(M.counts.Button or 0)
+    for tab in ("ReputationFrame", "SkillsFrame", "PVPRankFrame", "TokenFrame"):
+        cs_open(w, tab)
+        sc.check(not F.IsVisible(F), "tabs: not on the %s tab" % tab)
+    cs_open(w)
+    sc.check(F.IsVisible(F), "tabs: back on the Character tab")
+    cs_place_ok(sc, w, "tabs: back")
+    M.CharacterPetPage(True)
+    w.settle(0.3)
+    sc.check(F.IsVisible(F), "tabs: still up on the pet's page")
+    cs_place_ok(sc, w, "tabs: the pet's page (no slots)")
+    M.CharacterPetPage(False)
+    char_close(w)
+    sc.check(not F.IsVisible(F), "tabs: gone when the character screen closes")
+    w.g.ToggleCharacter("PaperDollFrame")
+    w.settle(0.3)
+    sc.check(F.IsVisible(F), "tabs: back when it opens again")
+    w.g.ToggleCharacter("PaperDollFrame")
+    sc.check(not F.IsVisible(F), "tabs: the key again closes both")
+    cs_open(w)
+    sc.eq(int(M.counts.Button or 0), buttons, "tabs: no new buttons when it opens again")
+    sc.eq(C.builds, 1, "tabs: made once")
+    kept, which = M.CharScriptsKept()
+    sc.check(kept, "tabs: still their own scripts (%s)" % which)
+    sc.eq({n: sum(len(g[n]._hooks[k] or {}) for k in ("OnShow", "OnHide"))
+           for n in ("CharacterFrame", "PaperDollFrame", "PaperDollItemsFrame")}, hooks, "tabs: no hooks added on the game's frames")
+    # The auction house (or a drag) moves the character screen: the list goes with it.
+    cf = g.CharacterFrame
+    cf.ClearAllPoints(cf)
+    cf.SetPoint(cf, "TOPLEFT", g.UIParent, "TOPLEFT", 700, -116)
+    w.settle(0.3)
+    cs_place_ok(sc, w, "tabs: the frame moved right")
+    for ev, args in (("ADDON_LOADED", ("Blizzard_UIPanels_Game",)), ("PLAYER_LOGIN", ()), ("PLAYER_ENTERING_WORLD", (False, True))):
+        M.fire(ev, *args)
+    C.Build()
+    sc.eq(C.builds, 1, "tabs: still made once")
+    sc.clean(w, "tabs")
+
+
+def cs_move(w, bottom):
+    """The character screen dragged so its bottom is at this height."""
+    g = w.g
+    cf = g.CharacterFrame
+    cf.ClearAllPoints(cf)
+    cf.SetPoint(cf, "TOPLEFT", g.UIParent, "TOPLEFT", 16, -(w.M.screenH - bottom - 484))
+
+
+def sc_consumes_room(sc, ref, items):
+    """Near the bottom of the screen: fewer rows a section, then above the character screen,
+    then what fits, scrolled; never off screen."""
+    # The game's default UI (768 tall): the frame's bottom at 168, room for the best 2 a section.
+    w = cs_world(ref, items, screen=(1365, 768, 1))
+    C = w.ns.Consumes
+    cs_open(w)
+    sc.eq(w.rect(w.g.CharacterFrame)[1], 168, "room: a 768 UI: the frame's bottom at 168")
+    L = C.Layout()
+    sc.eq((L.side, L.n), ("below", 2), "room: a 768 UI: the best 2 a section, under the frame")
+    cs_place_ok(sc, w, "room: 768")
+    sc.eq(cs_sections(w), cs_trim(cs_expect(w, "melee", "WARRIOR", 60), 2), "room: 768: the best 2 of each")
+    # Dragged low (bottom at 60): above the frame, 3 a section.
+    cs_move(w, 60)
+    w.settle(0.3)
+    L = C.Layout()
+    sc.eq((L.side, L.n), ("above", 3), "room: frame bottom at 60: above it, the best 3")
+    cs_place_ok(sc, w, "room: bottom at 60", side="above")
+    sc.eq(cs_sections(w), cs_trim(cs_expect(w, "melee", "WARRIOR", 60), 3), "room: above: the best 3 of each")
+    cs_move(w, 20)
+    w.settle(0.3)
+    sc.eq((C.Layout().side, C.Layout().n), ("above", 4), "room: frame bottom at 20: above it, room for the best 4")
+    cs_place_ok(sc, w, "room: bottom at 20", side="above")
+    # Room for 4 again: under it, all 4.
+    cs_move(w, 300)
+    w.settle(0.3)
+    sc.eq((C.Layout().side, C.Layout().n), ("below", 4), "room: frame bottom at 300: under it, the best 4")
+    cs_place_ok(sc, w, "room: bottom at 300")
+    sc.clean(w, "room")
+    # A short screen: no room under nor over it for 2 a section: what fits above, scrolled, on screen.
+    w = cs_world(ref, items, screen=(1365, 640, 1))
+    C = w.ns.Consumes
+    cs_open(w)
+    L = C.Layout()
+    sc.check(L.side == "above" and 0 < L.lines < L.total, "room: a 640 UI: what fits above it, the rest scrolls (%s, %s/%s)"
+             % (L.side, L.lines, L.total))
+    cs_place_ok(sc, w, "room: 640", side="above")
+    F = cs_frame(w)
+    sc.check(F.scrollBar.IsVisible(F.scrollBar), "room: 640: a scroll bar")
+    sc.clean(w, "room: short screen")
+
+
+def sc_consumes_collapse(sc, ref, items):
+    """A click on the header folds the list to its one line, remembered; another opens it."""
+    w = cs_world(ref, items)
+    g, M, ns = w.g, w.M, w.ns
+    S, C = ns.settings, ns.Consumes
+    F = cs_frame(w)
+    cs_open(w)
+    sc.eq(F.arrow.GetText(F.arrow), "v", "collapse: the arrow points down while open")
+    M.click(F.header)
+    sc.eq(S.consumesCollapsed, True, "collapse: remembered")
+    sc.eq((F.GetHeight(F), C.Layout().collapsed, F.arrow.GetText(F.arrow)), (CS_HEAD_H, True, ">"), "collapse: the header only")
+    titles, rows = cs_cells(w)
+    sc.eq((len(titles), len(rows)), (0, 0), "collapse: no sections, no rows")
+    sc.check(not F.allButton.IsVisible(F.allButton), "collapse: no All switch")
+    sc.eq(cs_header(w), "Consumes for melee, level 60", "collapse: the header says it all")
+    cs_place_ok(sc, w, "collapse: folded")
+    cs_reopen(w)
+    sc.eq((F.GetHeight(F), C.Layout().collapsed), (CS_HEAD_H, True), "collapse: still folded when it opens again")
+    M.click(F.header)
+    sc.check(S.consumesCollapsed is None and not C.Layout().collapsed, "collapse: a second click opens it")
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "collapse: the rows are back")
+    M.click(F.header)
+    sc.clean(w, "collapse")
+    # Saved: folded after a reload.
+    w = cs_world(ref, items, saved={"consumesCollapsed": True})
+    F = cs_frame(w)
+    cs_open(w)
+    sc.eq((F.GetHeight(F), w.ns.Consumes.Layout().collapsed), (CS_HEAD_H, True), "collapse: folded after a reload")
+    w.M.click(F.header)
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "collapse: and opens with a click")
+    sc.clean(w, "collapse saved")
+
+
+def cs_row(w, pred=None):
+    for r in cs_cells(w)[1]:
+        if pred is None or pred(r[0]):
+            return r
+    return None
+
+
+def sc_consumes_clicks(sc, ref, items):
+    """A click on a row at the auction house searches it; with the auction house closed it does
+    nothing; shift-click puts its link in chat and does not search."""
+    w = cs_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    cs_open(w)
+    iid, _, _, _, _, row = cs_row(w)
+    mark = w.chat_mark()
+    M.click(row)
+    w.settle(0.3)
+    sc.eq(w.chat(mark), [], "clicks: the auction house closed: nothing said")
+    w.open_ah_modern()
+    box = g.AuctionHouseFrame.SearchBar.SearchBox
+    box.SetText(box, "")
+    M.click(row)
+    w.settle(0.4)
+    sc.eq(box.GetText(box), ns.ItemName(iid), "clicks: at the auction house a click searches it")
+    other = cs_row(w, lambda i: i != iid)
+    M.click(other[5])
+    w.settle(0.4)
+    sc.eq(box.GetText(box), ns.ItemName(other[0]), "clicks: another row searches that one")
+    # Shift-click: the link in chat, no search.
+    w.lua.execute("MOCK.inserted = {}; ChatFrameUtil = nil; "
+                  "ChatEdit_InsertLink = function(ln) table.insert(MOCK.inserted, ln) return true end")
+    w.lua.execute("IsModifiedClick = function(k) return k == 'CHATLINK' end")
+    box.SetText(box, "")
+    M.click(row)
+    w.lua.execute("IsModifiedClick = function() return false end")
+    inserted = list(M.inserted.values())
+    sc.check(len(inserted) == 1 and "item:%d" % iid in str(inserted[0]), "clicks: shift-click links it in chat (%s)" % inserted)
+    sc.eq(box.GetText(box), "", "clicks: and does not search")
+    w.close_ah_modern()
+    box.SetText(box, "")
+    M.click(row)
+    w.settle(0.3)
+    sc.eq(box.GetText(box), "", "clicks: the auction house closed again: no search")
+    sc.clean(w, "clicks")
+
+
+def sc_consumes_tooltip(sc, ref, items):
+    """Hover a row: the game's tooltip for the item with Goblin Ledger's price lines (no enchant
+    lines); it goes with the mouse."""
+    w = cs_world(ref, items)
+    M, g = w.M, w.g
+    cs_open(w)
+    _, prices = cs_data(ref)
+    iid, _, _, _, _, row = cs_row(w, lambda i: prices.get(i, 0) > 0)
+    tt = g.GameTooltip
+    # What ns.tipQuiet was while the row set the tooltip up (no enchant lines then).
+    w.lua.eval("function(ns) local tt = GameTooltip; local o = tt.SetItemByID; "
+               "tt.SetItemByID = function(self, ...) MOCK.quietSeen = ns.tipQuiet; return o(self, ...) end end")(w.ns)
+    M.enter(row)
+    sc.check(tt.IsShown(tt) and w.same(tt.GetOwner(tt), row), "tooltip: shown, owned by the row")
+    sc.eq(M.quietSeen, True, "tooltip: ns.tipQuiet while the row sets the item")
+    lines = [l or "" for l, _ in w.all_lines(tt)]
+    sc.check(len(lines) > 0 and str(M["items"][iid].name) in lines[0], "tooltip: the item's own tooltip (%s)" % lines[:2])
+    sc.check(any(l.startswith("AH value") for l in lines), "tooltip: with Goblin Ledger's price lines (%s)" % lines)
+    sc.check(not any(l.startswith("Best enchant") for l in lines), "tooltip: no enchant lines")
+    sc.check(row.glNoEnchants is True and not w.ns.tipQuiet, "tooltip: the row marks itself, tipQuiet back off")
+    M.leave(row)
+    sc.check(not tt.IsShown(tt), "tooltip: gone with the mouse")
+    sc.clean(w, "tooltip")
+
+
+def sc_consumes_prices(sc, ref, items):
+    """Each row's price: today's AH value, a vendor's price when cheaper, "not on AH"; grey when the
+    prices are over 6 hours old; the live listing at the auction house; the bag count; no data."""
+    text, prices = cs_data(ref)
+    w = cs_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    cs_open(w)
+    cs_rows_ok(sc, w, prices, 60, "prices")
+    kinds = {cs_price(prices, r[0])[1] if not cs_price(prices, r[0])[0].startswith("vendor") else "vendor"
+             for r in cs_cells(w)[1]}
+    sc.check({"price", "vendor", "muted"} <= kinds, "prices: the test shows AH values, vendor prices and not on AH (%s)" % kinds)
+    # Bag counts: x3 once they are in the bags (after the game says the bags changed).
+    rows = cs_cells(w)[1]
+    a, b = rows[0][0], rows[1][0]
+    w.put_bag(0, 1, a, 2)
+    w.put_bag(1, 4, a, 1)
+    w.put_bag(0, 2, b, 20)
+    M.fire("BAG_UPDATE_DELAYED")
+    w.settle(0.1)
+    cs_rows_ok(sc, w, prices, 60, "prices: bag counts", counts={a: 3, b: 20})
+    # The live listing while the auction house shows it.
+    w.open_ah_modern()
+    w.set_commodity_results(a, [(1234, 5, False)])
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", a)
+    w.settle(0.3)
+    sc.eq(w.live(a), 1234, "prices: the auction house has a live listing")
+    cs_rows_ok(sc, w, prices, 60, "prices: the live listing", counts={a: 3, b: 20}, live={a: 1234})
+    w.close_ah_modern()
+    cs_rows_ok(sc, w, prices, 60, "prices: auction house closed", counts={a: 3, b: 20})
+    sc.clean(w, "prices")
+    # Over 6 hours old: AH values grey (vendor prices are not).
+    w = cs_world(ref, items, now=ref.updated + 7 * 3600)
+    cs_open(w)
+    cs_rows_ok(sc, w, prices, 60, "prices: 7 hours old", stale=True)
+    sc.clean(w, "prices: stale")
+    # No price data at all: vendor prices and "no prices", no error.
+    w = cs_world(ref, items, data_src=PLACEHOLDER)
+    cs_open(w)
+    cs_rows_ok(sc, w, prices, 60, "prices: no data", data=False)
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "prices: no data: the same lists")
+    sc.clean(w, "prices: no data", ok_chat=())
+
+
+def sc_consumes_roles(sc, ref, items):
+    """The lists follow the role (talents, or a /gl enchants pick) and the level: nothing the player
+    cannot use yet, potions by the class (rage for warriors and druids), +5% XP on food below 60."""
+    _, prices = cs_data(ref)
+    w = cs_world(ref, items)
+    ns = w.ns
+    cases = [("WARRIOR", (31, 5, 0), 60, "melee"), ("WARRIOR", (0, 5, 31), 60, "tank"), ("MAGE", (0, 31, 20), 60, "caster"),
+             ("ROGUE", (5, 31, 15), 60, "agility"), ("PRIEST", (31, 20, 0), 60, "healer"), ("HUNTER", (31, 20, 0), 60, "hunter"),
+             ("PALADIN", (0, 31, 0), 60, "tank"), ("DRUID", (0, 31, 0), 60, "agility"),
+             ("WARRIOR", (25, 5, 0), 35, "melee"), ("MAGE", (0, 0, 20), 25, "caster"), ("WARRIOR", (0, 0, 0), 12, "melee"),
+             ("PRIEST", (0, 20, 0), 44, "healer"), ("ROGUE", (0, 30, 0), 52, "agility")]
+    seen = {}
+    for cls, pts, lvl, role in cases:
+        en_player(w, cls, pts, "forever", lvl)
+        cs_reopen(w)
+        label = "roles: %s %s level %d" % (cls, pts, lvl)
+        sc.eq(cs_header(w), "Consumes for %s, level %d" % (role, lvl), label + ": header")
+        want = cs_expect(w, role, cls, lvl)
+        got = cs_sections(w)
+        sc.eq(got, want, label + ": sections, best 4")
+        cs_rows_ok(sc, w, prices, lvl, label)
+        sc.check(all(len(ids) <= 4 for _, ids in got) and all(len(ids) == len(set(ids)) for _, ids in got),
+                 label + ": at most 4 a section, none twice")
+        items_ = cs_source_items()
+        groups = [[items_[i][8] for i in ids] for _, ids in got]
+        sc.check(all(len(g_) == len(set(g_)) for g_ in groups), label + ": two of one group never both in the best 4")
+        rage = [i for _, ids in got for i in ids if "rage" in items_[i][5]]
+        sc.check(bool(rage) == (cls in ("WARRIOR", "DRUID") and role in ("melee", "tank")),
+                 label + ": rage potions only for warriors (%s)" % rage)
+        mana = [i for t, ids in got if t == "POTIONS" for i in ids if items_[i][5].endswith(" mana")]
+        sc.check(not mana or cls not in ("WARRIOR", "ROGUE"), label + ": no mana potions for warriors and rogues")
+        food = dict(got).get("FOOD", [])
+        lefts = {r[0]: strip_codes(r[2]) for r in cs_cells(w)[1]}
+        xp = [i for i in food if "+5% XP" in lefts[i]]
+        if lvl < 60:
+            sc.eq(sorted(xp), sorted(i for i in food if items_[i][6] > 0), label + ": +5% XP on Well Fed food")
+            sc.check(len(xp) > 0, label + ": some food gives XP")
+        else:
+            sc.eq(xp, [], label + ": no XP at 60")
+        sc.check(not any("XP" in strip_codes(r[2]) for r in cs_cells(w)[1] if r[1] != "food"), label + ": XP only on food")
+        seen[(cls, pts, lvl)] = got
+    sc.check(seen[("WARRIOR", (31, 5, 0), 60)] != seen[("WARRIOR", (0, 5, 31), 60)] != seen[("MAGE", (0, 31, 20), 60)],
+             "roles: melee, tank and caster lists differ")
+    names = lambda key, title: [cs_source_items()[i][0] for i in dict(seen[key]).get(title, [])]
+    sc.eq(names(("WARRIOR", (31, 5, 0), 60), "FOOD")[0], "Poached Sunscale Salmon", "roles: a fury warrior's best food (+40 AP)")
+    sc.eq(names(("MAGE", (0, 31, 20), 60), "FOOD")[0], "Lobster Stew", "roles: a mage's best food (+28 spell damage)")
+    sc.eq(names(("MAGE", (0, 31, 20), 60), "POTIONS")[0], "Major Mana Potion", "roles: a mage's first potion")
+    sc.check("Flask of Supreme Power" in names(("MAGE", (0, 31, 20), 60), "FLASKS"), "roles: a mage's flask")
+    sc.check("Flask of the Titans" in names(("WARRIOR", (0, 5, 31), 60), "FLASKS"), "roles: a tank's flask")
+    sc.eq(names(("WARRIOR", (31, 5, 0), 60), "SCROLLS")[:2], ["Scroll of Strength IV", "Scroll of Agility IV"],
+          "roles: one scroll of each stat (Strength III is the same buff)")
+    sc.eq(names(("WARRIOR", (31, 5, 0), 60), "ELIXIRS")[:2], ["Elixir of the Grizzly", "Elixir of the Mongoose"],
+          "roles: one elixir of each stat line")
+    sc.check("FLASKS" not in dict(seen[("WARRIOR", (25, 5, 0), 35)]), "roles: no flask at 35")
+    sc.check("Great Rage Potion" in names(("WARRIOR", (25, 5, 0), 35), "POTIONS"), "roles: a level 35 warrior's rage potion")
+    # A role picked by hand (/gl enchants) wins over the talents, also while the enchant tips are off.
+    en_player(w, "WARRIOR", (31, 5, 0), "forever", 60)
+    cs_reopen(w)
+    w.slash("/gl enchants tank")
+    w.settle(0.1)
+    sc.eq(cs_header(w), "Consumes for tank, level 60", "roles: /gl enchants tank: at once")
+    sc.eq(cs_sections(w), cs_expect(w, "tank", "WARRIOR", 60), "roles: /gl enchants tank: a tank's lists")
+    w.slash("/gl enchants off")
+    cs_reopen(w)
+    sc.eq(cs_header(w), "Consumes for tank, level 60", "roles: enchant tips off: still the role picked")
+    w.slash("/gl enchants auto")
+    w.settle(0.1)
+    sc.eq(cs_header(w), "Consumes for melee, level 60", "roles: /gl enchants auto: the talents' role")
+    # A level up while it is up: the lists follow.
+    en_player(w, "WARRIOR", (31, 5, 0), "forever", 59)
+    w.M.fire("PLAYER_LEVEL_UP", 59)
+    w.settle(0.1)
+    sc.eq(cs_header(w), "Consumes for melee, level 59", "roles: a new level while it is up")
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 59), "roles: level 59's lists")
+    sc.clean(w, "roles")
+
+
+def sc_consumes_all(sc, ref, items):
+    """All shows every usable item of each section (best first), scrolled in at most 16 lines;
+    the wheel scrolls; Best (All again) goes back."""
+    _, prices = cs_data(ref)
+    w = cs_world(ref, items)
+    M, ns = w.M, w.ns
+    S, C = ns.settings, ns.Consumes
+    F = cs_frame(w)
+    cs_open(w)
+    best = cs_sections(w)
+    M.click(F.allButton)
+    sc.eq((S.consumesAll, C.Model().all), (True, True), "all: on, remembered")
+    want = cs_expect(w, "melee", "WARRIOR", 60, all_=True)
+    model = [(s.title, [int(s.ids[i]) for i in range(1, len(s.ids) + 1)]) for s in
+             [C.Model().sections[k] for k in range(1, len(C.Model().sections) + 1)]]
+    sc.eq(model, want, "all: every usable item of each section")
+    sc.check(sum(len(ids) for _, ids in want) > sum(len(ids) for _, ids in best), "all: more than the best 4")
+    sc.check(all(ids[:1] == b[:1] for (_, ids), (_, b) in zip(want, best)), "all: the best first")
+    L = C.Layout()
+    sc.check(L.lines == CS_MAX_LINES and L.total > L.lines, "all: 16 lines shown, the rest scrolls (%s/%s)" % (L.lines, L.total))
+    cs_place_ok(sc, w, "all")
+    sc.check(F.scrollBar.IsVisible(F.scrollBar), "all: a scroll bar")
+    top = cs_sections(w)
+    cs_rows_ok(sc, w, prices, 60, "all")
+    M.fireScript(F, "OnMouseWheel", -1)
+    after = cs_sections(w)
+    sc.check(after != top, "all: the wheel scrolls down")
+    cs_place_ok(sc, w, "all: scrolled")
+    for _ in range(100):
+        M.fireScript(F, "OnMouseWheel", -1)
+    _, rows = cs_cells(w)
+    cells = C.Layout().cells
+    end = max((cells[i] for i in range(1, len(cells) + 1)), key=lambda c: c.line)
+    sc.check(end.id is not None and any(r[0] == end.id for r in rows), "all: scrolls to the last line")
+    row = rows[0][5]
+    for _ in range(100):
+        M.fireScript(row, "OnMouseWheel", 1)
+    sc.eq(cs_sections(w), top, "all: the wheel over a row scrolls back to the top")
+    M.click(F.allButton)
+    sc.eq((S.consumesAll, C.Model().all), (None, False), "all: off again")
+    sc.eq(cs_sections(w), best, "all: the best 4 again")
+    sc.check(not F.scrollBar.IsVisible(F.scrollBar), "all: no scroll bar")
+    sc.clean(w, "all")
+
+
+def sc_consumes_slash(sc, ref, items):
+    """/gl consumes off: never shows; on: back; alone: switches; /gl help says it in one line.
+    Saved off stays off; no character frame: nothing, no error; one made later: the list then."""
+    w = cs_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    S = ns.settings
+    F = cs_frame(w)
+    cs_open(w)
+    out = [strip_codes(x) for x in w.slash("/gl consumes off")]
+    sc.eq(out, [CS_OFF], "slash: off says so")
+    sc.check(not F.IsVisible(F) and S.consumes is False, "slash: off: gone at once, saved")
+    cs_reopen(w)
+    sc.check(not F.IsVisible(F), "slash: off: not when the character screen opens")
+    out = [strip_codes(x) for x in w.slash("/gl consumes on")]
+    sc.eq(out, [CS_ON], "slash: on says so")
+    sc.check(F.IsVisible(F) and S.consumes is None, "slash: on: back at once")
+    cs_place_ok(sc, w, "slash: on")
+    sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "slash: on: the lists")
+    w.slash("/gl consumes")
+    sc.check(not F.IsVisible(F) and S.consumes is False, "slash: alone: off")
+    w.slash("/gl consumes")
+    sc.check(F.IsVisible(F) and S.consumes is None, "slash: alone again: on")
+    # Turned off by the setting itself while the screen was closed: read when it opens.
+    char_close(w)
+    S.consumes = False
+    cs_open(w)
+    sc.check(not F.IsVisible(F), "slash: the setting off: not shown when it opens")
+    S.consumes = None
+    F.Show(F)
+    cs_reopen(w)
+    sc.check(F.IsVisible(F), "slash: the setting on again")
+    out = [strip_codes(x) for x in w.slash("/gl consumes sideways")]
+    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl consumes on or /gl consumes off (alone: switches)."], "slash: unknown")
+    sc.check(F.IsVisible(F), "slash: unknown changes nothing")
+    out = [strip_codes(x) for x in w.slash("/gl help")]
+    sc.eq([t for t in out if "/gl consumes" in t], ["Goblin Ledger: " + CS_HELP], "slash: /gl help names it in one line")
+    sc.check(sum(1 for t in out if "/gl enchants" in t) == 1, "slash: /gl help still lists /gl enchants once")
+    sc.clean(w, "slash")
+    # Saved off: never shows after a reload, until /gl consumes on.
+    w = cs_world(ref, items, saved={"consumes": False})
+    F = cs_frame(w)
+    cs_open(w)
+    sc.check(not F.IsVisible(F), "slash: saved off: not shown after a reload")
+    w.slash("/gl consumes on")
+    sc.check(F.IsVisible(F), "slash: saved off: /gl consumes on shows it")
+    cs_place_ok(sc, w, "slash: saved off, then on")
+    sc.clean(w, "slash saved")
+    # No character frame: nothing made, commands still answer, no error; made when it comes.
+    w = cs_world(ref, items, char=False)
+    C = w.ns.Consumes
+    sc.check(C.Frame() is None, "slash: no PaperDollFrame: no list")
+    w.slash("/gl consumes off")
+    w.slash("/gl consumes on")
+    sc.eq(w.ns.settings.consumes, None, "slash: no PaperDollFrame: the setting still works")
+    w.M.InstallCharacterFrame()
+    w.M.InstallCharacterNeighbours()
+    w.M.fire("ADDON_LOADED", "Blizzard_UIPanels_Game")
+    F = C.Frame()
+    if sc.check(F is not None and w.same(F.GetParent(F), w.g.PaperDollFrame), "slash: late: made on ADDON_LOADED"):
+        cs_open(w)
+        cs_place_ok(sc, w, "slash: late")
+        sc.eq(cs_sections(w), cs_expect(w, "melee", "WARRIOR", 60), "slash: late: the lists")
+    sc.clean(w, "slash: late")
+    # The character screen open before the list is made (it comes on that OnShow): up at once.
+    w = cs_world(ref, items, char=False)
+    w.M.InstallCharacterFrame({"noPaperDoll": True})
+    char_show(w)
+    w.M.InstallPaperDoll()
+    w.M.fire("PLAYER_LOGIN")
+    F = w.ns.Consumes.Frame()
+    if sc.check(F is not None, "slash: made while the screen is open"):
+        w.M.HideFrame(w.g.PaperDollFrame)
+        w.M.ShowFrame(w.g.PaperDollFrame)
+        w.settle(0.3)
+        sc.check(F.IsVisible(F), "slash: and shown")
+    sc.clean(w, "slash: open first")
+    # The source: plain ASCII with CRLF line ends, last in both TOC files.
+    raw = open(os.path.join(ADDON, "Consumes.lua"), "rb").read()
+    sc.check(all(b < 128 for b in raw), "slash: Consumes.lua is plain ASCII")
+    sc.check(raw.count(b"\r\n") == raw.count(b"\n") or raw.count(b"\r") == 0,
+             "slash: Consumes.lua line ends all alike")
+    for toc in ("GoblinLedger.toc", "GoblinLedger_Forever.toc"):
+        lines = [l.strip() for l in open(os.path.join(ADDON, toc), "rb").read().decode("ascii").splitlines() if l.strip()]
+        sc.eq(lines[-2:], ["Enchants.lua", "Consumes.lua"], "slash: %s loads Consumes.lua last" % toc)
+
+
+# --- consumes: end ---
+
 
 SCENARIOS = [
     ("static-source", sc_static),
@@ -15682,6 +16654,18 @@ SCENARIOS = [
     ("enchants-toggle-late", sc_enchants_toggle_late),
     ("enchants-toggle-saved", sc_enchants_toggle_saved),
     ("enchants-toggle-elvui", sc_enchants_toggle_elvui),
+    ("consumes-place", sc_consumes_place),
+    ("consumes-place-elvui", sc_consumes_place_elvui),
+    ("consumes-fold", sc_consumes_fold),
+    ("consumes-tabs", sc_consumes_tabs),
+    ("consumes-room", sc_consumes_room),
+    ("consumes-collapse", sc_consumes_collapse),
+    ("consumes-clicks", sc_consumes_clicks),
+    ("consumes-tooltip", sc_consumes_tooltip),
+    ("consumes-prices", sc_consumes_prices),
+    ("consumes-roles", sc_consumes_roles),
+    ("consumes-all", sc_consumes_all),
+    ("consumes-slash", sc_consumes_slash),
 ]
 
 
