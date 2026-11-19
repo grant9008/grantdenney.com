@@ -79,7 +79,42 @@ if (-not $AddonSource -or -not (Test-Path -LiteralPath (Join-Path $AddonSource '
            'Unzip GoblinLedger.zip first (right-click it, Extract All), then run',
            'Install-Goblin-Ledger.bat from the unzipped folder.')
 }
-$AddonSource = [IO.Path]::GetFullPath($AddonSource)
+$AddonSource = [IO.Path]::GetFullPath($AddonSource).TrimEnd('\')
+# The unzipped release: the folder with Install-Goblin-Ledger.bat and the
+# scripts folder (in the repo: this folder).
+$ReleaseRoot = $PSScriptRoot
+$up = Split-Path -Parent $PSScriptRoot
+if ($up -and (Test-Path -LiteralPath (Join-Path $up 'Install-Goblin-Ledger.bat') -PathType Leaf)) { $ReleaseRoot = $up }
+$ReleaseRoot = [IO.Path]::GetFullPath($ReleaseRoot).TrimEnd('\')
+
+# Whether $path is the folder $dir or inside it.
+function Test-Within([string]$path, [string]$dir) {
+    try {
+        $a = [IO.Path]::GetFullPath($path).TrimEnd('\')
+        $b = [IO.Path]::GetFullPath($dir).TrimEnd('\')
+    } catch { return $false }
+    return $a.Equals($b, [StringComparison]::OrdinalIgnoreCase) -or
+           $a.StartsWith($b + '\', [StringComparison]::OrdinalIgnoreCase)
+}
+
+# Saved settings from before the rename that have no Goblin Ledger copy yet:
+# one entry (account, old file, new file) per WTF\Account folder.
+function Get-SettingsMoves([string]$game) {
+    $moves = @()
+    $wtf = Join-Path $game 'WTF\Account'
+    if (-not (Test-Path -LiteralPath $wtf -PathType Container)) { return ,$moves }
+    foreach ($acct in @(Get-ChildItem -LiteralPath $wtf -Directory -ErrorAction SilentlyContinue)) {
+        $sv = Join-Path $acct.FullName 'SavedVariables'
+        $old = Join-Path $sv 'ForeverAH.lua'
+        $new = Join-Path $sv 'GoblinLedger.lua'
+        if ((Test-Path -LiteralPath $old -PathType Leaf) -and -not (Test-Path -LiteralPath $new) -and
+                (Select-String -LiteralPath $old -Pattern 'ForeverAH_Settings' -SimpleMatch -Quiet)) {
+            $moves += ,@($acct.Name, $old, $new)
+        }
+    }
+    return ,$moves
+}
+
 $Updater = $null
 foreach ($cand in @((Join-Path $PSScriptRoot 'update_prices.ps1'), (Join-Path $PSScriptRoot '..\wow\addon\update_prices.ps1'))) {
     if (Test-Path -LiteralPath $cand) { $Updater = [IO.Path]::GetFullPath($cand); break }
@@ -92,6 +127,9 @@ if (-not $Updater) {
 # ---- 1. find the game ---------------------------------------------------------
 if ($GameDir) {
     $found = Resolve-GameDir $GameDir
+    if (-not $found -and $script:OtherVersion) {
+        Fail @("That is another WoW version ($($script:OtherVersion)), not WoW Forever:", "    $GameDir")
+    }
     if (-not $found) { Fail @("This is not the WoW Forever folder: $GameDir") }
     $GameDir = $found
 } else {
@@ -122,7 +160,27 @@ $AccessLines = @(
 )
 Say 'Found WoW Forever in:'
 Say "  $GameDir"
-if (-not $script:TestMode -and (Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue)) {
+# The release unzipped straight into the game (AddOns, or AddOns\GoblinLedger):
+# its files stay where they are.
+$InGame = Test-Within $ReleaseRoot $GameDir
+$wowOpen = Test-WowRunning $GameDir
+if ($wowOpen -and ($OldIsOurs -or (Get-SettingsMoves $GameDir).Count -gt 0)) {
+    # The running game still holds the Forever AH settings and writes them to
+    # ForeverAH.lua when it closes: copying them before that would miss
+    # whatever changed since the last login.
+    Blank
+    Say 'WoW Forever is running. Close the game fully now (exit it, not just'
+    Say 'log out), so your Forever AH settings and watchlist carry over.'
+    $skipped = $true
+    for ($i = 0; $i -lt 20; $i++) {
+        $a = ([string](Ask 'Press Enter once WoW is closed (or type S and Enter to skip): ')).Trim()
+        if ($a -match '^(?i)s') { break }
+        if (-not (Test-WowRunning $GameDir)) { $skipped = $false; $wowOpen = $false; break }
+        Say 'WoW is still running (closing can take a few seconds).'
+    }
+    if ($skipped) { Say 'Skipped: changes made since you last logged in may not carry over.' }
+    else { Say 'WoW is closed. Carrying on.' }
+} elseif ($wowOpen) {
     Blank
     Say 'WoW is running. That is fine, but close it fully and start it again'
     Say 'after this: the game only finds a new addon when it starts.'
@@ -132,23 +190,32 @@ Blank
 # ---- 2. copy the addon ------------------------------------------------------------
 # Every file but Data.lua (the prices) is replaced; files the new version no
 # longer has are removed. The prices already there are kept until new ones
-# are downloaded below.
-Say 'Copying the addon into Interface\AddOns\GoblinLedger ...'
+# are downloaded below. Unzipped straight into AddOns, the addon is already
+# in place (nothing to copy), and the unzipped files are never removed.
+$sameDir = (Test-Within $AddonSource $Dest) -and (Test-Within $Dest $AddonSource)
+if ($sameDir) {
+    Say 'The addon is already in Interface\AddOns\GoblinLedger (unzipped there).'
+} else {
+    Say 'Copying the addon into Interface\AddOns\GoblinLedger ...'
+}
 try {
     New-Item -ItemType Directory -Path $Dest -Force | Out-Null
     $keep = @{}
-    foreach ($f in @(Get-ChildItem -LiteralPath $AddonSource -Recurse -File)) {
-        $rel = $f.FullName.Substring($AddonSource.Length).TrimStart('\')
-        if ($rel -ieq 'Data.lua') { continue }
-        $keep[$rel.ToLowerInvariant()] = $true
-        $to = Join-Path $Dest $rel
-        $toDir = Split-Path -Parent $to
-        if (-not (Test-Path -LiteralPath $toDir)) { New-Item -ItemType Directory -Path $toDir -Force | Out-Null }
-        Copy-Item -LiteralPath $f.FullName -Destination $to -Force
+    if (-not $sameDir) {
+        foreach ($f in @(Get-ChildItem -LiteralPath $AddonSource -Recurse -File)) {
+            $rel = $f.FullName.Substring($AddonSource.Length).TrimStart('\')
+            if ($rel -ieq 'Data.lua') { continue }
+            $keep[$rel.ToLowerInvariant()] = $true
+            $to = Join-Path $Dest $rel
+            $toDir = Split-Path -Parent $to
+            if (-not (Test-Path -LiteralPath $toDir)) { New-Item -ItemType Directory -Path $toDir -Force | Out-Null }
+            Copy-Item -LiteralPath $f.FullName -Destination $to -Force
+        }
     }
     foreach ($f in @(Get-ChildItem -LiteralPath $Dest -Recurse -File)) {
         $rel = $f.FullName.Substring($Dest.Length).TrimStart('\')
         if ($rel -ieq 'Data.lua' -or $keep.ContainsKey($rel.ToLowerInvariant())) { continue }
+        if ((Test-Within $f.FullName $AddonSource) -or (Test-Within $f.FullName $ReleaseRoot)) { continue }
         Remove-Item -LiteralPath $f.FullName -Force
     }
     $data = Join-Path $Dest 'Data.lua'
@@ -185,21 +252,14 @@ if ($OldIsOurs) {
         Say 'Delete it by hand (close WoW first), or the game runs both.'
     }
 }
-$wtf = Join-Path $GameDir 'WTF\Account'
-if (Test-Path -LiteralPath $wtf -PathType Container) {
-    foreach ($acct in @(Get-ChildItem -LiteralPath $wtf -Directory -ErrorAction SilentlyContinue)) {
-        $sv = Join-Path $acct.FullName 'SavedVariables'
-        $old = Join-Path $sv 'ForeverAH.lua'
-        $new = Join-Path $sv 'GoblinLedger.lua'
-        if ((Test-Path -LiteralPath $old -PathType Leaf) -and -not (Test-Path -LiteralPath $new) -and
-                (Select-String -LiteralPath $old -Pattern 'ForeverAH_Settings' -SimpleMatch -Quiet)) {
-            # The old file stays as it is (a backup); the game now saves GoblinLedger.lua.
-            try {
-                Copy-Item -LiteralPath $old -Destination $new
-                Say "Kept your settings and watchlist ($($acct.Name))."
-            } catch { Say "Could not copy your old settings for $($acct.Name): $($_.Exception.Message)" }
-        }
-    }
+# Looked up again now: closing WoW may just have written ForeverAH.lua.
+foreach ($mv in (Get-SettingsMoves $GameDir)) {
+    $acctName, $old, $new = $mv
+    # The old file stays as it is (a backup); the game now saves GoblinLedger.lua.
+    try {
+        Copy-Item -LiteralPath $old -Destination $new
+        Say "Kept your settings and watchlist ($acctName)."
+    } catch { Say "Could not copy your old settings for ${acctName}: $($_.Exception.Message)" }
 }
 if (-not (Remove-PriceTask $OldTaskName)) { Say "Could not remove the old ""$OldTaskName"" task. Task Scheduler can delete it." }
 
@@ -209,7 +269,7 @@ try {
     $upd = Join-Path $AppDir 'update_prices.ps1'
     Copy-Item -LiteralPath $Updater -Destination $upd -Force
     try { Unblock-File -LiteralPath $upd -ErrorAction Stop } catch { }
-    Set-Content -LiteralPath (Join-Path $AppDir 'addon_dir.txt') -Value $Dest -Encoding ASCII
+    Save-PathFile (Join-Path $AppDir 'addon_dir.txt') $Dest
 } catch {
     Fail @("Could not save the price updater in $AppDir", "    $($_.Exception.Message)")
 }
@@ -217,7 +277,7 @@ try {
 # owner's price collector uses it): point it at the new folder.
 $legacyPtr = Join-Path $LegacyAppDir 'addon_dir.txt'
 if (Test-Path -LiteralPath $legacyPtr -PathType Leaf) {
-    try { Set-Content -LiteralPath $legacyPtr -Value $Dest -Encoding ASCII } catch { }
+    try { Save-PathFile $legacyPtr $Dest } catch { }
 }
 
 # ---- 5. prices now ------------------------------------------------------------------
@@ -309,6 +369,11 @@ Say '  2. Hover an item you could sell: the Goblin Ledger lines show its'
 Say '     prices. Type /gl help for the commands.'
 Say ' Not showing? At the character screen click AddOns and make sure'
 Say ' Goblin Ledger is ticked.'
-Say ' You can delete the zip and the unzipped folder now.'
+if ($InGame) {
+    Say ' You can delete the zip now. Leave the files you unzipped into the'
+    Say ' game folder where they are.'
+} else {
+    Say ' You can delete the zip and the unzipped folder now.'
+}
 Say '============================================================'
 exit 0

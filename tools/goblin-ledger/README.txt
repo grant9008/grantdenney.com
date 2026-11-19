@@ -18,7 +18,8 @@ INSTALL (Windows, about 3 minutes)
    you could sell: the Goblin Ledger lines show its prices.
    Type /gl help in chat for the commands.
 
-You can delete the zip and the unzipped folder afterwards.
+Afterwards you can delete the zip and the unzipped folder. (Unzipped it
+straight into the game's AddOns folder? Then delete only the zip.)
 
 FRESH PRICES
 They update by themselves every 30 minutes while you are logged in to

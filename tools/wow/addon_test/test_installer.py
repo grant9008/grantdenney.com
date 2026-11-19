@@ -53,6 +53,11 @@ def read(p, mode="rb"):
         return fh.read()
 
 
+def peek(p, mode="rb"):
+    """read(), or None when the file is not there (the check then fails instead of stopping the run)."""
+    return read(p, mode) if os.path.isfile(p) else None
+
+
 def write(p, data):
     os.makedirs(os.path.dirname(p), exist_ok=True)
     with open(p, "wb") as fh:
@@ -80,10 +85,10 @@ def price_file(stamp):
 class Box:
     """A fake PC: game folder, LOCALAPPDATA, the owner's old install."""
 
-    def __init__(self, base, name):
+    def __init__(self, base, name, games="Games"):
         self.root = os.path.join(base, name)
         self.local = os.path.join(self.root, "local")
-        self.wow = os.path.join(self.root, "Games", "World of Warcraft")
+        self.wow = os.path.join(self.root, games, "World of Warcraft")
         self.game = os.path.join(self.wow, "_forever_")
         self.addons = os.path.join(self.game, "Interface", "AddOns")
         self.dest = os.path.join(self.addons, "GoblinLedger")
@@ -102,12 +107,13 @@ class Box:
     def sv(self, acct, name):
         return os.path.join(self.game, "WTF", "Account", acct, "SavedVariables", name)
 
-    def env(self, answers=None, search=None, tasks=""):
+    def env(self, answers=None, search=None, tasks="", wow_running=0):
         e = dict(os.environ)
         e.update({"GOBLINLEDGER_TEST": "1", "LOCALAPPDATA": self.local, "GOBLINLEDGER_TASKLOG": self.tasklog,
-                  "GOBLINLEDGER_TEST_TASKS": tasks,
+                  "GOBLINLEDGER_TEST_TASKS": tasks, "GOBLINLEDGER_TEST_WOW": str(wow_running),
                   "GOBLINLEDGER_SEARCH": search if search is not None else os.path.join(self.root, "nowhere", "_forever_")})
         e.pop("GOBLINLEDGER_ANSWERS", None)
+        e.pop("GOBLINLEDGER_DATA_URL", None)
         if answers is not None:
             e["GOBLINLEDGER_ANSWERS"] = answers
         return e
@@ -122,7 +128,14 @@ class Box:
 
 def run_ps(script, args, env):
     r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script] + args,
-                       env=env, capture_output=True, text=True, stdin=subprocess.DEVNULL, timeout=180)
+                       env=env, capture_output=True, text=True, errors="replace", stdin=subprocess.DEVNULL, timeout=180)
+    return r.returncode, r.stdout + r.stderr
+
+
+def run_bat(bat, env):
+    """A double-click in Explorer: cmd runs the .bat from its own folder."""
+    r = subprocess.run(["cmd.exe", "/c", bat], env=env, cwd=os.path.dirname(bat), capture_output=True, text=True,
+                       errors="replace", stdin=subprocess.DEVNULL, timeout=180)
     return r.returncode, r.stdout + r.stderr
 
 
@@ -166,7 +179,11 @@ def test_resolve(base):
     box = Box(base, "resolve")
     os.makedirs(os.path.join(box.addons), exist_ok=True)
     other = os.path.join(box.root, "Other", "World of Warcraft")
-    os.makedirs(os.path.join(other, "_retail_"))
+    # Other WoW versions look like a game folder (Interface, WTF, Wow.exe) but are not WoW Forever.
+    os.makedirs(os.path.join(other, "_retail_", "Interface", "AddOns"))
+    os.makedirs(os.path.join(box.wow, "_retail_", "Interface", "AddOns"))
+    os.makedirs(os.path.join(box.wow, "_classic_era_", "WTF"))
+    write(os.path.join(other, "_classic_", "WowClassic.exe"), b"MZ")
     g = box.game
     cases = [
         (g, g), ('"%s"' % g, g), ("'%s'" % g, g), ('  "%s\\"  ' % g, g),
@@ -174,6 +191,10 @@ def test_resolve(base):
         (os.path.join(g, "Interface", "AddOns"), g), ('"%s"' % os.path.join(g, "Interface", "AddOns", "Questie"), g),
         (os.path.join(g, "Wow.exe"), g), (g.lower(), g.lower()),
         (other, None), (os.path.join(box.root, "missing"), None), ("", None), ('""', None),
+        (os.path.join(other, "_retail_"), None), ('"%s\\"' % os.path.join(other, "_retail_"), None),
+        (os.path.join(other, "_classic_"), None),
+        (os.path.join(box.wow, "_retail_"), g), (os.path.join(box.wow, "_classic_era_"), g),
+        (os.path.join(box.wow, "_retail_", "Interface", "AddOns"), g),
     ]
     script = os.path.join(base, "resolve.ps1")
     write(script, ". '%s'\n$in = Get-Content -LiteralPath $args[0] -Raw -Encoding UTF8 | ConvertFrom-Json\n"
@@ -318,6 +339,73 @@ def test_edge_cases(base):
     code, out = install(box2, ["-GameDir", '"%s"' % box2.game, "-DataUrl", box2.prices1, "-AutoUpdate", "N"])
     eq(code, 0, "-GameDir in quotes works")
     check(not box2.tasks(), "-AutoUpdate N on a fresh PC: no task at all")
+    # Pasting another WoW version's folder: refused with a hint, nothing goes into that game.
+    box3 = Box(base, "otherversion")
+    shutil.rmtree(box3.game)
+    retail = os.path.join(box3.wow, "_retail_")
+    write(os.path.join(retail, "Wow.exe"), b"MZ")
+    os.makedirs(os.path.join(retail, "Interface", "AddOns"))
+    code, out = install(box3, ["-DataUrl", box3.prices1, "-AutoUpdate", "N"], answers='"%s"|' % retail)
+    eq(code, 1, "another WoW version pasted, then Enter: stops")
+    check("another WoW version" in out, "says the pasted folder is another WoW version")
+    check(not os.path.exists(os.path.join(retail, "Interface", "AddOns", "GoblinLedger")), "nothing installed into _retail_")
+    check(not os.path.exists(box3.app), "nothing set up for _retail_")
+    code, out = install(box3, ["-GameDir", retail, "-DataUrl", box3.prices1, "-AutoUpdate", "N"])
+    eq(code, 1, "-GameDir pointing at _retail_ is refused")
+    check(not os.path.exists(os.path.join(retail, "Interface", "AddOns", "GoblinLedger")), "-GameDir _retail_: nothing installed")
+
+
+def test_wow_running(base):
+    print("WoW open while moving over from Forever AH: waits until it is closed")
+    box = Box(base, "running")
+    old_install(box)
+    # WoW counts as running at the start and after the first Enter, then it is closed.
+    code, out = install(box, ["-DataUrl", box.prices1, "-AutoUpdate", "N"], search=box.game, answers="|",
+                        wow_running=2)
+    eq(code, 0, "WoW running: install exit code (%s)" % out[-600:])
+    check("Close the game fully" in out, "asks to close WoW before moving the settings over")
+    check("still running" in out, "says WoW is still running after an Enter while it is open")
+    check("WoW is closed" in out, "carries on once WoW is closed")
+    kept = out.find("Kept your settings")
+    check(kept > out.find("WoW is closed") >= 0, "settings are copied only after WoW is closed")
+    eq(read(box.sv("ACC1", "GoblinLedger.lua")), read(box.sv("ACC1", "ForeverAH.lua")), "WoW running: settings copied")
+    # The player can skip the wait: the settings are still copied, with a warning.
+    box2 = Box(base, "running_skip")
+    old_install(box2)
+    code, out = install(box2, ["-DataUrl", box2.prices1, "-AutoUpdate", "N"], search=box2.game, answers="s",
+                        wow_running=99)
+    eq(code, 0, "WoW running, skipped: exit code (%s)" % out[-600:])
+    check("Skipped" in out and "may not carry over" in out, "skipping the wait warns about recent changes")
+    check(os.path.exists(box2.sv("ACC1", "GoblinLedger.lua")), "skipped: settings still copied")
+    # Nothing to move over: no waiting, only the note to restart the game.
+    box3 = Box(base, "running_fresh")
+    code, out = install(box3, ["-DataUrl", box3.prices1, "-AutoUpdate", "N"], search=box3.game, wow_running=99)
+    eq(code, 0, "WoW running, fresh install: exit code")
+    check("Close the game fully" not in out and "Press Enter once WoW is closed" not in out,
+          "fresh install with WoW open does not wait")
+    check("WoW is running" in out, "fresh install with WoW open: says to restart the game")
+
+
+def test_non_ascii(base):
+    print("game folder with a non-ASCII name")
+    box = Box(base, "accent", games="Jos\u00e9 Games")
+    code, out = install(box, ["-DataUrl", box.prices1, "-AutoUpdate", "Y"], search=box.game)
+    eq(code, 0, "non-ASCII path: install exit code (%s)" % out[-600:])
+    eq(peek(os.path.join(box.dest, "Data.lua")), read(box.prices1), "non-ASCII path: prices downloaded")
+    eq((peek(os.path.join(box.app, "addon_dir.txt")) or b"").decode("utf-8-sig").strip(), box.dest,
+       "non-ASCII path: addon_dir.txt names the addon folder exactly")
+    # The task runs the installed updater with no -AddonDir: it must read the saved folder right.
+    code, out = run_ps(os.path.join(box.app, "update_prices.ps1"), ["-DataUrl", box.prices2, "-Quiet"], box.env())
+    eq(code, 0, "non-ASCII path: the installed updater finds the addon (%s)" % out[-300:])
+    eq(peek(os.path.join(box.dest, "Data.lua")), read(box.prices2), "non-ASCII path: the updater put new prices in")
+    code, out = uninstall(box, answers="y|n")
+    eq(code, 0, "non-ASCII path: uninstall exit code (%s)" % out[-300:])
+    check(not os.path.exists(box.dest), "non-ASCII path: uninstall finds and removes the addon")
+    # A plain path stays plain ASCII with no byte-order mark (the owner's .bat files read it with set /p).
+    box2 = Box(base, "plainpath")
+    install(box2, ["-DataUrl", box2.prices1, "-AutoUpdate", "N"], search=box2.game)
+    eq(peek(os.path.join(box2.app, "addon_dir.txt")), (box2.dest + "\r\n").encode("ascii"),
+       "plain path: addon_dir.txt is the path in plain ASCII")
 
 
 def test_release(base):
@@ -378,6 +466,55 @@ def test_release(base):
     code, out = run_ps(UPDATER, ["-DataUrl", box.prices1 + ".newest"], box.env())
     eq(code, 0, "an old pointer to the ForeverAH folder still finds GoblinLedger (%s)" % out[-300:])
     eq(read(os.path.join(box.dest, "Data.lua")), read(box.prices1 + ".newest"), "...and updates it")
+    return zpath
+
+
+def test_unzipped_in_game(base, zpath):
+    print("zip unzipped straight into the game's AddOns folder")
+    release = {}
+    with zipfile.ZipFile(zpath) as z:
+        for n in z.namelist():
+            release[n.replace("/", os.sep)] = hashlib.sha1(z.read(n)).hexdigest()
+    # 1. Into AddOns: the addon folder is already where it belongs.
+    box = Box(base, "inaddons")
+    old_install(box)
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(box.addons)
+    env = box.env(search=box.game, answers="y", tasks="ForeverAH Prices")
+    env["GOBLINLEDGER_DATA_URL"] = box.prices1
+    code, out = run_bat(os.path.join(box.addons, "Install-Goblin-Ledger.bat"), env)
+    eq(code, 0, "unzipped into AddOns: exit code (%s)" % out[-600:])
+    check("with itself" not in out and "Could not copy" not in out, "unzipped into AddOns: no copy error")
+    addon_files_ok(box, "unzipped into AddOns")
+    eq(peek(os.path.join(box.dest, "Data.lua")), read(box.prices1), "unzipped into AddOns: prices downloaded")
+    eq((peek(os.path.join(box.app, "addon_dir.txt"), "r") or "").strip(), box.dest, "unzipped into AddOns: updater installed")
+    check(any(x.startswith("REGISTER Goblin Ledger Prices") for x in box.tasks()), "unzipped into AddOns: task registered")
+    check(not os.path.exists(box.old), "unzipped into AddOns: old addon migrated")
+    check("delete the zip and the unzipped folder" not in out, "unzipped into AddOns: never says to delete the unzipped folder")
+    check("You can delete the zip now" in out, "unzipped into AddOns: says only the zip can go")
+    for rel in ("Install-Goblin-Ledger.bat", os.path.join("scripts", "install.ps1")):
+        check(os.path.isfile(os.path.join(box.addons, rel)), "unzipped into AddOns: %s left alone" % rel)
+    env["GOBLINLEDGER_DATA_URL"] = box.prices2
+    code, out = run_bat(os.path.join(box.addons, "Install-Goblin-Ledger.bat"), env)
+    eq(code, 0, "unzipped into AddOns, run again: exit code (%s)" % out[-600:])
+    eq(peek(os.path.join(box.dest, "Data.lua")), read(box.prices2), "unzipped into AddOns, run again: newer prices")
+    addon_files_ok(box, "unzipped into AddOns, run again")
+    # 2. Into AddOns\GoblinLedger (7-Zip "Extract to GoblinLedger\"): the release sits inside the addon folder.
+    box = Box(base, "inaddon")
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(box.dest)
+    env = box.env(search=box.game, answers="y")
+    env["GOBLINLEDGER_DATA_URL"] = box.prices1
+    code, out = run_bat(os.path.join(box.dest, "Install-Goblin-Ledger.bat"), env)
+    eq(code, 0, "unzipped into AddOns\\GoblinLedger: exit code (%s)" % out[-600:])
+    check("cannot find" not in out.lower(), "unzipped into AddOns\\GoblinLedger: the running .bat is not deleted")
+    src = tree(ADDON)
+    src.pop("Data.lua", None)
+    got = tree(box.dest)
+    eq({k: got.get(k) for k in src}, src, "unzipped into AddOns\\GoblinLedger: the addon files are at the top")
+    eq({k: got.get(k) for k in release}, release, "unzipped into AddOns\\GoblinLedger: the unzipped files are left alone")
+    eq(peek(os.path.join(box.dest, "Data.lua")), read(box.prices1), "unzipped into AddOns\\GoblinLedger: prices downloaded")
+    check(os.path.isfile(os.path.join(box.app, "update_prices.ps1")), "unzipped into AddOns\\GoblinLedger: updater installed")
 
 
 def main():
@@ -391,7 +528,11 @@ def main():
         test_rerun(base, box)
         test_uninstall(base, box)
         test_edge_cases(base)
-        test_release(base)
+        test_wow_running(base)
+        test_non_ascii(base)
+        zpath = test_release(base)
+        if zpath:
+            test_unzipped_in_game(base, zpath)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     print()

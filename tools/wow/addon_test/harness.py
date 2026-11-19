@@ -3641,12 +3641,56 @@ OLD_NAMES = ("Forever AH", "Update-WoW-Prices.bat", "Install-WoW-Addon.bat", "Un
              "grantdenney.com/wow")
 
 
+LONG_OPEN = re.compile(r"\[(=*)\[")
+
+
 def lua_strings(code):
-    """The string literals of Lua source (comments already removed)."""
+    """The string literals of Lua source, in order. One pass that knows
+    comments and strings apart, so a "--" inside a string is not taken for a
+    comment and a quote inside a comment is not taken for a string."""
     out = []
-    for m in re.finditer(r'"((?:[^"\\\n]|\\.)*)"|\'((?:[^\'\\\n]|\\.)*)\'|\[(=*)\[(.*?)\]\3\]', code, re.S):
-        out.append(m.group(1) if m.group(1) is not None else m.group(2) if m.group(2) is not None else m.group(4))
+    i, n = 0, len(code)
+    while i < n:
+        c = code[i]
+        if code.startswith("--", i):
+            m = LONG_OPEN.match(code, i + 2)
+            if m:
+                end = code.find("]" + m.group(1) + "]", m.end())
+                i = n if end < 0 else end + len(m.group(1)) + 2
+            else:
+                end = code.find("\n", i)
+                i = n if end < 0 else end + 1
+        elif c in "\"'":
+            j, buf = i + 1, []
+            while j < n and code[j] != c and code[j] != "\n":
+                if code[j] == "\\" and j + 1 < n:
+                    buf.append(code[j:j + 2])
+                    j += 2
+                else:
+                    buf.append(code[j])
+                    j += 1
+            out.append("".join(buf))
+            i = j + 1
+        elif c == "[" and LONG_OPEN.match(code, i):
+            m = LONG_OPEN.match(code, i)
+            end = code.find("]" + m.group(1) + "]", m.end())
+            out.append(code[m.end():] if end < 0 else code[m.end():end])
+            i = n if end < 0 else end + len(m.group(1)) + 2
+        else:
+            i += 1
     return out
+
+
+# "Forever" on its own is the old name, also when it is split over two
+# strings ("Forever" .. " AH"). The game's own name, WoW Forever, is fine;
+# identifiers such as ForeverAH_Settings or ForeverAHSidebar never match.
+OLD_WORD = re.compile(r"(?<!WoW )\bForever\b")
+
+
+def old_names_in(strings):
+    bad = [(old, s[:80]) for s in strings for old in OLD_NAMES if old in s]
+    bad += [("Forever", s[:80]) for s in strings if OLD_WORD.search(s) and not any(old in s for old in OLD_NAMES)]
+    return bad
 
 
 def check_rename_leftovers(sc):
@@ -3654,22 +3698,21 @@ def check_rename_leftovers(sc):
     files and the price file placeholder. /fah only as the old alias."""
     for fname in TOC_FILES + ["GoblinLedger.toc", "GoblinLedger_Forever.toc"]:
         txt = open(os.path.join(ADDON, fname), "rb").read().decode("latin-1")
-        if fname.endswith(".lua"):
-            code = re.sub(r"--\[(=*)\[.*?\]\1\]", "", txt, flags=re.S)
-            code = re.sub(r"--[^\n]*", "", code)
-            strings = lua_strings(code)
-        else:
-            strings = [txt]
-        bad = [(old, s[:80]) for s in strings for old in OLD_NAMES if old in s]
-        sc.eq(bad, [], "%s: no player-visible old name (%s)" % (fname, ", ".join(OLD_NAMES)))
+        strings = lua_strings(txt) if fname.endswith(".lua") else [txt]
+        sc.eq(old_names_in(strings), [], "%s: no player-visible old name (%s, Forever)" % (fname, ", ".join(OLD_NAMES)))
         fah = [s for s in strings if fname.endswith(".lua") and re.search(r"/fah\b", s) and s != "/fah"]
         sc.eq(fah, [], "%s: /fah only as the old slash alias, never in help or messages" % fname)
     toc = open(os.path.join(ADDON, "GoblinLedger.toc"), "rb").read().decode("ascii")
     sc.check("## Title: Goblin Ledger" in toc, "TOC title is Goblin Ledger")
     sc.check("## SavedVariables: ForeverAH_Settings" in toc, "TOC keeps the ForeverAH_Settings saved variable")
-    # The comment-stripping and string finding above really see strings.
-    probe = lua_strings('P("a /fah b") x = \'Forever AH\' y = [[Update-WoW-Prices.bat]]')
-    sc.eq(probe, ["a /fah b", "Forever AH", "Update-WoW-Prices.bat"], "rename check finds every kind of Lua string")
+    # The string finding above really sees strings, and only strings.
+    probe = lua_strings('P("a /fah b") x = \'Forever AH\' y = [[Update-WoW-Prices.bat]] -- "not this"\n'
+                        'z = "see -- Install-WoW-Addon.bat" --[==[ "nor [[this]]" ]==] w = [=[a]]b]=] '
+                        'v = "q\\"Forever\\" AH" u = \'it\\\'s\'')
+    sc.eq(probe, ["a /fah b", "Forever AH", "Update-WoW-Prices.bat", "see -- Install-WoW-Addon.bat", "a]]b",
+                  'q\\"Forever\\" AH', "it\\'s"], "rename check finds every kind of Lua string")
+    probe = lua_strings('T:SetText(Paint("Forever", "buy") .. Paint(" AH", "sell")) A("WoW Forever") B("ForeverAHSidebar")')
+    sc.eq(old_names_in(probe), [("Forever", "Forever")], "rename check: the old name split over two strings is caught")
 
 
 def sc_load(sc, ref, items):
@@ -5447,6 +5490,7 @@ def sc_sidebar(sc, ref, items):
     sc.check(SB.lastError is None, "sidebar: no swallowed error (%s)" % SB.lastError)
 
     # Header
+    sc.eq(strip_codes(SB.title._text), "Goblin Ledger", "sidebar header shows the addon's name")
     sc.check("ago" in strip_codes(SB.age._text) or "just now" in strip_codes(SB.age._text),
              "header shows the data age (%r)" % SB.age._text)
 

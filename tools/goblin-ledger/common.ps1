@@ -66,8 +66,12 @@ function Test-GameDir([string]$dir) {
 
 # What a player pasted: with or without quotes, the _forever_ folder, the
 # World of Warcraft folder above it, or a folder inside _forever_ (Interface,
-# AddOns). Returns the _forever_ folder, or $null.
+# AddOns). Returns the _forever_ folder, or $null. Another WoW version's
+# folder (_retail_, _classic_, _classic_era_, _ptr_ ...) is never taken: its
+# _forever_ neighbour is used when there is one, otherwise $null, and
+# $script:OtherVersion names that folder for the message.
 function Resolve-GameDir([string]$text) {
+    $script:OtherVersion = $null
     if (-not $text) { return $null }
     $p = $text.Trim().Trim('"').Trim("'").Trim()
     if (-not $p) { return $null }
@@ -78,8 +82,47 @@ function Resolve-GameDir([string]$text) {
     $m = [regex]::Match($p, '^(.*?\\_forever_)(\\.*)?$', 'IgnoreCase')
     if ($m.Success -and (Test-Path -LiteralPath $m.Groups[1].Value -PathType Container)) { return $m.Groups[1].Value }
     if (Test-Path -LiteralPath (Join-Path $p '_forever_') -PathType Container) { return (Join-Path $p '_forever_') }
+    # Another WoW version's folder, or its Interface or WTF folder.
+    $m = [regex]::Match($p, '^(.+)\\(_[a-z0-9]+(?:_[a-z0-9]+)*_)(\\(?:Interface|WTF)(?:\\.*)?)?$', 'IgnoreCase')
+    if ($m.Success -and $m.Groups[2].Value -ine '_forever_') {
+        $script:OtherVersion = $m.Groups[2].Value
+        $sib = Join-Path $m.Groups[1].Value '_forever_'
+        if (Test-Path -LiteralPath $sib -PathType Container) { return $sib }
+        return $null
+    }
     if (Test-GameDir $p) { return $p }
     return $null
+}
+
+# Is WoW Forever running? Only a Wow* program started from the game folder
+# counts (an addon manager such as WowUp does not). Test mode: the number in
+# GOBLINLEDGER_TEST_WOW says how many checks still find it running.
+$script:TestWowLeft = 0
+if ($env:GOBLINLEDGER_TEST_WOW -match '^\d+$') { $script:TestWowLeft = [int]$env:GOBLINLEDGER_TEST_WOW }
+function Test-WowRunning([string]$gameDir) {
+    if ($script:TestMode) {
+        if ($script:TestWowLeft -gt 0) { $script:TestWowLeft--; return $true }
+        return $false
+    }
+    $root = $null
+    try { $root = [IO.Path]::GetFullPath($gameDir).TrimEnd('\') + '\' } catch { }
+    foreach ($p in @(Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $p.Path } catch { }
+        # Windows would not say where it runs from: count it, to be safe.
+        if (-not $path -or -not $root) { return $true }
+        if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+    }
+    return $false
+}
+
+# Saves a folder path for the updater and the uninstallers. Plain ASCII when
+# it is (the owner's .bat files read the file with set /p, which would keep a
+# byte-order mark); UTF-8 with a byte-order mark otherwise, so a name like
+# "Jose" with an accent reads back right in Windows PowerShell.
+function Save-PathFile([string]$file, [string]$path) {
+    if ($path -match '[^\x00-\x7F]') { Set-Content -LiteralPath $file -Value $path -Encoding UTF8 }
+    else { Set-Content -LiteralPath $file -Value $path -Encoding ASCII }
 }
 
 # Where WoW Forever usually is. Test mode: only GOBLINLEDGER_SEARCH.
@@ -149,8 +192,13 @@ function Ask-GameDir {
         if (-not ([string]$a).Trim()) { return $null }
         $dir = Resolve-GameDir $a
         if ($dir) { return $dir }
-        Say 'That does not look like the WoW Forever folder (the one called _forever_,'
-        Say 'which holds the game''s Interface folder). Try again.'
+        if ($script:OtherVersion) {
+            Say "That is another WoW version ($($script:OtherVersion)), not WoW Forever. Paste the"
+            Say 'folder called _forever_ (in the Battle.net app pick WoW Forever first). Try again.'
+        } else {
+            Say 'That does not look like the WoW Forever folder (the one called _forever_,'
+            Say 'which holds the game''s Interface folder). Try again.'
+        }
     }
     return $null
 }

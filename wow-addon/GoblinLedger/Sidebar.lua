@@ -1327,7 +1327,7 @@ function SB:Build(parent)
   -- Header
   self.title = NewFS(F, "GameFontNormal")
   self.title:SetPoint("TOPLEFT", F, "TOPLEFT", PAD, -8)
-  self.title:SetText(Paint("Forever", "buy") .. Paint(" AH", "sell"))
+  self.title:SetText(Paint("Goblin", "buy") .. Paint(" Ledger", "sell"))
   self.age = NewFS(F, "GameFontHighlightSmall")
   self.age:SetPoint("TOPLEFT", self.title, "BOTTOMLEFT", 0, -3)
   self.age:SetPoint("RIGHT", F, "RIGHT", -PAD, 0)
