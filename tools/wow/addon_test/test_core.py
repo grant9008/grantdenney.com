@@ -1774,14 +1774,18 @@ def normal_fonts(G, tt, skip=(), size=12):
 
 
 BIG4 = [(4, "TextLeft", "ForeverAHBigFont1", 15), (4, "TextRight", "ForeverAHBigFont1", 15)]
+# the verdict (line 4) and the price under it (line 5: the AH value, or Vendor pays)
+BIG45 = BIG4 + [(5, "TextLeft", "ForeverAHBigFont1", 15), (5, "TextRight", "ForeverAHBigFont1", 15)]
 
 
 def tc(G, tt, iid, want, big, label, count=1, shift=False):
-    """One spec case: the lines with their colours, and whether the verdict (line 4) is bigger."""
+    """One spec case: the lines with their colours, and whether the verdict (line 4) and the
+    price under it (line 5: the AH value under Auction it, Vendor pays under Vendor it) are bigger."""
     got = show(G, tt, iid, count, shift)
     eq(got, want, label)
-    eq(big_lines(G, tt), BIG4 if big else [], label + ": " + ("the verdict is bigger" if big else "nothing is bigger"))
-    eq(normal_fonts(G, tt, skip=(4,) if big else ()), [], label + ": every other line at the normal size")
+    eq(big_lines(G, tt), BIG45 if big else [],
+       label + ": " + ("the verdict and its price are bigger" if big else "nothing is bigger"))
+    eq(normal_fonts(G, tt, skip=(4, 5) if big else ()), [], label + ": every other line at the normal size")
 
 
 def H(age="1m ago"):
@@ -1819,7 +1823,7 @@ def test_verdict_tooltips():
                      ROW("Suggested price (x20)", "40s"), stack((20, "38s"))], True, "TC3 Silk x20 with Shift",
        count=20, shift=True)
     tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC3 Shift released: TC1 again", count=20)
-    eq(len(big_lines(G, tt)), 2, "TC3: exactly two big FontStrings after the rebuild")
+    eq(len(big_lines(G, tt)), 4, "TC3: exactly four big FontStrings (two lines) after the rebuild")
     tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+5%", POS),
                      ROW("7-day average", "3s 67c"), ROW("Sell now", "3s 88c"), ROW("Suggested price", "3s 89c"),
                      stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17", count=17)
@@ -1830,15 +1834,22 @@ def test_verdict_tooltips():
     tc(G, tt, 13468, [H(), (("Auction it", "over 100x vendor"), "pos", "pos"), AHV("350g", "0%"),
                       ROW("1-day average", "350g 5s"), ROW("Sell now", "350g 19s"), ROW("Suggested price", "350g 19s")],
        True, "TC5 Black Lotus")
-    tc(G, tt, 17057, [H(), (("Vendor it", "+5% vs AH"), "neg", "neg"), AHV("7c", "0%"), ROW("5-day average", "7c"),
+    tc(G, tt, 17057, [H(), (("Vendor it", "+5% vs AH"), "neg", "neg"), ROW("Vendor pays", "7c"), AHV("7c", "0%"),
+                      ROW("5-day average", "7c"),
                       ROW("Sell now", "6c", "neg"), ROW("Suggested price", "7c", "neg")], True,
        "TC6 Shiny Fish Scales x20 (no stack line)", count=20)
     tc(G, tt, 12365, [H(), (("Close call", "AH +9%"), "muted", "muted"), AHV("2s 88c", "0%"),
                       ROW("5-day average", "2s 88c"), ROW("Sell now", "2s 77c"), ROW("Suggested price", "2s 88c"),
                       stack((20, "54s 72c"))], False, "TC7 Dense Stone x20", count=20)
-    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), AHV("42s", "0%"), ROW("5-day average", "42s"),
+    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
+                     ROW("5-day average", "42s"),
                      ROW("Sell now", "39s 99c", "neg"), ROW("Suggested price", "42s", "neg")], True,
        "TC8 Vendor Pays More x20 (no stack line)", count=20)
+    # with Shift on the stack: Vendor pays for the stack, with the same (x20) tag as the other lines
+    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays (x20)", "10g"),
+                     AHV("8g 40s", "0%", tag=" (x20)"), ROW("5-day average (x20)", "8g 40s"),
+                     ROW("Sell now (x20)", "7g 99s 80c", "neg"), ROW("Suggested price (x20)", "8g 40s", "neg")], True,
+       "TC8 Vendor Pays More x20 with Shift", count=20, shift=True)
     tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "+4%", POS),
                      ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c"), ROW("Suggested price", "11s"),
                      stack((20, "2g 9s"))], True, "TC9 No Vendor x20", count=20)
@@ -1855,7 +1866,7 @@ def test_verdict_tooltips():
     for iid, verdict, big, rows in (
             (9602, ("Auction it", "+10% vs vendor"), True, [AHV("44c", "0%"), ROW("5-day average", "44c"),
                                                              ROW("Sell now", "43c"), ROW("Suggested price", "44c")]),
-            (9603, ("Vendor it", "+1% vs AH"), True, [AHV("1s", "0%"), ROW("5-day average", "1s"),
+            (9603, ("Vendor it", "+1% vs AH"), True, [ROW("Vendor pays", "96c"), AHV("1s", "0%"), ROW("5-day average", "1s"),
                                                        ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")]),
             (9604, ("Auction it", "2x vendor"), True, [AHV("2s", "0%"), ROW("5-day average", "2s"),
                                                         ROW("Sell now", "1s 99c"), ROW("Suggested price", "2s")]),
@@ -1884,7 +1895,8 @@ def test_verdict_tooltips():
     tc(G, tt, 9703, [H(), (("Close call", "tiny gain"), "muted", "muted"), AHV("4c", "0%"), ROW("5-day average", "4c"),
                      ROW("Sell now", "3c", "neg"), ROW("Suggested price", "4c", "neg"), stack((20, "76c"))], False,
        "TC16 Tiny Gain x20", count=20)
-    tc(G, tt, 9705, [H(), (("Vendor it", "+28% vs AH"), "neg", "neg"), AHV("50c", "0%"), ROW("5-day average", "50c"),
+    tc(G, tt, 9705, [H(), (("Vendor it", "+28% vs AH"), "neg", "neg"), ROW("Vendor pays", "60c"), AHV("50c", "0%"),
+                     ROW("5-day average", "50c"),
                      ROW("Sell now", "49c", "neg"), (("Few listed: the price may not be reliable",), "muted", None)],
        True, "TC17 Thin Vendor")
     tc(G, tt, 9706, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("3g", "0%"), ROW("5-day average", "3g"),
@@ -1895,7 +1907,8 @@ def test_verdict_tooltips():
     tc(G, tt, 9802, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
                      ROW("Suggested price", "3s")], False, "TC13 Old Near: 150x the vendor price is used", count=20)
     # 100 x 95 = 9,500 against 95 x 100 = 9,500: the same, so the vendor (instant, no deposit)
-    tc(G, tt, 9803, [H(), (("Vendor it", "same as AH"), "neg", "neg"), AHV("1s", "0%"), ROW("5-day average", "1s"),
+    tc(G, tt, 9803, [H(), (("Vendor it", "same as AH"), "neg", "neg"), ROW("Vendor pays", "95c"), AHV("1s", "0%"),
+                     ROW("5-day average", "1s"),
                      ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")], True,
        "TC13 Tie: the AH nets the same as a vendor (no stack line)", count=20)
     # 101 x 95 = 9,595: exactly 101% of 9,500
@@ -1906,7 +1919,8 @@ def test_verdict_tooltips():
     tc(G, tt, 9805, [H(), (("Auction it", "+11% vs vendor"), "pos", "pos"), AHV("20c", "0%"), ROW("5-day average", "20c"),
                      ROW("Sell now", "19c"), ROW("Suggested price", "20c"), stack((20, "3s 80c"))], True,
        "TC13 Two Copper: exactly 2 copper more each is enough", count=20)
-    tc(G, tt, 9806, [H(), (("Vendor it", "+64% vs AH"), "neg", "neg"), ROW("AH value", "none listed", "muted"),
+    tc(G, tt, 9806, [H(), (("Vendor it", "+64% vs AH"), "neg", "neg"), ROW("Vendor pays", "50c"),
+                     ROW("AH value", "none listed", "muted"),
                      ROW("Suggested price", "32c", "neg")], True, "TC13 Nothing Vendor: none listed, a vendor ahead",
        count=20)
     # TC28 unchanged lines and no verdict
@@ -1991,14 +2005,17 @@ def test_verdict_fonts():
     M = G.MOCK
     tt = G.GameTooltip
     show(G, tt, 4306, 20)
-    eq(big_lines(G, tt), BIG4, "TC24 Silk: line 4 on ForeverAHBigFont1 at 15")
+    eq(big_lines(G, tt), BIG45, "TC24 Silk: lines 4 (Auction it) and 5 (AH value) on ForeverAHBigFont1 at 15")
     eq([cname(G.GameTooltipTextLeft4.GetTextColor(G.GameTooltipTextLeft4)),
-        cname(G.GameTooltipTextRight4.GetTextColor(G.GameTooltipTextRight4))], ["pos", "pos"],
-       "TC24: its colour is set again after SetFontObject (green, not the Font's white)")
-    eq(normal_fonts(G, tt, skip=(4,)), [], "TC24: every other line is GameTooltipText 12")
+        cname(G.GameTooltipTextRight4.GetTextColor(G.GameTooltipTextRight4)),
+        cname(G.GameTooltipTextLeft5.GetTextColor(G.GameTooltipTextLeft5)),
+        cname(G.GameTooltipTextRight5.GetTextColor(G.GameTooltipTextRight5))], ["pos", "pos", "text", "white"],
+       "TC24: their colours are set again after SetFontObject (green, the AH value's own, not the Font's white)")
+    eq(normal_fonts(G, tt, skip=(4, 5)), [], "TC24: every other line is GameTooltipText 12")
     eq(M.fontsCreated, 1, "TC24: one Font made")
     tt.Clear(tt)
-    eq((big_lines(G, tt), M.Font(tt, 4, "TextLeft")), ([], ("GameTooltipText", 12)), "TC24: a clear puts line 4 back")
+    eq((big_lines(G, tt), M.Font(tt, 4, "TextLeft"), M.Font(tt, 5, "TextRight")),
+       ([], ("GameTooltipText", 12), ("GameTooltipText", 12)), "TC24: a clear puts lines 4 and 5 back")
     show(G, tt, 4306, 20)
     tt.Hide(tt)
     eq(big_lines(G, tt), [], "TC24: Hide puts it back too")
@@ -2011,17 +2028,17 @@ def test_verdict_fonts():
     eq(big_lines(G, tt), [], "TC24: the next item (no verdict) has nothing bigger")
     for _ in range(50):
         show(G, tt, 4306, 20)
-    eq((M.fontsCreated, big_lines(G, tt)), (1, BIG4), "TC24: 50 more hovers make no new Font")
+    eq((M.fontsCreated, big_lines(G, tt)), (1, BIG45), "TC24: 50 more hovers make no new Font")
     G.GameTooltipText._size = 14
     show(G, tt, 4306, 20)
-    eq((big_lines(G, tt), M.fontsCreated), ([(4, "TextLeft", "ForeverAHBigFont2", 17), (4, "TextRight", "ForeverAHBigFont2", 17)], 2),
+    eq((big_lines(G, tt), M.fontsCreated),
+       ([(k, side, "ForeverAHBigFont2", 17) for k in (4, 5) for side in ("TextLeft", "TextRight")], 2),
        "TC24: GameTooltipText at 14 gets a new Font at 17")
     G.GameTooltipText._size = 12
     tt.Clear(tt)
     ir = G.ItemRefTooltip
     show(G, ir, 4306)
-    eq(big_lines(G, ir), [(4, "TextLeft", "ForeverAHBigFont1", 15), (4, "TextRight", "ForeverAHBigFont1", 15)],
-       "TC24: ItemRefTooltip's line 4 is bigger too")
+    eq(big_lines(G, ir), BIG45, "TC24: ItemRefTooltip's lines 4 and 5 are bigger too")
     eq(M.fontsCreated, 2, "TC24: the 12-point Font is reused for ItemRefTooltip")
     # TC24 line 4 on another addon's Font (a bold outline, not GameTooltipText): our Font is a
     # copy of it (face, flags, shadow), and the restore puts back that very Font object
@@ -2035,8 +2052,9 @@ def test_verdict_fonts():
       return GameTooltipTextLeft4:GetFontObject() == OTHER and GameTooltipTextRight4:GetFontObject() == OTHER end""")()
     show(G5, t5, 4306, 20)
     f = G5.ForeverAHBigFont1
-    eq((big_lines(G5, t5), f._flags, f._shadow[1], f._shadow[2]), (BIG4, "THICKOUTLINE", 3, -3),
-       "TC24 another addon's Font: ours keeps its flags and shadow, 3 points bigger")
+    eq((big_lines(G5, t5), f._flags, f._shadow[1], f._shadow[2]),
+       (BIG4 + [(5, "TextLeft", "ForeverAHBigFont2", 15), (5, "TextRight", "ForeverAHBigFont2", 15)], "THICKOUTLINE", 3, -3),
+       "TC24 another addon's Font: ours keeps its flags and shadow, 3 points bigger (line 5 on GameTooltipText's copy)")
     t5.Clear(t5)
     check(on_other(), "TC24 another addon's Font: a clear puts back that very Font object")
     show(G5, t5, 4306, 20)
@@ -2057,9 +2075,9 @@ def test_verdict_fonts():
     tt2.AddDoubleLine(tt2, "ID: 4306", "Bags: 30")
     eq([tt2.lines[i].left for i in range(9, 17)], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now",
                                                    "Suggested price", " ", "ID: 4306"], "TC25 lines 9 to 16")
-    eq(big_lines(G2, tt2), [(10, "TextLeft", "ForeverAHBigFont1", 15), (10, "TextRight", "ForeverAHBigFont1", 15)],
-       "TC25: only line 10 is bigger")
-    eq(normal_fonts(G2, tt2, skip=(10,)), [], "TC25: lines 11 to 16, made on demand, are GameTooltipText 12")
+    eq(big_lines(G2, tt2), [(k, side, "ForeverAHBigFont1", 15) for k in (10, 11) for side in ("TextLeft", "TextRight")],
+       "TC25: only lines 10 and 11 (the verdict, the AH value) are bigger")
+    eq(normal_fonts(G2, tt2, skip=(10, 11)), [], "TC25: lines 12 to 16, made on demand, are GameTooltipText 12")
     # TC26 fallbacks: the same text and colours at the normal size, no error. In the last two the
     # left side is already bigger when the right side fails: both go back, still green
     for label, setup in (("ShoppingTooltip1", None), ("HookScript errors", "hook"), ("CreateFont missing", "nofont"),
@@ -2092,6 +2110,31 @@ def test_verdict_fonts():
         tc(G3, t3, 4306, SILK_LINES, False, "TC26 " + label)
         eq((ns3.lastError, len(G3.MOCK.prints) - n0, G3.MOCK.lineSetFont), (None, 0, None),
            "TC26 %s: no error, no chat print" % label)
+    # TC26 the second line (line 5: the AH value, or Vendor pays) fails: that line stays at the normal size
+    # (a side already swapped goes back), the verdict stays bigger, and a clear puts it all back
+    vendor_lines = [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
+                    ROW("5-day average", "42s"), ROW("Sell now", "39s 99c", "neg"), ROW("Suggested price", "42s", "neg")]
+    for label, iid, want, code in (
+            ("the AH value's right side refuses our Font", 4306, SILK_LINES, """
+              local fs = GameTooltipTextRight5
+              local set = fs.SetFontObject
+              fs.SetFontObject = function(self, o)
+                if type(o) == "table" and tostring(o._name):find("ForeverAH", 1, true) then error("refused") end
+                return set(self, o)
+              end"""),
+            ("the AH value's left side's GetFont gives nothing", 4306, SILK_LINES,
+             "GameTooltipTextLeft5.GetFont = function() return nil end"),
+            ("Vendor pays' right side's GetFont gives nothing", 9501, vendor_lines,
+             "GameTooltipTextRight5.GetFont = function() return nil end")):
+        L7, G7, ns7 = font_env()
+        t7 = G7.GameTooltip
+        G7.loadstring(code)()
+        eq(show(G7, t7, iid), want, "TC26 %s: the lines and colours" % label)
+        eq(big_lines(G7, t7), BIG4, "TC26 %s: only the verdict is bigger" % label)
+        eq(normal_fonts(G7, t7, skip=(4,)), [], "TC26 %s: line 5 at the normal size" % label)
+        t7.Fire(t7, "OnHide")
+        eq((big_lines(G7, t7), rows_of(G7, t7)), ([], want), "TC26 %s: OnHide puts it back, colours kept" % label)
+        eq((ns7.lastError, G7.MOCK.lineSetFont), (None, None), "TC26 %s: no error, no SetFont on a line" % label)
     # the light tooltip mock (no NumLines, no GetLeftLine, no TextLeftN)
     L4, G4, ns4 = new_env(fixture_lua(VERDICT_ITEMS))
     G4.MOCK.now = UPDATED + 100

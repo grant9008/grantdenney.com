@@ -3113,7 +3113,9 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     (plain link: "all" for an item whose versions the data lists). verdict=False:
     a bound item or another market (no verdict, no stack line).
     styles=True gives (lines, [(left colour, right colour, big)]) with TT_RGB
-    names; big is True for the verdict line shown bigger (fresh data, full mode)."""
+    names; big is True for a line shown bigger (fresh data, full mode): "Auction it"
+    and the AH value, or "Vendor it" and the "Vendor pays" line under it (never
+    our last line: a line made after it would copy its Font)."""
     it = ref.items.get(iid)
     if it is None:
         lines, st = [("Goblin Ledger: no recent listings", None)], [("muted", None, False)]
@@ -3146,11 +3148,14 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
                 None, "text", None)
     else:
         add("Goblin Ledger", age_text(age), "sell", "muted")
+        clear_cut = V is not None and V["kind"] in ("auction", "vendor") and age <= 6 * 3600
         if V:
-            add(V["left"], V["right"], V["lc"], V["rc"], V["kind"] in ("auction", "vendor") and age <= 6 * 3600)
+            add(V["left"], V["right"], V["lc"], V["rc"], clear_cut)
+        if clear_cut and V["kind"] == "vendor" and m(it["vendor"]):
+            add("Vendor pays" + tag, m(it["vendor"]), "text", "white", True)
         mk = m(it["market"])
         if mk:
-            add("AH value" + tag, mk + ("  " + vs if vs else ""), "text", "white")
+            add("AH value" + tag, mk + ("  " + vs if vs else ""), "text", "white", clear_cut and V["kind"] == "auction")
         else:
             add("AH value", "none listed", "text", "muted")
         if m(it["avg7"]):
@@ -3172,6 +3177,8 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
         add("Price covers all versions of this item", None, "muted", None)
     if age > 6 * 3600:
         add("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload" % (age // 3600), None, "muted", None)
+    if out and out[-1][1][2]:
+        out[-1] = (out[-1][0], (out[-1][1][0], out[-1][1][1], False))
     lines = [x[0] for x in out]
     return (lines, [x[1] for x in out]) if styles else lines
 
@@ -3200,9 +3207,9 @@ def tooltip_styles(w, tt):
 
 
 def tooltip_style_ok(sc, w, tt, want_styles, label, base_size=12):
-    """Our lines' final colours, and fonts: the verdict line (when big) on our
-    bigger Font (both sides, base + 3 points), every other line of the whole
-    tooltip at its normal size on the game's own Font."""
+    """Our lines' final colours, and fonts: the big lines (the verdict and the
+    price that wins with it) on our bigger Font (both sides, base + 3 points),
+    every other line of the whole tooltip at its normal size on the game's own Font."""
     got = tooltip_styles(w, tt)
     first = int(tt._blz or 0)
     ours = got[first:]
@@ -3210,11 +3217,11 @@ def tooltip_style_ok(sc, w, tt, want_styles, label, base_size=12):
           "%s: line colours" % label)
     big_rows = [i for i, x in enumerate(got) if x and (x[2].startswith("ForeverAH") or x[4].startswith("ForeverAH"))]
     want_big = [first + i for i, (_, _, big) in enumerate(want_styles) if big]
-    sc.eq(big_rows, want_big, "%s: only the verdict line is bigger (%s)" % (label, "yes" if want_big else "none"))
+    sc.eq(big_rows, want_big, "%s: only the verdict and its price are bigger (%d lines)" % (label, len(want_big)))
     for i in want_big:
         x = got[i]
         sc.check(x[2].startswith("ForeverAHBigFont") and x[4] == x[2] and x[3] == base_size + 3 and x[5] == base_size + 3,
-                 "%s: the verdict line's both sides on our Font, %d points (%s)" % (label, base_size + 3, x))
+                 "%s: line %d's both sides on our Font, %d points (%s)" % (label, i + 1, base_size + 3, x))
     others = [(i + 1, x) for i, x in enumerate(got) if x and i not in want_big
               and not ((x[2] == "GameTooltipText" and x[3] == base_size) or (i == 0 and x[2] == "GameTooltipHeaderText"))]
     sc.eq(others, [], "%s: every other line at the normal size" % label)
@@ -3247,7 +3254,7 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=
     never multiplied by Shift)."""
     it = ref.items[iid]
     P = ref_sell_prices(ref, iid, tf, live, own)
-    want = {"AH value": it["market"], average_label(ref, iid): it["avg7"],
+    want = {"AH value": it["market"], average_label(ref, iid): it["avg7"], "Vendor pays": it["vendor"],
             "Sell now": P["now"], "Sell now (live)": P["now"], "Suggested price": P["best"]}
     seen = set()
     for left, right in lines:
@@ -8839,21 +8846,23 @@ VERDICT_FIXTURES = [
 ]
 
 
-def verdict_data(ref, items):
-    """The data under test plus the hand-made verdict items, under new ids (and the
-    mock game knows them, with the same vendor price). -> (text, items, {key: id})."""
+def verdict_data(ref, items, fixtures=None):
+    """The data under test plus the hand-made verdict items (VERDICT_FIXTURES, or
+    fixtures), under new ids (and the mock game knows them, with the same vendor
+    price). -> (text, items, {key: id})."""
+    fixtures = fixtures or VERDICT_FIXTURES
     ids, iid = {}, 970001
-    for key, _, _, _ in VERDICT_FIXTURES:
+    for key, _, _, _ in fixtures:
         while iid in ref.items or str(iid) in items:
             iid += 1
         ids[key] = iid
         iid += 1
-    lines = "".join('    [%d] = "Verdict %s|%s",\n' % (ids[k], k.capitalize(), f) for k, f, _, _ in VERDICT_FIXTURES)
+    lines = "".join('    [%d] = "Verdict %s|%s",\n' % (ids[k], k.capitalize(), f) for k, f, _, _ in fixtures)
     a, _ = block_span(ref.text, "items")
     nl = ref.text.index("\n", a) + 1 if ref.text[a] != "\n" else a + 1
     text = ref.text[:nl] + lines + ref.text[nl:]
     items2 = dict(items)
-    for key, f, _, _ in VERDICT_FIXTURES:
+    for key, f, _, _ in fixtures:
         items2[str(ids[key])] = {"name": "Verdict " + key.capitalize(), "sell": int(f.split("|")[5]), "quality": "COMMON"}
     return text, items2, ids
 
@@ -8970,7 +8979,7 @@ def sc_tooltip_verdicts(sc, ref, items):
 
 
 def sc_tooltip_fonts(sc, ref, items):
-    """The bigger verdict line: on our own Font (one per face, size and flags,
+    """The bigger lines (Silk: "Auction it" and the AH value under it): on our own Font (one per face, size and flags,
     a copy of the line's Font with its shadow), its colour set again, restored
     on clear and hide (the very Font object it had, its colour kept), only
     GameTooltip and ItemRefTooltip, lines made after it at the normal size,
@@ -8989,9 +8998,9 @@ def sc_tooltip_fonts(sc, ref, items):
     tt.SetBagItem(tt, 0, 1)
     want_lines, want_st = expected_tooltip(r2, silk, age, count=20, styles=True)
     sc.eq(w.lines(tt), want_lines, "fonts: Silk x20")
-    n = int(tt._blz) + 2           # the verdict: the game's 2 lines, our header, then it
-    sc.eq(big_fontstrings(w, tt), [(n, "left", "ForeverAHBigFont1", 15), (n, "right", "ForeverAHBigFont1", 15)],
-          "fonts: the verdict's both sides on ForeverAHBigFont1 at 15")
+    n = int(tt._blz) + 2           # the verdict: the game's 2 lines, our header, then it; the AH value under it
+    big_silk = [(k, side, "ForeverAHBigFont1", 15) for k in (n, n + 1) for side in ("left", "right")]
+    sc.eq(big_fontstrings(w, tt), big_silk, "fonts: the verdict's and the AH value's both sides on ForeverAHBigFont1 at 15")
     tooltip_style_ok(sc, w, tt, want_st, "fonts: Silk x20 (green after the swap)")
     sc.eq(M.fontsCreated, 1, "fonts: one Font made")
     f = g.ForeverAHBigFont1
@@ -9000,14 +9009,16 @@ def sc_tooltip_fonts(sc, ref, items):
           "fonts: our Font is a copy of GameTooltipText (ElvUI's shadow kept)")
     tt.ClearLines(tt)
     sc.eq(big_fontstrings(w, tt), [], "fonts: ClearLines puts the Font back")
-    s = M.lineStyle(tt, n)
-    sc.eq((s.left.font, s.left.size, s.right.font), ("GameTooltipText", 12, "GameTooltipText"), "fonts: the exact Font object")
+    for k in (n, n + 1):
+        s = M.lineStyle(tt, k)
+        sc.eq((s.left.font, s.left.size, s.right.font), ("GameTooltipText", 12, "GameTooltipText"),
+              "fonts: the exact Font object (line %d)" % k)
     tt.SetBagItem(tt, 0, 1)
     tt.Show(tt)
     tt.Hide(tt)
     sc.eq(big_fontstrings(w, tt), [], "fonts: Hide puts it back")
     tt.SetBagItem(tt, 0, 1)
-    sc.eq(len(big_fontstrings(w, tt)), 2, "fonts: bigger again")
+    sc.eq(len(big_fontstrings(w, tt)), 4, "fonts: bigger again")
     M.fireScript(tt, "OnHide")     # a hide that does not clear the lines (a parent hid, as with Alt+Z)
     sc.eq(big_fontstrings(w, tt), [], "fonts: OnHide alone puts it back")
     sc.eq(w.lines(tt), want_lines, "fonts: OnHide alone keeps the lines")
@@ -9022,18 +9033,17 @@ def sc_tooltip_fonts(sc, ref, items):
     sc.eq(big_fontstrings(w, tt), [], "fonts: the next item, with no verdict, has nothing bigger")
     for _ in range(50):
         tt.SetBagItem(tt, 0, 1)
-    sc.eq((M.fontsCreated, len(big_fontstrings(w, tt))), (1, 2), "fonts: 50 more hovers make no new Font")
+    sc.eq((M.fontsCreated, len(big_fontstrings(w, tt))), (1, 4), "fonts: 50 more hovers make no new Font")
     w.M.shift = True
     tt.RefreshData(tt)
     w.M.shift = False
     tt.RefreshData(tt)
-    sc.eq(big_fontstrings(w, tt), [(n, "left", "ForeverAHBigFont1", 15), (n, "right", "ForeverAHBigFont1", 15)],
-          "fonts: Shift down and up (rebuilds): still exactly one bigger line")
+    sc.eq(big_fontstrings(w, tt), big_silk, "fonts: Shift down and up (rebuilds): still exactly the two bigger lines")
     gtt = g.GameTooltipText
     gtt.SetFont(gtt, "Fonts\\PTSansNarrow.ttf", 14, "")
     tt.SetBagItem(tt, 0, 1)
     sc.eq((big_fontstrings(w, tt), M.fontsCreated),
-          ([(n, "left", "ForeverAHBigFont2", 17), (n, "right", "ForeverAHBigFont2", 17)], 2),
+          ([(k, side, "ForeverAHBigFont2", 17) for k in (n, n + 1) for side in ("left", "right")], 2),
           "fonts: GameTooltipText at 14 gets a new Font at 17")
     tooltip_style_ok(sc, w, tt, want_st, "fonts: at 14 points", base_size=14)
     gtt.SetFont(gtt, "Fonts\\PTSansNarrow.ttf", 12, "")
@@ -9042,7 +9052,7 @@ def sc_tooltip_fonts(sc, ref, items):
     ir.SetHyperlink(ir, M.ItemLink(silk))
     want_lines, want_st = expected_tooltip(r2, silk, age, styles=True)
     tooltip_style_ok(sc, w, ir, want_st, "fonts: ItemRefTooltip from a chat link")
-    sc.eq(len(big_fontstrings(w, ir)), 2, "fonts: ItemRefTooltip's verdict is bigger")
+    sc.eq(len(big_fontstrings(w, ir)), 4, "fonts: ItemRefTooltip's verdict and AH value are bigger")
     sc.eq(M.fontsCreated, 2, "fonts: the 12-point Font is reused")
     for name in ("ShoppingTooltip1", "ShoppingTooltip2", "ItemRefShoppingTooltip1"):
         st = g[name]
@@ -9061,14 +9071,14 @@ def sc_tooltip_fonts(sc, ref, items):
     al = w.all_lines(tt)
     sc.eq([l for l, _ in al[8:]], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now", "Suggested price",
                                    " ", "ID: %d" % silk], "fonts: lines 9 to 16")
-    sc.eq(big_fontstrings(w, tt), [(10, "left", "ForeverAHBigFont1", 15), (10, "right", "ForeverAHBigFont1", 15)],
-          "fonts: only line 10 is bigger")
+    sc.eq(big_fontstrings(w, tt), [(k, side, "ForeverAHBigFont1", 15) for k in (10, 11) for side in ("left", "right")],
+          "fonts: only lines 10 and 11 (the verdict, the AH value) are bigger")
     others = []
     for i in range(2, len(tt._L) + 1):
         s = M.lineStyle(tt, i)
-        if i != 10:
+        if i not in (10, 11):
             others += [(i, side, x.font, x.size) for side, x in (("left", s.left), ("right", s.right))]
-    sc.eq([x for x in others if x[2:] != ("GameTooltipText", 12)], [], "fonts: lines 11 to 16, made on demand, stay at 12")
+    sc.eq([x for x in others if x[2:] != ("GameTooltipText", 12)], [], "fonts: lines 12 to 16, made on demand, stay at 12")
     M.extraGameLines = None
     sc.clean(w, "fonts")
     # The verdict's line on another addon's Font (a bold outline, not GameTooltipText):
@@ -9089,8 +9099,9 @@ def sc_tooltip_fonts(sc, ref, items):
         sc.eq(got, [True, True], "fonts: %s puts back the very Font object the line had (another addon's)" % label)
     t4.SetItemByID(t4, silk)
     sc.eq(w4.lines(t4), expected_tooltip(r2, silk, age), "fonts on another addon's Font: the lines")
-    sc.eq(big_fontstrings(w4, t4), [(4, "left", "ForeverAHBigFont1", 15), (4, "right", "ForeverAHBigFont1", 15)],
-          "fonts on another addon's Font: the verdict is bigger")
+    sc.eq(big_fontstrings(w4, t4), [(4, "left", "ForeverAHBigFont1", 15), (4, "right", "ForeverAHBigFont1", 15),
+                                    (5, "left", "ForeverAHBigFont2", 15), (5, "right", "ForeverAHBigFont2", 15)],
+          "fonts on another addon's Font: the verdict is bigger (a copy of that Font), the AH value too (GameTooltipText's copy)")
     f4 = w4.g.ForeverAHBigFont1
     sc.eq((f4.GetFont(f4), f4.GetShadowOffset(f4)), (("Fonts\\PTSansNarrow.ttf", 15, "THICKOUTLINE"), (3, -3)),
           "fonts on another addon's Font: ours keeps its face, flags and shadow")
@@ -9098,7 +9109,7 @@ def sc_tooltip_fonts(sc, ref, items):
     on_other("a clear")
     for label, hide in (("OnHide", lambda: w4.M.fireScript(t4, "OnHide")), ("Hide", lambda: t4.Hide(t4))):
         t4.SetItemByID(t4, silk)
-        sc.eq(len(big_fontstrings(w4, t4)), 2, "fonts on another addon's Font: bigger again before %s" % label)
+        sc.eq(len(big_fontstrings(w4, t4)), 4, "fonts on another addon's Font: bigger again before %s" % label)
         hide()
         on_other(label)
     sc.clean(w4, "fonts on another addon's Font")
@@ -9129,6 +9140,237 @@ def sc_tooltip_fonts(sc, ref, items):
         sc.eq(w3.lines(t3), want_lines, "fonts %s: the lines" % label)
         tooltip_style_ok(sc, w3, t3, [(lc, rc, False) for lc, rc, _ in want_st], "fonts %s: normal size" % label)
         sc.clean(w3, "fonts " + label)
+
+
+def big_texts(w, tt):
+    """The lines of a tooltip on our bigger Font, by their left text (any FontString
+    of the tooltip, in use or not): a line with only one side bigger is (text, side)."""
+    fs = big_fontstrings(w, tt)
+    al = w.all_lines(tt)
+    out = []
+    for i in sorted(set(k for k, _, _, _ in fs)):
+        sides = sorted(side for k, side, _, _ in fs if k == i)
+        txt = al[i - 1][0] if i <= len(al) else "(unused line %d)" % i
+        out.append(txt if sides == ["left", "right"] else (txt, sides[0]))
+    return out
+
+
+def sc_tooltip_big_lines(sc, ref, items):
+    """Which lines are bigger, while the prices are fresh: "Auction it" and the AH
+    value under it; "Vendor it" and a "Vendor pays" line right under it (what a
+    vendor pays each, or the stack with Shift, " (xN)"). Nothing bigger and no
+    "Vendor pays" for Close call, Maybe auction, no verdict, stale prices or
+    compact. A reused tooltip keeps no stale big line; each line is bigger whole
+    or not at all, and a second line that cannot be leaves the verdict bigger;
+    a clear or a hide puts every line's Font and colour back."""
+    # lastah: an "Auction it" whose AH value is our last line (no average, Sell now or Suggested price)
+    fixtures = VERDICT_FIXTURES + [("lastah", "1|500|50|20|0|10|||20", ("Auction it", "47x vendor"), None)]
+    text, items2, ids = verdict_data(ref, items, fixtures)
+    r2 = RefData(text=text)
+    w = World(r2, items2, data_src=text)
+    M, g = w.M, w.g
+    tt = g.GameTooltip
+    V5000 = money_icons(5000)
+
+    def hover(t, key, how="id"):
+        if how == "id":
+            t.SetItemByID(t, ids[key])
+        else:
+            t.SetHyperlink(t, M.ItemLink(ids[key]))
+        return w.lines(t)
+
+    def model_ok(t, key, lines, label, **kw):
+        want, want_st = expected_tooltip(r2, ids[key], w.now - r2.updated, styles=True, **kw)
+        sc.eq(lines, want, label + ": the lines")
+        tooltip_style_ok(sc, w, t, want_st, label)
+
+    def colours(t, k):
+        st = M.lineStyle(t, k)
+        return (rgb_name(st.left.r, st.left.g, st.left.b), rgb_name(st.right.r, st.right.g, st.right.b))
+    # Auction it: the verdict and the AH value, nothing else
+    for key, verdict in (("silk", ("Auction it", "+26% vs vendor")), ("heavy", ("Auction it", "6.1x vendor")),
+                         ("novendor", ("Auction it", "can't vendor")), ("double", ("Auction it", "2x vendor"))):
+        lines = hover(tt, key)
+        model_ok(tt, key, lines, "big %s" % key)
+        sc.eq((lines[1], lines[2][0]), (verdict, "AH value"), "big %s: the AH value right under the verdict" % key)
+        sc.eq(big_texts(w, tt), ["Auction it", "AH value"], "big %s: Auction it and the AH value are bigger" % key)
+        sc.check(not any(l.startswith("Vendor pays") for l, _ in lines), "big %s: no Vendor pays line (%s)" % (key, lines))
+        sc.eq(colours(tt, int(tt._blz) + 3), ("text", "white"), "big %s: the AH value keeps its colours" % key)
+    # Vendor it: the verdict and a Vendor pays line under it with the vendor price; the AH value normal
+    for key, verdict, vendor in (("vendormore", ("Vendor it", "+25% vs AH"), 5000), ("shiny", ("Vendor it", "+5% vs AH"), 7),
+                                 ("tie", ("Vendor it", "same as AH"), 95), ("nothingvendor", ("Vendor it", "+64% vs AH"), 50),
+                                 ("thinvendor", ("Vendor it", "+28% vs AH"), 60)):
+        lines = hover(tt, key)
+        model_ok(tt, key, lines, "big %s" % key)
+        sc.eq(lines[1:3], [verdict, ("Vendor pays", money_icons(vendor))], "big %s: Vendor pays right under the verdict" % key)
+        sc.eq(lines[3][0], "AH value", "big %s: then the AH value" % key)
+        sc.eq(big_texts(w, tt), ["Vendor it", "Vendor pays"], "big %s: Vendor it and Vendor pays are bigger" % key)
+        sc.eq(colours(tt, int(tt._blz) + 3), ("text", "white"), "big %s: Vendor pays in the label colour, the money white" % key)
+        sc.eq([l for l, _ in lines].count("Vendor pays"), 1, "big %s: one Vendor pays line" % key)
+    # a stack: per item, and with Shift the stack's worth with the same (x20) tag as the other lines
+    w.put_bag(0, 1, ids["vendormore"], 20)
+    for shift, want in ((False, ("Vendor pays", V5000)), (True, ("Vendor pays (x20)", money_icons(5000 * 20)))):
+        M.shift = shift
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 0, 1)
+        lines = w.lines(tt)
+        lab = "big vendormore x20%s" % (" Shift" if shift else "")
+        model_ok(tt, "vendormore", lines, lab, mult=20 if shift else 1, count=20)
+        tooltip_values_ok(sc, r2, ids["vendormore"], lines, 20 if shift else 1, lab)
+        sc.eq(lines[2], want, lab + ": Vendor pays")
+        sc.eq(lines[3][0], "AH value (x20)" if shift else "AH value", lab + ": the AH value has the same tag")
+        sc.eq(big_texts(w, tt), ["Vendor it", "Vendor pays (x20)" if shift else "Vendor pays"], lab + ": bigger lines")
+        sc.check(not any(l.startswith("This stack") for l, _ in lines), lab + ": still no stack line")
+    M.shift = True
+    lines = hover(tt, "vendormore")
+    sc.eq(lines[2], ("Vendor pays", V5000), "big vendormore by id with Shift (count 1): no tag, one item")
+    M.shift = False
+    # nothing bigger, no Vendor pays: Close call, Maybe auction, no verdict ("slow" is a Maybe auction only with 6 or
+    # more hours of sales measured: a data file with fewer makes it an Auction it, bigger as above)
+    for key in ("dense", "even", "tieplus", "tiny", "onelisting", "nothingnow", "jumped", "slow", "oldnear",
+                "vendorjunk", "junk", "oldfar"):
+        lines = hover(tt, key)
+        model_ok(tt, key, lines, "big %s" % key)
+        V = ref_verdict(r2, ids[key])
+        kind = V["kind"] if V else None
+        sc.check(kind not in ("auction", "vendor") or (key == "slow" and (r2.salesHours or 0) < 6),
+                 "big %s: a Close call, Maybe auction or no verdict (%s)" % (key, kind))
+        want = {"auction": ["Auction it", "AH value"]}.get(kind, [])
+        sc.eq(big_texts(w, tt), want, "big %s: %s" % (key, "bigger lines" if want else "nothing bigger"))
+        sc.check(not any(l.startswith("Vendor pays") for l, _ in lines), "big %s: no Vendor pays line (%s)" % (key, lines))
+    # no verdict for another market or a bound copy: no Vendor pays either
+    vm = M["items"][ids["vendormore"]]
+    for label, setup, undo in (("Horde", lambda: setattr(M, "faction", "Horde"), lambda: setattr(M, "faction", "Alliance")),
+                               ("Hardcore", lambda: setattr(M, "hardcore", True), lambda: setattr(M, "hardcore", False)),
+                               ("bind on pickup", lambda: setattr(vm, "bind", 1), lambda: setattr(vm, "bind", 0))):
+        setup()
+        lines = hover(tt, "vendormore")
+        model_ok(tt, "vendormore", lines, "big vendormore %s" % label, verdict=False)
+        sc.check(not any(l.startswith(("Vendor it", "Vendor pays")) for l, _ in lines),
+                 "big vendormore %s: no verdict, no Vendor pays (%s)" % (label, lines))
+        sc.eq(big_texts(w, tt), [], "big vendormore %s: nothing bigger" % label)
+        undo()
+    # The AH value as our last line stays normal (a line made after it would copy its Font): the verdict is still
+    # bigger, and an ElvUI-like post call's lines made after ours (8 game lines first) are at the normal size
+    lines = hover(tt, "lastah")
+    model_ok(tt, "lastah", lines, "big lastah")
+    sc.eq([l for l, _ in lines], ["Goblin Ledger", "Auction it", "AH value"], "big lastah: the AH value is our last line")
+    sc.eq(big_texts(w, tt), ["Auction it"], "big lastah: only the verdict is bigger")
+    M.extraGameLines = w.to_lua(["stat %d" % i for i in range(3, 8)] + ["Sell Price: 1s"])
+    w.lua.execute("""MOCK.bigPost = true
+      TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt, d)
+        if MOCK.bigPost then tt:AddLine(" "); tt:AddDoubleLine("ID: " .. tostring(d.id), "Bags: 30") end
+      end)""")
+    for key, want in (("lastah", [10]), ("silk", [10, 11]), ("vendormore", [10, 11])):
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
+        hover(tt, key)
+        rows = sorted(set(k for k, _, _, _ in big_fontstrings(w, tt)))
+        sc.eq(rows, want, "big %s after 8 game lines: lines %s bigger" % (key, want))
+        al = w.all_lines(tt)
+        sc.eq(al[7][0], "Sell Price: 1s", "big %s: the game's Sell Price line is still line 8" % key)
+        bad = [(i, x) for i, x in enumerate(tooltip_styles(w, tt), start=1) if i not in want and i > 1
+               and (x[2], x[3], x[4], x[5]) != ("GameTooltipText", 12, "GameTooltipText", 12)]
+        sc.eq(bad, [], "big %s: every other line (the game's, the post call's, made on demand) at 12" % key)
+    M.extraGameLines = None
+    M.bigPost = False
+    # A reused tooltip: auction, vendor, close, then back, long then short; no stale big line anywhere
+    ir = g.ItemRefTooltip
+    for t, how, name in ((tt, "id", "GameTooltip"), (ir, "link", "ItemRefTooltip")):
+        for key, want in (("silk", ["Auction it", "AH value"]), ("vendormore", ["Vendor it", "Vendor pays"]),
+                          ("dense", []), ("nothingvendor", ["Vendor it", "Vendor pays"]), ("heavy", ["Auction it", "AH value"]),
+                          ("onelisting", []), ("shiny", ["Vendor it", "Vendor pays"]), ("vendorjunk", [])):
+            lines = hover(t, key, how)
+            model_ok(t, key, lines, "reuse %s %s" % (name, key))
+            sc.eq(big_texts(w, t), want, "reuse %s %s: bigger lines" % (name, key))
+    # a comparison tooltip gets the Vendor pays line, never anything bigger
+    st = g.ShoppingTooltip1
+    lines = hover(st, "vendormore")
+    sc.eq(lines[2], ("Vendor pays", V5000), "big ShoppingTooltip1: the Vendor pays line")
+    sc.eq(big_texts(w, st), [], "big ShoppingTooltip1: nothing bigger")
+    # Lines added again with no clear in between (another addon calling us twice): only the new verdict and its
+    # price are bigger, the first item's lines go back to the normal size with their colours
+    hover(tt, "silk")
+    n0 = len(w.all_lines(tt))
+    w.ns.AddTooltipLines(tt, ids["vendormore"], 1)
+    al = w.all_lines(tt)
+    rows = sorted(set(k for k, _, _, _ in big_fontstrings(w, tt)))
+    sc.eq((rows, al[rows[0] - 1][0] if rows else None), ([n0 + 2, n0 + 3], "Vendor it"),
+          "no clear: only the new Vendor it and Vendor pays are bigger")
+    b = int(tt._blz)
+    sc.eq([colours(tt, b + k) for k in (2, 3)], [("pos", "pos"), ("text", "white")],
+          "no clear: the first item's verdict and AH value keep their colours")
+    # Clear and hide put every line and colour back: OnHide alone keeps the lines on screen
+    for key, want in (("silk", [("pos", "pos"), ("text", "white")]), ("vendormore", [("neg", "neg"), ("text", "white")])):
+        lines = hover(tt, key)
+        b = int(tt._blz)
+        sc.eq(len(big_fontstrings(w, tt)), 4, "restore %s: two lines bigger" % key)
+        M.fireScript(tt, "OnHide")
+        sc.eq(big_fontstrings(w, tt), [], "restore %s: OnHide puts every FontString back" % key)
+        sc.eq([colours(tt, b + k) for k in (2, 3)], want, "restore %s: both lines keep their colours" % key)
+        sty = tooltip_styles(w, tt)
+        sc.eq([sty[b + k][2:] for k in (1, 2)], [("GameTooltipText", 12, "GameTooltipText", 12)] * 2,
+              "restore %s: the very Font object, at 12" % key)
+        sc.eq(w.lines(tt), lines, "restore %s: the lines stay" % key)
+        hover(tt, key)
+        tt.Hide(tt)
+        sc.eq(big_fontstrings(w, tt), [], "restore %s: Hide puts it back" % key)
+        hover(tt, key)
+        tt.ClearLines(tt)
+        sc.eq(big_fontstrings(w, tt), [], "restore %s: a clear puts it back" % key)
+    sc.clean(w, "big lines")
+    # The second line fails, the verdict stays bigger (each line whole or not at all), and a clear puts it all back
+    for key, label, line, how in (("silk", "AH value's right side refuses our Font", 5, "refuse"),
+                                  ("silk", "AH value's left side's GetFont gives nothing", 5, "nofont-left"),
+                                  ("vendormore", "Vendor pays' right side refuses our Font", 5, "refuse"),
+                                  ("vendormore", "Vendor pays' right side's GetFont gives nothing", 5, "nofont-right"),
+                                  ("silk", "the verdict's right side refuses our Font", 4, "refuse")):
+        w3 = World(r2, items2, data_src=text)
+        t3 = w3.g.GameTooltip
+        side = "Left" if how == "nofont-left" else "Right"
+        if how == "refuse":
+            w3.lua.execute("""
+              local fs = GameTooltipText%s%d
+              local set = fs.SetFontObject
+              fs.SetFontObject = function(self, o)
+                if type(o) == "table" and tostring(o._name):find("ForeverAH", 1, true) then error("refused") end
+                return set(self, o)
+              end""" % (side, line))
+        else:
+            w3.lua.execute("GameTooltipText%s%d.GetFont = function() return nil end" % (side, line))
+        t3.SetItemByID(t3, ids[key])
+        want, want_st = expected_tooltip(r2, ids[key], w3.now - r2.updated, styles=True)
+        sc.eq(w3.lines(t3), want, "fail %s: the lines" % label)
+        verdict_big = line != 4
+        st3 = [(lc, rc, bool(big) and verdict_big and k == 1) for k, (lc, rc, big) in enumerate(want_st)]
+        tooltip_style_ok(sc, w3, t3, st3, "fail %s: %s" % (label, "only the verdict bigger" if verdict_big else "nothing bigger"))
+        sc.eq(big_texts(w3, t3), [want[1][0]] if verdict_big else [], "fail %s: bigger lines" % label)
+        w3.M.fireScript(t3, "OnHide")
+        tooltip_style_ok(sc, w3, t3, [(lc, rc, False) for lc, rc, _ in want_st], "fail %s: OnHide puts it back" % label)
+        t3.SetItemByID(t3, ids[key])
+        t3.ClearLines(t3)
+        sc.eq(big_fontstrings(w3, t3), [], "fail %s: a clear puts it back" % label)
+        sc.clean(w3, "fail " + label)
+    # Stale prices (7h) and compact: nothing bigger, no Vendor pays; exactly 6h old is still fresh
+    for hours, fresh in ((7, False), (6, True)):
+        w5 = World(r2, items2, data_src=text, now=r2.updated + hours * 3600 + (0 if fresh else 120))
+        t5 = w5.g.GameTooltip
+        for key in ("vendormore", "silk"):
+            t5.SetItemByID(t5, ids[key])
+            lines = w5.lines(t5)
+            want, want_st = expected_tooltip(r2, ids[key], w5.now - r2.updated, styles=True)
+            sc.eq(lines, want, "%dh %s: the lines" % (hours, key))
+            tooltip_style_ok(sc, w5, t5, want_st, "%dh %s" % (hours, key))
+            has_vp = any(l == "Vendor pays" for l, _ in lines)
+            sc.eq(has_vp, fresh and key == "vendormore", "%dh %s: a Vendor pays line only when fresh" % (hours, key))
+            sc.eq(len(big_texts(w5, t5)), 2 if fresh else 0, "%dh %s: bigger lines only when fresh" % (hours, key))
+        sc.clean(w5, "%dh" % hours)
+    w.slash("/gl compact")
+    for key in ("vendormore", "silk", "dense"):
+        lines = hover(tt, key)
+        model_ok(tt, key, lines, "compact %s" % key, compact=True)
+        sc.eq((len(lines), big_texts(w, tt)), (1, []), "compact %s: one line, nothing bigger" % key)
+    w.slash("/gl compact")
+    sc.clean(w, "big lines compact")
 
 
 def sc_verdict_parity(sc, ref, items):
@@ -11670,6 +11912,7 @@ SCENARIOS = [
     ("stack-verdicts", sc_stack_verdicts),
     ("tooltip-verdicts", sc_tooltip_verdicts),
     ("tooltip-fonts", sc_tooltip_fonts),
+    ("tooltip-big-lines", sc_tooltip_big_lines),
     ("verdict-parity", sc_verdict_parity),
     ("bag-cleanup", sc_bag_cleanup),
     ("bag-cleanup-no-data", sc_bag_cleanup_nodata),

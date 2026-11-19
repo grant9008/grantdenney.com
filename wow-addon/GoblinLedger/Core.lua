@@ -938,13 +938,16 @@ ns.TOOLTIP_NAMES = TOOLTIP_NAMES
 local done = setmetatable({}, { __mode = "k" })      -- tooltip -> item id already shown
 local clearHooked = setmetatable({}, { __mode = "k" }) -- tooltip -> true when OnTooltipCleared is hooked
 
--- The bigger verdict line ("Auction it" / "Vendor it"), on GameTooltip and
--- ItemRefTooltip only. Both FontStrings of that line get our own Font: the
--- line's face and flags, 3 points bigger (at most 24). It is done after all
--- our lines exist, because a line the game makes later copies the Font of the
--- line above it. The exact Font object is saved and put back when the tooltip
--- clears or hides. GameTooltipText (ElvUI styles it) is never changed, nor the
--- comparison tooltips' fonts. Anything that fails leaves the normal size.
+-- The bigger lines, on GameTooltip and ItemRefTooltip only: the verdict
+-- ("Auction it" / "Vendor it"), then the price that wins with it (AH value
+-- under "Auction it", Vendor pays under "Vendor it"). Both FontStrings of
+-- such a line get our own Font: the line's face and flags, 3 points bigger
+-- (at most 24). It is done after all our lines exist, because a line the game
+-- makes later copies the Font of the line above it. The exact Font object is
+-- saved and put back when the tooltip clears or hides. GameTooltipText (ElvUI
+-- styles it) is never changed, nor the comparison tooltips' fonts. Each line
+-- is bigger whole or not at all: anything that fails leaves that line at the
+-- normal size, and a line made bigger before it stays bigger.
 local BIG_TOOLTIPS = { GameTooltip = true, ItemRefTooltip = true }
 local BIG_STEP, BIG_MAX = 3, 24
 local bigFonts, bigSeq = {}, 0                        -- "file|size|flags" -> our Font (false: none could be made)
@@ -952,15 +955,17 @@ local ourFonts = setmetatable({}, { __mode = "k" })   -- Font -> true for the Fo
 local bigSaved = setmetatable({}, { __mode = "k" })   -- FontString -> { obj, file, size, flags }
 local bigLines = setmetatable({}, { __mode = "k" })   -- tooltip -> { FontString, ... }
 
--- Puts the saved Font back on every enlarged FontString of a tooltip. Each
--- keeps its colour (SetFontObject takes the Font's colour), so a line still
--- on screen (a swap that failed half way, or OnHide from a parent hiding)
--- stays green or red at the normal size.
-local function restoreBig(tt)
+-- Puts the saved Font back on the enlarged FontStrings of a tooltip after the
+-- first keep of them (keep 0: every one). Each keeps its colour
+-- (SetFontObject takes the Font's colour), so a line still on screen (a swap
+-- that failed half way, or OnHide from a parent hiding) stays green or red at
+-- the normal size.
+local function restoreFrom(tt, keep)
   local l = bigLines[tt]
   if not l then return end
-  bigLines[tt] = nil
-  for _, fs in ipairs(l) do
+  for i = #l, keep + 1, -1 do
+    local fs = l[i]
+    l[i] = nil
     local s = bigSaved[fs]
     if s then
       bigSaved[fs] = nil
@@ -976,7 +981,9 @@ local function restoreBig(tt)
       end
     end
   end
+  if #l == 0 then bigLines[tt] = nil end
 end
+local function restoreBig(tt) restoreFrom(tt, 0) end
 
 -- One Font per face, size and flags, made once (a copy of src keeps ElvUI's shadow).
 local function bigFontFor(src, file, size, flags)
@@ -1041,17 +1048,19 @@ local function enlargeFS(tt, fs, c)
   return true
 end
 
--- Enlarges both sides of tooltip line n (or neither). Only with the restore
--- hook in, on GameTooltip / ItemRefTooltip, for n >= 3 and with a line after n.
+-- Enlarges both sides of tooltip line n (or neither: a side already swapped
+-- goes back, the lines enlarged before it stay). Only with the restore hook
+-- in, on GameTooltip / ItemRefTooltip, for n >= 3 and with a line after n.
 local function enlargeLine(tt, n, lc, rc)
   if clearHooked[tt] ~= true then return false end
   local okN, name = pcall(tt.GetName, tt)
   if not okN or type(name) ~= "string" or isSecret(name) or not BIG_TOOLTIPS[name] then return false end
   local okC, c = pcall(tt.NumLines, tt)
   if not okC or type(c) ~= "number" or isSecret(c) or n < 3 or c <= n then return false end
+  local keep = bigLines[tt] and #bigLines[tt] or 0
   local L, R = lineFS(tt, name, "Left", n), lineFS(tt, name, "Right", n)
   if not L or not R or not enlargeFS(tt, L, lc) or not enlargeFS(tt, R, rc) then
-    restoreBig(tt)
+    restoreFrom(tt, keep)
     return false
   end
   return true
@@ -1264,9 +1273,11 @@ ns.AverageLabel = averageLabel
 --   (the sell target from the price history; each in red when it nets no
 --   more than a vendor pays), then for a stack what it brings at the
 --   verdict's price after the AH cut (only when the AH pays more, or about
---   the same). "Auction it" and "Vendor it" are bigger while the prices are
---   fresh (enlargeLine). Compact mode is one line: the verdict and the AH
---   value, or the AH value alone.
+--   the same). While the prices are fresh, "Auction it" and the AH value
+--   are bigger, and "Vendor it" gets a "Vendor pays" line right under it
+--   (what a vendor pays each, or for the stack with Shift), both bigger
+--   (enlargeLine). Compact mode is one line: the verdict and the AH value,
+--   or the AH value alone.
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
 -- the "no recent listings" line; bound = true (soulbound, bind on pickup or a
 -- quest item: it can never be on the auction house) leaves out the verdict and
@@ -1315,7 +1326,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
      and not (type(ns.MarketMismatch) == "function" and ns.MarketMismatch()) then
     V = ns.SellVerdict(item, P)
   end
-  local vline   -- the line to enlarge, once all our lines are in
+  local vline, xline   -- the lines to enlarge (the verdict, the price that wins), once all our lines are in
   if S.compact then
     local m = money(item.market)
     if V then
@@ -1337,14 +1348,23 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     end
   else
     tt:AddDoubleLine("Goblin Ledger", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
+    local clearCut = V and (V.kind == "auction" or V.kind == "vendor") and age <= ns.STALE_SECONDS
     if V then
       local lc, rc = C[V.lc], C[V.rc]
       tt:AddDoubleLine(V.left, V.right, lc[1], lc[2], lc[3], rc[1], rc[2], rc[3])
-      if (V.kind == "auction" or V.kind == "vendor") and age <= ns.STALE_SECONDS then vline = numLines(tt) end
+      if clearCut then vline = numLines(tt) end
+    end
+    -- "Vendor it": what a vendor pays, bigger with the verdict.
+    local vp = clearCut and V.kind == "vendor" and money(item.vendor)
+    if vp then
+      tt:AddDoubleLine("Vendor pays" .. tag, vp, tx[1], tx[2], tx[3], 1, 1, 1)
+      xline = numLines(tt)
     end
     local m = money(item.market)
     if m then
       tt:AddDoubleLine("AH value" .. tag, vs and (m .. "  " .. vs) or m, tx[1], tx[2], tx[3], 1, 1, 1)
+      -- "Auction it": the AH value is bigger with the verdict.
+      if clearCut and V.kind == "auction" then xline = numLines(tt) end
     else
       tt:AddDoubleLine("AH value", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
@@ -1382,8 +1402,11 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   if age > ns.STALE_SECONDS then
     tt:AddLine(sformat("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload", floor(age / 3600)), mu[1], mu[2], mu[3])
   end
-  -- Last: every line after the verdict exists now (see enlargeLine).
-  if vline then enlargeLine(tt, vline, C[V.lc], C[V.rc]) end
+  -- Last: every line after ours exists now (see enlargeLine). Nothing from
+  -- an earlier item stays bigger. The second line only with the verdict:
+  -- when it cannot be bigger, the verdict still is.
+  restoreBig(tt)
+  if vline and enlargeLine(tt, vline, C[V.lc], C[V.rc]) and xline then enlargeLine(tt, xline, tx, { 1, 1, 1 }) end
   return true
 end
 
@@ -1443,7 +1466,7 @@ local function onTooltipSetItem(tt)
   local added = ns.AddTooltipLines(tt, pid, 1, opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not hasData and type(ns.QuestItemLine) == "function" and ns.QuestItemLine(tt, id) then added = true end
-  -- Show lays the tooltip out again, the bigger verdict line included.
+  -- Show lays the tooltip out again, the bigger lines included.
   if added and type(tt.Show) == "function" then tt:Show() end
 end
 
