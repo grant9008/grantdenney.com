@@ -8,8 +8,9 @@ local ADDON_NAME, ns = ...
 -- gives +5% XP from kills in Forever (below level 60): those rows say so in
 -- green. A click on the header folds it to one line (remembered); All shows
 -- every usable item instead of the best 4. Best / Budget (next to All) shows the
--- strongest, or good value for less gold: ones at least half as strong as the
--- strongest, the most strength per copper first (with All: cheapest first). The
+-- strongest, or for each of them one for less gold: a cheaper one that does the
+-- same job and is better value (a cheap one stays; a dear one with nothing like it
+-- goes; with All: those first, then cheapest first). The
 -- grey number on each row is how strong it is next to the strongest one of its
 -- kind you can use ("best", "62%"). Hover a row: the item's tooltip (and that in
 -- words); a click while the auction house is open searches it there; shift-click
@@ -1131,15 +1132,8 @@ local function dataStamp()
   return type(db) == "table" and tonumber(db.updated) or 0
 end
 
--- Today's AH value: Goblin Ledger's live price when it has one (ns.LivePrice), else the
--- price data's; 0 when there is none.
-local function ahValue(id)
-  local f = ns.LivePrice
-  if type(f) == "function" then
-    local ok, v = pcall(f, id)
-    v = ok and plainNumber(v) or nil
-    if v and v > 0 then return v end
-  end
+-- Today's AH value in the price data; 0 when there is none.
+local function dataValue(id)
   if dataStamp() > 0 and type(ns.GetItem) == "function" then
     local ok, g = pcall(ns.GetItem, id)
     local v = ok and type(g) == "table" and plainNumber(g.market) or nil
@@ -1148,10 +1142,24 @@ local function ahValue(id)
   return 0
 end
 
--- What one costs: a vendor's price when it is the cheaper, else today's AH value; nil: no price.
+-- The AH value a row shows: Goblin Ledger's live price when it has one (ns.LivePrice), else the
+-- price data's; 0 when there is none.
+local function ahValue(id)
+  local f = ns.LivePrice
+  if type(f) == "function" then
+    local ok, v = pcall(f, id)
+    v = ok and plainNumber(v) or nil
+    if v and v > 0 then return v end
+  end
+  return dataValue(id)
+end
+
+-- What one costs for the Budget picks: a vendor's price when it is the cheaper, else today's AH
+-- value in the price data (never a live listing: one lowball listing does not move the picks, and
+-- they stay the same at the auction house); nil: no price.
 local function costOf(id)
   local it = ITEMS[id]
-  local vendor, market = it and it[8] or 0, ahValue(id)
+  local vendor, market = it and it[8] or 0, dataValue(id)
   if vendor > 0 and (market <= 0 or vendor <= market) then return vendor, true end
   if market > 0 then return market, false end
   return nil
@@ -1171,8 +1179,9 @@ local SECTIONS = {
   { key = "weapon", title = "STONES AND OILS", lists = { "weapon" } },
 }
 local BEST_N = 4
-local FLOOR = 0.5    -- Budget: at least half as strong as the strongest one of its kind
-local NO_XP = 0.5    -- below 60, a food without the +5% XP counts half (XP food first while levelling)
+local FLOORS = { 1 / 2, 1 / 3 }   -- Budget: a stand-in at least half as strong as the Best pick (a dear one's: a third)
+local CHEAP, DEAR = 10, 25        -- copper a level: a Best pick this cheap stays in Budget; dearer with no stand-in: out
+local NO_XP = 0.25   -- below 60, a food without the +5% XP counts a quarter (below every XP food while levelling)
 
 local function bandOf(level)
   if level >= 60 then return 5 elseif level >= 50 then return 4 elseif level >= 40 then return 3 elseif level >= 20 then return 2 end
@@ -1294,82 +1303,107 @@ local function bestIds(role, lists, level, class)
   return takeTurns(per, lists, level, class)
 end
 
--- Budget's order for one list: the ones at least half as strong as the strongest of their kind,
--- with a price, not PvP-only, and not weaker and dearer than another of their kind; the most
--- strength per copper first (ties: the stronger), each kind's best buy first in the order the
--- best ones come (a stone for each kind of weapon, the protection potion Best shows, ...).
-local function budgetList(role, list, level, class, ref)
-  local cand = {}
-  for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
-    if usable(ITEMS[id], level, class) and not PVP[id] then
-      local s, k, c = strength(role, list, id, level), kindOf(list, id), costOf(id)
-      local r = ref[k]
-      if s and c and c > 0 and r and s >= FLOOR * r[1] - 1e-9 then
-        cand[#cand + 1] = { id = id, s = s, c = c, k = k }
-      end
-    end
-  end
-  local keep = {}
-  for _, a in ipairs(cand) do
-    local beaten = false
-    for _, b in ipairs(cand) do
-      if b ~= a and b.k == a.k and b.s >= a.s and b.c <= a.c and (b.s > a.s or b.c < a.c) then
-        beaten = true
-        break
-      end
-    end
-    if not beaten then keep[#keep + 1] = a end
-  end
-  tsort(keep, function(a, b)
-    local va, vb = a.s / a.c, b.s / b.c
-    if va ~= vb then return va > vb end
-    if a.s ~= b.s then return a.s > b.s end
-    if a.c ~= b.c then return a.c < b.c end
-    return a.id < b.id
-  end)
-  local out, took, kinds = {}, {}, {}
-  for _, id in ipairs(rankOrder(role, list, level)) do
-    local k = kindOf(list, id)
-    if not kinds[k] and usable(ITEMS[id], level, class) and not PVP[id] then
-      kinds[k] = true
-      for _, a in ipairs(keep) do
-        if a.k == k then
-          out[#out + 1] = a.id
-          took[a] = true
-          break
+-- Who can stand in for a Best pick in Budget: one that does the same job. Food, elixirs, scrolls,
+-- flasks, stones and oils: the same group (the stat, the elixir's stacking line, the weapons and
+-- what it adds); a protection potion: its school (or armor, or all); other potions: the same list
+-- (healing, mana, rage, a buff, a handy one: Free Action, Swiftness, ...).
+local function peerOf(list, id)
+  if list == "potion-protection" then return kindOf(list, id) end
+  if smatch(list, "^potion%-") then return list end
+  local it = ITEMS[id]
+  return list .. ":" .. (it and it[9] or tostring(id))
+end
+
+-- A potion that gives a random amount from next to nothing ("heals 1-1499"): never a Budget pick.
+local function chancy(list, id)
+  if not smatch(list, "^potion%-") then return false end
+  local it = ITEMS[id]
+  local lo, hi = smatch(it and it[6] or "", "(%d+)%-(%d+)")
+  lo, hi = tonumber(lo), tonumber(hi)
+  return lo ~= nil and hi ~= nil and lo * 3 < hi
+end
+
+-- How long a buff lasts in minutes, from its words ("+25 Agi, 1 hr", "+35 AP, 20 min"); nil: not said.
+local function minutesOf(id)
+  local b = ITEMS[id] and ITEMS[id][6] or ""
+  local h = tonumber(smatch(b, "(%d+) hr"))
+  if h then return h * 60 end
+  return tonumber(smatch(b, "(%d+) min"))
+end
+C.MinutesOf = minutesOf
+
+-- Strength per copper. An elixir, flask or scroll that lasts longer than 30 minutes is priced for 30
+-- of them (its strength counts 30 minutes at most): an hour's elixir is worth twice a 30 minute one.
+local LASTS = { elixir = true, flask = true, scroll = true }
+local function valueOf(list, id, s, c)
+  local m = LASTS[list] and minutesOf(id)
+  if m and m > 30 then c = c * 30 / m end
+  return s / c
+end
+
+-- What Budget shows for one Best pick b:
+--  * b when it costs at most CHEAP copper a level (a cheap one is not swapped to save pennies);
+--  * else the best value of the cheaper ones that do the same job (peerOf) and are better value than
+--    b, at least half as strong as b (when b is dear: over DEAR copper a level, no price, PvP-only or
+--    random, else at least a third);
+--  * none: b, unless it is dear: then nothing (a flask, a 50s elixir with nothing like it for less).
+-- Never a PvP-only one, a random one, one without a price or one of a group already shown.
+local function standIn(role, list, b, level, class, seen)
+  local cb, sb = costOf(b), strength(role, list, b, level) or 0
+  local own = not PVP[b] and not chancy(list, b)   -- may b itself be the Budget pick?
+  if own and cb and cb <= level * CHEAP then return b end
+  local dear = not own or not cb or cb > level * DEAR
+  local vb = own and cb and valueOf(list, b, sb, cb) or 0   -- one that cannot stay is no bar
+  local peer = peerOf(list, b)
+  for f = 1, dear and #FLOORS or 1 do
+    local top, tv, ts, tc
+    for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
+      local it = ITEMS[id]
+      if id ~= b and usable(it, level, class) and not PVP[id] and not seen[it[9]] and not chancy(list, id)
+         and peerOf(list, id) == peer then
+        local c, s = costOf(id), strength(role, list, id, level)
+        if c and c > 0 and s and (not cb or c < cb) and s >= FLOORS[f] * sb - 1e-9 then
+          local v = valueOf(list, id, s, c)
+          if v > vb and (not top or v > tv or (v == tv and (s > ts or (s == ts and c < tc)))) then
+            top, tv, ts, tc = id, v, s, c
+          end
         end
       end
     end
+    if top then return top end
   end
-  for _, a in ipairs(keep) do
-    if not took[a] then out[#out + 1] = a.id end
-  end
-  return out
+  if not dear then return b end
+  return nil
 end
 
--- The Budget picks: as the best ones (one of each kind of potion first, a group once, 4 at most),
--- from each list's Budget order. Below 60 every Well Fed food gives the same +5% XP: the cheapest
--- of the role's foods is in too (the last row), whatever its stat.
-local function budgetIds(role, key, lists, level, class, ref)
-  local per = {}
-  for i, list in ipairs(lists) do
-    per[i] = listAllowed(list, class) and budgetList(role, list, level, class, ref) or {}
+-- The Budget picks: a stand-in for each Best pick, in its order (fewer when a dear one has none).
+-- Below 60, when no food shown gives the +5% XP, the cheapest one of the role that does is the last
+-- food (of a stat not shown yet).
+local function budgetIds(role, key, lists, level, class)
+  local best, bfrom = bestIds(role, lists, level, class)
+  local out, from, seen = {}, {}, {}
+  for i, b in ipairs(best) do
+    local id = standIn(role, bfrom[i], b, level, class, seen)
+    if id and not seen[ITEMS[id][9]] then
+      seen[ITEMS[id][9]] = true
+      out[#out + 1] = id
+      from[#out] = bfrom[i]
+    end
   end
-  local out, from = takeTurns(per, lists, level, class)
   if key == "food" and level < 60 then
+    local xp = false
+    for _, id in ipairs(out) do
+      if ITEMS[id][7] > 0 then xp = true end
+    end
     local cheap, cc, cs
-    for _, id in ipairs(ALL[role] and ALL[role].food or {}) do
+    for _, id in ipairs(not xp and ALL[role] and ALL[role].food or {}) do
       local it = ITEMS[id]
-      if it and it[7] > 0 and usable(it, level, class) and not PVP[id] then
+      if it and it[7] > 0 and usable(it, level, class) and not PVP[id] and not seen[it[9]] then
         local c, s = costOf(id), strength(role, "food", id, level) or 0
         if c and c > 0 and (not cc or c < cc or (c == cc and s > cs)) then cheap, cc, cs = id, c, s end
       end
     end
-    local there = false
-    for _, id in ipairs(out) do
-      if id == cheap then there = true end
-    end
-    if cheap and not there then
+    if cheap then
       local n = min(#out + 1, BEST_N)
       out[n], from[n] = cheap, "food"
     end
@@ -1377,9 +1411,15 @@ local function budgetIds(role, key, lists, level, class, ref)
   return out, from
 end
 
--- Every usable one (the All switch), best first; with Budget, cheapest first (no price: last).
-local function allIds(role, lists, level, class, budget)
+-- Every usable one (the All switch), best first; with Budget: the Budget picks first, then the rest
+-- cheapest first (no price last).
+local function allIds(role, key, lists, level, class, budget)
   local out, from, seen = {}, {}, {}
+  if budget then
+    out, from = budgetIds(role, key, lists, level, class)
+    for _, id in ipairs(out) do seen[id] = true end
+  end
+  local lead = #out
   for _, list in ipairs(lists) do
     local ids = listAllowed(list, class) and ALL[role] and ALL[role][list] or {}
     for _, id in ipairs(ids) do
@@ -1392,13 +1432,13 @@ local function allIds(role, lists, level, class, budget)
   end
   if budget then
     local rows = {}
-    for i, id in ipairs(out) do rows[i] = { id = id, list = from[i], i = i, c = costOf(id) } end
+    for i = lead + 1, #out do rows[#rows + 1] = { id = out[i], list = from[i], i = i, c = costOf(out[i]) } end
     tsort(rows, function(a, b)
       if (a.c ~= nil) ~= (b.c ~= nil) then return a.c ~= nil end
       if a.c and a.c ~= b.c then return a.c < b.c end
       return a.i < b.i
     end)
-    for i, r in ipairs(rows) do out[i], from[i] = r.id, r.list end
+    for k, r in ipairs(rows) do out[lead + k], from[lead + k] = r.id, r.list end
   end
   return out, from
 end
@@ -1417,9 +1457,9 @@ local function buildModel()
     local ref = strongest(role, lists, level, class)
     local ids, from
     if all then
-      ids, from = allIds(role, lists, level, class, budget)
+      ids, from = allIds(role, s.key, lists, level, class, budget)
     elseif budget then
-      ids, from = budgetIds(role, s.key, lists, level, class, ref)
+      ids, from = budgetIds(role, s.key, lists, level, class)
     else
       ids, from = bestIds(role, lists, level, class)
     end
@@ -1513,8 +1553,8 @@ C.PriceOf = priceOf
 local function leftText(id, level)
   local it = ITEMS[id]
   local t = paint(it[2] or it[1], qualityColour(it[5]))
-  if it[6] ~= "" then t = t .. "  " .. paint(it[6], "muted") end
-  if it[7] > 0 and level < 60 then t = t .. "  " .. paint("+" .. it[7] .. "% XP", "pos") end
+  if it[6] ~= "" then t = t .. " " .. paint(it[6], "muted") end
+  if it[7] > 0 and level < 60 then t = t .. " " .. paint("+" .. it[7] .. "% XP", "pos") end
   return t
 end
 
@@ -1522,7 +1562,7 @@ local function rightText(id, stale)
   local words, key = priceOf(id, stale)
   local n = countOf(id)
   local t = paint(words, key)
-  if n > 0 then t = paint("x" .. n, "muted") .. "  " .. t end
+  if n > 0 then t = paint("x" .. n, "muted") .. " " .. t end
   return t
 end
 
@@ -1538,6 +1578,7 @@ end
 -- there it shows fewer rows, then goes above the character screen, then scrolls.
 local NAME = "GoblinLedgerConsumes"
 local HEAD_H, ROW_H, PAD, COL_GAP, GAP = 18, 16, 6, 12, 2
+local PCT_GAP = 4      -- the grey number's gap to the words and to the price
 local BODY_TOP, BODY_BOT = 1, 3
 local MAX_LINES = 16   -- the All list: at most this many lines, the rest scrolls
 local CAP = 24         -- a part more than this under the frame is not ours to avoid
@@ -1668,13 +1709,14 @@ local function newRow(i)
   -- the words give way to it (cut short) when the row is tight.
   r.pct = newFS(r)
   r.pct:SetJustifyH("RIGHT")
-  r.pct:SetPoint("RIGHT", r.right, "LEFT", -6, 0)
+  r.pct:SetPoint("RIGHT", r.right, "LEFT", -PCT_GAP, 0)
   local mu = colour("muted")
   r.pct:SetTextColor(mu[1], mu[2], mu[3], 1)
   r.text = newFS(r)
   r.text:SetPoint("LEFT", r.icon, "RIGHT", 4, 0)
-  r.text:SetPoint("RIGHT", r.pct, "LEFT", -6, 0)
+  r.text:SetPoint("RIGHT", r.pct, "LEFT", -PCT_GAP, 0)
   r.glNoEnchants = true   -- Enchants.lua: no enchant lines on a tooltip a row owns
+  r.glConsumes = true     -- the tooltip post call: a row of this list
   r:SetScript("OnEnter", guarded(rowEnter))
   r:SetScript("OnLeave", guarded(rowLeave))
   r:SetScript("OnClick", guarded(rowClick))
@@ -1879,11 +1921,50 @@ local function owns(tt, f)
   return ok and o == f
 end
 
--- The game's tooltip for the item (Goblin Ledger's price lines come with it).
+-- The row's grey number in words, last on its tooltip ("62% as strong as ... for a level 47 melee").
+local tipDone, tipHooked = false, false   -- the line is on the tooltip (until the game clears it)
+
+local function addPctLine(tt, row)
+  local p = row.glPct
+  if not p or not model then return end
+  local who = sformat("a level %d %s", model.level, model.role)
+  local ref = ITEMS[row.glRef]
+  local line = p >= 100 and ("Best: the strongest for " .. who) or
+    sformat("%d%% as strong as %s for %s", p, ref and ref[1] or "the best one", who)
+  local mu = colour("muted")
+  tt:AddLine(line, mu[1], mu[2], mu[3])
+  tipDone = true
+end
+
+-- The game builds an item's tooltip again later (item data arriving: TOOLTIP_DATA_UPDATE, a
+-- modifier key), which drops lines added after it was set: the line comes from the tooltip post
+-- call each time, as Core's price lines do (after them: Core's post call is the older one).
+local function onTipData(tt, data)
+  if tt ~= _G.GameTooltip or (tipHooked and tipDone) then return end
+  local ok, row = pcall(tt.GetOwner, tt)
+  if not ok or type(row) ~= "table" or row.glConsumes ~= true or not row.glID then return end
+  local id = type(data) == "table" and plainNumber(data.id) or nil
+  if id and id ~= row.glID then return end
+  addPctLine(tt, row)
+end
+
+local function hookTips()
+  local tt, tdp, enum = _G.GameTooltip, _G.TooltipDataProcessor, _G.Enum
+  if type(tt) == "table" and type(tt.HookScript) == "function" then
+    tipHooked = pcall(tt.HookScript, tt, "OnTooltipCleared", function() tipDone = false end) and true or false
+  end
+  if type(tdp) == "table" and type(tdp.AddTooltipPostCall) == "function" and type(enum) == "table"
+     and type(enum.TooltipDataType) == "table" and enum.TooltipDataType.Item ~= nil then
+    pcall(tdp.AddTooltipPostCall, enum.TooltipDataType.Item, guarded(onTipData))
+  end
+end
+
+-- The game's tooltip for the item (Goblin Ledger's price lines come with it), and the line in words.
 rowEnter = function(self)
   local id, tt = self.glID, _G.GameTooltip
   if not id or type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
   tt:SetOwner(self, "ANCHOR_RIGHT")
+  tipDone = false
   local shown = false
   if type(tt.SetItemByID) == "function" then
     ns.tipQuiet = true
@@ -1894,15 +1975,7 @@ rowEnter = function(self)
     local it = ITEMS[id]
     tt:AddLine(it and it[1] or ("Item " .. id), 1, 1, 1)
   end
-  local p = self.glPct
-  if p and model then
-    local who = sformat("a level %d %s", model.level, model.role)
-    local ref = ITEMS[self.glRef]
-    local line = p >= 100 and ("Best: the strongest for " .. who) or
-      sformat("%d%% as strong as %s for %s", p, ref and ref[1] or "the best one", who)
-    local mu = colour("muted")
-    tt:AddLine(line, mu[1], mu[2], mu[3])
-  end
+  if not tipDone then addPctLine(tt, self) end   -- no post call on this client (or it failed)
   tt:Show()
 end
 
@@ -2158,6 +2231,7 @@ local function build()
   F:SetScript("OnUpdate", guarded(onUpdate))
   F:SetScript("OnEvent", guarded(onEvent))
   for _, ev in ipairs(EVENTS) do pcall(F.RegisterEvent, F, ev) end   -- one this client lacks is skipped
+  hookTips()
   if not isOn() then F:Hide() end
   if F:IsVisible() then onShow(F) end
   return true
@@ -2229,10 +2303,11 @@ local function consumesCommand(rest)
     on = false
   elseif rest == "budget" or rest == "best" then
     setBudget(rest == "budget")
+    local off = isOn() and "" or " It is off: /gl consumes on brings it back."
     if rest == "budget" then
-      say("the consumes list shows Budget picks: good value for less gold. /gl consumes best for the strongest.")
+      say("the consumes list shows Budget picks: good value for less gold. /gl consumes best for the strongest." .. off)
     else
-      say("the consumes list shows the Best ones: the strongest. /gl consumes budget for good value for less gold.")
+      say("the consumes list shows the Best ones: the strongest. /gl consumes budget for good value for less gold." .. off)
     end
     return
   elseif rest == "status" then
