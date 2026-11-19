@@ -2056,7 +2056,8 @@ local function skillList()
   return out
 end
 local function skillInfo(s)
-  return { skillID = s.id or 0, name = s.name, isHeader = s.header == true, isCollapsed = false, rank = s.rank or 0,
+  local folded = s.header == true and M.skillsCollapsed and s.name == "Professions"
+  return { skillID = s.id or 0, name = s.name, isHeader = s.header == true, isCollapsed = folded == true, rank = s.rank or 0,
            tempPoints = 0, modifier = 0, maxRank = s.max or 300, isAbandonable = s.header ~= true, stepCost = 0,
            rankCost = 0, minLevel = 0, costType = 0, parentSkillLineID = 0, skillLineCategoryID = 0, description = "" }
 end
@@ -14256,39 +14257,31 @@ REACH_BAG = [
     (0, 10, 900632, 1, "Doubled Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
     (0, 11, 900633, 1, "Either Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
 ]
-SKILLS_LUA = r'''
--- C_SkillInfo as Forever has it (Questie's QuestieCompat reads it so): the skill list by
--- index, a table each (name, skillID, rank, isHeader, isCollapsed), from MOCK.skills.
-C_SkillInfo = {
-  GetNumSkillLines = function() return #(MOCK.skills or {}) end,
-  GetSkillLineInfo = function(i)
-    local s = MOCK.skills and MOCK.skills[i]
-    if type(s) ~= "table" then return nil end
-    local o = {}
-    for k, v in pairs(s) do o[k] = v end
-    return o
-  end,
-}
-'''
-
-
 def set_skills(w, lines):
-    """The game's skill list: None takes C_SkillInfo away; else (skill line id, rank) each, or
-    ("header", collapsed). Returns the skill line ids the model sees (None: it cannot be told)."""
+    """The game's skill list, through the shared C_SkillInfo mock (M.skills): None takes
+    C_SkillInfo away; else (skill line id, rank) each, or ("header", collapsed) for the
+    Professions header (a closed one hides the lines under it). Returns the skill line ids
+    the model sees (None: it cannot be told)."""
     if lines is None:
+        if w.g.C_SkillInfo is not None:
+            w.skill_api = w.g.C_SkillInfo
         w.g.C_SkillInfo = None
         return None
     if w.g.C_SkillInfo is None:
-        w.lua.execute(SKILLS_LUA)
-    t, ids, sure = [], set(), True
+        w.g.C_SkillInfo = w.skill_api
+    t, ids, sure, folded = [], set(), True, False
     for a, b in lines:
         if a == "header":
-            t.append({"name": "Professions", "isHeader": True, "isCollapsed": b})
+            t.append({"name": "Professions", "header": True})
+            folded = folded or bool(b)
             sure = sure and not b
         else:
-            t.append({"name": "Skill %d" % a, "skillID": a, "rank": b, "isHeader": False})
-            ids.add(a)
+            t.append({"name": "Skill %d" % a, "id": a, "rank": b})
+            if not folded:
+                ids.add(a)
     w.M.skills = w.to_lua(t)
+    w.M.skillMode = "forever"
+    w.M.skillsCollapsed = folded
     return ids if sure and ids else None
 
 
