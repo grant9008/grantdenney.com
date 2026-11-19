@@ -851,6 +851,50 @@ def test_fallback_hooks():
     eq(ns.lastError, None, "no fallback errors")
 
 
+def test_quest_item_hook():
+    """Both tooltip handlers ask Bags.lua (ns.QuestItemLine) for a quest line,
+    only for an item with no prices, after the price lines and once a show."""
+    print("quest item hook (Bags.lua's QuestItemLine)")
+    for processor in (True, False):
+        mode = "processor" if processor else "script"
+        L, G, ns = new_env(fixture_lua(), processor=processor)
+        M = G.MOCK
+        M.now = UPDATED + 3600
+        ns.QuestItemLine = G.loadstring("""return function(tt, id)
+            QCALLS = (QCALLS or 0) + 1
+            if id == 5000 then tt:AddLine("Done: you can drop it (Find the Gems)", 0.25, 0.8, 0.45) return true end
+            return false
+          end""")()
+        G.C_Item = G.loadstring("""return { GetItemInfo = function(id)
+            local bind = ({ [5000] = 4 })[id] or 0
+            return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 12, 0, bind end }""")()
+        tt = G.GameTooltip
+
+        def show(iid):
+            if processor:
+                return lines_of(M.ShowItem(tt, iid, None))
+            tt.Clear(tt)
+            tt.itemLink = "|cffffffff|Hitem:%d::::::::60:::::|h[Item]|h|r" % iid
+            tt.Fire(tt, "OnTooltipSetItem")
+            return lines_of(tt.lines)
+        shown0 = tt.shown
+        eq(show(5000), [("Done: you can drop it (Find the Gems)",)], mode + ": a quest item gets the quest line alone")
+        eq(G.QCALLS, 1, mode + ": asked once")
+        if not processor:
+            eq(tt.shown, shown0 + 1, mode + ": Show lays the tooltip out again for the quest line")
+        else:
+            M.ShowItem(tt, 5000, None, False)
+            eq(len(tt.lines), 1, mode + ": no second quest line when the same show fires again")
+            eq(G.QCALLS, 1, mode + ": and not asked again")
+        got = show(2589)
+        check(len(got) > 1 and all("Find the Gems" not in (ln[0] or "") for ln in got), mode + ": a priced item gets its prices only")
+        eq(G.QCALLS, 1, mode + ": not asked for a priced item")
+        eq(show(99998), [("Forever AH: no recent listings",)], mode + ": an unpriced item the hook has nothing for")
+        eq(G.QCALLS, 2, mode + ": asked for an unpriced item")
+        G.C_Item = None
+        eq(ns.lastError, None, mode + ": no tooltip errors")
+
+
 def test_bare_environment():
     print("bare environment (most WoW functions missing)")
     L = lua51.LuaRuntime(unpack_returned_tuples=True)
@@ -2129,6 +2173,7 @@ def main():
     test_tooltip(G, ns)
     test_placeholder()
     test_fallback_hooks()
+    test_quest_item_hook()
     test_bare_environment()
     test_new_fields()
     test_sales_hours()

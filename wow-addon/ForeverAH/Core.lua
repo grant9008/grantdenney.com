@@ -1410,7 +1410,8 @@ local function onTooltipData(tt, data)
   local link = tooltipLink(tt, data)
   local pid, cover = ns.PriceIDForLink(id, link)
   pid = pid or id
-  if not ns.GetItem(pid) then
+  local priced = ns.GetItem(pid) ~= nil
+  if not priced then
     -- No data: only worth a line for items that could be on the auction house.
     -- Comparison tooltips show what you wear, which is nearly always soulbound.
     local ok, name = pcall(tt.GetName, tt)
@@ -1422,6 +1423,8 @@ local function onTooltipData(tt, data)
     opts.bound = not mightBeTradeable(tt, data, id)
   end
   ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
+  -- A quest item with no prices: Bags.lua says whether you can drop it.
+  if not priced and type(ns.QuestItemLine) == "function" then ns.QuestItemLine(tt, id) end
 end
 
 -- OnTooltipSetItem script hook (fallback for clients without TooltipDataProcessor).
@@ -1437,8 +1440,11 @@ local function onTooltipSetItem(tt)
   local hasData = ns.GetItem(pid) ~= nil
   local tradeable = mightBeTradeable(tt, nil, id)
   local opts = { noData = hasData or tradeable, version = cover, bound = hasData and not tradeable }
+  local added = ns.AddTooltipLines(tt, pid, 1, opts)
+  -- A quest item with no prices: Bags.lua says whether you can drop it.
+  if not hasData and type(ns.QuestItemLine) == "function" and ns.QuestItemLine(tt, id) then added = true end
   -- Show lays the tooltip out again, the bigger verdict line included.
-  if ns.AddTooltipLines(tt, pid, 1, opts) and type(tt.Show) == "function" then tt:Show() end
+  if added and type(tt.Show) == "function" then tt:Show() end
 end
 
 ns.OnTooltipData = function(tt, data)
