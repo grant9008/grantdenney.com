@@ -894,6 +894,72 @@ end
 local P = ns.Print
 
 ---------------------------------------------------------------------------
+-- A small close X
+---------------------------------------------------------------------------
+-- ns.CloseX(parent, onClick[, size]): a small X button on parent (14px unless size says),
+-- like the game's own close buttons (its red panel X, made small), or ElvUI's X when
+-- ElvUI is in. onClick(button, mouseButton) runs on a click. Not placed: the caller
+-- sets its point. Used by the flight timer bar; the boat timer line can use it too.
+local CLOSE_ART = { "Interface\\Buttons\\UI-Panel-MinimizeButton-Up", "Interface\\Buttons\\UI-Panel-MinimizeButton-Down",
+                    "Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight" }
+
+local function closeArt(b)
+  pcall(b.SetNormalTexture, b, CLOSE_ART[1])
+  pcall(b.SetPushedTexture, b, CLOSE_ART[2])
+  pcall(b.SetHighlightTexture, b, CLOSE_ART[3], "ADD")
+end
+
+-- ElvUI's own X (Skins: HandleCloseButton). true = done (or no ElvUI), false = ask again.
+local function elvClose(b, size)
+  local eng = _G.ElvUI
+  local E = type(eng) == "table" and eng[1]
+  if type(E) ~= "table" or type(E.GetModule) ~= "function" then return true end
+  local ok, S = pcall(E.GetModule, E, "Skins", true)
+  if not ok or type(S) ~= "table" or type(S.HandleCloseButton) ~= "function" then return true end
+  if not pcall(S.HandleCloseButton, S, b) then
+    closeArt(b)   -- it may have taken the art off first
+    return false
+  end
+  pcall(b.SetHitRectInsets, b, -2, -2, -2, -2)   -- ElvUI's insets are for its bigger buttons
+  local t = b.Texture
+  if type(t) == "table" and type(t.SetSize) == "function" then pcall(t.SetSize, t, size - 2, size - 2) end
+  b.glLook = "elvui"
+  return true
+end
+
+function ns.CloseX(parent, onClick, size)
+  local make = _G.CreateFrame
+  if type(make) ~= "function" or type(parent) ~= "table" then return nil end
+  size = tonumber(size) or 14
+  local ok, b = pcall(make, "Button", nil, parent, "UIPanelCloseButtonNoScripts")
+  local look = "game"
+  if not ok or type(b) ~= "table" then
+    ok, b = pcall(make, "Button", nil, parent)
+    if not ok or type(b) ~= "table" then return nil end
+    closeArt(b)
+    look = "plain"
+  end
+  b.glLook = look
+  b:SetSize(size, size)
+  pcall(b.SetHitRectInsets, b, -2, -2, -2, -2)   -- a little easier to hit than it looks
+  -- The template sits at frame level 510 (over whole panels): just over its parent instead.
+  local lok, lvl = pcall(parent.GetFrameLevel, parent)
+  if lok and type(lvl) == "number" and lvl < 9990 then pcall(b.SetFrameLevel, b, lvl + 2) end
+  if b.RegisterForClicks then pcall(b.RegisterForClicks, b, "LeftButtonUp") end
+  b:SetScript("OnClick", function(self, button)
+    if type(onClick) ~= "function" then return end
+    local cok, err = pcall(onClick, self, button)
+    if not cok then ns.lastError = err end
+  end)
+  if not elvClose(b, size) then
+    b:HookScript("OnShow", function(self)
+      if self.glLook ~= "elvui" then elvClose(self, size) end
+    end)
+  end
+  return b
+end
+
+---------------------------------------------------------------------------
 -- Settings
 ---------------------------------------------------------------------------
 local DEFAULTS = { tooltip = true, chart = true, chartTF = "1D", compact = false, chartPoint = nil }
