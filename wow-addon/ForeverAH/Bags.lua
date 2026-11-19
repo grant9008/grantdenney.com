@@ -260,6 +260,18 @@ local function ItemInfo(x)
   }
 end
 
+-- Whether an item has a Use effect (a tool like a scrying phial): true, false,
+-- or nil when the game has not loaded the item yet (then it may be one).
+local function ItemUsable(id)
+  local CI = _G.C_Item
+  local f = (type(CI) == "table" and type(CI.GetItemSpell) == "function") and CI.GetItemSpell or _G.GetItemSpell
+  if type(f) ~= "function" then return nil end
+  local ok, spell = pcall(f, id)
+  if ok and spell ~= nil and not IsSecret(spell) then return true end
+  if ItemInfo(id) then return false end
+  return nil
+end
+
 -- Class and icon without the item being loaded yet.
 local function InstantInfo(id)
   local CI = _G.C_Item
@@ -312,10 +324,12 @@ local function ReadQuestLog()
     if QL and type(QL.GetQuestObjectives) == "function" and Num(questID) and questID > 0 then
       local ok, list = pcall(QL.GetQuestObjectives, questID)
       if ok and type(list) == "table" then
-        read = true
         for _, o in ipairs(list) do
           if type(o) == "table" and Str(o.text) then texts[#texts + 1] = o.text end
         end
+        -- Some clients give an empty list (or no texts) for a quest that has
+        -- objectives: then the quest log's own lines are read too.
+        read = #texts > 0
       end
     end
     if not read and index and type(_G.GetNumQuestLeaderBoards) == "function" and type(_G.GetQuestLogLeaderBoard) == "function" then
@@ -800,6 +814,7 @@ end
 local function QuestieVerdict(id, log, startQ)
   local L = QuestieReady()
   if not L or not Num(id) then return nil end
+  local usable = ItemUsable(id)
   local R, order = {}, {}
   local function add(q, role)
     q = Num(q)
@@ -835,8 +850,10 @@ local function QuestieVerdict(id, log, startQ)
         add(q, "use")
       elseif role == ROLE_GIVE and q ~= s1 and q ~= s2 then
         givers[#givers + 1] = q
-        -- The quest after the one that gives it is the one it is for, as a rule.
-        if add(q, "give") then
+        -- The quest after the one that gives it is the one it is for, as a rule,
+        -- but only for a tool you use (a phial that calls someone): a note or a
+        -- journal you only read is done with the quest that gave it.
+        if add(q, "give") and usable ~= false then
           local n = R[q].info.nextQ
           if add(n, "nextq") and not from[n] then from[n] = q end
         end
@@ -946,7 +963,7 @@ end
 -- The tooltip line for a verdict, and its colour.
 local function QuestLineText(v)
   local n = v.name
-  if v.kind == "done" then return "Done: you can drop it" .. (n and (" (" .. n .. ")") or ""), "pos" end
+  if v.kind == "done" then return "Can drop: done with " .. (n or "its quests"), "pos" end
   if v.kind == "open" then return "Only for " .. (n or "a quest") .. ", not in your quest log", "muted" end
   if v.kind == "starts" then return "Starts " .. (n or "a quest"), "buy" end
   if v.rep then return "Keep: for " .. (n and (n .. " (repeatable)") or "a repeatable quest"), "buy" end
@@ -957,6 +974,12 @@ local function IsQuestItem(id)
   local gi = ItemInfo(id)
   if gi then return gi.classID == CLASS_QUEST or gi.bind == BIND_QUEST end
   return (InstantInfo(id)) == CLASS_QUEST
+end
+
+-- Whether QuestieDB's index ties the item to a quest at all (a journal or a
+-- note a quest gives you is often not marked as a quest item).
+local function QuestieLinked(id)
+  return QI.state == "ready" and type(QI.map) == "table" and QI.map[id] ~= nil
 end
 
 -- Core.lua's tooltip handler calls this for an item it has no prices for:
@@ -971,7 +994,10 @@ function ns.QuestItemLine(tt, id)
   if st and st.tooltip == false then return false end
   if QI.state == "off" then return false end
   local ok, v = pcall(function()
-    if not IsQuestItem(id) then return nil end
+    -- Any item's tooltip may start the index (a journal a quest gave you is
+    -- not marked as a quest item, so it would otherwise wait for one that is).
+    QuestieReady()
+    if not IsQuestItem(id) and not QuestieLinked(id) then return nil end
     return QuestieVerdict(id, nil, nil)
   end)
   if not ok then
@@ -1186,6 +1212,16 @@ function ns.BagScan()
             e.source = (aTotal > vTotal) and "auction" or "vendor"
             e.junk = e.quality == 0 and vendor > 0
             if e.junk then out.junk[#out.junk + 1] = e end
+            if e.value <= 0 and not keep[id] and QuestieLinked(id) then
+              -- Worth nothing, and a quest gave it or needs it (a journal, a
+              -- note): Questie says whether you are done with it.
+              local v = ScanVerdict(id, log, qi)
+              if v and (v.kind == "done" or v.kind == "open") then
+                e.questItem = true
+                e.why, e.sure, e.quest, e.qdb = v.kind, true, v.name, true
+                out.quest[#out.quest + 1] = e
+              end
+            end
             local skip = e.value <= 0
               or classID == CLASS_PROJECTILE or classID == CLASS_QUIVER or classID == CLASS_KEY
               or classID == CLASS_REAGENT
@@ -1578,8 +1614,8 @@ local function Backdrop(F)
 end
 
 local QUEST_TEXT = {
-  done = "starts a quest you already finished",
-  none = "no quest in your log asks for it",
+  done = "It starts a quest you already finished.",
+  none = "No quest in your log asks for it.",
 }
 
 local function RowTooltip(row)
@@ -1610,16 +1646,15 @@ local function RowTooltip(row)
   elseif kind == "quest" then
     tt:AddLine(Paint("Old quest item", "buy"))
     if e.qdb and e.why == "done" then
-      tt:AddLine(e.quest and ("Quest done: " .. e.quest .. ". You can drop it.") or "Its quests are done. You can drop it.",
-        0.8, 0.8, 0.8, true)
+      tt:AddLine("Can drop: done with " .. (e.quest or "its quests") .. ".", 0.8, 0.8, 0.8, true)
     elseif e.qdb then
       tt:AddLine("Only for " .. (e.quest or "a quest") .. ", not in your quest log.", 0.8, 0.8, 0.8, true)
+    elseif e.sure then
+      tt:AddLine(QUEST_TEXT[e.why] or "It may be left over.", 0.8, 0.8, 0.8, true)
     else
-      tt:AddLine("This " .. (QUEST_TEXT[e.why] or "may be left over") .. ".", 0.8, 0.8, 0.8, true)
-    end
-    if not e.sure then
-      tt:AddLine("Some quests (deliver this, talk to someone) do not list what they need: check your quest log first.",
-        0.6, 0.6, 0.6, true)
+      -- Not sure: no quest names it, but that is no proof nothing needs it.
+      tt:AddLine("Not sure: no quest in your log names it, but some quests (deliver this, talk to someone) need "
+        .. "items they do not list. Check your quest log before you drop it.", 0.8, 0.8, 0.8, true)
     end
     tt:AddLine("Click: pick it up, then click the ground to destroy it (the game asks first)", mu[1], mu[2], mu[3], true)
     tt:AddLine("Right-click: always keep it", mu[1], mu[2], mu[3])

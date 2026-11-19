@@ -1711,6 +1711,13 @@ function C_Item.GetItemIconByID(id) local it = M["items"][id]; return it and it.
 function C_Item.GetItemQualityByID(id) local it = M["items"][id]; return it and it.quality end
 function C_Item.GetItemQualityColor(q) local c = QC[q] or QC[1]; return c[1], c[2], c[3], "ffffffff" end
 function C_Item.IsItemDataCachedByID(id) return M["items"][id] ~= nil end
+-- The Use effect of an item (useSpell in the mock's items): its name and a spell id, nil without one.
+function C_Item.GetItemSpell(id)
+  local it = M["items"][id]
+  if it and it.useSpell then return it.useSpell, 90000 + (id % 1000) end
+  return nil
+end
+GetItemSpell = C_Item.GetItemSpell
 
 C_Container = {}
 function C_Container.GetContainerItemInfo(bag, slot)
@@ -1835,6 +1842,8 @@ function C_QuestLog.GetInfo(i)
   return { title = q.title, questID = q.questID or 0, isHeader = q.isHeader == true, isCollapsed = q.isCollapsed == true }
 end
 function C_QuestLog.GetQuestObjectives(questID)
+  -- Some clients give an empty list here: the quest log's own lines (below) still have them.
+  if M.questObjectivesEmpty then return {} end
   for _, q in ipairs(M.quests) do
     if q.questID == questID and not q.isHeader then
       local out = {}
@@ -1845,6 +1854,16 @@ function C_QuestLog.GetQuestObjectives(questID)
   return {}
 end
 function C_QuestLog.IsQuestFlaggedCompleted(id) return M.questDone[id] == true end
+-- The quest log's objective lines by log index (the older way to read them).
+function GetNumQuestLeaderBoards(index)
+  local q = M.quests[index]
+  return (q and not q.isHeader and q.objectives) and #q.objectives or 0
+end
+function GetQuestLogLeaderBoard(j, index)
+  local q = M.quests[index]
+  local t = q and q.objectives and q.objectives[j]
+  return t, "item", false
+end
 
 -- The game's bag windows (ContainerFrame1 is the backpack) and the vendor window.
 NUM_CONTAINER_FRAMES = 13
@@ -10522,6 +10541,7 @@ QDB_ITEMS = {
     6866: {"name": "Symbol of Life", "class": 12, "flags": 64, "questRewards": [1789, 1790, 94435]},
     7666: {"name": "Shattered Necklace", "class": 12, "flags": 2048, "startQuest": 2198},
     7667: {"name": "Talvash's Phial of Scrying", "class": 12, "flags": 64, "questRewards": [3375]},
+    7668: {"name": "Bloodstained Journal", "class": 15, "flags": 2048},
     7846: {"name": "Crag Coyote Fang", "class": 12},
     12840: {"name": "Minion's Scourgestone", "class": 12},
     900501: {"name": "Sealed Letter", "class": 12, "startQuest": 950001},
@@ -10531,7 +10551,7 @@ QDB_ITEMS = {
 }
 # The bags: (bag, slot, item, count, name, fields for the mock game).
 QUEST_BAG = [
-    (0, 1, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 1, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1, "useSpell": "Create Scrying Bowl"}),
     (0, 2, 7846, 4, "Crag Coyote Fang", {"classID": 12, "bind": 4, "maxStack": 20}),
     (0, 3, 900501, 1, "Sealed Letter", {"classID": 12, "bind": 4, "maxStack": 1, "startsQuest": 950001}),
     (0, 4, 12840, 3, "Minion's Scourgestone", {"classID": 12, "maxStack": 20}),
@@ -10696,10 +10716,12 @@ def ref_quest_index(quests):
     return {k: (v[0] if len(v) == 1 else v) for k, v in idx.items()}
 
 
-def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None):
+def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None, usable=True):
     """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it.
     in_log: the quests known to be in the log; log_known: whether every other
-    quest is known not to be (False: closed headers and no IsOnQuest)."""
+    quest is known not to be (False: closed headers and no IsOnQuest).
+    usable: the item has a Use effect (a tool); only then does the quest after
+    the one that gave it count (a note you only read is done with its quest)."""
     idx = ref_quest_index(quests)
     item = QDB_ITEMS.get(iid, {})
     starts = [q for q in (item.get("startQuest", 0), start_q) if q]
@@ -10732,7 +10754,7 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
             add(q, "use")
         elif role == 1 and q not in starts:
             givers.append(q)
-            if add(q, "give"):
+            if add(q, "give") and usable:
                 n = quests[q].get("nextQuestInChain", 0)
                 if add(n, "nextq"):
                     given_for.setdefault(n, q)
@@ -10799,7 +10821,7 @@ def quest_line_text(v):
     """The tooltip line and its colour key for a model verdict."""
     kind, n, rep = v
     if kind == "done":
-        return "Done: you can drop it (%s)" % n, "pos"
+        return "Can drop: done with %s" % n, "pos"
     if kind == "open":
         return "Only for %s, not in your quest log" % n, "muted"
     if kind == "starts":
@@ -10846,7 +10868,7 @@ NO_LISTINGS = ("Forever AH: no recent listings", QDB_COLORS["muted"])
 def plain_tip(fields):
     """Our lines on a quest item's tooltip without QuestieDB: none, or for one
     that is not bound (it might go on the auction house) the no-listings line."""
-    return [] if fields.get("bind") == 4 else [NO_LISTINGS]
+    return [] if fields.get("bind") in (1, 4) else [NO_LISTINGS]
 
 
 def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None, bag_list=None):
@@ -10854,7 +10876,8 @@ def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=Tr
     for bag, slot, iid, count, name, fields in (bag_list or QUEST_BAG):
         if ids and iid not in ids:
             continue
-        want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"))
+        want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"),
+                                 usable="useSpell" in fields)
         sc.eq(lua_verdict(w, iid), want, "%s: %s verdict" % (label, name))
         tip = quest_tip(w, bag, slot)
         if want is None:
@@ -10927,7 +10950,7 @@ def sc_bag_questie(sc, ref, items):
     w.settle(0.5)
     in_log, done = {2204}, {2198, 2199, 2200, 2201}
     sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "questie: phial after Find the Gems, Restoring the Necklace in the log: done")
-    sc.eq(quest_tip(w, 0, 1), [("Done: you can drop it (Find the Gems)", QDB_COLORS["pos"])], "questie: phial tooltip, green done line")
+    sc.eq(quest_tip(w, 0, 1), [("Can drop: done with Find the Gems", QDB_COLORS["pos"])], "questie: phial tooltip, green done line")
     quest_checks(sc, w, quests, in_log, done, "after Find the Gems")
     rows = quest_rows(BP)
     sc.eq(rows[:1], [(7667, "done", pos)], "questie panel: the phial is listed first, done in green")
@@ -10935,7 +10958,7 @@ def sc_bag_questie(sc, ref, items):
     if sc.check(row is not None, "questie panel: the phial has a row"):
         M.enter(row)
         lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
-        sc.check("Quest done: Find the Gems. You can drop it." in lines, "questie panel: the phial's row tooltip (%s)" % lines)
+        sc.check("Can drop: done with Find the Gems." in lines, "questie panel: the phial's row tooltip (%s)" % lines)
         sc.check(not any("check your quest log" in l for l in lines), "questie panel: no unsure note for a QuestieDB verdict")
         M.leave(row)
         # The drop flow is as before for quest items: picked up, the game asks.
@@ -11028,7 +11051,7 @@ def sc_bag_questie(sc, ref, items):
     quest_bags(wl, LOG_NECKLACE, done=(2198, 2199, 2200, 2201))
     wl.ns.BagScan()
     wl.settle(0.5)
-    sc.eq(quest_tip(wl, 0, 1), [("Done: you can drop it (Find the Gems)", QDB_COLORS["pos"])], "questie legacy: phial tooltip")
+    sc.eq(quest_tip(wl, 0, 1), [("Can drop: done with Find the Gems", QDB_COLORS["pos"])], "questie legacy: phial tooltip")
     sc.eq(quest_tip(wl, 0, 5), [NO_LISTINGS], "questie legacy: no quest line for an item QuestieDB does not know")
     # /fah tooltip off: no quest line either.
     wl.slash("/fah tooltip")
@@ -11041,7 +11064,7 @@ def sc_bag_questie(sc, ref, items):
 # Life goes in an Undead paladin's bags.
 CHAIN_BAG = [
     (0, 1, 7666, 1, "Shattered Necklace", {"classID": 12, "bind": 4, "maxStack": 1, "startsQuest": 2198}),
-    (0, 2, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 2, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1, "useSpell": "Create Scrying Bowl"}),
     (0, 3, 900506, 1, "Miner's Lamp", {"classID": 12, "bind": 4, "maxStack": 1}),
 ]
 SYMBOL_BAG = [(0, 1, 6866, 1, "Symbol of Life", {"classID": 12, "bind": 4, "maxStack": 1})]
@@ -11107,7 +11130,7 @@ def sc_bag_questie_chain(sc, ref, items):
     rows = state(qlog(2199, "Lore for a Price"), (2198,), "chain, necklace handed in")
     sc.eq(lua_verdict(w, 7666), ("done", "The Shattered Necklace", False),
           "chain: the necklace once its quest is done (not kept for Lore for a Price)")
-    sc.eq(quest_tip(w, 0, 1), [("Done: you can drop it (The Shattered Necklace)", pos)], "chain: necklace tooltip, green done line")
+    sc.eq(quest_tip(w, 0, 1), [("Can drop: done with The Shattered Necklace", pos)], "chain: necklace tooltip, green done line")
     sc.check((7666, "done", "The Shattered Necklace") in rows, "chain: the necklace is listed as done (%s)" % rows)
 
     # Back to Uldaman done, Find the Gems not taken (a full log): the phial is
@@ -11140,7 +11163,7 @@ def sc_bag_questie_chain(sc, ref, items):
     # Taken (the player's case): the phial can go.
     rows = state(LOG_NECKLACE, (2198, 2199, 2200, 2201), "chain, Restoring the Necklace taken")
     sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "chain: Restoring the Necklace in the log: the phial is done")
-    sc.eq(quest_tip(w, 0, 2), [("Done: you can drop it (Find the Gems)", pos)], "chain: phial tooltip, green done line")
+    sc.eq(quest_tip(w, 0, 2), [("Can drop: done with Find the Gems", pos)], "chain: phial tooltip, green done line")
     sc.eq(quest_rows(BP), [(7666, "done", pos), (7667, "done", pos), (900506, "not started", mu)],
           "chain panel: the phial is listed as done")
     out = [plain(x) for x in w.slash("/fah bags")]
@@ -11384,6 +11407,114 @@ def sc_bag_questie_fallback(sc, ref, items):
     sc.clean(w, "breaks later")
 
 
+# A tool and a note from the same chain: the phial (Use: it creates the scrying bowl) and the
+# Bloodstained Journal, which Find the Gems gives you: readable, soulbound, no price, and not
+# marked as a quest item.
+JOURNAL_BAG = [
+    (0, 1, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1, "useSpell": "Create Scrying Bowl"}),
+    (0, 2, 7668, 1, "Bloodstained Journal", {"classID": 15, "bind": 1, "maxStack": 1}),
+]
+
+
+def sc_bag_questie_journal(sc, ref, items):
+    """With QuestieDB, an item a quest gave you that is not marked as a quest item (the
+    Bloodstained Journal) gets the same tooltip line and cleanup row as a quest item, and
+    only a tool you use (the phial) counts for the quest after the one that gave it: the
+    journal can go once Find the Gems is done, the phial waits for Restoring the Necklace."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    quests = install_questie(w)
+    for bag, slot, iid, count, name, fields in JOURNAL_BAG:
+        bag_add_item(w, iid, name, 1, 0, **fields)
+        bag_put(w, bag, slot, iid, count)
+    pos, buy = QDB_COLORS["pos"], QDB_COLORS["buy"]
+
+    def state(log, done):
+        bag_quests(w, log)
+        for q in (2198, 2199, 2200, 2201):
+            M.questDone[q] = q in done
+        M.fire("QUEST_LOG_UPDATE")
+        w.settle(0.5)
+    state(LOG_FIND_GEMS, (2198, 2199, 2200))
+    quest_tip(w, 0, 2)                     # the first need starts the index
+    w.settle(0.5)
+    sc.eq(ns.QuestIndex.state, "ready", "journal: the index is ready")
+    # On Find the Gems: both kept for it.
+    sc.eq(lua_verdict(w, 7668), ("keep", "Find the Gems", False), "journal: while on Find the Gems: keep")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Find the Gems", False), "journal: the phial too")
+    sc.eq(quest_tip(w, 0, 2), [("Keep: needed for Find the Gems", buy)], "journal: tooltip, gold keep line")
+    quest_checks(sc, w, quests, {2201}, {2198, 2199, 2200}, "journal on Find the Gems", bag_list=JOURNAL_BAG)
+    # Find the Gems done, Restoring the Necklace not taken: the journal can go, the phial is
+    # how you start the next quest (its bowl), so it stays.
+    state([{"title": "Uldaman", "isHeader": True}], (2198, 2199, 2200, 2201))
+    sc.eq(lua_verdict(w, 7668), ("done", "Find the Gems", False), "journal: after Find the Gems: can drop")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Restoring the Necklace", False), "journal: the phial waits for the next quest")
+    sc.eq(quest_tip(w, 0, 2), [("Can drop: done with Find the Gems", pos)], "journal: tooltip, green can drop line")
+    sc.eq(quest_tip(w, 0, 1), [("Keep: needed for Restoring the Necklace", buy)], "journal: phial tooltip, gold keep line")
+    quest_checks(sc, w, quests, set(), {2198, 2199, 2200, 2201}, "journal after Find the Gems", bag_list=JOURNAL_BAG)
+    M.OpenBags(1)
+    w.settle(0.2)
+    BP = ns.BagPanel
+    M.click(BP.tab)
+    w.settle(0.2)
+    sc.eq(quest_rows(BP), [(7668, "done", pos)], "journal panel: listed as done, the phial is not")
+    row = bag_row_for(BP, 7668)
+    if sc.check(row is not None, "journal panel: the journal has a row"):
+        sc.check(row.entry.questItem is True, "journal panel: a click only picks it up (never the drop box)")
+        M.enter(row)
+        lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
+        sc.check("Can drop: done with Find the Gems." in lines, "journal panel: the row tooltip says it can go (%s)" % lines)
+        M.leave(row)
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(any("[Bloodstained Journal] (done: Find the Gems)" in t for t in out), "journal /fah bags (%s)" % out)
+    # On Restoring the Necklace: both can go.
+    state(LOG_NECKLACE, (2198, 2199, 2200, 2201))
+    sc.eq(lua_verdict(w, 7668), ("done", "Find the Gems", False), "journal: on Restoring the Necklace: can drop")
+    sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "journal: the phial too")
+    quest_checks(sc, w, quests, {2204}, {2198, 2199, 2200, 2201}, "journal on Restoring the Necklace", bag_list=JOURNAL_BAG)
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "journal")
+
+
+def sc_bag_quest_log_fallback(sc, ref, items):
+    """Without QuestieDB: when the client gives no objective texts through
+    C_QuestLog.GetQuestObjectives, the quest log's own lines are read, so a note its quest
+    names is kept; and a quest item no quest names, while a quest in the log lists nothing,
+    says it is not sure (never "no quest in your log asks for it" as a fact)."""
+    w = World(ref, items)
+    M, ns, g = w.M, w.ns, w.g
+    bag_add_item(w, 904649, "Bonegrip's Note", 1, 0, classID=12, bind=4, maxStack=1)
+    bag_put(w, 0, 1, 904649, 1)
+    bag_add_item(w, 904650, "Dusty Key", 1, 0, classID=12, bind=4, maxStack=1)
+    bag_put(w, 0, 2, 904650, 1)
+    bag_quests(w, [{"title": "Burning Steppes", "isHeader": True},
+                   {"title": "The Star, the Hand and the Heart", "questID": 950735, "objectives": ["Bonegrip's Note: 1/1"]},
+                   {"title": "Talk to the Smith", "questID": 950736, "objectives": []}])
+    M.questObjectivesEmpty = True
+    M.OpenBags(1)
+    w.settle(0.2)
+    BP = ns.BagPanel
+    M.click(BP.tab)
+    w.settle(0.2)
+    ids = [r[0] for r in quest_rows(BP)]
+    sc.check(904649 not in ids, "log fallback: the note its quest names (from the quest log lines) is kept (%s)" % ids)
+    sc.check(904650 in ids, "log fallback: the key no quest names is listed (%s)" % ids)
+    row = bag_row_for(BP, 904650)
+    if sc.check(row is not None, "log fallback: the key has a row"):
+        sc.eq(row.right._text, "check log", "log fallback: a quest that lists nothing makes it a 'check log'")
+        M.enter(row)
+        lines = [plain(l) for l, _ in w.all_lines(g.GameTooltip)]
+        sc.check(any(l.startswith("Not sure: no quest in your log names it") for l in lines),
+                 "log fallback: the row tooltip says it is not sure (%s)" % lines)
+        sc.check(not any(l.startswith("This ") or l == "No quest in your log asks for it." for l in lines),
+                 "log fallback: and never states it as a fact (%s)" % lines)
+        M.leave(row)
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "log fallback")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -11465,6 +11596,8 @@ SCENARIOS = [
     ("bag-questie-slicing", sc_bag_questie_slicing),
     ("bag-questie-saved", sc_bag_questie_saved),
     ("bag-questie-fallback", sc_bag_questie_fallback),
+    ("bag-questie-journal", sc_bag_questie_journal),
+    ("bag-quest-log-fallback", sc_bag_quest_log_fallback),
 ]
 
 
