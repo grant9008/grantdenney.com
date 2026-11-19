@@ -10,17 +10,28 @@ fake game folder in a temporary folder:
 Also builds the release zip with make_release.ps1 into the temporary folder
 and runs Install-Goblin-Ledger.bat from the unzipped release.
 
-Nothing here touches the real game folder, %LOCALAPPDATA% or Task Scheduler.
+New versions: a local fake GitHub (an HTTP server on 127.0.0.1 that answers
+releases/latest with an ETag and serves the release zips) stands in for
+api.github.com, through GOBLINLEDGER_RELEASE_API / GOBLINLEDGER_RELEASE_ASSETS,
+which the updater only reads in test mode.
+
+Nothing here touches the real game folder, %LOCALAPPDATA%, Task Scheduler or GitHub.
 
     python tools/wow/addon_test/test_installer.py
 """
 import hashlib
+import http.server
+import io
 import json
 import os
+import re
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 import zipfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -143,6 +154,21 @@ def install(box, args=(), **kw):
     return run_ps(os.path.join(TOOLS, "install.ps1"), list(args), box.env(**kw))
 
 
+def keyfile(p):
+    """key=value lines (config.txt, addon_update.txt) as a dict."""
+    out = {}
+    if os.path.isfile(p):
+        for line in read(p).decode("utf-8-sig").splitlines():
+            m = re.match(r"^\s*([A-Za-z_]+)\s*=(.*)$", line)
+            if m:
+                out[m.group(1).lower()] = m.group(2).strip()
+    return out
+
+
+def config(box):
+    return keyfile(os.path.join(box.app, "config.txt"))
+
+
 def uninstall(box, args=(), **kw):
     return run_ps(os.path.join(TOOLS, "uninstall.ps1"), list(args), box.env(**kw))
 
@@ -251,6 +277,12 @@ def test_install_migrate(base):
     check(not any("Collector" in x for x in t), "the collector task is never touched")
     check("Kept your settings" in out, "says the settings were kept")
     check("Prices updated:" in out, "the updater ran and said so")
+    check("Install new Goblin Ledger versions by themselves? (Y/N, Enter = Y)" in out, "asks about new versions")
+    check("Checked every few hours; only official releases are installed." in out, "says how new versions are checked")
+    eq(config(box), {"addon_updates": "yes"}, "Enter = Y: config.txt says addon_updates=yes")
+    eq(peek(os.path.join(box.app, "Update-Goblin-Ledger.bat")), read(os.path.join(TOOLS, "Update-Goblin-Ledger.bat")),
+       "Update-Goblin-Ledger.bat copied to LOCALAPPDATA\\GoblinLedger")
+    check("Update-Goblin-Ledger.bat" in out and "%LOCALAPPDATA%\\GoblinLedger" in out, "the end says where Update-Goblin-Ledger.bat is")
     log = read(os.path.join(box.app, "update.log"), "r")
     check(" OK " in log, "update.log in LOCALAPPDATA\\GoblinLedger has the run")
     return box
@@ -286,6 +318,9 @@ def test_rerun(base, box):
     eq(read(os.path.join(box.dest, "Data.lua")), read(box.prices2), "failed download: the prices are kept")
     check("once a download works" in out, "failed download: says what happens")
     check("DELETE Goblin Ledger Prices" in box.tasks(), "answering N removes the automatic update")
+    eq(config(box), {"addon_updates": "no"}, "prices N: config.txt says addon_updates=no")
+    check("Install new Goblin Ledger versions by themselves?" not in out, "prices N: no question about new versions (no task)")
+    check("double-click Update-Goblin-Ledger.bat whenever" in out, "prices N: points at Update-Goblin-Ledger.bat")
 
 
 def test_uninstall(base, box):
@@ -418,8 +453,11 @@ def test_release(base):
     check(os.path.isfile(zpath), "GoblinLedger.zip built")
     if not os.path.isfile(zpath):
         return
+    out = r.stdout + r.stderr
+    check("Goblin Ledger version 1.0.0 (GitHub release tag: v1.0.0)" in out, "make_release says the version and the tag (%s)" % out[:200])
+    check("GoblinLedger/Latest.lua" in out, "make_release lists the Latest.lua placeholder")
     want = sorted(["GoblinLedger/" + f for f in os.listdir(ADDON) if f != "Data.lua"] +
-                  ["Install-Goblin-Ledger.bat", "Uninstall-Goblin-Ledger.bat", "README.txt",
+                  ["Install-Goblin-Ledger.bat", "Update-Goblin-Ledger.bat", "Uninstall-Goblin-Ledger.bat", "README.txt",
                    "scripts/install.ps1", "scripts/uninstall.ps1", "scripts/common.ps1", "scripts/update_prices.ps1"])
     with zipfile.ZipFile(zpath) as z:
         names = sorted(z.namelist())
@@ -432,8 +470,12 @@ def test_release(base):
         unz = os.path.join(base, "Downloads", "GoblinLedger")
         z.extractall(unz)
     readme = read(os.path.join(unz, "README.txt"), "r")
-    for s in ("Install-Goblin-Ledger.bat", "Uninstall-Goblin-Ledger.bat", "/gl help", "every 30 minutes", "_forever_"):
+    for s in ("Install-Goblin-Ledger.bat", "Uninstall-Goblin-Ledger.bat", "/gl help", "every 30 minutes", "_forever_",
+              "Update-Goblin-Ledger.bat", "Install new Goblin Ledger versions by themselves?", "%LOCALAPPDATA%\\GoblinLedger"):
         check(s in readme, "README.txt mentions %s" % s)
+    eq(readme.splitlines()[0], "GOBLIN LEDGER 1.0.0", "the zip's README.txt starts with the version")
+    eq(read(os.path.join(unz, "Update-Goblin-Ledger.bat")).replace(b"\r\n", b"\n"),
+       read(os.path.join(TOOLS, "Update-Goblin-Ledger.bat")).replace(b"\r\n", b"\n"), "Update-Goblin-Ledger.bat is in the zip")
     # Double-clicking the unzipped Install-Goblin-Ledger.bat (pause gets an empty stdin).
     box = Box(base, "unzipped")
     old_install(box)
@@ -517,6 +559,568 @@ def test_unzipped_in_game(base, zpath):
     check(os.path.isfile(os.path.join(box.app, "update_prices.ps1")), "unzipped into AddOns\\GoblinLedger: updater installed")
 
 
+# ---------------------------------------------------------------------------
+# New versions
+# ---------------------------------------------------------------------------
+API_PATH = "/repos/grant9008/grantdenney.com/releases/latest"
+DL_PATH = "/grant9008/grantdenney.com/releases/download/"
+
+
+class FakeGitHub:
+    """api.github.com's releases/latest (with an ETag, If-None-Match -> 304) and
+    the release downloads, on 127.0.0.1. Every request is recorded."""
+
+    def __init__(self):
+        self.requests = []
+        self.api_status = 200
+        self.release = None
+        self.files = {}
+        fake = self
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def reply(self, status, body=b"", headers=()):
+                self.send_response(status)
+                for k, v in headers:
+                    self.send_header(k, v)
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                if body:
+                    self.wfile.write(body)
+
+            def do_GET(self):
+                fake.requests.append({"path": self.path, "inm": self.headers.get("If-None-Match"),
+                                      "ua": self.headers.get("User-Agent"), "accept": self.headers.get("Accept")})
+                if self.path == API_PATH:
+                    if fake.api_status != 200:
+                        return self.reply(fake.api_status, b'{"message": "API rate limit exceeded"}')
+                    if fake.release is None:
+                        return self.reply(404, b'{"message": "Not Found"}')
+                    body = json.dumps(fake.release, indent=2).encode("utf-8")
+                    etag = 'W/"%s"' % hashlib.sha1(body).hexdigest()
+                    if self.headers.get("If-None-Match") == etag:
+                        return self.reply(304, headers=[("ETag", etag)])
+                    return self.reply(200, body, [("ETag", etag), ("Content-Type", "application/json; charset=utf-8")])
+                if self.path in fake.files:
+                    return self.reply(200, fake.files[self.path], [("Content-Type", "application/octet-stream")])
+                return self.reply(404)
+
+        self.httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.base = "http://127.0.0.1:%d" % self.httpd.server_address[1]
+        self.api = self.base + API_PATH
+        self.prefix = self.base + DL_PATH
+        threading.Thread(target=self.httpd.serve_forever, daemon=True).start()
+
+    def publish(self, tag, zbytes, digest=True, url=None, **extra):
+        """A release with GoblinLedger.zip. digest: True = the zip's real SHA-256,
+        None = GitHub shows none (null), "absent" = no digest field, else that text."""
+        path = DL_PATH + tag + "/GoblinLedger.zip"
+        self.files[path] = zbytes
+        asset = {"name": "GoblinLedger.zip", "state": "uploaded", "size": len(zbytes), "content_type": "application/zip",
+                 "browser_download_url": url or (self.base + path)}
+        if digest is True:
+            asset["digest"] = "sha256:" + hashlib.sha256(zbytes).hexdigest()
+        elif digest != "absent":
+            asset["digest"] = digest
+        self.release = {"tag_name": tag, "name": "Goblin Ledger " + tag.lstrip("v"), "draft": False, "prerelease": False,
+                        "assets": [asset]}
+        self.release.update(extra)
+
+    def api_calls(self):
+        return [r for r in self.requests if r["path"] == API_PATH]
+
+    def downloads(self):
+        return [r for r in self.requests if r["path"].startswith(DL_PATH)]
+
+
+def closed_port_url():
+    s = socket.socket()
+    s.bind(("127.0.0.1", 0))
+    port = s.getsockname()[1]
+    s.close()
+    return "http://127.0.0.1:%d%s" % (port, API_PATH)
+
+
+def release_zip(base_zip, version, toc_version=None, add=None, drop=(), toc_files=None, extra=None, keep_toc=True):
+    """The make_release zip as version X: both TOCs say it, Core.lua gets a line
+    saying it, the zip's update_prices.ps1 would leave PWNED.txt if it ever ran.
+    add: {addon file: bytes}; drop: zip names to leave out; toc_files: the TOC's
+    file list instead of the release's; extra: raw {zip name: bytes}."""
+    out = io.BytesIO()
+    with zipfile.ZipFile(base_zip) as zin, zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as zout:
+        for n in zin.namelist():
+            if n in drop:
+                continue
+            data = zin.read(n)
+            if n.endswith(".toc") and keep_toc:
+                text = data.decode("ascii")
+                text = re.sub(r"## Version: [0-9.]+", "## Version: " + (toc_version or version), text)
+                if toc_files is not None:
+                    head = [l for l in text.split("\r\n") if l.startswith("#")]
+                    text = "\r\n".join(head + list(toc_files)) + "\r\n"
+                data = text.encode("ascii")
+            if n == "GoblinLedger/Core.lua":
+                data += ("-- Goblin Ledger %s\r\n" % version).encode("ascii")
+            if n == "scripts/update_prices.ps1":
+                data = b"Set-Content -LiteralPath (Join-Path $env:LOCALAPPDATA 'PWNED.txt') -Value 'ran'\r\n"
+            zout.writestr(n, data)
+        for n, data in (add or {}).items():
+            zout.writestr("GoblinLedger/" + n, data)
+        for n, data in (extra or {}).items():
+            zi = zipfile.ZipInfo("x")
+            zi.filename = n   # as given: ZipInfo("a\\b") would turn the backslash into /
+            zout.writestr(zi, data)
+    zb = out.getvalue()
+    for n in (extra or {}):
+        check(n.encode("ascii") in zb, "test zip really holds the entry name %r" % n)
+    return zb
+
+
+def zip_addon(zbytes):
+    """{file: sha1} of the addon files a release zip should leave in the game (no Data.lua, no Latest.lua)."""
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as z:
+        return {n[len("GoblinLedger/"):]: hashlib.sha1(z.read(n)).hexdigest() for n in z.namelist()
+                if n.startswith("GoblinLedger/") and not n.endswith("/") and n[len("GoblinLedger/"):] not in ("Data.lua", "Latest.lua")}
+
+
+def code_tree(box):
+    t = tree(box.dest)
+    t.pop("Data.lua", None)
+    t.pop("Latest.lua", None)
+    return t
+
+
+def task(box, gh, data=None, api=None, extra=None, quiet=True):
+    """One run of the installed updater as the 30-minute task starts it."""
+    env = box.env()
+    env.update({"GOBLINLEDGER_RELEASE_API": api or gh.api, "GOBLINLEDGER_RELEASE_ASSETS": gh.prefix})
+    env.update(extra or {})
+    return run_ps(os.path.join(box.app, "update_prices.ps1"), ["-DataUrl", data or box.prices1] + (["-Quiet"] if quiet else []), env)
+
+
+def update_bat(box, gh, bat=None, api=None, extra=None):
+    """A double-click on Update-Goblin-Ledger.bat (the copy in LOCALAPPDATA unless bat is given)."""
+    env = box.env()
+    env.update({"GOBLINLEDGER_RELEASE_API": api or gh.api, "GOBLINLEDGER_RELEASE_ASSETS": gh.prefix})
+    env.update(extra or {})
+    return run_bat(bat or os.path.join(box.app, "Update-Goblin-Ledger.bat"), env)
+
+
+def state(box):
+    return keyfile(os.path.join(box.app, "addon_update.txt"))
+
+
+def due(box):
+    """Make the next task run check again (as if 6 hours had passed)."""
+    st = state(box)
+    st["next"] = "0"
+    write(os.path.join(box.app, "addon_update.txt"), "".join("%s=%s\r\n" % kv for kv in st.items()))
+
+
+def alog(box):
+    p = os.path.join(box.app, "addon_update.log")
+    return read(p).decode("utf-8-sig").splitlines() if os.path.isfile(p) else []
+
+
+def latest(box):
+    return (peek(os.path.join(box.dest, "Latest.lua")) or b"").decode("ascii")
+
+
+def latest_fields(box):
+    m = re.search(r"GoblinLedger_Latest = \{ (.*) \}", latest(box))
+    if not m:
+        return {}
+    return dict((k, v.strip('"')) for k, v in re.findall(r"(\w+) = (\"[^\"]*\"|\w+)", m.group(1)))
+
+
+def next_in(box):
+    """Seconds until the next check, from addon_update.txt."""
+    try:
+        return int(state(box).get("next", "0")) - int(time.time())
+    except ValueError:
+        return None
+
+
+def near(got, want, what, slack=120):
+    check(got is not None and abs(got - want) <= slack, "%s: got %r, want about %r" % (what, got, want))
+
+
+def test_addon_updates(base, zpath):
+    print("new versions: the task checks a fake GitHub, installs only a newer verified release")
+    gh = FakeGitHub()
+    try:
+        for part in (_addon_updates, _addon_updates_off, _addon_updates_unzipped):
+            try:
+                part(base, zpath, gh)
+            except Exception as e:   # a broken updater must show up as failures, not stop the run
+                import traceback
+                traceback.print_exc()
+                check(False, "%s stopped: %r" % (part.__name__, e))
+    finally:
+        gh.httpd.shutdown()
+        gh.httpd.server_close()
+
+
+def _addon_updates(base, zpath, gh):
+    z100 = read(zpath)
+    box = Box(base, "selfupdate")
+    code, out = install(box, ["-DataUrl", box.prices1, "-AutoUpdate", "Y"], search=box.game)
+    eq(code, 0, "install (%s)" % out[-400:])
+    eq(config(box), {"addon_updates": "yes"}, "Enter = Y: new versions install by themselves")
+    check("Done: new versions install by themselves." in out, "the installer says new versions install by themselves")
+    settings = "ForeverAH_Settings = {\n[\"compact\"] = true,\n}\n"
+    write(box.sv("ACC1", "GoblinLedger.lua"), settings)
+    write(os.path.join(box.dest, "notes.txt"), "mine\r\n")      # not an addon code file: never touched
+    write(os.path.join(box.dest, "Old.lua"), "-- an old file\r\n")  # a code file no version ships: goes with the next update
+    v100 = code_tree(box)
+    placeholder = latest(box)
+    check("GoblinLedger_Latest = {}" in placeholder, "the installer puts the Latest.lua placeholder in")
+
+    # 1. The same version as installed: nothing happens.
+    gh.publish("v1.0.0", z100)
+    code, out = task(box, gh)
+    eq(code, 0, "same version: exit code (%s)" % out[-300:])
+    eq(out.strip(), "", "the task prints nothing (-Quiet)")
+    eq(code_tree(box), v100, "same version: the addon is unchanged")
+    eq(latest(box), placeholder, "same version: Latest.lua unchanged")
+    eq(len(gh.api_calls()), 1, "same version: one question to GitHub")
+    if gh.api_calls():
+        c = gh.api_calls()[0]
+        eq(c["ua"], "GoblinLedger-updater", "the request has a plain User-Agent")
+        eq(c["accept"], "application/vnd.github+json", "the request asks for GitHub's JSON")
+        eq(c["inm"], None, "the first request has no If-None-Match")
+    eq(gh.downloads(), [], "same version: nothing downloaded")
+    check(alog(box) and "SKIP" in alog(box)[-1] and "newest release v1.0.0, installed 1.0.0" in alog(box)[-1],
+          "same version: one log line (%s)" % alog(box)[-1:])
+    near(next_in(box), 6 * 3600, "next check in 6 hours")
+    check(state(box).get("etag", "").startswith('W/"'), "the ETag is kept for next time")
+    check(os.path.isfile(os.path.join(box.app, "release.json")), "GitHub's answer is kept with its ETag")
+
+    # 2. At most one check per 6 hours.
+    for _ in range(2):
+        task(box, gh)
+    eq(len(gh.api_calls()), 1, "runs within 6 hours do not ask GitHub")
+    eq(len(alog(box)), 1, "runs within 6 hours write no log line")
+
+    # 3. Six hours later, nothing new: If-None-Match, 304, quiet.
+    due(box)
+    code, out = task(box, gh)
+    eq(code, 0, "304: exit code")
+    eq(len(gh.api_calls()), 2, "a check after 6 hours asks again")
+    check(gh.api_calls()[-1]["inm"] and gh.api_calls()[-1]["inm"] == state(box).get("etag"), "it sends the kept ETag back")
+    eq(code_tree(box), v100, "304: nothing changed")
+    check("SKIP" in alog(box)[-1], "304: logged as nothing new (%s)" % alog(box)[-1:])
+
+    # 4. A newer release: installed, prices and settings kept, nothing from the zip run.
+    z110 = release_zip(zpath, "1.1.0", drop=("GoblinLedger/Enchants.lua",),
+                       add={"Extra.lua": b"local _, ns = ...\r\n-- new in 1.1.0\r\n"},
+                       toc_files=["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua",
+                                  "Bags.lua", "Extra.lua"])
+    gh.publish("v1.1.0", z110)
+    due(box)
+    code, out = task(box, gh, data=box.prices2)
+    eq(code, 0, "newer: exit code (%s)" % out[-300:])
+    eq(out.strip(), "", "newer: the task stays quiet")
+    want110 = zip_addon(z110)
+    want110["notes.txt"] = v100["notes.txt"]
+    eq(code_tree(box), want110, "newer: the addon files are exactly 1.1.0's (Enchants.lua and Old.lua gone, Extra.lua in)")
+    eq(read(os.path.join(box.dest, "Data.lua")), read(box.prices2), "newer: the prices are kept, and still updated after it")
+    eq(read(box.sv("ACC1", "GoblinLedger.lua")).decode("ascii"), settings, "newer: saved settings untouched")
+    f = latest_fields(box)
+    eq((f.get("version"), f.get("installed"), f.get("from"), f.get("auto"), f.get("restart")),
+       ("1.1.0", "1.1.0", "1.0.0", "true", "true"), "newer: Latest.lua says 1.1.0, installed by itself, restart needed")
+    near(int(f.get("installedAt", "0")) - int(time.time()), 0, "newer: Latest.lua installedAt is now")
+    check(latest(box).endswith("\r\n") and all(ord(c) < 128 for c in latest(box)), "Latest.lua is plain ASCII with Windows line ends")
+    check(not os.path.exists(os.path.join(box.dest, "_update")), "newer: no staging folder left")
+    eq(read(os.path.join(box.app, "update_prices.ps1")), read(UPDATER), "newer: the installed updater is not replaced from the zip")
+    eq(sorted(os.listdir(box.app)), sorted(["Update-Goblin-Ledger.bat", "addon_dir.txt", "addon_update.log", "addon_update.txt",
+                                            "config.txt", "release.json", "update.log", "update_prices.ps1"]),
+       "newer: nothing from the zip lands in LOCALAPPDATA\\GoblinLedger")
+    check(not os.path.exists(os.path.join(box.local, "PWNED.txt")), "newer: nothing in the zip ran")
+    check("OK" in alog(box)[-1] and "updated 1.0.0 -> 1.1.0 by itself" in alog(box)[-1] and "restart" in alog(box)[-1],
+          "newer: logged (%s)" % alog(box)[-1:])
+    eq(len(gh.downloads()), 1, "newer: downloaded once")
+    v110 = code_tree(box)
+    l110 = latest(box)
+    # the next task run (6 hours later) still does not run the zip's updater
+    due(box)
+    task(box, gh)
+    check(not os.path.exists(os.path.join(box.local, "PWNED.txt")), "the zip's update_prices.ps1 is never run later either")
+
+    # 5. The same release again, and an older one: nothing.
+    due(box)
+    task(box, gh)
+    eq(code_tree(box), v110, "same release again: unchanged")
+    eq(latest(box), l110, "same release again: Latest.lua unchanged")
+    gh.publish("v0.9.0", release_zip(zpath, "0.9.0"))
+    due(box)
+    task(box, gh)
+    eq(code_tree(box), v110, "older release: no downgrade")
+    eq(latest(box), l110, "older release: Latest.lua unchanged")
+    check("newest release v0.9.0, installed 1.1.0" in alog(box)[-1], "older release: logged (%s)" % alog(box)[-1:])
+
+    # 6. Releases that must never be installed.
+    z120 = release_zip(zpath, "1.2.0", toc_files=["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua",
+                                                  "Sidebar.lua", "Bags.lua", "Extra.lua"],
+                       add={"Extra.lua": b"-- 1.2.0\r\n"}, drop=("GoblinLedger/Enchants.lua",))
+    bad = [
+        ("bad digest", dict(zbytes=z120, digest="sha256:" + hashlib.sha256(b"something else").hexdigest()), "GitHub says"),
+        ("no digest (null)", dict(zbytes=z120, digest=None), "no sha256 digest"),
+        ("no digest field", dict(zbytes=z120, digest="absent"), "no sha256 digest"),
+        ("md5 digest", dict(zbytes=z120, digest="md5:" + hashlib.md5(z120).hexdigest()), "no sha256 digest"),
+        ("download elsewhere", dict(zbytes=z120, url=gh.base + "/someone/else/GoblinLedger.zip"), "not a release of this project"),
+        ("path outside (..)", dict(zbytes=release_zip(zpath, "1.2.0", extra={"GoblinLedger/../evil.lua": b"x"})), "unsafe path"),
+        ("path outside (../)", dict(zbytes=release_zip(zpath, "1.2.0", extra={"../evil.lua": b"x"})), "unsafe path"),
+        ("absolute path", dict(zbytes=release_zip(zpath, "1.2.0", extra={"/evil.lua": b"x"})), "unsafe path"),
+        ("drive path", dict(zbytes=release_zip(zpath, "1.2.0", extra={"C:/evil.lua": b"x"})), "unsafe path"),
+        ("backslash path", dict(zbytes=release_zip(zpath, "1.2.0", extra={"GoblinLedger\\..\\evil.lua": b"x"})), "unsafe path"),
+        ("a folder in the addon", dict(zbytes=release_zip(zpath, "1.2.0", add={"sub/x.lua": b"x"})), "not an addon file"),
+        ("a program in the addon", dict(zbytes=release_zip(zpath, "1.2.0", add={"run.exe": b"MZ"})), "not an addon file"),
+        ("a .bat in the addon", dict(zbytes=release_zip(zpath, "1.2.0", add={"go.bat": b"@echo off"})), "not an addon file"),
+        ("missing toc", dict(zbytes=release_zip(zpath, "1.2.0", drop=("GoblinLedger/GoblinLedger_Forever.toc",))),
+         "GoblinLedger_Forever.toc is missing"),
+        ("toc lists a missing file", dict(zbytes=release_zip(zpath, "1.2.0", drop=("GoblinLedger/Bags.lua",))),
+         "lists Bags.lua, which is not in the zip"),
+        ("toc version is not the tag", dict(zbytes=release_zip(zpath, "1.2.0", toc_version="1.1.5")), "says version 1.1.5"),
+        ("not a zip", dict(zbytes=b"PK\x03\x04 this is not really a zip" * 20), "not a zip file"),
+        ("prerelease", dict(zbytes=z120, prerelease=True), "not an official"),
+        ("tag is not a version", dict(zbytes=z120, tag="latest"), "not an official"),
+    ]
+    for label, kw, logged in bad:
+        tag = kw.pop("tag", "v1.2.0")
+        gh.publish(tag, **kw)
+        due(box)
+        before = tree(box.root)
+        code, out = task(box, gh)
+        eq(code, 0, "%s: the task still ends fine (%s)" % (label, out[-200:]))
+        eq(code_tree(box), v110, "%s: the addon is unchanged" % label)
+        eq(latest(box), l110, "%s: Latest.lua unchanged" % label)
+        changed = sorted(k for k in set(before) | set(tree(box.root)) if before.get(k) != tree(box.root).get(k))
+        eq([c for c in changed if not c.endswith(("addon_update.log", "addon_update.txt", "update.log", "release.json"))], [],
+           "%s: nothing else changed anywhere" % label)
+        check(logged in alog(box)[-1], "%s: logged why (%s)" % (label, alog(box)[-1:]))
+    check(not any(os.path.exists(os.path.join(d, "evil.lua")) for d in (box.addons, box.game, box.root, os.path.dirname(box.dest))),
+          "no file from an unsafe path was written")
+
+    # 7. GitHub down or busy: quiet, the prices still update.
+    write(box.prices1 + ".3", price_file(1795007200))
+    for label, kw, logged, wait in [("no connection", dict(api=closed_port_url()), "no connection", 3600),
+                                    ("403", None, "GitHub said 403", 6 * 3600), ("429", None, "GitHub said 429", 6 * 3600)]:
+        gh.api_status = int(label) if label.isdigit() else 200
+        due(box)
+        code, out = task(box, gh, data=box.prices1 + ".3", **(kw or {}))
+        gh.api_status = 200
+        eq(code, 0, "%s: exit code" % label)
+        eq(out.strip(), "", "%s: nothing printed" % label)
+        eq(code_tree(box), v110, "%s: unchanged" % label)
+        check(logged in alog(box)[-1] and "WAIT" in alog(box)[-1], "%s: logged (%s)" % (label, alog(box)[-1:]))
+        near(next_in(box), wait, "%s: next check" % label)
+    eq(read(os.path.join(box.dest, "Data.lua")), read(box.prices1 + ".3"), "GitHub down: the prices still updated")
+
+    # 8. A swap that fails half way leaves the old addon as it was.
+    gh.publish("v1.2.0", z120)
+    for fail in ("stage:3", "swap:4", "swap:12", "swap:16"):
+        due(box)
+        code, out = task(box, gh, extra={"GOBLINLEDGER_TEST_FAIL": fail})
+        eq(code, 0, "fails at %s: exit code (%s)" % (fail, out[-200:]))
+        eq(code_tree(box), v110, "fails at %s: the old addon is intact" % fail)
+        eq(latest(box), l110, "fails at %s: Latest.lua unchanged" % fail)
+        check(not os.path.exists(os.path.join(box.dest, "_update")), "fails at %s: no staging folder left" % fail)
+        check("could not install v1.2.0 (old files kept)" in alog(box)[-1], "fails at %s: logged (%s)" % (fail, alog(box)[-1:]))
+    # ... also when the PC dies in the middle of it: the next run puts the old files back.
+    due(box)
+    code, out = task(box, gh, extra={"GOBLINLEDGER_TEST_FAIL": "crash:12"})
+    eq(code, 99, "crash: the run stopped dead")
+    check(code_tree(box) != v110 and os.path.isfile(os.path.join(box.dest, "_update", "swap.txt")),
+          "crash: the addon really was left half way")
+    eq([f for f in os.listdir(box.dest) if f.endswith(".toc")], [], "crash: half way there is no TOC, so the game loads no half addon")
+    check(any(f.endswith(".lua") and f not in ("Data.lua", "Latest.lua") for f in os.listdir(box.dest)),
+          "crash: some new .lua files were already in")
+    due(box)
+    code, out = task(box, gh, api=closed_port_url())
+    eq(code_tree(box), v110, "after a crash: the next run puts the old addon back")
+    check(not os.path.exists(os.path.join(box.dest, "_update")), "after a crash: no staging folder left")
+    check(any("FIXED" in l and "stopped half way" in l for l in alog(box)[-2:]), "after a crash: logged (%s)" % alog(box)[-2:])
+    due(box)
+    code, out = task(box, gh)
+    eq(code_tree(box), zip_addon(z120) | {"notes.txt": v100["notes.txt"]}, "after a crash: the next check installs it whole")
+    f = latest_fields(box)
+    eq((f.get("installed"), f.get("from"), f.get("restart")), ("1.2.0", "1.1.0", "false"), "1.2.0: same file list, no restart needed")
+
+    # 9. WoW open: waits (checks again in 20 minutes); closed: installs.
+    z130 = release_zip(zpath, "1.3.0", toc_files=["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua",
+                                                  "Sidebar.lua", "Bags.lua", "Extra.lua"],
+                       add={"Extra.lua": b"-- 1.3.0\r\n"}, drop=("GoblinLedger/Enchants.lua",))
+    gh.publish("v1.3.0", z130)
+    v120 = code_tree(box)
+    due(box)
+    n_dl = len(gh.downloads())
+    code, out = task(box, gh, extra={"GOBLINLEDGER_TEST_WOW": "1"})
+    eq(code_tree(box), v120, "WoW open: not installed while the game runs")
+    eq(len(gh.downloads()), n_dl, "WoW open: not even downloaded")
+    check("WoW is open" in alog(box)[-1], "WoW open: logged (%s)" % alog(box)[-1:])
+    near(next_in(box), 20 * 60, "WoW open: checks again in 20 minutes")
+    write(os.path.join(box.app, "addon_update.txt"), "next=%d\r\netag=%s\r\n" % (int(time.time()) - 1, state(box).get("etag")))
+    code, out = task(box, gh)
+    eq(code_tree(box), zip_addon(z130) | {"notes.txt": v100["notes.txt"]}, "WoW closed: installed")
+
+    # 10. Update-Goblin-Ledger.bat: now, whatever the 6 hours say, also with WoW open.
+    z140 = release_zip(zpath, "1.4.0", toc_files=["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua",
+                                                  "Sidebar.lua", "Bags.lua", "Extra.lua"],
+                       add={"Extra.lua": b"-- 1.4.0\r\n"}, drop=("GoblinLedger/Enchants.lua",))
+    gh.publish("v1.4.0", z140)
+    check(next_in(box) > 5 * 3600, "the task would not check for hours")
+    code, out = update_bat(box, gh, extra={"GOBLINLEDGER_TEST_WOW": "1"})
+    eq(code, 0, "Update-Goblin-Ledger.bat: exit code (%s)" % out[-300:])
+    check("Checking for a new Goblin Ledger version..." in out, "the .bat says what it does")
+    check("Updated 1.3.0 -> 1.4.0. Restart WoW (or /reload) to use it." in out, "the .bat says it updated (%s)" % out[-300:])
+    check("Press any key" in out, "the .bat pauses at the end")
+    eq(code_tree(box), zip_addon(z140) | {"notes.txt": v100["notes.txt"]}, "the .bat installed 1.4.0")
+    f = latest_fields(box)
+    eq((f.get("installed"), f.get("auto")), ("1.4.0", "false"), "the .bat: Latest.lua says installed by hand")
+    check("Update-Goblin-Ledger.bat: updated 1.3.0 -> 1.4.0 by hand" in alog(box)[-1], "the .bat: logged (%s)" % alog(box)[-1:])
+    code, out = update_bat(box, gh)
+    eq(code, 0, "the .bat again: exit code")
+    check("You have the newest version (1.4.0)." in out, "the .bat again: newest version (%s)" % out[-300:])
+    code, out = update_bat(box, gh, api=closed_port_url())
+    eq(code, 5, "the .bat offline: exit code")
+    check("Could not reach GitHub" in out and "Nothing was changed." in out, "the .bat offline: says so (%s)" % out[-300:])
+    gh.publish("v1.5.0", z140, digest="sha256:" + "0" * 64)
+    code, out = update_bat(box, gh)
+    eq(code, 4, "the .bat, bad download: exit code")
+    check("did not match the official release, so it was not installed." in out, "the .bat, bad download: says so (%s)" % out[-300:])
+    eq(code_tree(box), zip_addon(z140) | {"notes.txt": v100["notes.txt"]}, "the .bat, bad download: unchanged")
+    z150 = release_zip(zpath, "1.5.0")   # Enchants.lua back, Extra.lua gone: a new file list
+    gh.publish("v1.5.0", z150)
+    code, out = update_bat(box, gh)
+    check("Updated 1.4.0 -> 1.5.0. Restart WoW to use it (it has new files, so /reload is not enough)." in out,
+          "the .bat, new file list: says to restart (%s)" % out[-300:])
+    eq(code_tree(box), zip_addon(z150) | {"notes.txt": v100["notes.txt"]}, "the .bat installed 1.5.0 (Extra.lua gone, Enchants.lua back)")
+
+    # 11. An install from before this feature (no config.txt): the task never asks GitHub.
+    os.remove(os.path.join(box.app, "config.txt"))
+    due(box)
+    n = len(gh.api_calls())
+    task(box, gh)
+    eq(len(gh.api_calls()), n, "no config.txt: no version check")
+
+    # 12. Running the installer again: a leftover staging folder goes, the next run checks again.
+    os.makedirs(os.path.join(box.dest, "_update", "old"), exist_ok=True)
+    write(os.path.join(box.dest, "_update", "swap.txt"), "in Core.lua\r\n")
+    code, out = install(box, ["-DataUrl", box.prices1, "-AutoUpdate", "Y", "-AutoAddonUpdate", "Y"], search=box.game)
+    eq(code, 0, "re-install exit code")
+    check("Install new Goblin Ledger versions by themselves? Yes" in out, "-AutoAddonUpdate Y answers the question")
+    check(not os.path.exists(os.path.join(box.dest, "_update")), "re-install removes a leftover staging folder")
+    check(not os.path.exists(os.path.join(box.app, "addon_update.txt")), "re-install: the next task run checks for a version")
+    check("GoblinLedger_Latest = {}" in latest(box), "re-install: Latest.lua is the placeholder again")
+    addon_files_ok(box, "re-install over an updated addon")
+    # 13. Uninstall removes all of it.
+    code, out = uninstall(box, answers="y|n")
+    eq(code, 0, "uninstall after updates: exit code (%s)" % out[-300:])
+    check("Update-Goblin-Ledger.bat" in out, "uninstall says it removes Update-Goblin-Ledger.bat")
+    check(not os.path.exists(box.app) and not os.path.exists(box.dest), "uninstall: config, state, logs, the .bat and the addon are gone")
+
+
+def _addon_updates_off(base, zpath, gh):
+    print("new versions with 'install by themselves' off")
+    box = Box(base, "selfupdate_off")
+    code, out = install(box, ["-DataUrl", box.prices1, "-AutoUpdate", "Y"], search=box.game, answers="n")
+    eq(code, 0, "install, N for new versions (%s)" % out[-300:])
+    eq(config(box), {"addon_updates": "no"}, "N: config.txt says addon_updates=no")
+    check("the game says so in chat: then double-click Update-Goblin-Ledger.bat." in out, "N: says the game will tell")
+    v100 = code_tree(box)
+    z110 = release_zip(zpath, "1.1.0")
+    gh.publish("v1.1.0", z110)
+    n_dl = len(gh.downloads())
+    code, out = task(box, gh)
+    eq(code, 0, "off: exit code")
+    eq(code_tree(box), v100, "off: nothing installed")
+    eq(len(gh.downloads()), n_dl, "off: nothing downloaded")
+    f = latest_fields(box)
+    eq((f.get("version"), f.get("installed"), f.get("installedAt")), ("1.1.0", "nil", "0"),
+       "off: Latest.lua only says 1.1.0 is out (%s)" % latest(box))
+    check("NEWER" in alog(box)[-1] and "v1.1.0 is out" in alog(box)[-1], "off: logged (%s)" % alog(box)[-1:])
+    l1 = latest(box)
+    due(box)
+    task(box, gh)
+    eq(latest(box), l1, "off: the same news is not written again")
+    # The .bat still installs it.
+    code, out = update_bat(box, gh)
+    check("Updated 1.0.0 -> 1.1.0." in out, "off: Update-Goblin-Ledger.bat installs it (%s)" % out[-300:])
+    eq(code_tree(box), zip_addon(z110), "off: the .bat installed 1.1.0")
+    # The zip's own Update-Goblin-Ledger.bat (in the unzipped folder) works the same.
+    unz = os.path.join(base, "selfupdate_off_unzipped")
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(unz)
+    z120 = release_zip(zpath, "1.2.0")
+    gh.publish("v1.2.0", z120)
+    code, out = update_bat(box, gh, bat=os.path.join(unz, "Update-Goblin-Ledger.bat"))
+    check("Updated 1.1.0 -> 1.2.0." in out, "the unzipped Update-Goblin-Ledger.bat installs it (%s)" % out[-300:])
+    eq(code_tree(box), zip_addon(z120), "the unzipped .bat installed 1.2.0")
+    # Not installed at all: the .bat says so.
+    empty = Box(base, "selfupdate_none")
+    code, out = update_bat(empty, gh, bat=os.path.join(unz, "Update-Goblin-Ledger.bat"))
+    check(code != 0 and "Goblin Ledger is not installed yet." in out, "not installed: the .bat says to install first (%s)" % out[-200:])
+
+
+def _addon_updates_unzipped(base, zpath, gh):
+    print("new versions when the zip was unzipped into AddOns\\GoblinLedger")
+    box = Box(base, "selfupdate_inaddon")
+    with zipfile.ZipFile(zpath) as z:
+        z.extractall(box.dest)
+    env = box.env(search=box.game, answers="y")
+    env["GOBLINLEDGER_DATA_URL"] = box.prices1
+    code, out = run_bat(os.path.join(box.dest, "Install-Goblin-Ledger.bat"), env)
+    eq(code, 0, "unzipped into the addon folder: install (%s)" % out[-300:])
+    release = {k: v for k, v in tree(box.dest).items() if os.sep in k or not k.endswith((".lua", ".toc"))}
+    check(os.path.join("scripts", "install.ps1") in release and "Install-Goblin-Ledger.bat" in release, "the release files are there")
+    z110 = release_zip(zpath, "1.1.0")
+    gh.publish("v1.1.0", z110)
+    code, out = task(box, gh)
+    got = tree(box.dest)
+    eq({k: v for k, v in got.items() if os.sep not in k and k.endswith((".lua", ".toc")) and k not in ("Data.lua", "Latest.lua")},
+       zip_addon(z110), "unzipped into the addon folder: the addon files are 1.1.0's")
+    eq({k: got.get(k) for k in release}, release, "unzipped into the addon folder: the unzipped release files are left alone")
+
+
+def test_release_checks(base):
+    print("make_release.ps1 refuses a release friends could not update to")
+    fake = os.path.join(base, "fakerepo")
+    shutil.copytree(TOOLS, os.path.join(fake, "tools", "goblin-ledger"))
+    os.makedirs(os.path.join(fake, "tools", "wow", "addon"))
+    shutil.copy(UPDATER, os.path.join(fake, "tools", "wow", "addon"))
+    shutil.copytree(ADDON, os.path.join(fake, "wow-addon", "GoblinLedger"))
+    script = os.path.join(fake, "tools", "goblin-ledger", "make_release.ps1")
+    toc = os.path.join(fake, "wow-addon", "GoblinLedger", "GoblinLedger_Forever.toc")
+    good = read(toc)
+
+    def build():
+        r = subprocess.run([PS, "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", script, "-OutDir", os.path.join(fake, "dist")],
+                           capture_output=True, text=True, timeout=120)
+        return r.returncode, r.stdout + r.stderr
+    write(toc, good.replace(b"## Version: 1.0.0", b"## Version: 1.0.1"))
+    code, out = build()
+    eq(code, 1, "TOC versions differ: not built")
+    check("Not built: the TOC versions differ (GoblinLedger.toc 1.0.0, GoblinLedger_Forever.toc 1.0.1)" in out, "says why (%s)" % out[-300:])
+    check(not os.path.exists(os.path.join(fake, "dist", "GoblinLedger.zip")), "TOC versions differ: no zip")
+    write(toc, good.replace(b"## Version: 1.0.0\r\n", b""))
+    code, out = build()
+    check(code == 1 and "has no \"## Version: X.Y.Z\" line" in out, "no version: not built (%s)" % out[-200:])
+    write(toc, good)
+    write(os.path.join(fake, "wow-addon", "GoblinLedger", "media", "icon.tga"), b"x")
+    code, out = build()
+    check(code == 1 and "a folder inside the addon (media)" in out, "a folder in the addon: not built (%s)" % out[-200:])
+    shutil.rmtree(os.path.join(fake, "wow-addon", "GoblinLedger", "media"))
+    write(os.path.join(fake, "wow-addon", "GoblinLedger", "notes.txt"), b"x")
+    code, out = build()
+    check(code == 1 and "only .lua and .toc files" in out, "a .txt in the addon: not built (%s)" % out[-200:])
+    os.remove(os.path.join(fake, "wow-addon", "GoblinLedger", "notes.txt"))
+    code, out = build()
+    eq(code, 0, "fixed: built (%s)" % out[-200:])
+
+
 def main():
     if os.name != "nt" or not os.path.isfile(PS):
         print("Windows PowerShell not found: the installer tests need Windows.")
@@ -533,6 +1137,8 @@ def main():
         zpath = test_release(base)
         if zpath:
             test_unzipped_in_game(base, zpath)
+            test_addon_updates(base, zpath)
+        test_release_checks(base)
     finally:
         shutil.rmtree(base, ignore_errors=True)
     print()

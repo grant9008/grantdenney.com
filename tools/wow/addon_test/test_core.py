@@ -613,7 +613,7 @@ def test_files():
                 "## X-Credits: Price data from Blizzard Entertainment\r\n"
                 "## X-Website: https://grantdenney.com/goblin-ledger/\r\n"
                 "## SavedVariables: ForeverAH_Settings\r\n## Version: 1.0.0\r\n"
-                "Data.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\nEnchants.lua\r\n")
+                "Data.lua\r\nLatest.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\nEnchants.lua\r\n")
     # Git may check these out with either line ending; WoW reads both.
     def text(name):
         with open(os.path.join(ADDON, name), "rb") as fh:
@@ -625,7 +625,12 @@ def test_files():
            "-- Goblin Ledger price data placeholder. Run Install-Goblin-Ledger.bat.\n"
            "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }",
            "Data.lua placeholder")
-    for name in ("Core.lua", "Recommend.lua", "Data.lua", "GoblinLedger.toc", "GoblinLedger_Forever.toc"):
+    eq(text("Latest.lua"),
+       "-- Goblin Ledger: the newest version the updater found, and the one it installed.\n"
+       "-- Written by update_prices.ps1 (the \"Goblin Ledger Prices\" task and Update-Goblin-Ledger.bat). Do not edit.\n"
+       "GoblinLedger_Latest = {}\n",
+       "Latest.lua placeholder (the Windows updater rewrites it)")
+    for name in ("Core.lua", "Recommend.lua", "Data.lua", "Latest.lua", "GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         with open(os.path.join(ADDON, name), "rb") as fh:
             raw = fh.read()
         check(b"\xe2\x80\x94" not in raw and b"\xe2\x80\x93" not in raw, name + " has no long dashes")

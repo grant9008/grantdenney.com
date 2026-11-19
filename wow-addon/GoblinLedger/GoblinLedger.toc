@@ -6,6 +6,7 @@
 ## SavedVariables: ForeverAH_Settings
 ## Version: 1.0.0
 Data.lua
+Latest.lua
 Core.lua
 Recommend.lua
 Chart.lua

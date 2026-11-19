@@ -51,7 +51,7 @@ ITEMS_FILE = SIM_ITEMS_FILE
 SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in goblin-ledger/prices/_localdata
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
-TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua"]
+TOC_FILES = ["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -2404,7 +2404,11 @@ function C_AddOns.IsAddOnLoaded(name) return M.loaded[name] == true, M.loaded[na
 -- TOC fields of other addons a scenario installs (QuestieDB's Version and X-BUILD-COMMIT).
 M.addonMeta = {}
 function C_AddOns.GetAddOnMetadata(name, key)
-  if name == "GoblinLedger" and key == "Version" then return "1.0.0" end
+  -- Our TOC's version as the game read it at start (M.ourVersion: a scenario's; false: none).
+  if name == "GoblinLedger" and key == "Version" then
+    if M.ourVersion == false then return nil end
+    return M.ourVersion or "1.0.0"
+  end
   local t = M.addonMeta[name]
   if t then return t[key] end
 end
@@ -3157,7 +3161,8 @@ end)
 class World:
     def __init__(self, ref, items_json, client="modern", data_src=None, now=None, saved=None,
                  faction="Alliance", screen=None, auctionator=False, bare_coin=False, ah_width=800,
-                 set_owner_clears=True, copper_values=True, gold=MOCK_GOLD, before_addon=None):
+                 set_owner_clears=True, copper_values=True, gold=MOCK_GOLD, before_addon=None,
+                 latest_src=None, running_version=None, login=(True, False)):
         self.ref = ref
         self.items_json = items_json
         self.lua = lua51.LuaRuntime(unpack_returned_tuples=True)
@@ -3174,6 +3179,8 @@ class World:
         M.setOwnerClears = set_owner_clears
         M.copperValues = copper_values
         M.ahWidth = ah_width
+        if running_version is not None:   # the ## Version of the TOC the game started with
+            M.ourVersion = running_version
         if screen:
             M.SetScreen(*screen)
         if bare_coin:
@@ -3197,6 +3204,8 @@ class World:
         for fname in TOC_FILES:
             if fname == "Data.lua":
                 src = data_src if data_src is not None else open(DATA_FILE, "rb").read().decode("utf-8")
+            elif fname == "Latest.lua" and latest_src is not None:   # what the updater wrote
+                src = latest_src
             else:
                 src = open(os.path.join(ADDON, fname), "rb").read().decode("utf-8")
             ok = M.LoadChunk(src, "@Interface/AddOns/%s/%s" % (ADDON_NAME, fname), ADDON_NAME, self.ns)
@@ -3209,7 +3218,8 @@ class World:
         M.fire("ADDON_LOADED", ADDON_NAME)
         M.fire("VARIABLES_LOADED")
         M.fire("PLAYER_LOGIN")
-        M.fire("PLAYER_ENTERING_WORLD", True, False)
+        # (True, False): a login; (False, True): a /reload; (): a client that passes neither
+        M.fire("PLAYER_ENTERING_WORLD", *login)
         M.settle(0.2)
 
     def to_lua(self, v):
@@ -4534,6 +4544,134 @@ def sc_saved_settings(sc, ref, items):
     sc.check(p[1] == "TOPLEFT" and w.same(p[2], w.g.UIParent) and p[4] == 100 and p[5] == -200, "saved chart position used")
     chart_check(sc, w, ref, R.RUNE, "1W", "saved 1W")
     sc.clean(w)
+
+
+LATEST_PLACEHOLDER = (
+    '-- Goblin Ledger: the newest version the updater found, and the one it installed.\n'
+    '-- Written by update_prices.ps1 (the "Goblin Ledger Prices" task and Update-Goblin-Ledger.bat). Do not edit.\n'
+    'GoblinLedger_Latest = {}\n')
+
+
+def latest_lua(**f):
+    """Latest.lua as update_prices.ps1 writes it (Save-Latest)."""
+    def lv(v):
+        if v is None:
+            return "nil"
+        if isinstance(v, bool):
+            return "true" if v else "false"
+        if isinstance(v, int):
+            return str(v)
+        return '"%s"' % v
+    keys = ("version", "installed", "from", "installedAt", "auto", "restart")
+    return ("-- Goblin Ledger: the newest version the updater found, and the one it installed.\r\n"
+            "GoblinLedger_Latest = { %s }\r\n" % ", ".join("%s = %s" % (k, lv(f.get(k))) for k in keys))
+
+
+def notices(w, mark=0):
+    """The chat lines about Goblin Ledger versions (plain text)."""
+    return [plain(c) for c in w.chat(mark) if plain(c).startswith("Goblin Ledger ") and
+            (" updated to " in plain(c) or " is out" in plain(c))]
+
+
+def sc_update_notice(sc, ref, items):
+    """Latest.lua from the Windows updater: at most one short chat line per login."""
+    src = open(os.path.join(ADDON, "Latest.lua"), "rb").read().decode("ascii")
+    sc.eq(src.replace("\r\n", "\n"), LATEST_PLACEHOLDER, "repo Latest.lua is the placeholder")
+    sc.check(src.count("\r\n") == src.count("\n"), "Latest.lua has Windows line ends")
+    T = 1795000000
+    OUT = "Goblin Ledger 1.1.0 is out: double-click Update-Goblin-Ledger.bat."
+
+    def world(latest, running="1.0.0", saved=None, login=(True, False), client="modern"):
+        w = World(ref, items, latest_src=latest, running_version=running, saved=saved, login=login, client=client)
+        sc.eq(w.load_errors, [], "loads (%s)" % latest[-80:])
+        return w
+
+    def seen(w):
+        return dict(updateSeen=w.ns.settings.updateSeen)
+
+    # The placeholder, a missing Latest.lua, and junk: no line, no error.
+    for label, latest in [("placeholder", src), ("no Latest.lua", ""), ("a string", 'GoblinLedger_Latest = "1.1.0"'),
+                          ("numbers", "GoblinLedger_Latest = { version = 5, installed = 1, installedAt = 'x', auto = 1 }"),
+                          ("two-part version", 'GoblinLedger_Latest = { version = "1.1", installed = "1.1" }'),
+                          ("bad stamp", 'GoblinLedger_Latest = { installed = "1.1.0", installedAt = "soon", auto = true }'),
+                          ("not newer", latest_lua(version="1.0.0")), ("older", latest_lua(version="0.9.9")),
+                          ("tag-like", 'GoblinLedger_Latest = { version = "v1.1.0" }')]:
+        w = world(latest)
+        sc.eq(notices(w), [], "%s: no version line" % label)
+        sc.clean(w, label)
+
+    # Installed by itself, game restarted since: one line, once.
+    L = latest_lua(version="1.1.0", installed="1.1.0", **{"from": "1.0.0"}, installedAt=T, auto=True, restart=True)
+    w = world(L, running="1.1.0")
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "auto update: one line at login")
+    sc.check(any(c.startswith("|c") and "Goblin Ledger|r updated to 1.1.0." in c for c in w.chat()), "the name is coloured like /gl's")
+    sc.eq(w.ns.settings.updateSeen, T, "auto update: remembered in the saved settings")
+    sc.clean(w, "auto update")
+    w2 = world(L, running="1.1.0", saved=seen(w))
+    sc.eq(notices(w2), [], "auto update: not again at the next login")
+    w3 = world(L, running="1.1.0", saved=seen(w), login=(False, True))
+    sc.eq(notices(w3), [], "auto update: not again after a /reload")
+    # Installed by itself while the game ran: the TOC the game has is still 1.0.0.
+    w = world(L, running="1.0.0", login=(False, True))
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0. Restart WoW to finish."], "new file list, not restarted: says to restart")
+    w2 = world(L, running="1.1.0", saved=seen(w))
+    sc.eq(notices(w2), [], "after the restart: nothing more")
+    w = world(latest_lua(version="1.1.0", installed="1.1.0", installedAt=T, auto=True, restart=False), running="1.0.0",
+              login=(False, True))
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "same file list: a /reload is enough, no restart line")
+    w = world(L, running="1.1.0", login=())
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "a client without login arguments: the line still comes")
+
+    # Update-Goblin-Ledger.bat (it said everything itself): nothing, unless the game must restart.
+    M1 = latest_lua(version="1.1.0", installed="1.1.0", installedAt=T, auto=False, restart=False)
+    w = world(M1, running="1.0.0", login=(False, True))
+    sc.eq(notices(w), [], "by hand, /reload: no line")
+    sc.eq(w.ns.settings.updateSeen, T, "by hand: still remembered")
+    w = world(M1, running="1.0.0")
+    sc.eq(notices(w), [], "by hand: no 'is out' for the version just installed")
+    w = world(latest_lua(version="1.1.0", installed="1.1.0", installedAt=T, auto=False, restart=True), running="1.0.0")
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0. Restart WoW to finish."], "by hand, new file list: says to restart")
+
+    # Installing by itself is off: "is out", once per login, never after a /reload.
+    OFF = latest_lua(version="1.1.0", installedAt=0, auto=False, restart=False)
+    w = world(OFF)
+    sc.eq(notices(w), [OUT], "off: one 'is out' line at login")
+    mark = w.chat_mark()
+    w.M.fire("PLAYER_ENTERING_WORLD", False, False)   # a loading screen later
+    w.settle(0.2)
+    sc.eq(notices(w, mark), [], "off: not again on the next loading screen")
+    sc.clean(w, "off")
+    w = world(OFF, saved=seen(w), login=(False, True))
+    sc.eq(notices(w), [], "off: not after a /reload")
+    w = world(OFF, saved=seen(w))
+    sc.eq(notices(w), [OUT], "off: once at the next login again")
+    w = world(OFF, running="1.1.0")
+    sc.eq(notices(w), [], "off: already on 1.1.0 (installed by hand): nothing")
+    w = world(OFF, running=False)
+    sc.eq(notices(w), [], "off: the game does not say our version: nothing")
+    sc.clean(w, "no version from the game")
+    w = world(OFF, login=())
+    sc.eq(notices(w), [OUT], "off, a client without login arguments: shown")
+
+    # An unseen update and a newer version at once: only one line per login.
+    BOTH = latest_lua(version="1.2.0", installed="1.1.0", installedAt=T, auto=True, restart=False)
+    w = world(BOTH, running="1.1.0")
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "both: the update line first, alone")
+    w = world(BOTH, running="1.1.0", saved=seen(w))
+    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out: double-click Update-Goblin-Ledger.bat."], "both: 'is out' at the next login")
+    w = world(BOTH, running="1.0.0", saved={"updateSeen": T})
+    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out: double-click Update-Goblin-Ledger.bat."],
+          "the installed version counts even before a restart")
+
+    # The legacy client works the same.
+    w = world(L, running="1.1.0", client="legacy")
+    sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "legacy client: the update line")
+    sc.clean(w, "legacy")
+    w = world(OFF, client="legacy")
+    sc.eq(notices(w), [OUT], "legacy client: 'is out'")
+    # Plain ASCII, short.
+    for line in ("Goblin Ledger updated to 1.1.0. Restart WoW to finish.", OUT):
+        sc.check(all(ord(c) < 128 for c in line) and len(line) <= 72, "short plain line: %s" % line)
 
 
 def sc_chart_standalone(sc, ref, items):
@@ -15587,6 +15725,7 @@ SCENARIOS = [
     ("stale-data", sc_stale),
     ("placeholder-data", sc_placeholder),
     ("saved-settings", sc_saved_settings),
+    ("update-notice", sc_update_notice),
     ("chart-standalone", sc_chart_standalone),
     ("chart-timeframes", sc_chart_timeframes),
     ("chart-hover-no-clear", sc_chart_no_setowner_clear),
