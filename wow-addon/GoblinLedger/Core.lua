@@ -1613,6 +1613,7 @@ local function printHelp()
   P("/gl chart reset : put the chart back in its normal place after you dragged it")
   P("/gl tooltip : turn the prices in item tooltips on or off")
   P("/gl compact : switch tooltips between full and one-line")
+  P("/gl update : which Goblin Ledger version you have, and how to get a newer one")
   P("/gl help : show this list")
 end
 
@@ -1665,6 +1666,8 @@ function ns.HandleSlash(msg)
     P("tooltips are now " .. (S.compact and "one line" or "full") .. ".")
   elseif cmd == "help" or cmd == "?" then
     printHelp()
+  elseif cmd == "update" or cmd == "version" then
+    if type(ns.UpdateHelp) == "function" then ns.UpdateHelp() end
   else
     P("unknown command. Type /gl help for the list.")
   end
@@ -1681,6 +1684,124 @@ if type(_G.SlashCmdList) == "table" then
 end
 
 ---------------------------------------------------------------------------
+-- New versions
+---------------------------------------------------------------------------
+-- Latest.lua (GoblinLedger_Latest) is written by the Windows updater: the
+-- newest official version it found ("version") and the one it installed
+-- ("installed", at "installedAt", "auto" = by itself, "restart" = the new
+-- version has a new file list, which only a game restart loads, "waiting" =
+-- it installs by itself once WoW is closed). At most one short chat line per
+-- login:
+--   - once after an update the updater installed by itself: "updated to"
+--     (also after Update-Goblin-Ledger.bat when the game still needs a restart)
+--   - else, while a newer version waits: "is out", once per login, never again
+--     after a /reload; with "it installs by itself after you close WoW" when it
+--     does, else pointing at /gl update (which says where Update-Goblin-Ledger.bat is)
+local function versionParts(s)
+  if type(s) ~= "string" then return nil end
+  local a, b, c = smatch(s, "^(%d+)%.(%d+)%.(%d+)$")
+  if not a then return nil end
+  return { tonumber(a), tonumber(b), tonumber(c) }
+end
+
+local function newerThan(x, y)
+  for i = 1, 3 do
+    if x[i] ~= y[i] then return x[i] > y[i] end
+  end
+  return false
+end
+
+-- The ## Version of the TOC the game read when it started.
+local function runningVersion()
+  local CA = _G.C_AddOns
+  local f = (type(CA) == "table" and type(CA.GetAddOnMetadata) == "function") and CA.GetAddOnMetadata
+    or _G.GetAddOnMetadata
+  if type(f) ~= "function" then return nil end
+  local ok, v = pcall(f, ADDON_NAME, "Version")
+  if ok and type(v) == "string" and not isSecret(v) and versionParts(v) then return v end
+  return nil
+end
+ns.RunningVersion = runningVersion
+
+-- The newer official version the updater found (text), or nil: newer than the
+-- version the game started with and than the one installed since.
+local function newerVersion()
+  local L = _G.GoblinLedger_Latest
+  if type(L) ~= "table" then return nil end
+  local newest = versionParts(L.version)
+  local have = versionParts(runningVersion())
+  local inst = versionParts(L.installed)
+  if inst and (not have or newerThan(inst, have)) then have = inst end
+  if newest and have and newerThan(newest, have) then return L.version end
+  return nil
+end
+
+-- The line to show now (plain text), or nil. reloading: a /reload, not a login.
+function ns.UpdateNotice(reloading)
+  local L = _G.GoblinLedger_Latest
+  if type(L) ~= "table" then return nil end
+  local S = ns.settings
+  local running = runningVersion()
+  local installed = versionParts(L.installed) and L.installed or nil
+  local at = tonumber(L.installedAt)
+  if installed and at and at > 0 and S.updateSeen ~= at then
+    S.updateSeen = at
+    local restart = L.restart == true and running ~= installed
+    if L.auto == true or restart then
+      return "Goblin Ledger updated to " .. installed .. "." .. (restart and " Restart WoW to finish." or "")
+    end
+  end
+  if reloading then return nil end
+  local newer = newerVersion()
+  if newer and L.waiting == true then
+    return "Goblin Ledger " .. newer .. " is out: it installs by itself after you close WoW."
+  elseif newer then
+    return "Goblin Ledger " .. newer .. " is out. Type /gl update for how to get it."
+  end
+  return nil
+end
+
+-- /gl update: the version, and where Update-Goblin-Ledger.bat is (the
+-- unzipped folder is often deleted; the installer keeps a copy in
+-- %LOCALAPPDATA%\GoblinLedger, which Windows+R opens).
+function ns.UpdateHelp()
+  local L = _G.GoblinLedger_Latest
+  local have = runningVersion()
+  local newer = newerVersion()
+  if newer then
+    P("version " .. newer .. " is out" .. (have and (" (you have " .. have .. ")") or "") .. ".")
+    if type(L) == "table" and L.waiting == true then
+      P("it installs by itself after you close WoW. To get it now:")
+    else
+      P("to get it:")
+    end
+  else
+    P((have and ("you have version " .. have) or "you have this version") .. ". To look for a newer one now:")
+  end
+  P("press Windows+R, type %LOCALAPPDATA%\\GoblinLedger and press Enter, then double-click")
+  P("Update-Goblin-Ledger.bat. When it says Updated, type /reload (or restart WoW if it says so).")
+end
+
+local noticeDone = false
+local function showUpdateNotice(isInitialLogin, isReloadingUi)
+  if noticeDone then return end
+  noticeDone = true
+  local ok, line = pcall(ns.UpdateNotice, isReloadingUi == true)
+  if not ok then
+    ns.lastError = line
+    return
+  end
+  if type(line) ~= "string" then return end
+  local text = "|c" .. ns.Hex(ns.COLORS.sell) .. "Goblin Ledger|r" .. ssub(line, 14)
+  local cf = _G.DEFAULT_CHAT_FRAME
+  if type(cf) == "table" and type(cf.AddMessage) == "function" then
+    pcall(cf.AddMessage, cf, text)
+  elseif type(_G.print) == "function" then
+    pcall(_G.print, text)
+  end
+end
+
+---------------------------------------------------------------------------
 -- Events
 ---------------------------------------------------------------------------
 local okTT, errTT = pcall(installTooltipHooks)
@@ -1692,7 +1813,8 @@ if type(_G.CreateFrame) == "function" then
     ns.eventFrame = frame
     frame:RegisterEvent("ADDON_LOADED")
     frame:RegisterEvent("PLAYER_LOGIN")
-    frame:SetScript("OnEvent", function(self, event, arg1)
+    frame:RegisterEvent("PLAYER_ENTERING_WORLD")
+    frame:SetScript("OnEvent", function(self, event, arg1, arg2)
       if event == "ADDON_LOADED" then
         if arg1 == ADDON_NAME then loadSettings() end
       elseif event == "PLAYER_LOGIN" then
@@ -1701,6 +1823,10 @@ if type(_G.CreateFrame) == "function" then
         if (tonumber(db.updated) or 0) <= 0 then
           P("no price data yet. Type /gl to see how to get it.")
         end
+      elseif event == "PLAYER_ENTERING_WORLD" then
+        -- arg1: a fresh login, arg2: a /reload (the first one after either counts)
+        if not ns.settingsLoaded then loadSettings() end
+        showUpdateNotice(arg1, arg2)
       end
     end)
   end

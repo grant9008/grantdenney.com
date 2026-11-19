@@ -13,7 +13,8 @@ INSTALL (Windows, about 3 minutes)
    Show in Explorer, open the _forever_ folder, click the address bar,
    press Ctrl+C, then click the installer window, press Ctrl+V and Enter.
 4. It copies the addon and downloads the latest prices. When it asks
-   "Update prices automatically every 30 minutes?", press Y and Enter.
+   "Update prices automatically every 30 minutes?", press Y and Enter,
+   and Y again for "Install new Goblin Ledger versions by themselves?".
 5. Start WoW Forever (close it fully first if it was open). Hover an item
    you could sell: the Goblin Ledger lines show its prices.
    Type /gl help in chat for the commands.
@@ -26,8 +27,11 @@ They update by themselves every 30 minutes while you are logged in to
 Windows (if you said Y). The game loads them when you log in or type
 /reload. Want fresh prices right now? Run Install-Goblin-Ledger.bat again.
 
-NEW VERSION
-Download the zip again, unzip it and run Install-Goblin-Ledger.bat.
+NEW VERSIONS
+They install by themselves if you said Y (checked every few hours, only
+official releases, your prices and settings are kept). Update right now:
+double-click Update-Goblin-Ledger.bat in %LOCALAPPDATA%\GoblinLedger (press
+Windows+R, type that and press Enter), then restart WoW or type /reload.
 
 NOT WORKING?
 - "Windows did not allow copying into the game folder": right-click
@@ -37,12 +41,13 @@ NOT WORKING?
 
 REMOVE IT
 Double-click Uninstall-Goblin-Ledger.bat and press Y. It removes the addon,
-the price updater and the "Goblin Ledger Prices" task. It asks before
-deleting your saved settings.
+the updater and the "Goblin Ledger Prices" task. It asks before deleting
+your saved settings.
 
 WHAT IS IN HERE
 GoblinLedger                 the addon (copied into the game's Interface\AddOns)
 Install-Goblin-Ledger.bat    the installer
+Update-Goblin-Ledger.bat     gets the newest version now
 Uninstall-Goblin-Ledger.bat  removes it again
 scripts                      the installer's steps (plain text, open in Notepad)
 README.txt                   this file

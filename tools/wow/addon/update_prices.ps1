@@ -6,9 +6,9 @@
   Data.lua in the Goblin Ledger addon folder. The game reads it when you log
   in or type /reload.
 
-  Usually started by Install-Goblin-Ledger.bat, Update-WoW-Prices.bat, the
-  "Goblin Ledger Prices" scheduled task (every 30 minutes) or the owner's
-  price collector. You never need to run it by hand.
+  Usually started by Install-Goblin-Ledger.bat, Update-Goblin-Ledger.bat,
+  Update-WoW-Prices.bat, the "Goblin Ledger Prices" scheduled task (every 30
+  minutes) or the owner's price collector. You never need to run it by hand.
 
     -AddonDir  the GoblinLedger addon folder. Default: the path the installer
                saved in %LOCALAPPDATA%\GoblinLedger\addon_dir.txt (or, from an
@@ -29,6 +29,25 @@
   The price file keeps its old name (ForeverAH_Data.lua) and first line, so
   copies of this updater from before the rename still accept it.
 
+  NEW GOBLIN LEDGER VERSIONS (see "New versions" below)
+    -AddonCheck auto  (the default, the scheduled task) at most every 6 hours,
+                      asks GitHub for the newest official release. Installs
+                      it by itself when the installer's "Install new Goblin
+                      Ledger versions by themselves?" was answered Y (saved in
+                      %LOCALAPPDATA%\GoblinLedger\config.txt); answered N, it
+                      only notes the new version for the game's chat line.
+                      While WoW is open it waits (asks again every 20
+                      minutes) and notes the version for the chat line too.
+                      Then the prices are updated as always.
+    -AddonCheck now   Update-Goblin-Ledger.bat: check and install right now,
+                      say what happened, and stop (no prices).
+    -AddonCheck skip  prices only (the installer uses this).
+  A new version is installed only when it is newer than the installed one,
+  its zip matches the SHA-256 fingerprint GitHub publishes for it, and the
+  zip holds a complete addon. Only the addon's .lua and .toc files change
+  (never Data.lua, never saved settings); nothing from the zip is ever run,
+  and this updater itself only changes when Install-Goblin-Ledger.bat runs.
+
   Exit codes: 0 updated or already up to date, 2 addon not installed,
   3 prices not published yet, 4 bad or missing file, 5 no connection,
   6 could not save.
@@ -36,7 +55,9 @@
 param(
     [string]$AddonDir,
     [string]$DataUrl = 'https://raw.githubusercontent.com/grant9008/grantdenney.com/wow-data/ForeverAH_Data.lua',
-    [switch]$Quiet
+    [switch]$Quiet,
+    [ValidateSet('auto', 'now', 'skip')]
+    [string]$AddonCheck = 'auto'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -55,15 +76,16 @@ function Say([string]$text) {
     if (-not $Quiet) { Write-Host "  $text" }
 }
 
-function Write-Log([string]$status, [string]$text) {
+# One line in update.log (or $file), which keeps its last 200 lines.
+function Write-Log([string]$status, [string]$text, [string]$file = $LogFile) {
     try {
         if (-not (Test-Path -LiteralPath $AppDir)) { New-Item -ItemType Directory -Path $AppDir -Force | Out-Null }
         $line = '{0}  {1,-5}  {2}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $status, $text
         $lines = @()
-        if (Test-Path -LiteralPath $LogFile) { $lines = @(Get-Content -LiteralPath $LogFile -Encoding UTF8) }
+        if (Test-Path -LiteralPath $file) { $lines = @(Get-Content -LiteralPath $file -Encoding UTF8) }
         $lines = @($lines + $line)
         if ($lines.Count -gt 200) { $lines = $lines[($lines.Count - 200)..($lines.Count - 1)] }
-        Set-Content -LiteralPath $LogFile -Value $lines -Encoding UTF8
+        Set-Content -LiteralPath $file -Value $lines -Encoding UTF8
     } catch { }   # a log problem must never stop the update
 }
 
@@ -176,10 +198,731 @@ $Dest = Join-Path $AddonDir 'Data.lua'
 $oldStamp = [int64]0
 if (Test-Path -LiteralPath $Dest) { $oldStamp = Get-Stamp $Dest }
 
-# 2. Download to a temp file ----------------------------------------------------
+# GitHub only talks TLS 1.2 or newer, which Windows PowerShell does not always
+# turn on by itself (for the version check and the prices alike).
 try {
     [Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
 } catch { }
+
+# 1b. New versions ---------------------------------------------------------------
+# New versions come from the GitHub releases of grant9008/grantdenney.com (the
+# share page's download). A release's GoblinLedger.zip is installed only when:
+#   - its tag (vX.Y.Z) is newer than the installed addon's ## Version (never
+#     older, never the same one again)
+#   - the downloaded zip matches the SHA-256 fingerprint ("digest") GitHub
+#     shows for it (no fingerprint: nothing is installed, the next check tries again)
+#   - the zip holds a whole addon: both TOC files with that same version and
+#     every file they list, nothing but .lua and .toc files in GoblinLedger\,
+#     and no path that leads anywhere else
+# Then only the addon's .lua and .toc files change. They are written to
+# GoblinLedger\_update first and swapped in by renames; when anything fails,
+# the old files are put back (after a crash, by the next run). Data.lua (the
+# prices) and Latest.lua (this updater's note for the game) never come from
+# the zip, saved settings are in the game's WTF folder, and nothing in the zip
+# is ever run or copied anywhere else: the installer's scripts and this
+# updater only change when Install-Goblin-Ledger.bat runs.
+# Each check writes one line to %LOCALAPPDATA%\GoblinLedger\addon_update.log.
+$ReleaseApi = 'https://api.github.com/repos/grant9008/grantdenney.com/releases/latest'
+$AssetPrefix = 'https://github.com/grant9008/grantdenney.com/releases/download/'
+$AssetName = 'GoblinLedger.zip'
+$ConfigFile = Join-Path $AppDir 'config.txt'          # addon_updates=yes or no (the installer's question)
+$StateFile = Join-Path $AppDir 'addon_update.txt'     # when to check next, GitHub's ETag
+$ReleaseCache = Join-Path $AppDir 'release.json'      # GitHub's answer that ETag belongs to
+$AddonLog = Join-Path $AppDir 'addon_update.log'
+$CheckEvery = 6 * 3600
+$SafeName = '^[A-Za-z0-9_][A-Za-z0-9_.-]*\.(lua|toc)$'
+$TestMode = ($env:GOBLINLEDGER_TEST -eq '1')
+if ($TestMode) {
+    # Tests (tools\wow\addon_test\test_installer.py) use a local fake GitHub,
+    # never the real one. Without GOBLINLEDGER_RELEASE_API nothing is checked.
+    $ReleaseApi = [string]$env:GOBLINLEDGER_RELEASE_API
+    $AssetPrefix = [string]$env:GOBLINLEDGER_RELEASE_ASSETS
+}
+$script:State = @{}
+
+$AddonAccessHelp = @(
+    'Windows does not let normal programs change the game folder on this PC.',
+    'Fix it once: right-click Install-Goblin-Ledger.bat and choose "Run as administrator".',
+    'Your Goblin Ledger was left as it was.'
+)
+
+# Tests only, GOBLINLEDGER_TEST_FAIL:
+#   stage:N or swap:N  the Nth file step of an install fails
+#   crash:N            the whole run stops dead at the Nth swap step (like a
+#                      power cut), with no clean-up at all
+#   hold:N             at the Nth swap step the run waits while test_hold.txt is
+#                      in %LOCALAPPDATA%\GoblinLedger (so another run can start then)
+#   lock:NAME          the staged copy of NAME stays open until the run ends,
+#                      like a virus scanner holding it
+$script:FailKind = $null
+$script:FailAt = 0
+$script:FailStep = 0
+$script:FailName = $null
+$script:TestHandle = $null
+if ($TestMode -and ([string]$env:GOBLINLEDGER_TEST_FAIL) -match '^(stage|swap|crash|hold):(\d+)$') {
+    $script:FailKind = $Matches[1]
+    $script:FailAt = [int]$Matches[2]
+} elseif ($TestMode -and ([string]$env:GOBLINLEDGER_TEST_FAIL) -match '^lock:([A-Za-z0-9_.-]+)$') {
+    $script:FailKind = 'lock'
+    $script:FailName = $Matches[1]
+}
+function Step-TestFail([string]$phase) {
+    if (-not $script:FailKind -or $script:FailKind -eq 'lock') { return }
+    $p = if ($script:FailKind -eq 'crash' -or $script:FailKind -eq 'hold') { 'swap' } else { $script:FailKind }
+    if ($phase -ne $p) { return }
+    $script:FailStep++
+    if ($script:FailStep -lt $script:FailAt) { return }
+    if ($script:FailKind -eq 'hold') {
+        if ($script:FailStep -ne $script:FailAt) { return }
+        $mark = Join-Path $AppDir 'test_hold.txt'
+        Set-Content -LiteralPath $mark -Value 'holding' -Encoding ASCII
+        $until = (Get-Date).AddSeconds(120)
+        while ((Test-Path -LiteralPath $mark) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 50 }
+        return
+    }
+    if ($script:FailKind -eq 'crash') { [Environment]::Exit(99) }
+    throw "test: $phase step $($script:FailStep) failed"
+}
+function Lock-TestFile([string]$dir) {
+    if ($script:FailKind -ne 'lock') { return }
+    $p = Join-Path $dir $script:FailName
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+        $script:TestHandle = [IO.File]::Open($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    }
+}
+
+# Only one version check or install at a time: the task, Update-Goblin-Ledger.bat,
+# the owner's collector and Install-Goblin-Ledger.bat (install.ps1 uses the
+# same name) all take this lock first, also before putting back an update
+# that stopped half way. Tests get a lock of their own (one per fake PC), so
+# they never wait for, or hold up, a real run.
+function Get-LockName {
+    $n = 'Local\GoblinLedgerAddonUpdate'
+    if ($TestMode) { $n += '_' + (Get-Sha256 ([Text.Encoding]::UTF8.GetBytes(([string]$env:LOCALAPPDATA).ToLowerInvariant()))).Substring(0, 16) }
+    return $n
+}
+
+# @{ Owned; Mutex }. Owned is $false when another run holds the lock.
+function Enter-UpdateLock {
+    $l = @{ Owned = $true; Mutex = $null }
+    try {
+        $l.Mutex = New-Object Threading.Mutex($false, (Get-LockName))
+        try { $l.Owned = $l.Mutex.WaitOne(0) } catch { $l.Owned = $true }   # abandoned by a run that stopped: ours now
+    } catch { }   # Windows gave no lock at all: carry on without one
+    if (-not $l.Owned -and $l.Mutex) { $l.Mutex.Dispose(); $l.Mutex = $null }
+    return $l
+}
+
+function Exit-UpdateLock($l) {
+    if ($l -and $l.Mutex) {
+        if ($l.Owned) { try { $l.Mutex.ReleaseMutex() } catch { } }
+        $l.Mutex.Dispose()
+        $l.Mutex = $null
+    }
+}
+
+function Get-UnixNow { return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
+
+# key=value lines (config.txt, addon_update.txt).
+function Read-KeyFile([string]$path) {
+    $h = @{}
+    try {
+        if (Test-Path -LiteralPath $path -PathType Leaf) {
+            foreach ($l in @(Get-Content -LiteralPath $path -Encoding UTF8)) {
+                $m = [regex]::Match([string]$l, '^\s*([A-Za-z_]+)\s*=(.*)$')
+                if ($m.Success) { $h[$m.Groups[1].Value.ToLowerInvariant()] = $m.Groups[2].Value.Trim() }
+            }
+        }
+    } catch { }
+    return $h
+}
+
+function Save-State {
+    try {
+        if (-not (Test-Path -LiteralPath $AppDir)) { New-Item -ItemType Directory -Path $AppDir -Force | Out-Null }
+        $lines = @('# Goblin Ledger: when the updater asks GitHub for a new version next (unix time).')
+        foreach ($k in @($script:State.Keys | Sort-Object)) {
+            if ($script:State[$k]) { $lines += ('{0}={1}' -f $k, $script:State[$k]) }
+        }
+        Set-Content -LiteralPath $StateFile -Value $lines -Encoding ASCII
+    } catch { }
+}
+
+function Get-Sha256([byte[]]$bytes) {
+    $sha = [Security.Cryptography.SHA256]::Create()
+    try { return ([BitConverter]::ToString($sha.ComputeHash($bytes))).Replace('-', '').ToLowerInvariant() }
+    finally { $sha.Dispose() }
+}
+
+# "1.2.3" or "v1.2.3" as a [Version], else $null.
+function ConvertTo-AddonVersion([string]$text) {
+    if (-not $text) { return $null }
+    $m = [regex]::Match($text.Trim(), '^[vV]?(\d{1,5})\.(\d{1,5})\.(\d{1,5})$')
+    if (-not $m.Success) { return $null }
+    return New-Object Version ([int]$m.Groups[1].Value), ([int]$m.Groups[2].Value), ([int]$m.Groups[3].Value)
+}
+
+# A TOC's ## Version, its file list, and everything but the version (what
+# the game reads when it starts: when that changes, a /reload is not enough).
+function Read-Toc([string]$text) {
+    $ver = $null
+    $shape = New-Object System.Collections.Generic.List[string]
+    $files = New-Object System.Collections.Generic.List[string]
+    foreach ($raw in ($text -split "`r?`n")) {
+        $l = $raw.Trim()
+        if (-not $l) { continue }
+        $m = [regex]::Match($l, '^##\s*Version\s*:\s*(.*)$', 'IgnoreCase')
+        if ($m.Success) { $ver = ConvertTo-AddonVersion $m.Groups[1].Value; continue }
+        $shape.Add($l.ToLowerInvariant())
+        if (-not $l.StartsWith('#')) { $files.Add($l) }
+    }
+    return @{ Version = $ver; Shape = ($shape -join "`n"); Files = $files.ToArray() }
+}
+
+# The installed addon's TOC (GoblinLedger_Forever.toc is the one WoW Forever
+# reads), with the lower version when the two TOC files disagree. $null when
+# there is none, or one without a version.
+function Get-InstalledToc([string]$dir) {
+    $best = $null
+    foreach ($n in @('GoblinLedger_Forever.toc', 'GoblinLedger.toc')) {
+        $p = Join-Path $dir $n
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }
+        $t = Read-Toc ([IO.File]::ReadAllText($p))
+        if (-not $t.Version) { return $null }
+        if (-not $best) { $best = $t }
+        elseif ($t.Version -lt $best.Version) { $best.Version = $t.Version }
+    }
+    return $best
+}
+
+# Is WoW Forever running? Only a Wow* program started from this game folder
+# counts. When Windows will not say where a program runs from (one started as
+# administrator), it counts only when its name is the game's own (Wow,
+# WowClassic, WowT ...), never an addon manager such as WowUp left in the tray.
+function Test-GameProcess([string]$name, [string]$path, [string]$root) {
+    if ($path -and $root) { return $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) }
+    return ($name -match '^(?i)wow(classic)?[a-z]?(-64)?$')
+}
+
+function Test-WowOpen([string]$dir) {
+    $root = $null
+    try { $root = [IO.Path]::GetFullPath((Join-Path $dir '..\..\..')).TrimEnd('\') + '\' } catch { }
+    if ($TestMode) {
+        # GOBLINLEDGER_TEST_PROCS: name|path;name|path (an empty path: Windows would not say)
+        if ($null -ne $env:GOBLINLEDGER_TEST_PROCS) {
+            foreach ($p in @(([string]$env:GOBLINLEDGER_TEST_PROCS) -split ';' | Where-Object { $_ })) {
+                $name, $path = $p -split '\|', 2
+                if (Test-GameProcess $name $path $root) { return $true }
+            }
+            return $false
+        }
+        return (([string]$env:GOBLINLEDGER_TEST_WOW) -match '^[1-9]\d*$')
+    }
+    foreach ($p in @(Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue)) {
+        $path = $null
+        try { $path = $p.Path } catch { }
+        if (Test-GameProcess $p.ProcessName $path $root) { return $true }
+    }
+    return $false
+}
+
+# One GET. Status is the HTTP status, or 0 when there was no answer (no
+# connection, timed out, cut off, or more than $max bytes).
+function Get-Url([string]$url, [string]$accept, [string]$etag, [int64]$max) {
+    $r = @{ Status = 0; Etag = $null; Bytes = $null; Error = '' }
+    if ($url -notmatch '^(?i)https?://') { $r.Error = "not a web address: $url"; return $r }
+    $resp = $null
+    try {
+        $req = [Net.HttpWebRequest]::Create($url)
+        $req.UserAgent = 'GoblinLedger-updater'
+        $req.Accept = $accept
+        $req.Timeout = 30000
+        $req.ReadWriteTimeout = 30000
+        $req.AutomaticDecompression = [Net.DecompressionMethods]::GZip -bor [Net.DecompressionMethods]::Deflate
+        if ($etag) { $req.Headers.Add('If-None-Match', $etag) }
+        $resp = $req.GetResponse()
+    } catch {
+        $we = Get-WebException $_
+        if ($we -and $we.Response) {
+            try { $r.Status = [int]$we.Response.StatusCode } catch { }
+            try { $we.Response.Close() } catch { }
+        }
+        $r.Error = $_.Exception.Message
+        return $r
+    }
+    try {
+        $r.Etag = $resp.Headers.Get('ETag')
+        $in = $resp.GetResponseStream()
+        $ms = New-Object IO.MemoryStream
+        try {
+            $buf = New-Object byte[] 65536
+            while (($n = $in.Read($buf, 0, $buf.Length)) -gt 0) {
+                $ms.Write($buf, 0, $n)
+                if ($ms.Length -gt $max) { throw "more than $max bytes" }
+            }
+        } finally { $in.Dispose() }
+        $r.Bytes = $ms.ToArray()
+        $r.Status = [int]$resp.StatusCode
+    } catch {
+        $r.Status = 0
+        $r.Error = $_.Exception.Message
+    } finally { $resp.Close() }
+    return $r
+}
+
+# The addon files of a release zip: @{ Files = name -> bytes (no Data.lua, no
+# Latest.lua); Toc = Read-Toc of GoblinLedger_Forever.toc }. Throws the reason
+# when the zip is not a whole, safe Goblin Ledger $want.
+function Read-ReleaseZip([byte[]]$bytes, [Version]$want) {
+    Add-Type -AssemblyName System.IO.Compression
+    $files = New-Object 'System.Collections.Generic.Dictionary[string,byte[]]' ([StringComparer]::OrdinalIgnoreCase)
+    $ms = New-Object IO.MemoryStream (, $bytes)
+    $zip = $null
+    try {
+        try { $zip = New-Object IO.Compression.ZipArchive ($ms, [IO.Compression.ZipArchiveMode]::Read) }
+        catch { throw 'not a zip file' }
+        if ($zip.Entries.Count -gt 500) { throw 'too many files' }
+        $total = [int64]0
+        foreach ($e in $zip.Entries) {
+            $name = $e.FullName.Replace('\', '/')
+            if ($name -match '[\x00-\x1f:*?"<>|]' -or $name.StartsWith('/') -or $name.Contains('//') -or
+                    $name -match '(^|/)\.\.?(/|$)') {
+                throw "unsafe path in the zip: $name"
+            }
+            if ($name.EndsWith('/')) { continue }   # a folder
+            # Install-Goblin-Ledger.bat, the scripts, README.txt: never used here.
+            if (-not $name.StartsWith('GoblinLedger/', [StringComparison]::OrdinalIgnoreCase)) { continue }
+            $rel = $name.Substring(13)
+            if ($rel -notmatch $SafeName) { throw "not an addon file: $name" }
+            if ($e.Length -gt 8MB) { throw "file too big: $name" }
+            $total += $e.Length
+            if ($total -gt 40MB) { throw 'the files are too big' }
+            if ($rel -ieq 'Data.lua' -or $rel -ieq 'Latest.lua') { continue }
+            if ($files.ContainsKey($rel)) { throw "$name is in the zip twice" }
+            $s = $e.Open()
+            $out = New-Object IO.MemoryStream
+            try {
+                $buf = New-Object byte[] 65536
+                while (($n = $s.Read($buf, 0, $buf.Length)) -gt 0) {
+                    $out.Write($buf, 0, $n)
+                    if ($out.Length -gt $e.Length) { throw "damaged file: $name" }
+                }
+            } finally { $s.Dispose() }
+            if ($out.Length -ne $e.Length) { throw "damaged file: $name" }
+            $files[$rel] = $out.ToArray()
+        }
+    } finally {
+        if ($zip) { $zip.Dispose() }
+        $ms.Dispose()
+    }
+    $toc = $null
+    foreach ($t in @('GoblinLedger.toc', 'GoblinLedger_Forever.toc')) {
+        if (-not $files.ContainsKey($t)) { throw "GoblinLedger/$t is missing" }
+        $info = Read-Toc ([Text.Encoding]::ASCII.GetString($files[$t]))
+        if (-not $info.Version) { throw "$t has no ## Version" }
+        if ($info.Version -ne $want) { throw "$t says version $($info.Version), the release is $want" }
+        foreach ($f in $info.Files) {
+            if ($f -ieq 'Data.lua' -or $f -ieq 'Latest.lua') { continue }
+            if (-not $files.ContainsKey($f)) { throw "$t lists $f, which is not in the zip" }
+        }
+        $toc = $info
+    }
+    return @{ Files = $files; Toc = $toc }
+}
+
+# The notes of a swap in progress (_update\swap.txt): "out NAME" for each old
+# file that is moved to _update\old, "in SHA256 NAME" for each new file that is
+# moved in from _update\new. Lines that do not read like that are ignored.
+function Read-Journal([string]$path) {
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($l in @(Get-Content -LiteralPath $path -Encoding ASCII)) {
+        $m = [regex]::Match([string]$l, '^(out) (\S+)$|^(in) ([0-9a-f]{64}) (\S+)$')
+        if (-not $m.Success) { continue }
+        if ($m.Groups[1].Success) { $e = @{ Kind = 'out'; Hash = $null; Name = $m.Groups[2].Value } }
+        else { $e = @{ Kind = 'in'; Hash = $m.Groups[4].Value; Name = $m.Groups[5].Value } }
+        if ($e.Name -match $SafeName) { $list.Add($e) }
+    }
+    return ,$list.ToArray()
+}
+
+# Puts the old files back after a swap that stopped half way ($journal: see
+# Read-Journal). A file in the addon folder is deleted only when it is exactly
+# a new file (the same SHA-256) and its old copy is waiting in _update\old (or
+# the old version had no such file); then the old files return. So this can
+# run again, or stop in the middle, without ever losing a file. $true when the
+# addon is as it was: then the notes go first and _update after them, so a
+# folder that cannot be removed completely is only leftover copies.
+function Undo-Swap([string]$dir, $journal) {
+    $work = Join-Path $dir '_update'
+    $oldDir = Join-Path $work 'old'
+    $ok = $true
+    $hadOld = @{}
+    foreach ($e in $journal) { if ($e.Kind -eq 'out') { $hadOld[$e.Name.ToLowerInvariant()] = $true } }
+    foreach ($e in $journal) {
+        if ($e.Kind -ne 'in') { continue }
+        $p = Join-Path $dir $e.Name
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }   # never came in
+        if ($hadOld.ContainsKey($e.Name.ToLowerInvariant()) -and
+                -not (Test-Path -LiteralPath (Join-Path $oldDir $e.Name) -PathType Leaf)) { continue }   # the old one is (back) there
+        try {
+            if ((Get-Sha256 ([IO.File]::ReadAllBytes($p))) -eq $e.Hash) { [IO.File]::Delete($p) }
+        } catch { $ok = $false }
+    }
+    foreach ($e in $journal) {
+        if ($e.Kind -ne 'out') { continue }
+        $src = Join-Path $oldDir $e.Name
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }   # never went out, or back already
+        $p = Join-Path $dir $e.Name
+        try {
+            if (Test-Path -LiteralPath $p) { [IO.File]::Delete($p) }
+            [IO.File]::Move($src, $p)
+        } catch { $ok = $false }
+    }
+    if ($ok) {
+        try { [IO.File]::Delete((Join-Path $work 'swap.txt')) } catch { $ok = $false }
+    }
+    if ($ok) { try { Remove-Item -LiteralPath $work -Recurse -Force } catch { } }
+    return $ok
+}
+
+# An update that stopped half way (power cut, killed): its notes in
+# _update\swap.txt say which files to take back out. Only called while this
+# run holds the update lock, so it never undoes another run's update.
+function Restore-Interrupted([string]$dir) {
+    $work = Join-Path $dir '_update'
+    if (-not (Test-Path -LiteralPath $work)) { return }
+    $journal = Join-Path $work 'swap.txt'
+    if (-not (Test-Path -LiteralPath $journal -PathType Leaf)) {
+        # Stopped before any file moved, or after the swap was done or undone:
+        # only copies that are not needed any more are there.
+        try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
+        return
+    }
+    if (Undo-Swap $dir (Read-Journal $journal)) { Write-Log 'FIXED' 'an update that stopped half way was undone: the old version is back' $AddonLog }
+    else { Write-Log 'ERROR' 'could not undo an update that stopped half way yet; the next run tries again' $AddonLog }
+}
+
+# Puts the new code files in: written to _update\new and read back, then the
+# current ones moved to _update\old and the new ones moved in. Throws (with
+# the old files back in place) when a step fails.
+function Install-AddonFiles([string]$dir, $files) {
+    $work = Join-Path $dir '_update'
+    $newDir = Join-Path $work 'new'
+    $oldDir = Join-Path $work 'old'
+    if (Test-Path -LiteralPath (Join-Path $work 'swap.txt')) { throw 'an update that stopped half way could not be undone yet' }
+    if (Test-Path -LiteralPath $work) { Remove-Item -LiteralPath $work -Recurse -Force }
+    New-Item -ItemType Directory -Path $newDir -Force | Out-Null
+    New-Item -ItemType Directory -Path $oldDir -Force | Out-Null
+    $in = @($files.Keys)
+    $hash = @{}
+    try {
+        foreach ($n in $in) {
+            Step-TestFail 'stage'
+            $p = Join-Path $newDir $n
+            [IO.File]::WriteAllBytes($p, $files[$n])
+            $hash[$n] = Get-Sha256 $files[$n]
+            if ((Get-Sha256 ([IO.File]::ReadAllBytes($p))) -ne $hash[$n]) { throw "the copy of $n did not read back the same" }
+        }
+    } catch {
+        $err = $_
+        try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
+        throw $err
+    }
+    Lock-TestFile $newDir
+    # The TOC files go out first and come in last: in between, the folder has
+    # no TOC, so even a game started right then never loads half an addon.
+    $out = @(Get-ChildItem -LiteralPath $dir -File | Where-Object {
+            ($_.Extension -ieq '.lua' -or $_.Extension -ieq '.toc') -and $_.Name -ine 'Data.lua' -and $_.Name -ine 'Latest.lua'
+        } | ForEach-Object { $_.Name } | Sort-Object { if ($_ -like '*.toc') { 0 } else { 1 } }, { $_ })
+    $in = @($in | Sort-Object { if ($_ -like '*.toc') { 1 } else { 0 } }, { $_ })
+    $notes = @('# Goblin Ledger update in progress. While this file is here, the next run puts the old files back.')
+    $notes += @($out | ForEach-Object { "out $_" })
+    $notes += @($in | ForEach-Object { 'in {0} {1}' -f $hash[$_], $_ })
+    $journalPath = Join-Path $work 'swap.txt'
+    Set-Content -LiteralPath $journalPath -Value $notes -Encoding ASCII
+    try {
+        foreach ($n in $out) { Step-TestFail 'swap'; [IO.File]::Move((Join-Path $dir $n), (Join-Path $oldDir $n)) }
+        foreach ($n in $in) { Step-TestFail 'swap'; [IO.File]::Move((Join-Path $newDir $n), (Join-Path $dir $n)) }
+        # Every file is in: from here on the new version stays.
+        [IO.File]::Delete($journalPath)
+    } catch {
+        $err = $_
+        $undone = $false
+        try { $undone = Undo-Swap $dir (Read-Journal $journalPath) } catch { }
+        if (-not $undone) { Write-Log 'ERROR' 'could not put every old file back yet; the next run tries again' $AddonLog }
+        throw $err
+    }
+    try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
+}
+
+# Latest.lua, read by the addon at login (Core.lua, ns.UpdateNotice).
+function Read-Latest([string]$dir) {
+    $h = @{}
+    try {
+        $p = Join-Path $dir 'Latest.lua'
+        if (Test-Path -LiteralPath $p -PathType Leaf) {
+            $t = [IO.File]::ReadAllText($p)
+            foreach ($k in @('version', 'installed', 'from')) {
+                $m = [regex]::Match($t, "\b$k\s*=\s*`"(\d+\.\d+\.\d+)`"")
+                if ($m.Success) { $h[$k] = $m.Groups[1].Value }
+            }
+            $m = [regex]::Match($t, '\binstalledAt\s*=\s*(\d+)')
+            if ($m.Success) { $h['installedAt'] = $m.Groups[1].Value }
+            foreach ($k in @('auto', 'restart', 'waiting')) {
+                $m = [regex]::Match($t, "\b$k\s*=\s*(true|false)")
+                if ($m.Success) { $h[$k] = $m.Groups[1].Value }
+            }
+        }
+    } catch { }
+    return $h
+}
+
+function Save-Latest([string]$dir, [hashtable]$h) {
+    $q = @{}
+    foreach ($k in @('version', 'installed', 'from')) { $q[$k] = if ($h[$k]) { '"' + $h[$k] + '"' } else { 'nil' } }
+    $at = 0
+    if ($h['installedAt']) { $at = [int64]$h['installedAt'] }
+    $b = @{}
+    foreach ($k in @('auto', 'restart', 'waiting')) { $b[$k] = if ([string]$h[$k] -eq 'true') { 'true' } else { 'false' } }
+    $line = 'GoblinLedger_Latest = {{ version = {0}, installed = {1}, from = {2}, installedAt = {3}, auto = {4}, restart = {5}, waiting = {6} }}' -f `
+        $q['version'], $q['installed'], $q['from'], $at, $b['auto'], $b['restart'], $b['waiting']
+    $p = Join-Path $dir 'Latest.lua'
+    Set-Content -LiteralPath "$p.new" -Value @(
+        '-- Goblin Ledger: the newest version the updater found, and the one it installed.',
+        '-- Written by update_prices.ps1 (the "Goblin Ledger Prices" task and Update-Goblin-Ledger.bat). Do not edit.',
+        $line) -Encoding ASCII
+    Move-Item -LiteralPath "$p.new" -Destination $p -Force
+}
+
+function New-Result([int]$code, [string]$status, [string]$log, [string[]]$lines) {
+    return @{ Code = $code; Status = $status; Log = $log; Lines = $lines; Next = $CheckEvery }
+}
+
+# Asks GitHub for the newest release. Newer than the installed addon: installs
+# it ($install), or only notes it in Latest.lua for the game's chat line.
+# $manual: Update-Goblin-Ledger.bat (installs also while WoW is open).
+function Update-Addon([bool]$install, [bool]$manual) {
+    $cur = Get-InstalledToc $AddonDir
+    if (-not $cur) {
+        return New-Result 4 'ERROR' 'the installed addon has no TOC with a ## Version' @(
+            'The installed Goblin Ledger has no version number, so it cannot be updated from here.',
+            'Download GoblinLedger.zip again and run Install-Goblin-Ledger.bat.')
+    }
+    $curText = $cur.Version.ToString()
+
+    # What GitHub says is the newest release (an unchanged answer costs nothing).
+    $known = $null
+    if ($script:State['etag'] -and (Test-Path -LiteralPath $ReleaseCache -PathType Leaf)) { $known = $script:State['etag'] }
+    $api = Get-Url $ReleaseApi 'application/vnd.github+json' $known 1MB
+    $json = $null
+    if ($api.Status -eq 304) {
+        try { $json = [IO.File]::ReadAllText($ReleaseCache, [Text.Encoding]::UTF8) } catch { }
+    } elseif ($api.Status -eq 200) {
+        $json = [Text.Encoding]::UTF8.GetString($api.Bytes)
+    } elseif ($api.Status -eq 404) {
+        return New-Result 0 'NONE' 'no release published yet (404)' @('No Goblin Ledger release is published yet. Nothing was changed.')
+    } elseif ($api.Status -eq 403 -or $api.Status -eq 429) {
+        return New-Result 5 'WAIT' "GitHub said $($api.Status) (too many checks from this network)" @(
+            'GitHub is busy right now (too many checks from this network).',
+            'Try again in an hour. Nothing was changed.')
+    } elseif ($api.Status -eq 0) {
+        $r = New-Result 5 'WAIT' "no connection: $($api.Error)" @(
+            'Could not reach GitHub to check for a new version.',
+            'Check that this PC is connected to the internet, then try again. Nothing was changed.')
+        $r.Next = 3600
+        return $r
+    } else {
+        return New-Result 5 'ERROR' "HTTP $($api.Status) from $ReleaseApi" @(
+            "GitHub answered with error $($api.Status). It is usually a short hiccup:",
+            'try again in a few minutes. Nothing was changed.')
+    }
+    $rel = $null
+    try { $rel = $json | ConvertFrom-Json } catch { }
+    if (-not $rel -or -not $rel.tag_name) {
+        $script:State['etag'] = $null   # ask for the whole answer next time
+        $r = New-Result 4 'ERROR' "unreadable release answer (HTTP $($api.Status))" @(
+            'The answer from GitHub was not readable. Nothing was changed. Try again later.')
+        $r.Next = 3600
+        return $r
+    }
+    if ($api.Status -eq 200) {
+        try {
+            [IO.File]::WriteAllText($ReleaseCache, $json, (New-Object Text.UTF8Encoding $false))
+            $script:State['etag'] = $api.Etag
+        } catch { $script:State['etag'] = $null }
+    }
+
+    $tag = [string]$rel.tag_name
+    $new = ConvertTo-AddonVersion $tag
+    if (-not $new -or $rel.draft -eq $true -or $rel.prerelease -eq $true) {
+        return New-Result 0 'SKIP' "newest release '$tag' is not an official vX.Y.Z release; ignored" @(
+            "The newest release on GitHub ($tag) is not a Goblin Ledger version. Nothing was changed.")
+    }
+    if ($new -le $cur.Version) {
+        return New-Result 0 'SKIP' "newest release $tag, installed $curText" @("You have the newest version ($curText).")
+    }
+    $newText = $new.ToString()
+    $wowOpen = $install -and -not $manual -and (Test-WowOpen $AddonDir)
+    if (-not $install -or $wowOpen) {
+        # Only noted for the game's chat line: "is out" (with "it installs after
+        # you close WoW" while it waits for that).
+        $l = Read-Latest $AddonDir
+        $waiting = $(if ($wowOpen) { 'true' } else { 'false' })
+        if ($l['version'] -ne $newText -or [string]$l['waiting'] -ne $waiting) {
+            $l['version'] = $newText
+            $l['waiting'] = $waiting
+            try { Save-Latest $AddonDir $l } catch { }
+        }
+        if (-not $install) {
+            return New-Result 0 'NEWER' "$tag is out (installed $curText); installing by itself is off" @()
+        }
+        $r = New-Result 0 'WAIT' "$tag is out (installed $curText); WoW is open, so it installs after WoW closes" @()
+        $r.Next = 20 * 60
+        return $r
+    }
+
+    # The download, checked before anything changes.
+    $assets = @($rel.assets | Where-Object { $_ -and $_.name -eq $AssetName })
+    if ($assets.Count -ne 1) {
+        return New-Result 4 'WAIT' "release $tag has no single $AssetName; not installed" @(
+            "Goblin Ledger $newText is out, but its download is not there yet. Nothing was changed.",
+            'Try again later.')
+    }
+    $m = [regex]::Match([string]$assets[0].digest, '^sha256:([0-9a-fA-F]{64})$')
+    if (-not $m.Success) {
+        return New-Result 4 'WAIT' "release $tag shows no sha256 digest for $AssetName; not installed until it does" @(
+            "Goblin Ledger $newText is out, but GitHub does not show its fingerprint yet, so it",
+            'cannot be checked and was not installed. Nothing was changed. Try again later.')
+    }
+    $want = $m.Groups[1].Value.ToLowerInvariant()
+    $url = [string]$assets[0].browser_download_url
+    # Also as Windows reads it: "../" in the address must not lead to another project.
+    $abs = ''
+    try { $abs = ([Uri]$url).AbsoluteUri } catch { }
+    if (-not $AssetPrefix -or -not $url.StartsWith($AssetPrefix, [StringComparison]::Ordinal) -or
+            -not $abs.StartsWith($AssetPrefix, [StringComparison]::Ordinal)) {
+        return New-Result 4 'ERROR' "download address is not a release of this project: $url" @(
+            "The $newText download is not where official releases are, so it was not installed.",
+            'Nothing was changed.')
+    }
+    $dl = Get-Url $url 'application/octet-stream' $null 25MB
+    if ($dl.Status -ne 200) {
+        $r = New-Result 5 'WAIT' "download of $tag failed (HTTP $($dl.Status)): $($dl.Error)" @(
+            "Could not download Goblin Ledger $newText. Check that this PC is connected to",
+            'the internet, then try again. Nothing was changed.')
+        if ($dl.Status -eq 0) { $r.Next = 3600 }
+        return $r
+    }
+    $got = Get-Sha256 $dl.Bytes
+    if ($got -ne $want) {
+        return New-Result 4 'ERROR' "$AssetName of $tag has sha256 $got, GitHub says $want; not installed" @(
+            "The $newText download did not match the official release, so it was not installed.",
+            'Nothing was changed. Try again later.')
+    }
+    $pkg = $null
+    try { $pkg = Read-ReleaseZip $dl.Bytes $new }
+    catch {
+        return New-Result 4 'ERROR' "rejected the $tag zip: $($_.Exception.Message)" @(
+            "The $newText download is not a whole Goblin Ledger addon, so it was not installed.",
+            'Nothing was changed.')
+    }
+
+    # Swap the files in.
+    $restart = ($pkg.Toc.Shape -ne $cur.Shape)
+    try { Install-AddonFiles $AddonDir $pkg.Files }
+    catch {
+        $err = $_
+        if (Test-AccessDenied $err) {
+            return New-Result 6 'ERROR' "access denied installing $tag (old files kept): $($err.Exception.Message)" $AddonAccessHelp
+        }
+        # Often a file held open for a moment (a virus scanner): try again in an hour.
+        $r = New-Result 6 'ERROR' "could not install $tag (old files kept): $($err.Exception.Message)" @(
+            'Could not replace the addon files, so the version you had was left as it was:',
+            "    $($err.Exception.Message)",
+            'Close WoW and try again.')
+        $r.Next = 3600
+        return $r
+    }
+    try {
+        Save-Latest $AddonDir @{ version = $newText; installed = $newText; from = $curText; installedAt = [string](Get-UnixNow);
+                                 auto = $(if ($manual) { 'false' } else { 'true' }); restart = $(if ($restart) { 'true' } else { 'false' }) }
+    } catch { Write-Log 'ERROR' "could not write Latest.lua: $($_.Exception.Message)" $AddonLog }
+    $how = if ($manual) { 'by hand' } else { 'by itself' }
+    $tail = 'Restart WoW (or /reload) to use it.'
+    if ($restart) { $tail = 'Restart WoW to use it (it has new files, so /reload is not enough).' }
+    return New-Result 0 'OK' ("updated $curText -> $newText $how" + $(if ($restart) { ' (new file list: restart needed)' } else { '' })) @(
+        "Updated $curText -> $newText. $tail")
+}
+
+# One check, with its log line and the time of the next one. Only one at a
+# time: while another run holds the update lock, nothing is touched at all.
+function Invoke-AddonCheck([bool]$install, [bool]$manual) {
+    $lock = Enter-UpdateLock
+    if (-not $lock.Owned) {
+        return New-Result 0 'SKIP' 'another update was running' @('Another Goblin Ledger update is running right now. Try again in a minute.')
+    }
+    try {
+        # An update that stopped half way is put back first.
+        try { Restore-Interrupted $AddonDir } catch { }
+        $script:State = Read-KeyFile $StateFile
+        try { $r = Update-Addon $install $manual }
+        catch {
+            $r = New-Result 4 'ERROR' "unexpected: $($_.Exception.Message)" @(
+                'Something went wrong while checking for a new version. Nothing was changed.',
+                "    $($_.Exception.Message)")
+        }
+        $now = Get-UnixNow
+        $script:State['checked'] = [string]$now
+        $script:State['next'] = [string]($now + $r.Next)
+        Save-State
+        Write-Log $r.Status $(if ($manual) { 'Update-Goblin-Ledger.bat: ' + $r.Log } else { $r.Log }) $AddonLog
+        return $r
+    } finally { Exit-UpdateLock $lock }
+}
+
+if ($AddonCheck -eq 'now') {
+    # Update-Goblin-Ledger.bat: the version only, every message shown.
+    Say 'Checking for a new Goblin Ledger version...'
+    if (-not $ReleaseApi) {
+        Say 'No release address to check (test mode). Nothing was changed.'
+        exit 5
+    }
+    $r = Invoke-AddonCheck $true $true
+    foreach ($l in $r.Lines) { Say $l }
+    exit $r.Code
+}
+$checked = $false
+if ($AddonCheck -eq 'auto' -and $ReleaseApi) {
+    # The scheduled task: at most every 6 hours, and only for an install that
+    # answered the installer's question (config.txt).
+    try {
+        $mode = (Read-KeyFile $ConfigFile)['addon_updates']
+        if ($mode -eq 'yes' -or $mode -eq 'no') {
+            $st = Read-KeyFile $StateFile
+            [int64]$next = 0
+            [void][int64]::TryParse([string]$st['next'], [ref]$next)
+            $now = Get-UnixNow
+            if ($next -le $now -or $next -gt $now + $CheckEvery + 3600) {
+                $checked = $true
+                $r = Invoke-AddonCheck ($mode -eq 'yes') $false
+                if ($r.Status -eq 'OK') { foreach ($l in $r.Lines) { Say $l } }
+            }
+        }
+    } catch {
+        Write-Log 'ERROR' "version check failed: $($_.Exception.Message)" $AddonLog
+    }
+}
+if ($AddonCheck -eq 'auto' -and -not $checked -and (Test-Path -LiteralPath (Join-Path $AddonDir '_update'))) {
+    # No check due: an update that stopped half way is still put back, but
+    # only when no other run is busy with it.
+    $lock = Enter-UpdateLock
+    if ($lock.Owned) {
+        try { Restore-Interrupted $AddonDir } catch { }
+        finally { Exit-UpdateLock $lock }
+    }
+}
+
+# 2. Download to a temp file ----------------------------------------------------
 $script:TmpFile = Join-Path ([IO.Path]::GetTempPath()) ('GoblinLedger_' + [guid]::NewGuid().ToString('N') + '.lua')
 $isWeb = $DataUrl -match '^(?i)https?://'
 try {

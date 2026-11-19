@@ -4,7 +4,8 @@
     - the "Goblin Ledger Prices" task (and "ForeverAH Prices", its name
       before the rename), if there is one
     - the addon folder Interface\AddOns\GoblinLedger
-    - the price updater in %LOCALAPPDATA%\GoblinLedger
+    - the price and version updater in %LOCALAPPDATA%\GoblinLedger, with
+      Update-Goblin-Ledger.bat and the saved installer answers (config.txt)
   Your saved settings (watchlist, kept items) stay in the game's WTF folder
   unless you say yes when it asks about them.
 
@@ -62,8 +63,8 @@ if (-not ($hasAddon -or $hasTask -or $hasApp)) {
 
 Say 'This removes:'
 if ($hasAddon) { Say "  - the addon: $Dest" }
-if ($hasTask) { Say '  - the automatic price update (the "Goblin Ledger Prices" task)' }
-if ($hasApp) { Say "  - the price updater: $AppDir" }
+if ($hasTask) { Say '  - the automatic price and version updates (the "Goblin Ledger Prices" task)' }
+if ($hasApp) { Say "  - the updater and Update-Goblin-Ledger.bat: $AppDir" }
 Say 'Nothing else is touched.'
 Blank
 if (-not (Ask-YesNo 'Remove Goblin Ledger? (Y/N) ' $false)) {

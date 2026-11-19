@@ -477,7 +477,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           See the price website
         </a>
       </div>
-      <p class="fine">GoblinLedger.zip, free, from GitHub. Works alongside ElvUI, Auctionator and Questie.</p>
+      <p class="fine">GoblinLedger.zip, free, from GitHub. Works alongside ElvUI, Auctionator and Questie. New versions install by themselves; to get one right away, double-click Update-Goblin-Ledger.bat.</p>
     </div>
 
     <figure class="legend">
@@ -672,6 +672,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <ul class="files">
           <li><code>GoblinLedger</code> <span>the addon</span></li>
           <li><code>Install-Goblin-Ledger.bat</code> <span>the installer</span></li>
+          <li><code>Update-Goblin-Ledger.bat</code> <span>gets the newest version now</span></li>
           <li><code>Uninstall-Goblin-Ledger.bat</code> <span>removes it again</span></li>
           <li><code>scripts</code> <span>the installer's steps, plain text</span></li>
           <li><code>README.txt</code> <span>these steps in short</span></li>
@@ -687,6 +688,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           <li>copies the addon into <code>Interface\AddOns\GoblinLedger</code></li>
           <li>downloads the latest prices</li>
           <li>asks <b>"Update prices automatically every 30 minutes?"</b> Press <span class="ui">Y</span> (or just Enter). It then adds a Windows task called <b>Goblin Ledger Prices</b> that quietly refreshes the prices while you are logged in to Windows. No window pops up, and Uninstall-Goblin-Ledger.bat removes it.</li>
+          <li>asks <b>"Install new Goblin Ledger versions by themselves?"</b> Press <span class="ui">Y</span> (or just Enter). The same task then checks every few hours for a new official version and installs it, keeping your prices and settings.</li>
         </ul>
         <p>No administrator rights needed. When it says <b>All set</b>, press any key to close the window.</p>
         <p><b>Windows may warn you first.</b> It does that for files from the internet that are not from a big-name publisher. You may see one or both of these:</p>
@@ -785,7 +787,9 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
       </div>
       <div class="card">
         <h3>A new version</h3>
-        <p>Download the zip again from this page, unzip it and run <b>Install-Goblin-Ledger.bat</b>. It replaces the old addon files and keeps your prices and settings. Then restart the game.</p>
+        <p>New versions install by themselves within a few hours (if you pressed Y in the installer), and the game says <b>Goblin Ledger updated to ...</b> in chat. Only official releases from this page are installed, after a fingerprint check, and your prices and settings are kept.</p>
+        <p>Want it this minute? Double-click <b>Update-Goblin-Ledger.bat</b> (in the unzipped folder, or the copy in <code>%LOCALAPPDATA%\GoblinLedger</code>: press Windows+R, type that and press Enter), then restart the game or type <code>/reload</code>. In the game, <code>/gl update</code> says the same.</p>
+        <p class="note">Installed version 1.0.0? It cannot update itself yet: download the zip once more and run Install-Goblin-Ledger.bat. After that, new versions come by themselves.</p>
         <p class="note">Had an early copy called Forever AH? The installer swaps it for Goblin Ledger and keeps your settings and watchlist.</p>
       </div>
       <div class="card">
@@ -814,7 +818,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
       <div class="card">
         <h3>Is it safe?</h3>
         <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Suggested buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
-        <p>The installer is plain text you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and, if you say yes, adds one Windows task that keeps that file fresh. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
+        <p>The installer is plain text you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and, if you say yes, adds one Windows task that keeps that file fresh and installs new official versions of the addon. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
       </div>
 
       <div class="card">
