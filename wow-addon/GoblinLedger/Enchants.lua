@@ -1,13 +1,15 @@
 local ADDON_NAME, ns = ...
--- Goblin Ledger: the best enchant for the gear under the mouse.
+-- Goblin Ledger: the best enchants for the gear under the mouse.
 --
--- Gear in your bags (and item links): the best enchant for your role, its
--- mats and what the mats cost at today's AH value. Gear you wear (the
--- character panel): the same, plus the 2nd best (cheaper or easier to get).
--- Nothing when the item already has the best enchant (or one at least as
--- good); only the best when it has the 2nd best. The role comes from your
--- talents; /gl enchants picks one by hand or turns the lines off, and the
--- Enchant tips box on the character panel turns them off and on again.
+-- Gear in your bags, item links and gear you wear: the two best enchants for
+-- your role (Top 2), or up to five with cheaper budget options (Top 5), each
+-- with its mats and what they cost at today's AH value. Upgrades you buy and
+-- use yourself are options too: Leatherworking armor kits, Engineering scopes,
+-- and Blacksmithing spikes and counterweights for a blacksmith. Only upgrades
+-- show: an item with the 3rd best gets the best and the 2nd, one with the best
+-- gets nothing. The role comes from your talents; /gl enchants picks one by
+-- hand or turns the lines off, and the Enchant tips box on the character panel
+-- (with its Top 2 / Top 5 button) turns them off and on again.
 --
 -- Core.lua calls ns.EnchantLines after its price lines (and the quest line),
 -- so these lines are made under a normal-size line and keep the normal font.
@@ -22,7 +24,7 @@ local floor = math.floor
 local smatch, slower, ssub, sformat = string.match, string.lower, string.sub, string.format
 local tconcat = table.concat
 
-local E = { lastError = nil, reads = 0, builds = 0 }   -- state for /gl enchants and the tests
+local E = { lastError = nil, reads = 0, builds = 0, skillReads = 0 }   -- state for /gl enchants and the tests
 ns.Enchants = E
 
 -- BEGIN DATA
@@ -30,9 +32,12 @@ ns.Enchants = E
 -- tables (wago.tools, wowf 1.60.1) checked against rankedboost's Forever pages.
 -- Mats: item id = the game's name.
 local MATS = {
-  [4405] = "Crude Scope",
-  [4406] = "Standard Scope",
-  [4407] = "Accurate Scope",
+  [1705] = "Lesser Moonstone",
+  [2775] = "Silver Ore",
+  [3478] = "Coarse Grinding Stone",
+  [3575] = "Iron Bar",
+  [3860] = "Mithril Bar",
+  [6037] = "Truesilver Bar",
   [7075] = "Core of Earth",
   [7076] = "Essence of Earth",
   [7077] = "Heart of Fire",
@@ -41,20 +46,23 @@ local MATS = {
   [7080] = "Essence of Water",
   [7081] = "Breath of Wind",
   [7082] = "Essence of Air",
+  [7966] = "Solid Grinding Stone",
   [7972] = "Ichor of Undeath",
   [8153] = "Wildvine",
   [8411] = "Lung Juice Cocktail",
   [8424] = "Gizzard Gum",
   [8831] = "Purple Lotus",
-  [10546] = "Deadly Scope",
-  [10548] = "Sniper Scope",
+  [10938] = "Lesser Magic Essence",
   [10940] = "Strange Dust",
+  [10978] = "Small Glimmering Shard",
   [10998] = "Lesser Astral Essence",
   [11082] = "Greater Astral Essence",
   [11083] = "Soul Dust",
   [11084] = "Large Glimmering Shard",
   [11134] = "Lesser Mystic Essence",
+  [11135] = "Greater Mystic Essence",
   [11137] = "Vision Dust",
+  [11138] = "Small Glowing Shard",
   [11139] = "Large Glowing Shard",
   [11174] = "Lesser Nether Essence",
   [11175] = "Greater Nether Essence",
@@ -68,6 +76,8 @@ local MATS = {
   [11754] = "Black Diamond",
   [11951] = "Whipper Root Tuber",
   [11952] = "Night Dragon's Breath",
+  [12359] = "Thorium Bar",
+  [12644] = "Dense Grinding Stone",
   [12735] = "Frayed Abomination Stitching",
   [12753] = "Skin of Shadow",
   [12803] = "Living Essence",
@@ -100,6 +110,10 @@ local MATS = {
 
 -- n = name shown, id = the enchant id in item links (item:<id>:<enchant>:...),
 -- m = mats { item id, count, ... }, lvl = level needed to use it, fee = copper paid to the quest giver.
+-- Upgrades you buy and use yourself (no enchanter needed): item = its item id (the cost is its AH
+-- value), how = the grey line (lw: Leatherworking kit, eng: Engineering scope, bs: Blacksmithing),
+-- prof, rank = the profession (skill line id) and rank its item asks for (m = its crafting mats, the
+-- cost when the item has no AH value), subs = the only weapon subclasses it fits.
 local ENCHANTS = {
   -- Lesser Arcanum of Rumination (item 11622, quest 4463, medium): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1483 https://www.wowhead.com/classic/quest=4463
   a11622 = { n = "Lesser Arcanum of Rumination", id = 1483, m = { 11732, 1, 11754, 1, 11752, 1, 8424, 1 }, lvl = 50, fee = 300000 },
@@ -119,20 +133,110 @@ local ENCHANTS = {
   a18330 = { n = "Arcanum of Focus", id = 2544, m = { 18333, 1, 18335, 1, 14344, 4, 12753, 2 }, lvl = 58 },
   -- Arcanum of Protection (item 18331, quest 7485, high): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2545 https://www.wowhead.com/classic/quest=7485
   a18331 = { n = "Arcanum of Protection", id = 2545, m = { 18334, 1, 18335, 1, 14344, 2, 12735, 1 }, lvl = 58 },
-  -- Crude Scope (Engineering, item 4405): https://www.wowhead.com/classic/item=4405
-  i4405 = { n = "Crude Scope +1", id = 30, m = { 4405, 1 }, lvl = 5 },
-  -- Standard Scope (Engineering, item 4406): https://www.wowhead.com/classic/item=4406
-  i4406 = { n = "Standard Scope +2", id = 32, m = { 4406, 1 }, lvl = 10 },
-  -- Accurate Scope (Engineering, item 4407): https://www.wowhead.com/classic/item=4407
-  i4407 = { n = "Accurate Scope +3", id = 33, m = { 4407, 1 }, lvl = 20 },
-  -- Deadly Scope (Engineering, item 10546): https://www.wowhead.com/classic/item=10546
-  i10546 = { n = "Deadly Scope +5", id = 663, m = { 10546, 1 }, lvl = 30 },
-  -- Sniper Scope (Engineering, item 10548): https://www.wowhead.com/classic/item=10548
-  i10548 = { n = "Sniper Scope +7", id = 664, m = { 10548, 1 }, lvl = 40 },
+  -- Crude Scope (Engineering, item 4405, needs level 5): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=4405
+  i4405 = { n = "Crude Scope +1", id = 30, item = 4405, lvl = 5, how = "eng" },
+  -- Standard Scope (Engineering, item 4406, needs level 10): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=4406
+  i4406 = { n = "Standard Scope +2", id = 32, item = 4406, lvl = 10, how = "eng" },
+  -- Accurate Scope (Engineering, item 4407, needs level 20): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=4407
+  i4407 = { n = "Accurate Scope +3", id = 33, item = 4407, lvl = 20, how = "eng" },
+  -- Deadly Scope (Engineering, item 10546, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=10546
+  i10546 = { n = "Deadly Scope +5", id = 663, item = 10546, lvl = 30, how = "eng" },
+  -- Sniper Scope (Engineering, item 10548, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=10548
+  i10548 = { n = "Sniper Scope +7", id = 664, item = 10548, lvl = 40, how = "eng" },
+  -- Light Armor Kit (Leatherworking, item 2304, needs level 1): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=2304 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=15
+  k2304 = { n = "Light Armor Kit", id = 15, item = 2304, lvl = 1, how = "lw" },
+  -- Medium Armor Kit (Leatherworking, item 2313, needs level 5): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=2313 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8481
+  k2313 = { n = "Medium Armor Kit", id = 8481, item = 2313, lvl = 5, how = "lw" },
+  -- Heavy Armor Kit (Leatherworking, item 4265, needs level 20): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=4265 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8484
+  k4265 = { n = "Heavy Armor Kit", id = 8484, item = 4265, lvl = 20, how = "lw" },
+  -- Thick Armor Kit (Leatherworking, item 8173, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=8173 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8487
+  k8173 = { n = "Thick Armor Kit", id = 8487, item = 8173, lvl = 30, how = "lw" },
+  -- Rugged Armor Kit (Leatherworking, item 15564, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=15564 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8490
+  k15564 = { n = "Rugged Armor Kit", id = 8490, item = 15564, lvl = 40, how = "lw" },
+  -- Mystic Medium Armor Kit (Leatherworking, item 252436, needs level 15): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252436 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8482
+  k252436 = { n = "Mystic Medium Armor Kit", id = 8482, item = 252436, lvl = 15, how = "lw" },
+  -- Forceful Medium Armor Kit (Leatherworking, item 252437, needs level 15): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252437 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8483
+  k252437 = { n = "Forceful Medium Armor Kit", id = 8483, item = 252437, lvl = 15, how = "lw" },
+  -- Mystic Heavy Armor Kit (Leatherworking, item 252452, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252452 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8485
+  k252452 = { n = "Mystic Heavy Armor Kit", id = 8485, item = 252452, lvl = 30, how = "lw" },
+  -- Forceful Heavy Armor Kit (Leatherworking, item 252453, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252453 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8486
+  k252453 = { n = "Forceful Heavy Armor Kit", id = 8486, item = 252453, lvl = 30, how = "lw" },
+  -- Mystic Thick Armor Kit (Leatherworking, item 252462, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252462 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8489
+  k252462 = { n = "Mystic Thick Armor Kit", id = 8489, item = 252462, lvl = 40, how = "lw" },
+  -- Forceful Thick Armor Kit (Leatherworking, item 252463, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252463 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8488
+  k252463 = { n = "Forceful Thick Armor Kit", id = 8488, item = 252463, lvl = 40, how = "lw" },
+  -- Mystic Rugged Armor Kit (Leatherworking, item 252487, needs level 50): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252487 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8492
+  k252487 = { n = "Mystic Rugged Armor Kit", id = 8492, item = 252487, lvl = 50, how = "lw" },
+  -- Forceful Rugged Armor Kit (Leatherworking, item 252488, needs level 50): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252488 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8491
+  k252488 = { n = "Forceful Rugged Armor Kit", id = 8491, item = 252488, lvl = 50, how = "lw" },
+  -- Iron Shield Spike (Blacksmithing 150 to use it; made by spell 7221): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=6042 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=43
+  b6042 = { n = "Iron Shield Spike", id = 43, item = 6042, prof = 164, rank = 150, m = { 3575, 6, 3478, 4 }, how = "bs" },
+  -- Iron Counterweight (Blacksmithing 165 to use it; made by spell 7222): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=6043 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=34
+  b6043 = { n = "Iron Counterweight", id = 34, item = 6043, prof = 164, rank = 165, m = { 3575, 4, 3478, 2, 1705, 1 }, how = "bs", subs = { 1, 5, 6, 8 } },
+  -- Mithril Shield Spike (Blacksmithing 215 to use it; made by spell 9939): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=7967 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=463
+  b7967 = { n = "Mithril Shield Spike", id = 463, item = 7967, prof = 164, rank = 215, m = { 3860, 4, 6037, 2, 7966, 4 }, how = "bs" },
+  -- Thorium Shield Spike (Blacksmithing 250 to use it; made by spell 16651): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=12645 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1704
+  b12645 = { n = "Thorium Shield Spike", id = 1704, item = 12645, prof = 164, rank = 250, m = { 12359, 4, 12644, 4, 7076, 2 }, how = "bs" },
+  -- Enchant Cloak - Minor Resistance (spell 7454, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-7454 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=65
+  s7454 = { n = "Minor Resistance +2", id = 65, m = { 10940, 1, 10938, 1 } },
+  -- Enchant Bracer - Minor Stamina (spell 7457, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-7457 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=66
+  s7457 = { n = "Minor Stamina +3", id = 66, m = { 10940, 2 } },
+  -- Enchant Chest - Lesser Intellect (spell 7776, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-7776 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=246
+  s7776 = { n = "Lesser Intellect +3", id = 246, m = { 10938, 2 } },
+  -- Enchant Bracer - Minor Agility (spell 7779, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-7779 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=247
+  s7779 = { n = "Minor Agility +3", id = 247, m = { 10940, 1, 10938, 2 } },
+  -- Enchant Bracer - Minor Strength (spell 7782, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-7782 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=248
+  s7782 = { n = "Minor Strength +3", id = 248, m = { 10940, 3 } },
+  -- Enchant Weapon - Minor Striking (spell 7788, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-7788 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=250
+  s7788 = { n = "Minor Striking +1", id = 250, m = { 10940, 1, 10938, 1, 10978, 1 } },
+  -- Enchant 2H Weapon - Lesser Intellect (spell 7793, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-7793 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=723
+  s7793 = { n = "Lesser Intellect +5", id = 723, m = { 10938, 4 } },
+  -- Enchant Chest - Stamina (spell 7857, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-7857 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=254
+  s7857 = { n = "Stamina +4", id = 254, m = { 10940, 2, 10998, 1 } },
+  -- Enchant Boots - Minor Agility (spell 7867, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-7867 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=247
+  s7867 = { n = "Minor Agility +3", id = 247, m = { 10940, 3, 10998, 1 } },
+  -- Enchant Shield - Minor Stamina (spell 13378, high): https://rankedboost.com/world-of-warcraft/forever/enchants/shield/#e-recipe-13378 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=66
+  s13378 = { n = "Minor Stamina +3", id = 66, m = { 10998, 1, 10940, 1 } },
+  -- Enchant 2H Weapon - Lesser Spirit (spell 13380, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-13380 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=851
+  s13380 = { n = "Lesser Spirit +5", id = 851, m = { 10998, 1, 10940, 3 } },
   -- Enchant Cloak - Minor Agility (spell 13419, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-13419 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=247
   s13419 = { n = "Minor Agility +3", id = 247, m = { 10998, 1 } },
+  -- Enchant Cloak - Lesser Protection (spell 13421, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-13421 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=744
+  s13421 = { n = "Lesser Protection +20", id = 744, m = { 10940, 3, 10978, 1 } },
+  -- Enchant Bracer - Lesser Stamina (spell 13501, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13501 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=254
+  s13501 = { n = "Lesser Stamina +4", id = 254, m = { 11083, 1 } },
+  -- Enchant Weapon - Lesser Striking (spell 13503, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-13503 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=241
+  s13503 = { n = "Lesser Striking +2", id = 241, m = { 11083, 1, 11084, 1 } },
+  -- Enchant Bracer - Lesser Strength (spell 13536, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13536 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=823
+  s13536 = { n = "Lesser Strength +4", id = 823, m = { 11083, 1 } },
+  -- Enchant Chest - Intellect (spell 13607, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13607 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=843
+  s13607 = { n = "Intellect +4", id = 843, m = { 11082, 1 } },
+  -- Enchant Chest - Minor Stats (spell 13626, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13626 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=847
+  s13626 = { n = "Minor Stats +1", id = 847, m = { 10998, 1, 11083, 1, 11084, 1 } },
+  -- Enchant Shield - Lesser Stamina (spell 13631, high): https://rankedboost.com/world-of-warcraft/forever/enchants/shield/#e-recipe-13631 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=852
+  s13631 = { n = "Lesser Stamina +5", id = 852, m = { 11134, 1 } },
+  -- Enchant Cloak - Defense (spell 13635, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-13635 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=848
+  s13635 = { n = "Defense +30", id = 848, m = { 11138, 1, 11083, 1 } },
+  -- Enchant Boots - Lesser Agility (spell 13637, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-13637 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8204
+  s13637 = { n = "Lesser Agility +4", id = 8204, m = { 11083, 1 } },
+  -- Enchant Chest - Greater Stamina (spell 13640, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13640 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=850
+  s13640 = { n = "Greater Stamina +6", id = 850, m = { 11083, 2 } },
+  -- Enchant Boots - Lesser Stamina (spell 13644, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-13644 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=254
+  s13644 = { n = "Lesser Stamina +4", id = 254, m = { 11083, 2 } },
+  -- Enchant Bracer - Stamina (spell 13648, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13648 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=852
+  s13648 = { n = "Stamina +5", id = 852, m = { 11083, 3 } },
+  -- Enchant Bracer - Strength (spell 13661, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13661 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=856
+  s13661 = { n = "Strength +5", id = 856, m = { 11137, 1 } },
+  -- Enchant Chest - Greater Intellect (spell 13663, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13663 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=857
+  s13663 = { n = "Greater Intellect +6", id = 857, m = { 11134, 1 } },
   -- Enchant Boots - Lesser Spirit (spell 13687, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-13687 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8203
   s13687 = { n = "Lesser Spirit +4", id = 8203, m = { 11134, 2 } },
+  -- Enchant Weapon - Striking (spell 13693, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-13693 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=943
+  s13693 = { n = "Striking +3", id = 943, m = { 11135, 1, 11139, 1 } },
+  -- Enchant 2H Weapon - Impact (spell 13695, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-13695 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8205
+  s13695 = { n = "Impact +6", id = 8205, m = { 11137, 2, 11139, 1 } },
+  -- Enchant Chest - Lesser Stats (spell 13700, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13700 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=866
+  s13700 = { n = "Lesser Stats +2", id = 866, m = { 11135, 1, 11137, 1, 11139, 1 } },
   -- Enchant Cloak - Greater Defense (spell 13746, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-13746 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=884
   s13746 = { n = "Greater Defense +60", id = 884, m = { 11137, 1 } },
   -- Enchant Cloak - Resistance (spell 13794, high): https://rankedboost.com/world-of-warcraft/forever/enchants/cloak/#e-recipe-13794 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=903
@@ -141,24 +245,38 @@ local ENCHANTS = {
   s13815 = { n = "Agility +7", id = 1887, m = { 11137, 1 } },
   -- Enchant Shield - Stamina (spell 13817, high): https://rankedboost.com/world-of-warcraft/forever/enchants/shield/#e-recipe-13817 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=929
   s13817 = { n = "Stamina +7", id = 929, m = { 11137, 2 } },
+  -- Enchant Bracer - Intellect (spell 13822, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13822 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=905
+  s13822 = { n = "Intellect +5", id = 905, m = { 11174, 1 } },
   -- Enchant Boots - Stamina (spell 13836, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-13836 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=852
   s13836 = { n = "Stamina +5", id = 852, m = { 11137, 2 } },
+  -- Enchant Chest - Superior Stamina (spell 13858, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13858 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=908
+  s13858 = { n = "Superior Stamina +8", id = 908, m = { 11137, 3 } },
+  -- Enchant Gloves - Strength (spell 13887, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-13887 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=927
+  s13887 = { n = "Strength +7", id = 927, m = { 11174, 1, 11137, 2 } },
+  -- Enchant Chest - Superior Intellect (spell 13917, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13917 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=913
+  s13917 = { n = "Superior Intellect +8", id = 913, m = { 11175, 1 } },
   -- Enchant Bracer - Deflection (spell 13931, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13931 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=923
   s13931 = { n = "Deflection +7", id = 923, m = { 11174, 2, 11176, 1 } },
   -- Enchant Boots - Agility (spell 13935, high): https://rankedboost.com/world-of-warcraft/forever/enchants/boots/#e-recipe-13935 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=904
   s13935 = { n = "Agility +5", id = 904, m = { 11175, 1 } },
+  -- Enchant 2H Weapon - Greater Impact (spell 13937, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-13937 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=963
+  s13937 = { n = "Greater Impact +7", id = 963, m = { 11178, 1, 11176, 1 } },
   -- Enchant Bracer - Greater Strength (spell 13939, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13939 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=927
   s13939 = { n = "Greater Strength +7", id = 927, m = { 11176, 1, 11174, 2 } },
   -- Enchant Chest - Stats (spell 13941, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13941 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=928
   s13941 = { n = "Stats +3", id = 928, m = { 11178, 1, 11176, 1, 11175, 1 } },
   -- Enchant Weapon - Greater Striking (spell 13943, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-13943 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=805
   s13943 = { n = "Greater Striking +4", id = 805, m = { 11178, 1, 11175, 1 } },
+  -- Enchant Bracer - Greater Stamina (spell 13945, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13945 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=929
+  s13945 = { n = "Greater Stamina +7", id = 929, m = { 11176, 3 } },
   -- Enchant Gloves - Minor Haste (spell 13948, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-13948 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=931
   s13948 = { n = "Minor Haste +1%", id = 931, m = { 11178, 1, 8153, 1 } },
   -- Enchant Bracer - Greater Intellect (spell 20008, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-20008 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1883
   s20008 = { n = "Greater Intellect +7", id = 1883, m = { 16202, 2 } },
   -- Enchant Bracer - Superior Strength (spell 20010, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-20010 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1885
   s20010 = { n = "Superior Strength +9", id = 1885, m = { 16204, 6, 16203, 6 } },
+  -- Enchant Bracer - Superior Stamina (spell 20011, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-20011 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1886
+  s20011 = { n = "Superior Stamina +9", id = 1886, m = { 16204, 15 } },
   -- Enchant Gloves - Greater Agility (spell 20012, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-20012 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8206
   s20012 = { n = "Greater Agility +10", id = 8206, m = { 16202, 2, 16204, 2 } },
   -- Enchant Gloves - Greater Strength (spell 20013, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-20013 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8207
@@ -181,10 +299,16 @@ local ENCHANTS = {
   s20026 = { n = "Major Stamina +10", id = 1892, m = { 16204, 6, 14343, 1 } },
   -- Enchant Chest - Major Intellect (spell 20028, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-20028 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1893
   s20028 = { n = "Major Intellect +10", id = 1893, m = { 16203, 3, 14343, 1 } },
+  -- Enchant 2H Weapon - Superior Impact (spell 20030, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20030 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1896
+  s20030 = { n = "Superior Impact +9", id = 1896, m = { 14344, 4, 16204, 10 } },
   -- Enchant Weapon - Crusader (spell 20034, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20034 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1900
   s20034 = { n = "Crusader", id = 1900, m = { 14344, 4, 12811, 2 } },
+  -- Enchant 2H Weapon - Major Spirit (spell 20035, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20035 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1903
+  s20035 = { n = "Major Spirit +9", id = 1903, m = { 16203, 12, 14344, 2 } },
   -- Enchant 2H Weapon - Major Intellect (spell 20036, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20036 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1904
   s20036 = { n = "Major Intellect +9", id = 1904, m = { 16203, 12, 14344, 2 } },
+  -- Enchant Weapon - Strength (spell 23799, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-23799 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2563
+  s23799 = { n = "Strength +15", id = 2563, m = { 14344, 6, 16203, 6, 16204, 4, 7076, 2 } },
   -- Enchant Weapon - Agility (spell 23800, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-23800 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2564
   s23800 = { n = "Agility +15", id = 2564, m = { 14344, 6, 16203, 6, 16204, 4, 7082, 2 } },
   -- Enchant Bracer - Healing Power (spell 23802, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-23802 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2566
@@ -205,6 +329,14 @@ local ENCHANTS = {
   s1219587 = { n = "Agility +5", id = 7667, m = { 16203, 3, 16204, 9, 7078, 1 } },
   -- Enchant Bracer - Greater Spellpower (spell 1220624, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1220624 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=7665
   s1220624 = { n = "Greater Spellpower +16", id = 7665, m = { 16203, 3, 16204, 9, 12808, 12, 8831, 2 } },
+  -- Enchant Bracer - Minor Intellect (spell 1248458, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248458 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=246
+  s1248458 = { n = "Minor Intellect +3", id = 246, m = { 10938, 1 } },
+  -- Enchant Bracer - Minor Healing Power (spell 1248459, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248459 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8208
+  s1248459 = { n = "Minor Healing Power +8", id = 8208, m = { 10938, 2 } },
+  -- Enchant Bracer - Lesser Agility (spell 1248460, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248460 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8204
+  s1248460 = { n = "Lesser Agility +4", id = 8204, m = { 11134, 1 } },
+  -- Enchant Bracer - Agility (spell 1248497, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248497 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=904
+  s1248497 = { n = "Agility +5", id = 904, m = { 11137, 1 } },
   -- Enchant Bracer - Lesser Healing Power (spell 1248498, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248498 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8209
   s1248498 = { n = "Lesser Healing Power +16", id = 8209, m = { 11134, 2 } },
   -- Enchant Bracer - Greater Agility (spell 1248500, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248500 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1887
@@ -216,16 +348,22 @@ local ENCHANTS = {
   s1248511 = { n = "Lesser Strength +15", id = 2563, m = { 11137, 1, 11139, 1, 11174, 2 } },
   -- Enchant Bracer - Superior Agility (spell 1248599, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248599 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=7656
   s1248599 = { n = "Superior Agility +9", id = 7656, m = { 16204, 3, 16203, 3, 14344, 1 } },
+  -- Enchant 2H Weapon - Mighty Spell Power (spell 1248607, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-1248607 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8211
+  s1248607 = { n = "Mighty Spell Power +55", id = 8211, m = { 248819, 4, 16203, 6, 7076, 4, 12808, 4, 20725, 4, 248820, 2 } },
   -- Enchant 2H Weapon - Mighty Healing Power (spell 1248636, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-1248636 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8212
   s1248636 = { n = "Mighty Healing Power +100", id = 8212, m = { 248819, 4, 16203, 6, 249726, 4, 249274, 4, 20725, 4, 248820, 4 } },
   -- Enchant Gloves - Superior Strength (spell 1248640, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-1248640 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2563
   s1248640 = { n = "Superior Strength +15", id = 2563, m = { 20725, 4, 16203, 8, 7076, 4 } },
   -- Enchant Gloves - Natural Power (spell 1248645, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-1248645 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8213
   s1248645 = { n = "Natural Power +20", id = 8213, m = { 20725, 2, 14344, 5, 248822, 4 } },
+  -- Enchant Bracer - Superior Intellect (spell 1248661, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248661 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1901
+  s1248661 = { n = "Superior Intellect +9", id = 1901, m = { 16203, 10 } },
   -- Enchant Bracer - Superior Deflection (spell 1248665, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248665 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8214
   s1248665 = { n = "Superior Deflection +9", id = 8214, m = { 14344, 3 } },
   -- Enchant Weapon - Insight (spell 1248757, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-1248757 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8216
   s1248757 = { n = "Insight", id = 8216, m = { 10940, 10, 11084, 4, 11082, 4, 249391, 4, 249399, 4 } },
+  -- Enchant Weapon - Recovery (spell 1248760, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-1248760 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8721
+  s1248760 = { n = "Recovery", id = 8721, m = { 11083, 6, 11084, 4, 11082, 6, 249391, 4, 2775, 4 } },
   -- Enchant Weapon - Revelation (spell 1248805, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-1248805 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8217
   s1248805 = { n = "Revelation", id = 8217, m = { 11083, 8, 11084, 6, 11082, 2, 249409, 4, 249410, 4 } },
   -- Enchant Necklace - Strength (spell 1249019, high): https://rankedboost.com/world-of-warcraft/forever/enchants/necklace/#e-recipe-1249019 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=856
@@ -241,107 +379,116 @@ local ENCHANTS = {
   -- get Agility +5, and a necklace with Deflection on is left alone (up = { 925 }).
 }
 
--- Best first: the first entry the player can use is the best, the next one the 2nd.
--- up = enchant ids that count as the best or better (nothing is shown),
--- mid = ids better than the 2nd (only the best is shown).
+-- Best first, in value order for the role: an item shows the entries above the enchant it has
+-- (nothing when it has the first), as far as the player's level and professions allow. up = enchant
+-- ids at least as good as the first (nothing is shown); at = { [id] = n }: an enchant not in the list
+-- that ranks just above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list.
+-- Belts, shoulders, rings, trinkets: nothing (Forever has no belt buckle, and its Engineering belt
+-- tinkers need schematics and parts that are not in the game).
 local PICKS = {
   weapon = {
-    ["melee"] = { "s20034", "s13943", mid = { 2563, 1897 } },
-    ["agility"] = { "s20034", "s13943", mid = { 2564, 1897 } },
-    ["tank"] = { "s20034", "s13943", mid = { 2564, 1897 } },
-    ["agility/DRUID"] = { "s23800" },
-    ["tank/DRUID"] = { "s23800" },
+    ["melee"] = { "s20034", "s23799", "s13943", "s13693", "s13503", "s7788", at = { [1897] = 2, [2564] = 3 } },
+    ["agility"] = { "s20034", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [1897] = 2, [2563] = 5 } },
+    ["tank"] = { "s20034", "s23800", "s1248760", "s13943", "s13693", "s13503", at = { [1897] = 3, [2563] = 3 } },
+    ["agility/DRUID"] = { "s23800", "s23799" },
+    ["tank/DRUID"] = { "s23800", "s23799" },
     ["hunter"] = { "s23800" },
-    ["caster"] = { "s23804", "s1248805", up = { 2504 } },
-    ["caster/MAGE3"] = { "s23804", "s1248805", up = { 2504, 2443 } },
-    ["healer"] = { "s23803", "s1248757", up = { 2505 }, mid = { 2568 } },
+    ["caster"] = { "s23804", "s1248805", "s1248757", up = { 2504 } },
+    ["caster/MAGE3"] = { "s23804", "s1248805", "s1248757", up = { 2504, 2443 } },
+    ["healer"] = { "s23803", "s23804", "s1248757", up = { 2505 } },
     ["healer/PALADIN"] = { "s23804", up = { 2505 } },
-    ["healer/SHAMAN"] = { "s23804", up = { 2505 } },
+    ["healer/SHAMAN"] = { "s23804", "s1248757", up = { 2505 } },
   },
   weapon2h = {
-    ["melee"] = { "s20034", "s1248511", up = { 8215 }, mid = { 2646, 1896 } },
-    ["agility"] = { "s27837", "s1248510", mid = { 2564 } },
-    ["hunter"] = { "s27837", "s1248510", mid = { 2564 } },
-    ["tank"] = { "s27837", "s1248510", mid = { 2564 } },
-    ["caster"] = { "s1219580", "s20036", mid = { 8211, 2568 } },
-    -- Mighty Spell Power (8211) and the "Enchant Weapon" Mighty Intellect / Spirit (2568 / 2567) fit
-    -- two-handers too and beat Major Intellect: with one of them on, the best only.
-    ["healer"] = { "s1248636", "s20036", mid = { 7662, 8211, 2568, 2567 } },
+    ["melee"] = { "s20034", "b6043", "s27837", "s20030", "s1248511", "s13937", "s13695", up = { 8215 }, at = { [2564] = 7 } },
+    ["agility"] = { "s27837", "s1248510", "s1248511", at = { [2564] = 2 } },
+    ["hunter"] = { "s27837", "s1248510", at = { [2564] = 2 } },
+    ["tank"] = { "s27837", "s1248510", "s1248511", at = { [2564] = 2 } },
+    ["caster"] = { "s1219580", "s1248607", "s20036", "s7793", at = { [2567] = 3, [2568] = 3, [8212] = 3 } },
+    ["healer"] = { "s1248636", "s1219580", "s20036", "s20035", "s7793", "s13380", at = { [2567] = 3, [2568] = 3, [8211] = 3 } },
   },
   shield = {
-    ["melee"] = { "s20017", "s13817", up = { 7663 } },
-    ["tank"] = { "s20017", "s13817", up = { 7663 } },
-    ["caster"] = { "s20017", "s13817", up = { 7663 } },
-    ["healer"] = { "s20017", "s13817", up = { 7663 } },
+    ["melee"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 } },
+    ["tank"] = { "s20017", "b12645", "s13817", "b7967", "s13631", "b6042", "s13378", up = { 7663 } },
+    ["caster"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 }, at = { [1890] = 4 } },
+    ["healer"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 }, at = { [851] = 4, [907] = 3, [1890] = 3 } },
   },
   holdable = {
     ["caster"] = { "s1219579", up = { 7659, 7660 } },
     ["healer"] = { "s1219579", up = { 7659, 7660 } },
   },
   chest = {
-    ["melee"] = { "s20025", "s13941" },
-    ["agility"] = { "s20025", "s13941" },
-    ["hunter"] = { "s20025", "s13941" },
-    ["tank"] = { "s20025", "s20026" },
-    ["caster"] = { "s20025", "s20028" },
-    ["healer"] = { "s20025", "s20028" },
+    ["melee"] = { "s20025", "s13941", "k252488", "s13700", "k252463", "k252453", "s13626", "k252437", at = { [908] = 7, [1892] = 7 } },
+    ["agility"] = { "s20025", "s13941", "k252488", "k252463", "s13700", "k252453", "k252437", "s13626", at = { [850] = 8, [908] = 7, [1892] = 7, [8490] = 8 } },
+    ["hunter"] = { "s20025", "k252488", "s13941", "k252463", "s13700", "k252453", "k252437", "s13626", at = { [850] = 8, [908] = 7, [913] = 8, [1892] = 5, [1893] = 7, [8487] = 8, [8490] = 8 } },
+    ["tank"] = { "s20025", "s20026", "s13858", "k15564", "s13640", "k8173", "k4265", "s7857", "k2313", up = { 8719 }, at = { [242] = 9, [866] = 7, [928] = 4, [8491] = 9 } },
+    ["caster"] = { "s20028", "k252487", "k252462", "s13917", "k252452", "s13663", "s13607", "k252436", "s7776", at = { [866] = 8, [908] = 8, [928] = 7, [1891] = 5, [1892] = 7 } },
+    ["healer"] = { "s20028", "k252487", "k252462", "s13917", "k252452", "s13663", "s13607", "k252436", "s7776", at = { [866] = 7, [928] = 5, [1891] = 3, [1892] = 8 } },
   },
   cloak = {
-    ["melee"] = { "s1219587", "s13419", mid = { 849 } },
-    ["agility"] = { "s1219587", "s13419", mid = { 849 } },
-    ["hunter"] = { "s1219587", "s13419", mid = { 849 } },
-    ["tank"] = { "s20015", "s13746", up = { 2622 } },
-    ["caster"] = { "s20014", "s13794", up = { 2621 } },
-    ["healer"] = { "s20014", "s13794", up = { 2621 } },
+    ["melee"] = { "s1219587", "s13419", at = { [849] = 2 } },
+    ["agility"] = { "s1219587", "s13419", at = { [849] = 2 } },
+    ["hunter"] = { "s1219587", "s13419", at = { [849] = 2 } },
+    ["tank"] = { "s20015", "s13746", "s13635", "s13421", up = { 2622 }, at = { [247] = 3, [849] = 3, [7667] = 3 } },
+    ["caster"] = { "s20014", "s13794", "s7454", up = { 2621 } },
+    ["healer"] = { "s20014", "s13794", "s7454", up = { 2621 } },
   },
   wrist = {
-    ["melee"] = { "s20010", "s13939" },
-    ["agility"] = { "s1248599", "s1248500" },
-    ["hunter"] = { "s1248599", "s1248500" },
-    ["tank"] = { "s1248665", "s13931", mid = { 1886 } },
-    ["caster"] = { "s1220624", "s20008", mid = { 1901 } },
-    ["healer"] = { "s23802", "s1248498", mid = { 7665, 2565 } },
+    ["melee"] = { "s20010", "s13939", "s13661", "s13536", "s7782", at = { [904] = 4, [1887] = 3, [7656] = 2, [8204] = 5 } },
+    ["agility"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779", at = { [927] = 5, [1885] = 4 } },
+    ["hunter"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779" },
+    ["tank"] = { "s1248665", "s20011", "s13931", "s13945", "s13648", "s13501", "s7457", at = { [856] = 7, [904] = 6, [924] = 7, [927] = 6, [1885] = 5, [1887] = 5, [7656] = 3, [8204] = 7 } },
+    ["caster"] = { "s1220624", "s1248661", "s20008", "s13822", "s1248458", at = { [1884] = 5, [1886] = 5, [2566] = 2, [8208] = 4, [8209] = 2, [8734] = 5 } },
+    ["healer"] = { "s23802", "s1248498", "s1248459", at = { [2565] = 2, [7665] = 2 } },
   },
   hands = {
-    ["melee"] = { "s1248640", "s20013" },
-    ["agility"] = { "s20012", "s13815", up = { 2564 } },
-    ["hunter"] = { "s20012", "s13815", up = { 2564 } },
-    ["tank"] = { "s20012", "s13815", up = { 2613, 2564, 2563 } },
-    ["caster"] = { "s13948" },
-    ["caster/MAGE1"] = { "s1213626", "s13948" },
-    ["caster/MAGE2"] = { "s13948", up = { 2616 } },
-    ["caster/MAGE3"] = { "s13948", up = { 2615 } },
-    ["caster/WARLOCK"] = { "s13948", up = { 2614 } },
-    ["caster/PRIEST"] = { "s13948", up = { 2614 } },
-    ["caster/DRUID1"] = { "s1213626", "s13948", mid = { 8213 } },
-    ["caster/SHAMAN1"] = { "s1248645", "s13948" },
-    ["healer"] = { "s13948", up = { 2617 } },
+    ["melee"] = { "s1248640", "s20013", "s13887", "k252488", "k252463", "k252453", "k252437", at = { [931] = 3, [1887] = 4, [8206] = 3 } },
+    ["agility"] = { "s20012", "s13815", "k252488", "k252463", "k252453", "k252437", up = { 2564 }, at = { [927] = 5, [931] = 2, [2563] = 2, [8207] = 4 } },
+    ["hunter"] = { "s20012", "s13815", "k252488", "k252463", "k252453", "k252437", up = { 2564 }, at = { [931] = 2 } },
+    ["tank"] = { "s20012", "s20013", "k15564", "s13815", "k8173", "k4265", "k2313", up = { 2613, 2564, 2563 }, at = { [927] = 6, [931] = 7, [8491] = 7 } },
+    ["caster"] = { "s13948", "k252487", "k252462", "k252452", "k252436" },
+    ["caster/MAGE1"] = { "s1213626", "s13948", "k252487", "k252462", "k252452", "k252436" },
+    ["caster/MAGE2"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2616 } },
+    ["caster/MAGE3"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2615 } },
+    ["caster/WARLOCK"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2614 } },
+    ["caster/PRIEST"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2614 } },
+    ["caster/DRUID1"] = { "s1213626", "s13948", "k252487", "k252462", "k252452", "k252436", at = { [8213] = 2 } },
+    ["caster/SHAMAN1"] = { "s1248645", "s13948", "k252487", "k252462", "k252452", "k252436" },
+    ["healer"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2617 } },
   },
   feet = {
-    ["melee"] = { "s20023", "s13935" },
-    ["agility"] = { "s20023", "s13935" },
-    ["hunter"] = { "s20023", "s13935" },
-    ["tank"] = { "s20020", "s13836" },
-    ["caster"] = { "s20020", "s13836" },
-    ["healer"] = { "s20024", "s13687" },
-    ["healer/PALADIN"] = { "s20020", "s13836" },
-    ["healer/SHAMAN"] = { "s20020", "s13836" },
+    ["melee"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437", up = { 8737, 911, 464 } },
+    ["agility"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437", up = { 8737, 911, 464 } },
+    ["hunter"] = { "s20023", "s13935", "k252488", "s13637", "k252463", "s7867", "k252453", "k252437", up = { 8737, 911, 464 }, at = { [929] = 8 } },
+    ["tank"] = { "s20020", "k15564", "k8173", "s13836", "s13644", "k4265", "k2313", up = { 8737, 911, 464, 8719 }, at = { [904] = 5, [1887] = 3, [8204] = 7, [8491] = 7 } },
+    ["caster"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", "s13644", up = { 8737, 911, 464 }, at = { [851] = 6, [8203] = 7, [8487] = 7, [8490] = 6 } },
+    ["healer"] = { "k252487", "k252462", "k252452", "s20024", "s13687", "k252436", up = { 8737, 911, 464 } },
+    ["healer/PALADIN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [851] = 6, [8490] = 6 } },
+    ["healer/SHAMAN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [851] = 6, [8490] = 6 } },
   },
   neck = {
-    ["melee"] = { "s1249019" },
-    ["agility"] = { "s1249059" },
+    ["melee"] = { "s1249019", "s1249059" },
+    ["agility"] = { "s1249059", "s1249019" },
     ["hunter"] = { "s1249059" },
-    ["tank"] = { "s1249059", up = { 925 } },
+    ["tank"] = { "s1249059", "s1249019", up = { 925 } },
     ["caster"] = { "s1249057" },
-    ["healer"] = { "s1249058" },
+    ["healer"] = { "s1249058", "s1249057" },
   },
-  headlegs = {
+  head = {
     ["melee"] = { "a18329", "a11645" },
     ["agility"] = { "a18329", "a11647" },
-    ["hunter"] = { "a11647" },
+    ["hunter"] = { "a11647", at = { [2543] = 1 } },
     ["tank"] = { "a18331", "a11642" },
-    ["caster"] = { "a18330", "a11648" },
+    ["caster"] = { "a18330", "a11648", at = { [1483] = 2 } },
     ["healer"] = { "a18330", "a11622" },
+  },
+  legs = {
+    ["melee"] = { "a18329", "a11645", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 6, [1504] = 9, [1507] = 6, [1508] = 3, [2545] = 10, [8492] = 11 } },
+    ["agility"] = { "a18329", "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 6, [1504] = 9, [1506] = 5, [1507] = 6, [2545] = 7, [8492] = 11 } },
+    ["hunter"] = { "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 4, [1504] = 8, [1507] = 5, [1509] = 7, [2543] = 1, [8492] = 10 } },
+    ["tank"] = { "a18331", "a11642", "k15564", "k8173", "k4265", "k2313", "k2304", up = { 8719 }, at = { [1504] = 5, [1506] = 4, [1507] = 3, [1508] = 4, [2543] = 6, [8486] = 7, [8488] = 7, [8491] = 6, [8492] = 7 } },
+    ["caster"] = { "a18330", "k252487", "k252462", "a11648", "k252452", "k252436", "k2313", "k2304", at = { [1483] = 2, [1507] = 6, [1510] = 6, [8484] = 7, [8487] = 7, [8490] = 7 } },
+    ["healer"] = { "a18330", "a11622", "k252487", "k252462", "k252452", "k252436", "k2313", "k2304", at = { [1507] = 7, [1509] = 5, [1510] = 5, [8484] = 7, [8487] = 7, [8490] = 7 } },
   },
   ranged = {
     ["hunter"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
@@ -406,10 +553,13 @@ local GROUP_OF = {
   INVTYPE_2HWEAPON = "weapon2h", INVTYPE_SHIELD = "shield", INVTYPE_HOLDABLE = "holdable",
   INVTYPE_CHEST = "chest", INVTYPE_ROBE = "chest", INVTYPE_CLOAK = "cloak", INVTYPE_WRIST = "wrist",
   INVTYPE_HAND = "hands", INVTYPE_FEET = "feet", INVTYPE_NECK = "neck",
-  INVTYPE_HEAD = "headlegs", INVTYPE_LEGS = "headlegs",            -- Arcanums (level 50 quests)
+  INVTYPE_HEAD = "head",                                           -- Arcanums (level 50 quests)
+  INVTYPE_LEGS = "legs",                                           -- Arcanums and armor kits
   INVTYPE_RANGED = "ranged", INVTYPE_RANGEDRIGHT = "ranged",       -- scopes (bows, guns, crossbows)
   -- Shoulders, rings, trinkets, belts, shirts, tabards, thrown, relics: no option worth showing.
 }
+-- Armor kits fit cloth, leather, mail and plate (SpellEquippedItems of the kit spells: subclass mask 30).
+local KIT_SUBS = { [1] = true, [2] = true, [3] = true, [4] = true }
 -- Weapon subclasses the recipes take ("Enchant Weapon": every melee weapon; 2H: axes, maces,
 -- polearms, swords, staves; scopes: bows, guns, crossbows). Fishing poles (20) and wands (19) get none.
 local WEAPON_SUBS = { [0] = true, [1] = true, [4] = true, [5] = true, [6] = true, [7] = true, [8] = true,
@@ -554,9 +704,17 @@ local function whereOf(info)
 end
 E.WhereOf = whereOf
 
--- How many options each place shows: the 2nd best only for gear you wear.
-local SHOW = { bag = 1, link = 1, script = 1, equipped = 2 }
+-- The places that get the lines (the same number of options everywhere).
+local SHOW = { bag = true, link = true, script = true, equipped = true }
 E.SHOW = SHOW
+
+-- Top 2 (the two best, the default) or Top 5 (the best, then cheaper budget options).
+local TOPS = { [2] = true, [5] = true }
+local function topN()
+  local n = settings().enchantsTop
+  return TOPS[n] and n or 2
+end
+E.TopN = topN
 
 -- The item's link when the tooltip did not give one.
 local function fallbackLink(info)
@@ -752,9 +910,78 @@ E.DetectRole = function()
   return role, how, d.tab, d.tabPoints, d.class
 end
 
+---------------------------------------------------------------------------
+-- Professions: Blacksmithing's spikes and counterweight need the skill to use
+---------------------------------------------------------------------------
+-- The skill lines the upgrades ask for, with their English names (older clients' list gives names only).
+local SKILL_NAME = { [164] = "Blacksmithing" }
+local SKILL_UNSURE_TTL = 2   -- seconds: nothing readable yet (just after login)
+local skills, skillsAt, skillsTTL
+
+-- { [skill line id] = rank } and whether any skill line could be read.
+local function readSkills()
+  E.skillReads = E.skillReads + 1
+  local out, seen = {}, false
+  local function note(id, rank)
+    local r = plainNumber(rank)
+    if id and r and r > (out[id] or 0) then out[id] = r end
+  end
+  local CS = _G.C_SkillInfo
+  if type(CS) == "table" then
+    -- By id: also finds a profession under a collapsed header in the Skills tab.
+    if type(CS.GetSkillLineInfoByID) == "function" then
+      for id in pairs(SKILL_NAME) do
+        local ok, info = pcall(CS.GetSkillLineInfoByID, id)
+        if ok and type(info) == "table" then note(id, info.rank) end
+      end
+    end
+    -- The Skills tab's list, as Blizzard's Forever SkillsFrame reads it.
+    if type(CS.GetNumSkillLines) == "function" and type(CS.GetSkillLineInfo) == "function" then
+      local okN, n = pcall(CS.GetNumSkillLines)
+      n = okN and plainNumber(n) or 0
+      for i = 1, (n < 200 and n or 200) do
+        local ok, info = pcall(CS.GetSkillLineInfo, i)
+        if ok and type(info) == "table" then
+          seen = true
+          local id = plainNumber(info.skillID)
+          if id and SKILL_NAME[id] then note(id, info.rank) end
+        end
+      end
+    end
+  end
+  -- Older clients: GetSkillLineInfo(i) answers name, isHeader, isExpanded, rank, ...
+  local num, info = _G.GetNumSkillLines, _G.GetSkillLineInfo
+  if not seen and type(num) == "function" and type(info) == "function" then
+    local okN, n = pcall(num)
+    n = okN and plainNumber(n) or 0
+    for i = 1, (n < 200 and n or 200) do
+      local ok, name, _, _, rank = pcall(info, i)
+      if ok and type(name) == "string" and not isSecret(name) then
+        seen = true
+        for id, nm in pairs(SKILL_NAME) do
+          if name == nm then note(id, rank) end
+        end
+      end
+    end
+  end
+  return out, seen or next(out) ~= nil
+end
+
+-- The player's rank in a profession (0 = not learned). Read once, again on SKILL_LINES_CHANGED.
+local function skillRank(id)
+  local t = now()
+  if not skills or not skillsAt or t < skillsAt or t - skillsAt >= skillsTTL then
+    local r, sure = readSkills()
+    skills, skillsAt, skillsTTL = r, t, sure and 1e9 or SKILL_UNSURE_TTL
+  end
+  return skills[id] or 0
+end
+E.SkillRank = skillRank
+
 local lineMemo, lineStamp = {}, nil
 function E.Invalidate()
   cache, cacheAt = nil, nil
+  skills = nil
   lineMemo = {}
   factMemo = {}
 end
@@ -769,23 +996,6 @@ local function pickFor(group, role, class, tab)
   return (class and tab and g[role .. "/" .. class .. tab]) or (class and g[role .. "/" .. class]) or g[role]
 end
 
--- The best and the 2nd: the first two entries the player's level can use.
-local function choose(rec, level)
-  local best, bi, second, si
-  for i, key in ipairs(rec) do
-    local e = ENCHANTS[key]
-    if e and (not e.lvl or level >= e.lvl) then
-      if not best then
-        best, bi = key, i
-      else
-        second, si = key, i
-        break
-      end
-    end
-  end
-  return best, bi, second, si
-end
-
 local function listHas(list, v)
   if type(list) ~= "table" then return false end
   for _, x in ipairs(list) do
@@ -794,20 +1004,43 @@ local function listHas(list, v)
   return false
 end
 
--- 0 = nothing (it has the best, or one at least as good), 1 = the best only
--- (it has the 2nd best, or one between the two), 2 = both (no enchant, or another).
-local function wanted(rec, current, bi, si)
-  if not current then return 2 end
+-- Whether the player can use an entry on this item: the level it needs, the profession rank
+-- its item asks for, and the item's kind (armor kits: cloth to plate; the counterweight: its weapons).
+local function usable(e, f, level)
+  if e.lvl and level < e.lvl then return false end
+  if e.prof and skillRank(e.prof) < (e.rank or 1) then return false end
+  if e.how == "lw" then return not f.sub or KIT_SUBS[f.sub] == true end
+  if e.subs and f.sub then return listHas(e.subs, f.sub) end
+  return true
+end
+
+-- Where the item's enchant stops the list: entries before this place are upgrades. 0 = nothing
+-- (an "up" enchant, or the first entry), nil = the whole list (no enchant, or one the data does not know).
+local function stopAt(rec, current)
+  if not current then return nil end
   if listHas(rec.up, current) then return 0 end
   for i, key in ipairs(rec) do
-    if ENCHANTS[key].id == current then
-      if i <= bi then return 0 end
-      if i == si then return 1 end
-      return 2
+    if ENCHANTS[key].id == current then return i end
+  end
+  local at = rec.at
+  return type(at) == "table" and at[current] or nil
+end
+
+-- The options to show, best first: the usable entries before the stop, at most `most`.
+local function pickKeys(rec, f, level, current, most)
+  local stop = stopAt(rec, current)
+  if stop == 0 then return nil end
+  local out
+  for i, key in ipairs(rec) do
+    if stop and i >= stop then break end
+    local e = ENCHANTS[key]
+    if e and usable(e, f, level) then
+      out = out or {}
+      out[#out + 1] = key
+      if #out >= most then break end
     end
   end
-  if listHas(rec.mid, current) then return 1 end
-  return 2
+  return out
 end
 
 ---------------------------------------------------------------------------
@@ -818,24 +1051,39 @@ local function dataStamp()
   return type(db) == "table" and tonumber(db.updated) or 0
 end
 
+-- An item's AH value in copper (0 = none).
+local function marketOf(id)
+  local it = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
+  local v = it and tonumber(it.market) or 0
+  return v > 0 and v or 0
+end
+
 local costMemo = {}
--- { copper = mats with an AH value (and a quest fee), missing = { "2 Skin of Shadow", ... } }
+-- { copper = mats with an AH value (and a quest fee), missing = { "2 Skin of Shadow", ... },
+--   by = "item" (an upgrade's own AH value, or none) or "mats" }
 local function costOf(key)
   local c = costMemo[key]
   if c then return c end
   local e = ENCHANTS[key]
-  local copper, missing, m = e.fee or 0, {}, e.m
-  for i = 1, #m, 2 do
-    local id, n = m[i], m[i + 1]
-    local it = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
-    local v = it and tonumber(it.market) or 0
-    if v > 0 then
-      copper = copper + v * n
-    else
-      missing[#missing + 1] = n .. " " .. (MATS[id] or ("Item " .. id))
-    end
+  local missing = {}
+  if e.item then
+    -- An upgrade you buy: its own AH value. A blacksmith's one with none: what its mats cost.
+    local v = marketOf(e.item)
+    if v > 0 or not e.m then c = { copper = v, missing = missing, by = "item" } end
   end
-  c = { copper = copper, missing = missing }
+  if not c then
+    local copper, m = e.fee or 0, e.m
+    for i = 1, #m, 2 do
+      local id, n = m[i], m[i + 1]
+      local v = marketOf(id)
+      if v > 0 then
+        copper = copper + v * n
+      else
+        missing[#missing + 1] = n .. " " .. (MATS[id] or ("Item " .. id))
+      end
+    end
+    c = { copper = copper, missing = missing, by = "mats" }
+  end
   costMemo[key] = c
   return c
 end
@@ -858,11 +1106,12 @@ local function stalePrices()
 end
 
 -- "~38g", "~38g + 2 Skin of Shadow", "~38g + more" (mats with no AH price),
--- "no AH price"; nil without price data. Second value: true = grey.
+-- "no AH price", "not on AH" (an upgrade item nobody lists); nil without price data.
+-- Second value: true = grey.
 local function costText(key, stale)
   if dataStamp() <= 0 then return nil end
   local c = costOf(key)
-  if c.copper <= 0 then return "no AH price", true end
+  if c.copper <= 0 then return c.by == "item" and "not on AH" or "no AH price", true end
   local money = "~" .. ns.MoneyIcons(roundCopper(c.copper))
   if #c.missing == 1 then return money .. " + " .. c.missing[1], stale end
   if #c.missing > 1 then return money .. " + more", stale end
@@ -883,31 +1132,43 @@ local function matsText(key)
 end
 E.MatsText = matsText
 
--- The lines for a best (and 2nd) pick: { left, right, grey } rows; mats rows have mats = true.
-local function buildLines(best, second, full, stale)
+-- The grey line: an enchant's mats, or how you get an upgrade and use it yourself.
+local HOW = { lw = "Leatherworking kit, use it on the item", eng = "Engineering scope, use it on the item",
+  bs = "Your Blacksmithing: use it on the item" }
+local function detailText(key)
+  local e = ENCHANTS[key]
+  if not e.item then return matsText(key) end
+  if e.how == "bs" and costOf(key).by == "mats" then return "Your Blacksmithing: make it from " .. matsText(key) end
+  return HOW[e.how] or "Use it on the item"
+end
+E.DetailText = detailText
+
+-- The labels by place among the entries the player can use.
+local LABELS = { "Best enchant: ", "2nd: ", "3rd: ", "4th: ", "5th: " }
+
+-- The lines for the options: { left, right, grey } rows; mats rows have mats = true.
+local function buildLines(keys, full, stale)
   E.builds = E.builds + 1
   local out = {}
-  local function option(label, key)
+  for i, key in ipairs(keys) do
     local cost, grey = costText(key, stale)
-    out[#out + 1] = { label .. ENCHANTS[key].n, cost, grey }
-    if full then out[#out + 1] = { "  " .. matsText(key), mats = true } end
+    out[#out + 1] = { (LABELS[i] or (i .. "th: ")) .. ENCHANTS[key].n, cost, grey }
+    if full then out[#out + 1] = { "  " .. detailText(key), mats = true } end
   end
-  option("Best enchant: ", best)
-  if second then option("2nd best: ", second) end
   return out
 end
 
-local function linesFor(best, second, full)
+local function linesFor(keys, full)
   local stamp = dataStamp()
   if lineStamp ~= stamp then
     lineMemo, costMemo, lineStamp = {}, {}, stamp
   end
   -- The age grows while the data stays the same: whether it is old is part of the key.
   local stale = stalePrices()
-  local k = best .. "|" .. (second or "") .. "|" .. (full and "f" or "c") .. (stale and "|s" or "")
+  local k = tconcat(keys, "|") .. (full and "|f" or "|c") .. (stale and "|s" or "")
   local l = lineMemo[k]
   if not l then
-    l = buildLines(best, second, full, stale)
+    l = buildLines(keys, full, stale)
     lineMemo[k] = l
   end
   return l
@@ -941,10 +1202,9 @@ local function quietOwner(tt)
   return ok and type(owner) == "table" and owner.glNoEnchants == true
 end
 
--- The options for an item at a place, or nil: best key, 2nd key (or nil).
+-- The options for an item at a place, best first (a list of keys), or nil.
 local function optionsFor(itemID, link, where)
-  local most = SHOW[where]
-  if not most then return nil end
+  if not SHOW[where] then return nil end
   local f = facts(itemID)
   if not f then return nil end
   if quality(itemID, link) == 0 then return nil end   -- grey junk
@@ -952,12 +1212,7 @@ local function optionsFor(itemID, link, where)
   if not role or not canWear(d.class, f) then return nil end
   local rec = pickFor(f.g, role, d.class, d.tab)
   if not rec then return nil end
-  local best, bi, second, si = choose(rec, d.level or 60)
-  if not best then return nil end
-  local n = wanted(rec, linkEnchant(link), bi, si)
-  if n > most then n = most end
-  if n <= 0 then return nil end
-  return best, n > 1 and second or nil
+  return pickKeys(rec, f, d.level or 60, linkEnchant(link), topN())
 end
 E.OptionsFor = optionsFor
 
@@ -974,9 +1229,9 @@ local function addLines(tt, itemID, link, info)
   if not itemID then return false end
   if type(link) ~= "string" or isSecret(link) then link = fallbackLink(info) end
   if not link then return false end   -- without the link the current enchant is unknown
-  local best, second = optionsFor(itemID, link, where)
-  if not best then return false end
-  draw(tt, linesFor(best, second, not S.compact or shiftDown()))
+  local keys = optionsFor(itemID, link, where)
+  if not keys then return false end
+  draw(tt, linesFor(keys, not S.compact or shiftDown()))
   return true
 end
 
@@ -1029,7 +1284,11 @@ E.IsOn = tipsOn
 -- slots' level. There the box sits just above the head slot. ElvUI's skin hides
 -- the portrait and boxes the model in between the slot columns from 31px down,
 -- so there the box sits in the empty top left corner, over the left slot column.
--- Pawn's button and GearMatic's arrows are at the bottom.
+-- Pawn's button and GearMatic's arrows are at the bottom. The Top 2 / Top 5
+-- button goes with the box: in Forever's layout right of the head slot (and its
+-- flyout button), under the end of the label and left of the model's buttons,
+-- since beside the label is too narrow; with ElvUI right under the box, since
+-- the label ends just before the level line.
 local TOGGLE_NAME, TOGGLE_SIZE = "GoblinLedgerEnchantToggle", 22
 local TOGGLE_ART = {   -- the game's check box look, put back if a skin stops half way
   SetNormalTexture = "Interface\\Buttons\\UI-CheckBox-Up",
@@ -1041,6 +1300,9 @@ local ROLE_HOW = { pick = "picked by hand", talents = "from your talents", class
 local GREY = { 0.5, 0.5, 0.5 }   -- the label while Goblin Ledger's tooltips are off (/gl tooltip)
 local toggle   -- the box, made once
 local labelColour = { 1, 0.82, 0 }   -- the label's own colour (GameFontNormalSmall's), read when it is made
+local TOP_NAME = "GoblinLedgerEnchantTop"
+local TOP_TIP = "Top 2: the two best. Top 5: adds cheaper budget options. Click to switch."
+local topBtn   -- the Top 2 / Top 5 button, made with the box
 
 local function guarded(fn)
   return function(...)
@@ -1082,13 +1344,37 @@ local function showToggleTip(self)
   local r = role and sformat("Role: %s (%s).", role, ROLE_HOW[how] or "auto") or "Role: none for this class."
   tt:SetOwner(self, "ANCHOR_RIGHT")
   tt:SetText("Goblin Ledger: Enchant tips", 1, 1, 1)
-  tt:AddLine("Best enchant for your role, its mats and cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
+  tt:AddLine("The best enchants for your role, with their cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
   if tooltipsOff() then
     tt:AddLine("Goblin Ledger tooltips are off: /gl tooltip turns them on.", mu[1], mu[2], mu[3], true)
   else
     tt:AddLine(r .. " /gl enchants picks the role.", mu[1], mu[2], mu[3], true)
   end
   tt:Show()
+end
+
+local function showTopTip(self)
+  local tt = _G.GameTooltip
+  if type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
+  tt:SetOwner(self, "ANCHOR_RIGHT")
+  tt:SetText(TOP_TIP, 1, 1, 1)
+  tt:Show()
+end
+
+-- The button's words ("Top 2" or "Top 5"), its size, and grey while the tips are off.
+local function refreshTop()
+  local b = topBtn
+  if not b then return end
+  local fs = b.Text
+  fs:SetText("Top " .. topN())
+  local okW, wide = pcall(fs.GetStringWidth, fs)
+  wide = okW and plainNumber(wide) or 0
+  if wide <= 0 or wide > 80 then wide = 30 end
+  b:SetWidth(wide + 4)
+  local c = (tooltipsOff() or not tipsOn()) and GREY or (b.glHover and WHITE or labelColour)
+  if type(fs.SetTextColor) == "function" then pcall(fs.SetTextColor, fs, c[1], c[2], c[3]) end
+  local tt = _G.GameTooltip
+  if owns(tt, b) and tt:IsShown() then showTopTip(b) end
 end
 
 local function refreshToggle()
@@ -1098,13 +1384,14 @@ local function refreshToggle()
   local fs, c = toggle.Text, tooltipsOff() and GREY or labelColour
   if type(fs) == "table" and type(fs.SetTextColor) == "function" and c then pcall(fs.SetTextColor, fs, c[1], c[2], c[3]) end
   if owns(_G.GameTooltip, toggle) then showToggleTip(toggle) end
+  refreshTop()
 end
 
 -- An item tooltip that is up (a chat link's, say) is built again, so the change shows at once.
 local function refreshItemTips()
   for name in pairs(TIPS) do
     local tt = _G[name]
-    if type(tt) == "table" and type(tt.RefreshData) == "function" and not owns(tt, toggle) then
+    if type(tt) == "table" and type(tt.RefreshData) == "function" and not owns(tt, toggle) and not owns(tt, topBtn) then
       local okS, shown = pcall(tt.IsShown, tt)
       local okI, _, link = pcall(tt.GetItem, tt)
       if okS and shown and okI and type(link) == "string" then pcall(tt.RefreshData, tt) end
@@ -1125,7 +1412,10 @@ local function raiseToggle()
     local l = levelOf(_G[name])
     if l and l > lvl then lvl = l end
   end
-  if lvl < 10000 then toggle:SetFrameLevel(lvl + 1) end
+  if lvl < 10000 then
+    toggle:SetFrameLevel(lvl + 1)
+    if topBtn then topBtn:SetFrameLevel(lvl + 1) end
+  end
 end
 
 -- ElvUI's engine and Skins module when ElvUI skins the character panel (its
@@ -1179,6 +1469,16 @@ local function placeToggle()
   else
     toggle:SetPoint("TOPLEFT", toggle:GetParent(), "TOPLEFT", 21, -57)
   end
+  local b = topBtn
+  if not b then return end
+  b:ClearAllPoints()
+  if where == "corner" then
+    b:SetPoint("TOPLEFT", toggle, "BOTTOMLEFT", 2, -2)
+  elseif where == "head" then
+    b:SetPoint("TOPLEFT", head, "TOPRIGHT", 25, 0)
+  else
+    b:SetPoint("TOPLEFT", b:GetParent(), "TOPLEFT", 86, -80)
+  end
 end
 
 local function onToggleShow(self)
@@ -1200,6 +1500,40 @@ local function onToggleClick(self)
   refreshToggle()
 end
 
+-- One click flips Top 2 and Top 5 (the role and the box stay as they are).
+local function onTopClick()
+  local S = settings()
+  S.enchantsTop = topN() == 5 and 2 or 5
+  local play, kit = _G.PlaySound, _G.SOUNDKIT
+  local id = type(kit) == "table" and kit.IG_MAINMENU_OPTION_CHECKBOX_ON
+  if type(play) == "function" and id then pcall(play, id) end
+  refreshItemTips()
+  refreshTop()
+end
+
+-- The Top 2 / Top 5 button: a few words you click, no window.
+local function buildTop(parent, make)
+  local ok, b = pcall(make, "Button", TOP_NAME, parent)
+  if not ok or type(b) ~= "table" then return end
+  topBtn = b
+  b:SetSize(34, 14)
+  local fs = b:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  fs:SetPoint("LEFT", b, "LEFT", 2, 0)
+  b.Text = fs
+  b:SetScript("OnClick", guarded(onTopClick))
+  b:SetScript("OnEnter", guarded(function(self)
+    self.glHover = true
+    refreshTop()
+    showTopTip(self)
+  end))
+  b:SetScript("OnLeave", guarded(function(self)
+    self.glHover = nil
+    local tt = _G.GameTooltip
+    if owns(tt, self) then tt:Hide() end
+    refreshTop()
+  end))
+end
+
 local function buildToggle()
   if toggle then return true end
   local parent, make = _G.PaperDollFrame, _G.CreateFrame
@@ -1207,6 +1541,7 @@ local function buildToggle()
   local cb = make("CheckButton", TOGGLE_NAME, parent, "UICheckButtonTemplate")
   toggle = cb
   cb:SetSize(TOGGLE_SIZE, TOGGLE_SIZE)
+  buildTop(parent, make)
   placeToggle()
   local fs = cb.Text or cb.text
   if type(fs) ~= "table" then
@@ -1230,12 +1565,20 @@ local function buildToggle()
     if owns(tt, self) then tt:Hide() end
   end))
   cb:SetScript("OnShow", guarded(onToggleShow))
-  -- Forever hides the slots (PaperDollItemsFrame) on the pet's page: the box goes with them.
+  -- Forever hides the slots (PaperDollItemsFrame) on the pet's page: the box and the button go with them.
   local items = _G.PaperDollItemsFrame
   if type(items) == "table" and type(items.HookScript) == "function" then
-    items:HookScript("OnShow", guarded(function() if toggle then toggle:Show() end end))
-    items:HookScript("OnHide", guarded(function(self) if toggle and not self:IsShown() then toggle:Hide() end end))
+    items:HookScript("OnShow", guarded(function()
+      if toggle then toggle:Show() end
+      if topBtn then topBtn:Show() end
+    end))
+    items:HookScript("OnHide", guarded(function(self)
+      if self:IsShown() then return end
+      if toggle then toggle:Hide() end
+      if topBtn then topBtn:Hide() end
+    end))
     cb:SetShown(items:IsShown())
+    if topBtn then topBtn:SetShown(items:IsShown()) end
   end
   raiseToggle()
   refreshToggle()
@@ -1263,6 +1606,7 @@ end
 E.BuildToggle = tryBuild
 E.RefreshToggle = function() pcall(refreshToggle) end
 E.Toggle = function() return toggle end
+E.TopButton = function() return topBtn end
 
 if not tryBuild() and type(_G.CreateFrame) == "function" then
   local ok, f = pcall(_G.CreateFrame, "Frame")
@@ -1287,24 +1631,44 @@ local function autoText(d)
   return sformat("%s (the %s default: fewer than %d points in one talent tree)", d.role, slower(d.class or "class"), MIN_POINTS)
 end
 
+-- " Top 2 (...)." or " Top 5 (...).": which one is on, and the word for the other.
+local function topStatus()
+  if topN() == 5 then return " Top 5: the best, then cheaper budget options (/gl enchants top2 for the two best)." end
+  return " Top 2: the two best (/gl enchants top5 adds cheaper budget options)."
+end
+
 local function statusText()
   local v = settings().enchants
   if v == "off" then return "enchant tips are off. /gl enchants auto turns them back on." end
   local d = detect()
   if ROLES[v] then
     return sformat("enchant tips are for %s (picked by hand; your talents say %s). /gl enchants auto follows your talents.",
-      v, autoText(d))
+      v, autoText(d)) .. topStatus()
   end
-  return "enchant tips: auto, " .. autoText(d) .. "."
+  return "enchant tips: auto, " .. autoText(d) .. "." .. topStatus()
 end
 
-local CHOICES = "auto, melee, agility, tank, caster, healer, hunter or off"
+local CHOICES = "auto, melee, agility, tank, caster, healer, hunter, off, top2 or top5"
+-- /gl enchants top2 or top5 (or just 2 or 5): how many options the tooltips show.
+local TOP_WORDS = { top2 = 2, ["2"] = 2, ["top 2"] = 2, top5 = 5, ["5"] = 5, ["top 5"] = 5 }
 
 local function enchantsCommand(rest)
   local S = settings()
   rest = slower(rest or "")
   if rest == "" or rest == "status" then
     say(statusText())
+    return
+  end
+  local top = TOP_WORDS[rest]
+  if top then
+    S.enchantsTop = top   -- the role and the off state stay as they are
+    refreshItemTips()
+    refreshToggle()
+    if top == 5 then
+      say("enchant tips show the top 5: the best, then cheaper budget options.")
+    else
+      say("enchant tips show the top 2: the two best.")
+    end
     return
   end
   if rest == "auto" then
@@ -1348,23 +1712,29 @@ function ns.HandleSlash(msg)
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "tooltip" or cmd == "tooltips" then pcall(refreshToggle) end   -- Core's /gl tooltip: the label greys or not
   if cmd == "help" or cmd == "?" then
-    say("/gl enchants : the best enchant on gear tooltips for your role: " .. CHOICES .. " (auto follows your talents)")
-    say("   the price is the mats at AH value; you still need an enchanter who knows the formula")
+    say("/gl enchants : the best enchants on gear tooltips for your role: auto, melee, agility, tank, caster, healer, "
+      .. "hunter or off (auto follows your talents); top2 shows the two best, top5 adds cheaper budget options")
+    say("   the price is the mats at AH value (a kit, scope or other upgrade: its own); an enchant needs an enchanter")
     say("   the Enchant tips box on the character panel turns them off and on")
   end
 end
 
 ---------------------------------------------------------------------------
--- Events: a respec, a new talent point or a level clears the role
+-- Events: a respec, a new talent point or a level clears the role; a new skill, the professions
 ---------------------------------------------------------------------------
 if type(_G.CreateFrame) == "function" then
   local ok, f = pcall(_G.CreateFrame, "Frame")
   if ok and type(f) == "table" then
     for _, ev in ipairs({ "TRAIT_CONFIG_UPDATED", "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE",
-                          "ACTIVE_TALENT_GROUP_CHANGED", "PLAYER_LEVEL_UP", "PLAYER_LOGIN" }) do
+                          "ACTIVE_TALENT_GROUP_CHANGED", "PLAYER_LEVEL_UP", "PLAYER_LOGIN", "SKILL_LINES_CHANGED" }) do
       pcall(f.RegisterEvent, f, ev)   -- an event this client does not have is skipped
     end
     pcall(f.SetScript, f, "OnEvent", function(_, event)
+      -- A profession learned or a skill point (weapon skills too): only the professions are read again.
+      if event == "SKILL_LINES_CHANGED" then
+        skills = nil
+        return
+      end
       E.Invalidate()
       if event == "PLAYER_LOGIN" then
         -- A saved choice this version does not know means auto.
@@ -1373,6 +1743,8 @@ if type(_G.CreateFrame) == "function" then
         -- What the tips were before off: "auto" or a role, kept only while they are off.
         local was = S.enchantsBeforeOff
         if S.enchants ~= "off" or (was ~= "auto" and not ROLES[was]) then S.enchantsBeforeOff = nil end
+        -- Top 2 or Top 5, kept apart from the role; anything else is the default (Top 2).
+        if S.enchantsTop ~= nil and not TOPS[S.enchantsTop] then S.enchantsTop = nil end
       end
     end)
   end
