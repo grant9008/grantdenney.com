@@ -934,8 +934,10 @@ end
 ---------------------------------------------------------------------------
 -- Professions: Blacksmithing's spikes and counterweight need the skill to use
 ---------------------------------------------------------------------------
--- The skill lines the upgrades ask for, with their English names (older clients' list gives names only).
-local SKILL_NAME = { [164] = "Blacksmithing" }
+-- The skill lines the upgrades ask for (and Crafts.lua's craft tips: every crafting
+-- profession and Mining, which smelts), with their English names (older clients' list gives names only).
+local SKILL_NAME = { [164] = "Blacksmithing", [186] = "Mining", [202] = "Engineering", [165] = "Leatherworking",
+  [197] = "Tailoring", [171] = "Alchemy", [185] = "Cooking", [129] = "First Aid", [333] = "Enchanting" }
 local SKILL_UNSURE_TTL = 2   -- seconds: nothing readable yet (just after login)
 local skills, skillsAt, skillsTTL
 

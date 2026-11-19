@@ -1139,7 +1139,11 @@ local function RowTooltip(row)
   local shown = SetItemTooltip(tt, id)
   if not shown then tt:AddLine(ItemName(id), QualityRGB(id)) end
   local idea = row.idea
-  if idea and idea.data then
+  if idea and idea.kind == "craft" and type(ns.CraftRowTooltip) == "function" then
+    -- An idea from your own recipes (Crafts.lua): its mats and what it makes.
+    tt:AddLine(" ")
+    ns.CraftRowTooltip(tt, idea)
+  elseif idea and idea.data then
     tt:AddLine(" ")
     DataFlipTooltip(tt, idea)
   elseif idea then
@@ -1232,7 +1236,8 @@ local function RowClick(row, button)
       return
     end
   end
-  ns.SearchAH(id)
+  -- A craft idea searches the mat you buy (Crafts.lua sets it).
+  ns.SearchAH(row.idea and row.idea.searchID or id)
 end
 
 local function MakeRow(parent, h, isFlip)
@@ -1572,7 +1577,13 @@ function SB:RefreshFlips()
       SetRowItem(r, idea.id)
       r.idea = idea
       local fit = idea.fit
-      if idea.data then
+      if idea.kind == "craft" then
+        -- An idea from your own recipes (Crafts.lua words it): what to buy and
+        -- make, what it sells for, how many sell in a day.
+        r.sub:SetText(idea.subText or "")
+        r.sub2:SetText(idea.sub2Text or "")
+        r.right2:SetText(idea.noteText or "")
+      elseif idea.data then
         -- A flip from the latest snapshot: how much to pay and for how many
         -- (of how many, when your gold covers only some), then the relist
         -- price its profit is counted at (or sell to a vendor). The small
@@ -1873,6 +1884,7 @@ local SLASH_FLIPS = 10   -- /gl flips prints this many
 -- ideas are sized to your gold.
 local function FlipLine(x)
   local fit = type(x.fit) == "table" and x.fit or nil
+  if x.kind == "craft" and type(x.line) == "string" then return x.line end   -- Crafts.lua words it
   if x.data then
     local n = Count(x.units)
     if fit and fit.limited then n = Count(fit.units) .. " of " .. Count(x.units) end

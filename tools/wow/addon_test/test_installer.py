@@ -961,7 +961,10 @@ def _addon_updates(base, zpath, gh):
         check("could not install v1.2.0 (old files kept)" in alog(box)[-1], "fails at %s: logged (%s)" % (fail, alog(box)[-1:]))
     # ... also when the PC dies in the middle of it: the next run puts the old files back.
     due(box)
-    code, out = task(box, gh, extra={"GOBLINLEDGER_TEST_FAIL": "crash:12"})
+    # The swap moves every old TOC and code file out first, then the new ones in: stop just after
+    # the first new file is in (one step per file, so a release with more files stops later).
+    n_out = sum(1 for f in os.listdir(box.dest) if f.endswith((".lua", ".toc")) and f not in ("Data.lua", "Latest.lua"))
+    code, out = task(box, gh, extra={"GOBLINLEDGER_TEST_FAIL": "crash:%d" % (n_out + 2)})
     eq(code, 99, "crash: the run stopped dead")
     check(code_tree(box) != v110 and os.path.isfile(os.path.join(box.dest, "_update", "swap.txt")),
           "crash: the addon really was left half way")
