@@ -9269,7 +9269,7 @@ def bagcheck(sc, w, label, cmd="/fah bagcheck"):
     body = [t.split("Forever AH: ", 1)[-1] for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
-    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18f", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18g", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
     num = {}
     for t in body:
         m = re.match(r"^(\d+)\. (.*)$", t)
@@ -9432,22 +9432,41 @@ def qobj(*ids):
 
 
 # Quests and items as this player's QuestieDB 1.1.2 has them (decoded from its
-# QuestieDB_Forever.toc): the Uldaman necklace chain (the phial is given by
-# 2200 and used in 2201; it is also the reward of 3375) and both factions'
-# Badlands Reagent Run. Made up: a letter that starts a quest, a repeatable
-# turn-in, two quests that exclude each other and a Warrior quest.
+# QuestieDB_Forever.toc): the Uldaman necklace chain (the necklace starts
+# 2198 and is its source item too; the phial is given by 2200 and used in
+# 2201, which is handed in at Talvash's scrying bowl, object 112877, where
+# 2204 starts; the phial is also the reward of 3375), both factions'
+# Badlands Reagent Run, and the Undead paladin lessons (the Symbol of Life is
+# the reward of 94435 and needed for 94438, which comes after 94436). Made
+# up: a letter that starts a quest, a repeatable turn-in, two quests that
+# exclude each other, a Warrior quest, and a lamp for a quest that comes
+# after another (a negative id in preQuestGroup is that quest too).
+QDB_UNDEAD, QDB_PALADIN = 16, 2
 QDB_QUESTS = {
-    2198: {"name": "The Shattered Necklace", "requiredRaces": QDB_ALLY, "sourceItemId": 7666, "nextQuestInChain": 2199},
-    2199: {"name": "Lore for a Price", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2200, "objectives": qobj(2842)},
-    2200: {"name": "Back to Uldaman", "requiredRaces": QDB_ALLY, "sourceItemId": 7667, "nextQuestInChain": 2201},
+    2198: {"name": "The Shattered Necklace", "requiredRaces": QDB_ALLY, "sourceItemId": 7666, "nextQuestInChain": 2199,
+           "startedBy": {3: [7666]}, "finishedBy": {1: [6826]}},
+    2199: {"name": "Lore for a Price", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2200, "objectives": qobj(2842),
+           "preQuestSingle": [2198], "startedBy": {1: [6826]}, "finishedBy": {1: [6826]}},
+    2200: {"name": "Back to Uldaman", "requiredRaces": QDB_ALLY, "sourceItemId": 7667, "nextQuestInChain": 2201,
+           "preQuestSingle": [2199], "startedBy": {1: [6826]}, "finishedBy": {1: [6912]}},
     2201: {"name": "Find the Gems", "requiredRaces": QDB_ALLY, "sourceItemId": 7668, "nextQuestInChain": 2204,
-           "objectives": qobj(7669, 7670, 7671)},
-    2204: {"name": "Restoring the Necklace", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2361, "objectives": qobj(7672)},
+           "objectives": qobj(7669, 7670, 7671), "preQuestSingle": [2200], "startedBy": {1: [6912]},
+           "finishedBy": {2: [112877]}},
+    2204: {"name": "Restoring the Necklace", "requiredRaces": QDB_ALLY, "nextQuestInChain": 2361, "objectives": qobj(7672),
+           "preQuestSingle": [2201], "startedBy": {2: [112877]}, "finishedBy": {1: [6826]}},
+    2361: {"name": "Restoring the Necklace", "requiredRaces": QDB_ALLY, "preQuestSingle": [2204],
+           "startedBy": {1: [6826]}, "finishedBy": {1: [6826]}},
     3375: {"name": "Replacement Phial", "requiredRaces": QDB_ALLY, "specialFlags": 1, "availableUntilCompleted": 2361,
-           "objectives": qobj(3827, 3857, 1708)},
+           "objectives": qobj(3827, 3857, 1708), "preQuestSingle": [2201]},
     2500: {"name": "Badlands Reagent Run", "requiredRaces": QDB_ALLY, "nextQuestInChain": 17, "objectives": qobj(7847, 7846, 7848)},
     2258: {"name": "Badlands Reagent Run", "requiredRaces": QDB_HORDE, "nextQuestInChain": 2202,
            "objectives": qobj(7847, 7846, 7848)},
+    94435: {"name": "A Lesson in Divinity", "requiredRaces": QDB_UNDEAD, "requiredClasses": QDB_PALADIN,
+            "nextQuestInChain": 94436, "preQuestSingle": [94434]},
+    94436: {"name": "A Lesson in Divinity", "requiredRaces": QDB_UNDEAD, "requiredClasses": QDB_PALADIN,
+            "nextQuestInChain": 94438, "preQuestSingle": [94435]},
+    94438: {"name": "A Lesson in Divinity", "requiredRaces": QDB_UNDEAD, "requiredClasses": QDB_PALADIN,
+            "nextQuestInChain": 94440, "preQuestSingle": [94436], "requiredSourceItems": [6866]},
     950001: {"name": "A Sealed Letter"},
     950002: {"name": "Minion's Scourgestones", "specialFlags": 1, "objectives": qobj(12840)},
     950010: {"name": "Ogre Toll", "exclusiveTo": [950011], "objectives": qobj(900503)},
@@ -9455,15 +9474,19 @@ QDB_QUESTS = {
     950020: {"name": "The Brutal Way", "requiredClasses": 1, "requiredSourceItems": [900504]},
     950030: {"name": "Old Debts", "availableUntilCompleted": 950031, "objectives": qobj(900505)},
     950031: {"name": "New Debts"},
+    950040: {"name": "Into the Mine"},
+    950041: {"name": "Deeper Down", "preQuestGroup": [950039, -950040], "requiredSourceItems": [900506]},
 }
 QDB_ITEMS = {
-    7666: {"name": "Shattered Necklace", "class": 12},
+    6866: {"name": "Symbol of Life", "class": 12, "flags": 64, "questRewards": [1789, 1790, 94435]},
+    7666: {"name": "Shattered Necklace", "class": 12, "flags": 2048, "startQuest": 2198},
     7667: {"name": "Talvash's Phial of Scrying", "class": 12, "flags": 64, "questRewards": [3375]},
     7846: {"name": "Crag Coyote Fang", "class": 12},
     12840: {"name": "Minion's Scourgestone", "class": 12},
     900501: {"name": "Sealed Letter", "class": 12, "startQuest": 950001},
     900503: {"name": "Ogre Tooth", "class": 12},
     900504: {"name": "Brutal Token", "class": 12},
+    900506: {"name": "Miner's Lamp", "class": 12},
 }
 # The bags: (bag, slot, item, count, name, fields for the mock game).
 QUEST_BAG = [
@@ -9633,9 +9656,13 @@ def ref_quest_index(quests):
 
 
 def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None):
-    """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it."""
+    """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it.
+    in_log: the quests known to be in the log; log_known: whether every other
+    quest is known not to be (False: closed headers and no IsOnQuest)."""
     idx = ref_quest_index(quests)
-    R, order = {}, []
+    item = QDB_ITEMS.get(iid, {})
+    starts = [q for q in (item.get("startQuest", 0), start_q) if q]
+    R, order, given_for, givers = {}, [], {}, []
 
     def mine(row):
         races, classes = row.get("requiredRaces", 0), row.get("requiredClasses", 0)
@@ -9653,15 +9680,21 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
         R[q] = role
         order.append(q)
         return True
+    # The quest it starts first: QuestieDB also lists a starter as the item its
+    # quest gives, and it stays the quest it starts (no quest after it counts).
+    for s in starts:
+        add(s, "start")
     e = idx.get(iid)
     for c in (e if isinstance(e, list) else ([] if e is None else [e])):
         q, role = c // 4, c % 4
         if role == 0:
             add(q, "use")
-        elif role == 1 and add(q, "give"):
-            add(quests[q].get("nextQuestInChain", 0), "nextq")
-    add(QDB_ITEMS.get(iid, {}).get("startQuest", 0), "start")
-    add(start_q, "start")
+        elif role == 1 and q not in starts:
+            givers.append(q)
+            if add(q, "give"):
+                n = quests[q].get("nextQuestInChain", 0)
+                if add(n, "nextq"):
+                    given_for.setdefault(n, q)
     if not order:
         return None
 
@@ -9675,6 +9708,9 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
     def closed(q):
         return (q in done or quests[q].get("availableUntilCompleted") in done
                 or any(x in done for x in quests[q].get("exclusiveTo", [])))
+
+    def logged(q):
+        return True if q in in_log else (False if log_known else None)
     name = lambda q: quests[q]["name"]  # noqa: E731
     q = pick(lambda x: x in in_log)
     if q:
@@ -9687,7 +9723,32 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
         return ("keep", name(q or pick(lambda x: True)), True)
     q = pick(lambda x: not closed(x))
     if not q:
+        # The quest it was given for is handed in at an object where the next
+        # quest starts: kept until that one is taken.
+        unsure = False
+        for x in order:
+            n = quests[x].get("nextQuestInChain", 0)
+            row = quests.get(n)
+            if x not in given_for or x not in done or not row or not mine(row) or closed(n):
+                continue
+            if set(quests[x].get("finishedBy", {}).get(2, [])) & set(row.get("startedBy", {}).get(2, [])):
+                s = logged(n)
+                if s is False:
+                    return ("keep", name(n), False)
+                unsure = unsure or s is None
+        if unsure:
+            return None
         return ("done", name(pick(lambda x: True)), False)
+    # Halfway along a chain: a quest done gave it or rewarded it, or one that
+    # needs it comes after a quest in the log.
+    got = any(g in done for g in givers) or any(r in done for r in item.get("questRewards", []))
+
+    def after_log(x):
+        pre = list(quests[x].get("preQuestSingle", [])) + [abs(p) for p in quests[x].get("preQuestGroup", [])]
+        return any(p in in_log for p in pre)
+    q2 = pick(lambda x: not closed(x) and (got or after_log(x)))
+    if q2:
+        return ("keep", name(q2), False)
     if not log_known:
         return None
     return ("open", name(q), False)
@@ -9747,9 +9808,9 @@ def plain_tip(fields):
     return [] if fields.get("bind") == 4 else [NO_LISTINGS]
 
 
-def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None):
+def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None, bag_list=None):
     """Every bag item's verdict, tooltip line and colour against the model."""
-    for bag, slot, iid, count, name, fields in QUEST_BAG:
+    for bag, slot, iid, count, name, fields in (bag_list or QUEST_BAG):
         if ids and iid not in ids:
             continue
         want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"))
@@ -9871,20 +9932,26 @@ def sc_bag_questie(sc, ref, items):
           "questie: a quest only available until one you did counts as done")
     quest_checks(sc, w, quests, in_log, done, "later")
 
-    # Closed quest log headers and no IsOnQuest: "not started" cannot be told, done still can.
+    # Closed quest log headers and no IsOnQuest: "not started" cannot be told,
+    # done still can; not for the phial, though: whether Restoring the
+    # Necklace was taken at the scrying bowl cannot be told either.
     M.questDone[2500] = None
     M.questDone[950010] = None
     done = done - {2500, 950010}
     bag_quests(w, [{"title": "Uldaman", "isHeader": True, "isCollapsed": True}])
     quest_checks(sc, w, quests, set(), done, "log headers closed", log_known=False)
+    sc.eq(lua_verdict(w, 7667), None, "questie: with a header closed the phial has no verdict (Restoring the Necklace may be under it)")
     s = ns.BagScan()
-    sc.eq([s.quest[i].id for i in range(1, len(s.quest) + 1)], [900505, 900501, 7667],
+    sc.eq([s.quest[i].id for i in range(1, len(s.quest) + 1)], [900505, 900501],
           "questie: with a header closed only the done ones are listed (by name)")
     # C_QuestLog.IsOnQuest knows every quest, closed headers or not.
     w.lua.execute("MOCK.onQuest = {}; C_QuestLog.IsOnQuest = function(q) return MOCK.onQuest[q] == true end")
     quest_checks(sc, w, quests, set(), done, "IsOnQuest")
-    w.lua.execute("MOCK.onQuest[2500] = true")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Restoring the Necklace", False),
+          "questie: IsOnQuest says Restoring the Necklace is not taken: the phial still calls up the bowl it starts at")
+    w.lua.execute("MOCK.onQuest[2500] = true; MOCK.onQuest[2204] = true")
     sc.eq(lua_verdict(w, 7846), ("keep", "Badlands Reagent Run", False), "questie: IsOnQuest finds a quest under a closed header")
+    sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "questie: IsOnQuest finds Restoring the Necklace: the phial is done")
     w.lua.execute("C_QuestLog.IsOnQuest = nil")
     n, _ = bagcheck(sc, w, "questie bagcheck")
     sc.check((n.get(8) or "").endswith(", quests from QuestieDB (%d items)" % len(ref_quest_index(quests))),
@@ -9926,6 +9993,172 @@ def sc_bag_questie(sc, ref, items):
     wl.slash("/fah tooltip")
     sc.eq(quest_tip(wl, 0, 1), [], "questie: /fah tooltip off hides the quest line too")
     sc.clean(wl, "questie legacy")
+
+
+# Along quest chains (bag-questie-chain): the necklace that starts its quest,
+# the phial, and a lamp for a quest that comes after another; the Symbol of
+# Life goes in an Undead paladin's bags.
+CHAIN_BAG = [
+    (0, 1, 7666, 1, "Shattered Necklace", {"classID": 12, "bind": 4, "maxStack": 1, "startsQuest": 2198}),
+    (0, 2, 7667, 1, "Talvash's Phial of Scrying", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 3, 900506, 1, "Miner's Lamp", {"classID": 12, "bind": 4, "maxStack": 1}),
+]
+SYMBOL_BAG = [(0, 1, 6866, 1, "Symbol of Life", {"classID": 12, "bind": 4, "maxStack": 1})]
+LOG_ELSEWHERE = [
+    {"title": "Elwynn Forest", "isHeader": True},
+    {"title": "A Threat Within", "questID": 783, "objectives": ["Speak with Marshal McBride: 0/1"]},
+]
+
+
+def qlog(quest_id, title):
+    """A quest log with one quest (and one objective) under a header."""
+    return [{"title": "Quests", "isHeader": True}, {"title": title, "questID": quest_id, "objectives": ["Task: 0/1"]}]
+
+
+def chain_state(sc, w, quests, bag_list, log, done, label, race=1, cls=1):
+    """The quest log and the quests done; every bag item against the model;
+    returns the old quest items listed: (item, why, quest)."""
+    bag_quests(w, log)
+    w.M.questDone = w.to_lua({q: True for q in done})
+    w.M.fire("QUEST_LOG_UPDATE")
+    w.settle(0.5)
+    in_log = {q["questID"] for q in log if q.get("questID")}
+    quest_checks(sc, w, quests, in_log, set(done), label, race, cls, bag_list=bag_list)
+    s = w.ns.BagScan()
+    return [(s.quest[i].id, s.quest[i].why, s.quest[i].quest) for i in range(1, len(s.quest) + 1)]
+
+
+def sc_bag_questie_chain(sc, ref, items):
+    """Along quest chains (the player's real QuestieDB rows, and a made-up
+    lamp): a quest starter says Starts until its quest is done (QuestieDB
+    lists it as the item its quest gives too), then Done; an item stays Keep
+    while the next step still needs it, where a dropped one is gone for good:
+    the phial after Back to Uldaman, and after Find the Gems until Restoring
+    the Necklace is taken at the scrying bowl; the lamp while the quest it
+    comes after is in the log; the Symbol of Life between the paladin's
+    lessons."""
+    w = World(ref, items)
+    M, ns = w.M, w.ns
+    quests = install_questie(w)
+    for bag, slot, iid, count, name, fields in CHAIN_BAG:
+        bag_add_item(w, iid, name, 1, 0, **fields)
+        bag_put(w, bag, slot, iid, count)
+    bag_quests(w, LOG_ELSEWHERE)
+    ns.BagScan()
+    w.settle(0.5)
+    sc.eq(ns.QuestIndex.state, "ready", "chain: the index is ready")
+    buy, pos, mu = QDB_COLORS["buy"], QDB_COLORS["pos"], QDB_COLORS["muted"]
+
+    def state(log, done, label):
+        return chain_state(sc, w, quests, CHAIN_BAG, log, done, label)
+
+    # Nothing of the chain taken: the necklace starts it.
+    rows = state(LOG_ELSEWHERE, (), "chain, nothing taken")
+    sc.eq(lua_verdict(w, 7666), ("starts", "The Shattered Necklace", False), "chain: the necklace starts its quest")
+    sc.eq(quest_tip(w, 0, 1), [("Starts The Shattered Necklace", buy)], "chain: necklace tooltip, gold Starts line")
+    sc.check(7666 not in [r[0] for r in rows], "chain: a quest starter is no old quest item (%s)" % rows)
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(not any("Shattered Necklace" in t for t in out), "chain /fah bags: the necklace is not listed (%s)" % out)
+    sc.eq(lua_verdict(w, 6866), None, "chain: the Undead paladin's lessons are not a human warrior's")
+    # Carrying it to Talvash, then handed in (a second necklace is just an old one).
+    state(qlog(2198, "The Shattered Necklace"), (), "chain, necklace taken")
+    sc.eq(lua_verdict(w, 7666), ("keep", "The Shattered Necklace", False), "chain: the necklace while its quest is in the log")
+    rows = state(qlog(2199, "Lore for a Price"), (2198,), "chain, necklace handed in")
+    sc.eq(lua_verdict(w, 7666), ("done", "The Shattered Necklace", False),
+          "chain: the necklace once its quest is done (not kept for Lore for a Price)")
+    sc.eq(quest_tip(w, 0, 1), [("Done: you can drop it (The Shattered Necklace)", pos)], "chain: necklace tooltip, green done line")
+    sc.check((7666, "done", "The Shattered Necklace") in rows, "chain: the necklace is listed as done (%s)" % rows)
+
+    # Back to Uldaman done, Find the Gems not taken (a full log): the phial is
+    # still needed, and no new one is given before Find the Gems is done.
+    rows = state(LOG_ELSEWHERE, (2198, 2199, 2200), "chain, Find the Gems not taken")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Find the Gems", False), "chain: the phial after Back to Uldaman, Find the Gems not taken: keep")
+    sc.eq(quest_tip(w, 0, 2), [("Keep: needed for Find the Gems", buy)], "chain: phial tooltip, gold keep line")
+    sc.check(7667 not in [r[0] for r in rows], "chain: the phial is not listed (%s)" % rows)
+    state(LOG_FIND_GEMS, (2198, 2199, 2200), "chain, on Find the Gems")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Find the Gems", False), "chain: the phial on Find the Gems")
+
+    # Find the Gems handed in at the scrying bowl, Restoring the Necklace (it
+    # starts at the bowl) not taken there: the phial calls the bowl up again.
+    M.OpenBags(1)
+    w.settle(0.2)
+    BP = ns.BagPanel
+    M.click(BP.tab)
+    w.settle(0.2)
+    rows = state(LOG_ELSEWHERE, (2198, 2199, 2200, 2201), "chain, Restoring the Necklace not taken")
+    sc.eq(lua_verdict(w, 7667), ("keep", "Restoring the Necklace", False),
+          "chain: the phial until Restoring the Necklace is taken at the bowl: keep")
+    sc.eq(quest_tip(w, 0, 2), [("Keep: needed for Restoring the Necklace", buy)], "chain: phial tooltip names Restoring the Necklace")
+    sc.check(7667 not in [r[0] for r in rows], "chain: the phial is still not listed (%s)" % rows)
+    sc.eq(quest_rows(BP), [(7666, "done", pos), (900506, "not started", mu)],
+          "chain panel: the old necklace, the lamp not started; no phial")
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(any(t.endswith("old quest items: [Shattered Necklace] (done: The Shattered Necklace), "
+                            "[Miner's Lamp] (not started: Deeper Down)") for t in out),
+             "chain /fah bags: the same, no phial (%s)" % out)
+    # Taken (the player's case): the phial can go.
+    rows = state(LOG_NECKLACE, (2198, 2199, 2200, 2201), "chain, Restoring the Necklace taken")
+    sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "chain: Restoring the Necklace in the log: the phial is done")
+    sc.eq(quest_tip(w, 0, 2), [("Done: you can drop it (Find the Gems)", pos)], "chain: phial tooltip, green done line")
+    sc.eq(quest_rows(BP), [(7666, "done", pos), (7667, "done", pos), (900506, "not started", mu)],
+          "chain panel: the phial is listed as done")
+    out = [plain(x) for x in w.slash("/fah bags")]
+    sc.check(any("[Talvash's Phial of Scrying] (done: Find the Gems)" in t for t in out),
+             "chain /fah bags: the phial is done (%s)" % out)
+    state(qlog(2361, "Restoring the Necklace"), (2198, 2199, 2200, 2201, 2204), "chain, Restoring the Necklace done")
+    sc.eq(lua_verdict(w, 7667), ("done", "Find the Gems", False), "chain: Restoring the Necklace done: the phial is done")
+    # Closed headers and no IsOnQuest: whether it was taken cannot be told, so no verdict.
+    bag_quests(w, [{"title": "Uldaman", "isHeader": True, "isCollapsed": True}])
+    M.questDone = w.to_lua({q: True for q in (2198, 2199, 2200, 2201)})
+    quest_checks(sc, w, quests, set(), {2198, 2199, 2200, 2201}, "chain, headers closed", log_known=False, bag_list=CHAIN_BAG)
+    sc.eq(lua_verdict(w, 7667), None, "chain: headers closed, Restoring the Necklace may be under one: no verdict")
+    sc.eq(quest_tip(w, 0, 2), [], "chain: and no quest line")
+
+    # The lamp: Deeper Down comes after Into the Mine (all of 950039 and 950040,
+    # the second as a negative id). In the log: keep; done and Deeper Down not
+    # taken: a lamp you can find again is not started, as the fang is.
+    state(qlog(950040, "Into the Mine"), (), "chain, on Into the Mine")
+    sc.eq(lua_verdict(w, 900506), ("keep", "Deeper Down", False), "chain: the lamp while Into the Mine is in the log: keep")
+    sc.eq(quest_tip(w, 0, 3), [("Keep: needed for Deeper Down", buy)], "chain: lamp tooltip, gold keep line")
+    rows = state(LOG_ELSEWHERE, (950040,), "chain, Into the Mine done")
+    sc.eq(lua_verdict(w, 900506), ("open", "Deeper Down", False), "chain: Into the Mine done, Deeper Down not taken: not started")
+    sc.check((900506, "open", "Deeper Down") in rows, "chain: the lamp is listed as not started (%s)" % rows)
+    state(qlog(950041, "Deeper Down"), (950040,), "chain, on Deeper Down")
+    sc.eq(lua_verdict(w, 900506), ("keep", "Deeper Down", False), "chain: the lamp on Deeper Down")
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "chain")
+
+    # An Undead paladin: the Symbol of Life is the reward of 94435 and needed for
+    # 94438, which comes after 94436.
+    wp = World(ref, items, faction="Horde")
+    wp.M.race = wp.to_lua(["Undead", "Scourge", 5])
+    wp.M["class"] = wp.to_lua(["Paladin", "PALADIN", 2])
+    quests = install_questie(wp)
+    for bag, slot, iid, count, name, fields in SYMBOL_BAG:
+        bag_add_item(wp, iid, name, 1, 0, **fields)
+        bag_put(wp, bag, slot, iid, count)
+    bag_quests(wp, LOG_ELSEWHERE)
+    wp.ns.BagScan()
+    wp.settle(0.5)
+
+    def pstate(log, done, label):
+        return chain_state(sc, wp, quests, SYMBOL_BAG, log, done, label, race=5, cls=2)
+    rows = pstate(qlog(94436, "A Lesson in Divinity"), (94434, 94435), "paladin, on 94436")
+    sc.eq(lua_verdict(wp, 6866), ("keep", "A Lesson in Divinity", False),
+          "paladin: the Symbol of Life on the lesson before the one that needs it: keep")
+    sc.eq(quest_tip(wp, 0, 1), [("Keep: needed for A Lesson in Divinity", buy)], "paladin: symbol tooltip, gold keep line")
+    sc.eq(rows, [], "paladin: nothing listed on 94436")
+    rows = pstate(LOG_ELSEWHERE, (94434, 94435, 94436), "paladin, 94438 not taken")
+    sc.eq(lua_verdict(wp, 6866), ("keep", "A Lesson in Divinity", False),
+          "paladin: 94436 done, 94438 not taken: a reward you cannot get again is kept")
+    sc.eq(rows, [], "paladin: nothing listed before 94438")
+    pstate(qlog(94438, "A Lesson in Divinity"), (94434, 94435, 94436), "paladin, on 94438")
+    sc.eq(lua_verdict(wp, 6866), ("keep", "A Lesson in Divinity", False), "paladin: the symbol on 94438")
+    rows = pstate(LOG_ELSEWHERE, (94434, 94435, 94436, 94438), "paladin, 94438 done")
+    sc.eq(lua_verdict(wp, 6866), ("done", "A Lesson in Divinity", False), "paladin: 94438 done: done")
+    sc.eq(rows, [(6866, "done", "A Lesson in Divinity")], "paladin: then the symbol is listed as done")
+    sc.clean(wp, "chain paladin")
 
 
 def sc_bag_questie_slicing(sc, ref, items):
@@ -10174,6 +10407,7 @@ SCENARIOS = [
     ("bag-window-unreadable", sc_bag_window_unreadable),
     ("bag-check", sc_bag_check),
     ("bag-questie", sc_bag_questie),
+    ("bag-questie-chain", sc_bag_questie_chain),
     ("bag-questie-slicing", sc_bag_questie_slicing),
     ("bag-questie-saved", sc_bag_questie_saved),
     ("bag-questie-fallback", sc_bag_questie_fallback),

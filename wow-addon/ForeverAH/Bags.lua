@@ -49,7 +49,7 @@ local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes yo
 local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
                             -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-18f"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-18g"   -- /fah bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -414,11 +414,18 @@ end
 -- every quest is read, a few a frame (at most QI_BATCH quests, or about QI_MS
 -- milliseconds), into an index item -> quests (the quests that ask for it,
 -- as objectives or besides, and the one that gives it) that is kept in
--- ForeverAH_Settings. The quest an item starts is QuestieDB's item data, read
--- when needed. A quest item's verdict comes from the quests that use it (for
--- your race and class): the ones that ask for it, the one that gives it and
--- the quest after that one, and the one it starts:
---   keep    one of them is in your quest log (or one is repeatable)
+-- ForeverAH_Settings. The quest an item starts and the quests that reward it
+-- are QuestieDB's item data, read when needed. A quest item's verdict comes
+-- from the quests that use it (for your race and class): the ones that ask
+-- for it, the one that gives it and the quest after that one, and the one it
+-- starts (QuestieDB also lists a quest starter as the item its quest gives;
+-- it is handed in with that quest, so the quest after it does not count):
+--   keep    one of them is in your quest log (or one is repeatable). Also
+--           halfway along a chain, where a dropped item is gone for good:
+--           a quest you finished gave it to you or rewarded you with it, or
+--           a quest that needs it comes after one in your log; or its last
+--           quest was handed in at an object where the next quest starts (a
+--           scrying bowl the item calls up) and you have not taken that one
 --   starts  it starts a quest you have not done
 --   done    they are all done: you can drop it
 --   open    you have not started them (none is in your quest log)
@@ -617,6 +624,8 @@ end
 
 -- What a verdict needs from one quest, read once a session; false for a
 -- quest QuestieDB does not have.
+local PRE_KEYS = { "preQuestSingle", "preQuestGroup" }
+
 local function QuestInfo(L, q)
   local c = QI.info[q]
   if c ~= nil then return c end
@@ -634,6 +643,18 @@ local function QuestInfo(L, q)
       if x and x > 0 then ex[#ex + 1] = x end
     end
   end
+  -- The quests it comes after (preQuestSingle: one of them, preQuestGroup:
+  -- all of them; a negative id there is that quest too).
+  local pre = {}
+  for _, key in ipairs(PRE_KEYS) do
+    list = Q.Get(q, key)
+    if type(list) == "table" then
+      for _, x in pairs(list) do
+        x = Num(x)
+        if x and x ~= 0 then pre[#pre + 1] = x < 0 and -x or x end
+      end
+    end
+  end
   c = {
     name = name,
     races = Num(Q.Get(q, "requiredRaces")) or 0,
@@ -643,6 +664,7 @@ local function QuestInfo(L, q)
     -- It can no longer be taken once you did one of these.
     ex = ex,
     untilQ = Num(Q.Get(q, "availableUntilCompleted")),
+    pre = pre,
   }
   QI.info[q] = c
   return c
@@ -734,7 +756,39 @@ end
 
 -- Which quest a verdict names: one that asks for the item, else the one
 -- after the quest that gives it, the one it starts, the one that gives it.
-local RANK = { use = 1, nextq = 2, start = 3, give = 4 }
+local RANK = { use = 1, nextq = 2, start = 3, give = 4, after = 5 }
+
+-- The objects a quest is handed in at (key "finishedBy") or taken from
+-- ("startedBy"), as a set; read the first time a verdict needs them.
+local function QuestObjects(L, q, info, key)
+  local c = info[key]
+  if c then return c end
+  c = {}
+  local t = L.Quest.Get(q, key)
+  local list = type(t) == "table" and t[2] or nil
+  if type(list) == "table" then
+    for _, o in pairs(list) do
+      o = Num(o)
+      if o and o > 0 then c[o] = true end
+    end
+  end
+  info[key] = c
+  return c
+end
+
+-- The quest after q when it starts at an object q is handed in at (a
+-- scrying bowl an item calls up), it is for you and still open; else nil.
+local function HandedOverTo(L, q, info)
+  local n = info.nextQ
+  if not n or n <= 0 then return nil end
+  local ni = QuestInfo(L, n)
+  if not ni or not ForPlayer(L, ni) or Closed(ni, n) then return nil end
+  local ends = QuestObjects(L, q, info, "finishedBy")
+  for o in pairs(QuestObjects(L, n, ni, "startedBy")) do
+    if ends[o] then return n end
+  end
+  return nil
+end
 
 -- QuestieDB's verdict on a quest item (see above): { kind = "keep",
 -- "starts", "done" or "open", quest = id, name = its name, rep = true when
@@ -757,6 +811,11 @@ local function QuestieVerdict(id, log, startQ)
     order[#order + 1] = q
     return true
   end
+  -- The quest it starts first: QuestieDB lists a quest starter as the item
+  -- that quest gives too, and it has to stay the quest it starts.
+  local s1, s2 = Num(L.Item.Get(id, "startQuest")), Num(startQ)
+  add(s1, "start")
+  add(s2, "start")
   local entry, codes = QI.map[id], {}
   if type(entry) == "string" then
     for c in sgmatch(entry, "%d+") do codes[#codes + 1] = tonumber(c) end
@@ -765,20 +824,25 @@ local function QuestieVerdict(id, log, startQ)
   else
     codes[1] = entry
   end
+  -- givers: the quests that hand it to you. from: the quest after a giver
+  -- (the one the item is for) -> that giver.
+  local givers, from = {}, {}
   for i = 1, #codes do
     local c = Num(codes[i])
     if c and c > 0 then
       local q, role = floor(c / 4), c % 4
       if role == ROLE_USE then
         add(q, "use")
-      elseif role == ROLE_GIVE and add(q, "give") then
+      elseif role == ROLE_GIVE and q ~= s1 and q ~= s2 then
+        givers[#givers + 1] = q
         -- The quest after the one that gives it is the one it is for, as a rule.
-        add(R[q].info.nextQ, "nextq")
+        if add(q, "give") then
+          local n = R[q].info.nextQ
+          if add(n, "nextq") and not from[n] then from[n] = q end
+        end
       end
     end
   end
-  add(L.Item.Get(id, "startQuest"), "start")
-  add(startQ, "start")
   if #order == 0 then return nil end
   local function pick(want)
     local bq, br
@@ -809,7 +873,49 @@ local function QuestieVerdict(id, log, startQ)
   q = pick(function(x) return R[x].info.rep end)
   if q or REPEATABLE[id] then return verdict("keep", q or pick(any), true) end
   q = pick(function(x) return not closed[x] end)
-  if not q then return verdict("done", pick(any)) end
+  if not q then
+    -- All done, unless a quest it was given for is handed in at an object
+    -- where the next quest starts: until you take that one, the item is
+    -- the way back to it.
+    local wait = false
+    for _, x in ipairs(order) do
+      local n = from[x] and QuestDone(x) and HandedOverTo(L, x, R[x].info)
+      if n then
+        local s = InLog(n, ctx)
+        if s == false then
+          add(n, "after")
+          return verdict("keep", n)
+        end
+        if s == nil then wait = true end
+      end
+    end
+    if wait then return nil end
+    return verdict("done", pick(any))
+  end
+  -- Halfway along a chain, where a dropped item is gone for good: a quest
+  -- you finished gave it to you or rewarded you with it, or a quest that
+  -- needs it comes after one in your log.
+  local got = false
+  for _, g in ipairs(givers) do
+    if QuestDone(g) then got = true break end
+  end
+  if not got then
+    local rw = L.Item.Get(id, "questRewards")
+    if type(rw) == "table" then
+      for _, r in pairs(rw) do
+        if QuestDone(r) then got = true break end
+      end
+    end
+  end
+  local mid = pick(function(x)
+    if closed[x] then return false end
+    if got then return true end
+    for _, p in ipairs(R[x].info.pre) do
+      if InLog(p, ctx) == true then return true end
+    end
+    return false
+  end)
+  if mid then return verdict("keep", mid) end
   if unsure then return nil end
   return verdict("open", q)
 end
