@@ -885,6 +885,186 @@ local function OnSellItem(sf, loc)
 end
 
 ---------------------------------------------------------------------------
+-- Price arrows: a tiny up and down arrow in each gold, silver and copper box
+-- of the price boxes. Up adds 1 of that coin, down takes 1 away (carrying
+-- over like money does: 1s 99c + 1c = 2s). Holding one keeps going. The new
+-- price goes in the same way the Sell now button fills it.
+---------------------------------------------------------------------------
+local ARROW_W, ARROW_H = 9, 8
+local HOLD_DELAY, HOLD_EVERY = 0.4, 0.08
+local COIN_STEP = { gold = 10000, silver = 100, copper = 1 }
+local arrowSets = setmetatable({}, { __mode = "k" })   -- money box frame -> { get, put, max, gold = { up, down }, ... }
+AH.arrowSets = arrowSets
+AH.HOLD_DELAY, AH.HOLD_EVERY = HOLD_DELAY, HOLD_EVERY
+
+-- The gold, silver or copper edit box of a money box: GoldBox in the
+-- auction house's own boxes, gold (or the global <name>Gold) in the older ones.
+local function CoinBox(mf, coin)
+  local word = coin:sub(1, 1):upper() .. coin:sub(2)
+  local b = mf[word .. "Box"] or mf[coin]
+  if type(b) ~= "table" and type(mf.GetName) == "function" then
+    local ok, name = pcall(mf.GetName, mf)
+    if ok and type(name) == "string" and not IsSecret(name) then b = _G[name .. word] end
+  end
+  if type(b) == "table" and type(b.GetObjectType) == "function" then return b end
+  return nil
+end
+
+-- The highest price the gold box can hold (7 digits unless it says).
+local function MaxCopper(goldBox)
+  local digits = 7
+  if goldBox and type(goldBox.GetMaxLetters) == "function" then
+    local ok, n = pcall(goldBox.GetMaxLetters, goldBox)
+    n = ok and Num(n) or nil
+    if n and n >= 1 and n <= 9 then digits = floor(n) end
+  end
+  return (10 ^ digits - 1) * 10000 + 9999
+end
+
+-- One step: reads the price from the boxes (so what was just typed counts),
+-- adds or takes one coin and writes it back. Does nothing when that would go
+-- under 0 or past what the gold box holds, or while the box is turned off.
+local function ArrowStep(b)
+  local set, box = b.arrowSet, b:GetParent()
+  if type(set) ~= "table" or type(box) ~= "table" then return false end
+  if type(box.IsEnabled) == "function" then
+    local ok, on = pcall(box.IsEnabled, box)
+    if ok and on == false then return false end
+  end
+  local ok, now = pcall(set.get)
+  now = ok and Num(now) or nil
+  if not now then return false end
+  now = floor(now + 0.5)
+  local new = now + b.dir * (COIN_STEP[b.coin] or 1)
+  if new < 0 or new > set.max then return false end
+  return (pcall(set.put, new))
+end
+AH.ArrowStep = ArrowStep
+
+local function StopHold(b)
+  b.holding = nil
+  b:SetScript("OnUpdate", nil)
+end
+
+-- While an arrow is held: after a short pause, one more step every so often
+-- (at most one per frame). Stops when the mouse button is up.
+local function HoldTick(b, elapsed)
+  local down = _G.IsMouseButtonDown
+  if type(down) == "function" then
+    local ok, v = pcall(down, "LeftButton")
+    if ok and not v then return StopHold(b) end
+  end
+  b.wait = (b.wait or 0) - (Num(elapsed) or 0)
+  if b.wait > 0 then return end
+  b.wait = max(0, b.wait + HOLD_EVERY)
+  ArrowStep(b)
+end
+
+local function HoldUpdate(b, elapsed)
+  local ok, err = pcall(HoldTick, b, elapsed)
+  if not ok then
+    AH.lastError = err
+    pcall(StopHold, b)
+  end
+end
+
+local function ArrowMouseDown(b, mouse)
+  local ok, err = pcall(function()
+    if mouse ~= nil and mouse ~= "LeftButton" then return end
+    b.holding, b.wait = true, HOLD_DELAY
+    ArrowStep(b)
+    b:SetScript("OnUpdate", HoldUpdate)
+  end)
+  if not ok then AH.lastError = err end
+end
+
+local function ArrowStop(b)
+  local ok, err = pcall(StopHold, b)
+  if not ok then AH.lastError = err end
+end
+
+-- The game's small yellow arrow (pushed: Arrow-Up-Down). Its art has empty
+-- space around the arrow, so only the arrow part is shown; down is the same
+-- arrow turned over.
+local ARROW_UP, ARROW_PUSHED = "Interface\\Buttons\\Arrow-Up-Up", "Interface\\Buttons\\Arrow-Up-Down"
+local ARROW_COORD = { [1] = { 0, 0.8125, 0.1875, 0.875 }, [-1] = { 0, 0.8125, 0.875, 0.1875 } }
+
+-- An arrow lives in its box (it hides with it), in the strip at the box's
+-- right end: right of the coin icon in the auction house boxes, past where
+-- typed digits can reach. Up sits just above the middle, down just below.
+local function NewArrow(box, set, coin, dir, h)
+  local b = CreateFrame("Button", nil, box)
+  b:SetSize(ARROW_W, h)
+  b:SetPoint(dir > 0 and "BOTTOMRIGHT" or "TOPRIGHT", box, "RIGHT", -1, 0)
+  b:SetNormalTexture(ARROW_UP)
+  b:SetPushedTexture(ARROW_PUSHED)
+  pcall(b.SetHighlightTexture, b, ARROW_UP, "ADD")
+  local c = ARROW_COORD[dir]
+  for _, getter in ipairs({ "GetNormalTexture", "GetPushedTexture", "GetHighlightTexture" }) do
+    if type(b[getter]) == "function" then
+      local ok, t = pcall(b[getter], b)
+      if ok and type(t) == "table" and type(t.SetTexCoord) == "function" then
+        pcall(t.SetTexCoord, t, c[1], c[2], c[3], c[4])
+      end
+    end
+  end
+  b:EnableMouse(true)
+  b.arrowSet, b.coin, b.dir, b.isPriceArrow = set, coin, dir, true
+  b:SetScript("OnMouseDown", ArrowMouseDown)
+  b:SetScript("OnMouseUp", ArrowStop)
+  b:SetScript("OnHide", ArrowStop)
+  return b
+end
+
+-- Adds the arrows to a money box once. get() returns its price in copper and
+-- put(copper) writes one. A coin box that is missing simply gets none.
+local function AddPriceArrows(mf, get, put)
+  if type(mf) ~= "table" or type(get) ~= "function" or type(put) ~= "function" then return nil end
+  if arrowSets[mf] then return arrowSets[mf] end
+  local set = { get = get, put = put, max = MaxCopper(CoinBox(mf, "gold")) }
+  local any = false
+  for _, coin in ipairs({ "gold", "silver", "copper" }) do
+    local box = CoinBox(mf, coin)
+    if box then
+      local ok, up, down = pcall(function()
+        local okH, bh = pcall(box.GetHeight, box)
+        bh = okH and Num(bh) or 0
+        local h = bh > 0 and max(5, min(ARROW_H, floor((bh - 2) / 2))) or ARROW_H
+        return NewArrow(box, set, coin, 1, h), NewArrow(box, set, coin, -1, h)
+      end)
+      if ok then
+        set[coin] = { up = up, down = down }
+        any = true
+      else
+        AH.lastError = up
+      end
+    end
+  end
+  if not any then return nil end
+  arrowSets[mf] = set
+  return set
+end
+AH.AddPriceArrows = AddPriceArrows
+
+-- The price boxes of a Blizzard sell frame: the price (buyout), and the
+-- starting bid the item frame shows when buyout only is unticked.
+local function AddSellArrows(sf)
+  if type(sf) ~= "table" then return end
+  for _, key in ipairs({ "PriceInput", "SecondaryPriceInput" }) do
+    local input = sf[key]
+    if type(input) == "table" and type(input.GetAmount) == "function" and type(input.SetAmount) == "function" then
+      AddPriceArrows(input.MoneyInputFrame,
+        function() return input:GetAmount() end,
+        function(v)
+          input:SetAmount(v)
+          if type(sf.UpdatePostState) == "function" then sf:UpdatePostState() end
+        end)
+    end
+  end
+end
+AH.AddSellArrows = AddSellArrows
+
+---------------------------------------------------------------------------
 -- Auctionator (optional): follow its Shopping and Selling tabs
 ---------------------------------------------------------------------------
 local atrListener = {}
@@ -1009,7 +1189,25 @@ local function ApplyAuctionatorPrice(kind)
 end
 AH.ApplyAuctionatorPrice = ApplyAuctionatorPrice
 
+-- Arrows on Auctionator's buyout and bid boxes, when they are made of the
+-- game's own gold, silver and copper boxes. Written the same way as its
+-- price is filled above (its SetAmount).
+local function AddAtrArrows()
+  local sale = AtrSaleFrame()
+  if not sale then return end
+  for _, key in ipairs({ "Price", "BidPrice" }) do
+    local box = sale[key]
+    if type(box) == "table" and type(box.GetAmount) == "function" and type(box.SetAmount) == "function" then
+      AddPriceArrows(box.MoneyInput,
+        function() return box:GetAmount() end,
+        function(v) box:SetAmount(v) end)
+    end
+  end
+end
+
 local function CreateAtrUseButton()
+  local okA, errA = pcall(AddAtrArrows)
+  if not okA then AH.lastError = errA end
   if atrPair then return end
   local sale = AtrSaleFrame()
   if not sale then return end
@@ -1249,6 +1447,8 @@ local function HookModern()
     local sf = f[key]
     if type(sf) == "table" then
       CreateUseButton(sf, isCommodity)
+      local okA, errA = pcall(AddSellArrows, sf)
+      if not okA then AH.lastError = errA end
       SafeHook(sf, "SetItem", function(self, loc) OnSellItem(self, loc) end)
     end
   end
@@ -1376,6 +1576,17 @@ local function HookLegacy()
       "Fills the buyout and starting bid with 1 copper under the cheapest listing. Nothing is posted: you still click Create Auction.")
     AttachTooltip(legacyPair.best, "Suggested price",
       "Fills the buyout and starting bid with what this item usually sells for. Nothing is posted: you still click Create Auction.")
+  end
+  -- Arrows on the starting bid and buyout boxes, written like the buttons do.
+  for _, name in ipairs({ "StartPrice", "BuyoutPrice" }) do
+    local mf = _G[name]
+    if type(mf) == "table" and type(_G.MoneyInputFrame_GetCopper) == "function"
+      and type(_G.MoneyInputFrame_SetCopper) == "function" then
+      local okA, errA = pcall(AddPriceArrows, mf,
+        function() return _G.MoneyInputFrame_GetCopper(mf) end,
+        function(v) _G.MoneyInputFrame_SetCopper(mf, v) end)
+      if not okA then AH.lastError = errA end
+    end
   end
   if type(f.HookScript) == "function" then
     pcall(f.HookScript, f, "OnShow", function()

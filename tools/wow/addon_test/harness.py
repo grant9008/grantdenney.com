@@ -828,6 +828,7 @@ function TextureBase:SetTexCoord(...)
   local n = select("#", ...)
   if n ~= 4 and n ~= 8 then apiError("SetTexCoord: needs 4 or 8 numbers") end
   checkColor("SetTexCoord", ...)
+  self._coord = { ... }
 end
 function TextureBase:SetDrawLayer(layer, sub)
   if not LAYERS[layer] then apiError("SetDrawLayer: bad layer") end
@@ -1093,10 +1094,32 @@ function Button:GetFontString() return self._fontString end
 function Button:SetNormalFontObject(f) end
 function Button:SetHighlightFontObject(f) end
 function Button:SetDisabledFontObject(f) end
-function Button:SetNormalTexture(t) end
-function Button:SetHighlightTexture(t) end
-function Button:SetPushedTexture(t) end
-function Button:SetDisabledTexture(t) end
+-- A button's state textures: set from a file they are textures of the button
+-- covering it, and Get<State>Texture gives them back, as in the game.
+local function stateTexture(self, key, t, layer)
+  if isRegion(t) then self[key] = t; return end
+  if t ~= nil and type(t) ~= "string" and type(t) ~= "number" then apiError("Button: bad state texture") end
+  local tex = rawget(self, key)
+  if not tex then
+    tex = newObject("Texture", self, nil)
+    tex._layer = layer
+    tex:SetAllPoints(self)
+    self[key] = tex
+  end
+  tex:SetTexture(t)
+  return tex
+end
+function Button:SetNormalTexture(t) stateTexture(self, "_normalTex", t, "ARTWORK") end
+function Button:SetPushedTexture(t) stateTexture(self, "_pushedTex", t, "ARTWORK") end
+function Button:SetDisabledTexture(t) stateTexture(self, "_disabledTex", t, "ARTWORK") end
+function Button:SetHighlightTexture(t, blend)
+  local tex = stateTexture(self, "_highlightTex", t, "HIGHLIGHT")
+  if tex and blend then tex:SetBlendMode(blend) end
+end
+function Button:GetNormalTexture() return self._normalTex end
+function Button:GetPushedTexture() return self._pushedTex end
+function Button:GetDisabledTexture() return self._disabledTex end
+function Button:GetHighlightTexture() return self._highlightTex end
 function Button:RegisterForClicks(...) end
 function Button:Enable() self._disabled = false end
 function Button:Disable() self._disabled = true end
@@ -1120,7 +1143,12 @@ function EditBox:SetFocus() self._focus = true end
 function EditBox:ClearFocus() self._focus = false end
 function EditBox:HasFocus() return self._focus == true end
 function EditBox:SetAutoFocus(v) end
-function EditBox:SetMaxLetters(n) end
+function EditBox:SetMaxLetters(n) self._maxLetters = n end
+function EditBox:GetMaxLetters() return self._maxLetters or 0 end
+function EditBox:Enable() self._disabled = false end
+function EditBox:Disable() self._disabled = true end
+function EditBox:IsEnabled() return not self._disabled end
+function EditBox:SetEnabled(v) self._disabled = not v end
 function EditBox:SetNumeric(v) end
 function EditBox:SetCursorPosition(n) end
 function EditBox:Insert(t) self:SetText((self._text or "") .. t) end
@@ -1546,6 +1574,23 @@ function M.click(btn, mouse)
   btn:Click(mouse)
   M.hw = prev
   return true
+end
+-- The mouse buttons held down (IsMouseButtonDown), and a press and release
+-- on a frame the way the game sends them: OnMouseDown, later OnMouseUp.
+M.mouseButtons = {}
+function IsMouseButtonDown(b) return M.mouseButtons[b or "LeftButton"] == true end
+function M.press(f, b)
+  b = b or "LeftButton"
+  if not isRegion(f) or not f:IsVisible() then M.err("harness", "pressed a frame that is not visible: " .. tostring(f)); return false end
+  M.mouseButtons[b] = true
+  M.fireScript(f, "OnMouseDown", b)
+  return true
+end
+-- f = nil: the button comes up somewhere the frame never hears of it.
+function M.release(f, b)
+  b = b or "LeftButton"
+  M.mouseButtons[b] = false
+  if f then M.fireScript(f, "OnMouseUp", b) end
 end
 function M.enter(f) M.fireScript(f, "OnEnter", true) end
 function M.leave(f) M.fireScript(f, "OnLeave", true) end
@@ -2424,8 +2469,17 @@ function M.InstallLegacyAPI()
     if not isRegion(frame) then error("MoneyInputFrame_SetCopper: bad frame", 2) end
     if not finite(copper) or copper < 0 or copper ~= floor(copper) then error("MoneyInputFrame_SetCopper: bad copper " .. tostring(copper), 2) end
     frame._copper = copper
+    if frame.gold then   -- the boxes, as the game's MoneyInputFrame_SetCopper writes them
+      frame.copper:SetNumber(copper % 100)
+      frame.silver:SetNumber(floor((copper % 10000) / 100))
+      frame.gold:SetNumber(floor(copper / 10000))
+    end
   end
-  function MoneyInputFrame_GetCopper(frame) return frame._copper or 0 end
+  -- Reads the boxes (what the player typed) when the frame has them.
+  function MoneyInputFrame_GetCopper(frame)
+    if frame.gold then return frame.copper:GetNumber() + frame.silver:GetNumber() * 100 + frame.gold:GetNumber() * 10000 end
+    return frame._copper or 0
+  end
 end
 
 M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
@@ -2492,27 +2546,72 @@ AuctionHouseFrameDisplayMode = {
   Auctions = { "AuctionsFrame" },
 }
 
-local function makeMoneyInput(parent)
+-- One box of LargeMoneyInputFrameTemplate (Blizzard_MoneyFrame/Shared/MoneyInputFrame.xml):
+-- LargeInputBoxTemplate is 33 tall with text insets of 10 on each side; the
+-- coin icon (12x14) sits at RIGHT -10, 2.
+local function makeCoinBox(mif)
+  local b = CreateFrame("EditBox", nil, mif)
+  b:SetHeight(33)
+  b.Icon = b:CreateTexture(nil, "ARTWORK")
+  b.Icon:SetSize(12, 14)
+  b.Icon:SetPoint("RIGHT", b, "RIGHT", -10, 2)
+  b.textInsetL, b.textInsetR = 10, 10
+  return b
+end
+
+-- AuctionHouseAlignedPriceInputFrameTemplate (Blizzard_AuctionHouseSellFrame.xml):
+-- a row (200x30, the bid row 300x20) with its label (93 wide) on the left and
+-- the money boxes (LargeMoneyInputFrameTemplate, 190x33) 18 right of it, 2 down.
+-- Copper 50 wide at the right, silver 50 wide 6 left of it, gold fills the rest.
+-- GetAmount reads the boxes (what the player typed), like LargeMoneyInputFrameMixin.
+local function makeMoneyInput(parent, w, h)
   local p = CreateFrame("Frame", nil, parent)
-  p:SetSize(240, 32)
-  p.MoneyInputFrame = CreateFrame("Frame", nil, p)
-  p.MoneyInputFrame:SetAllPoints(p)
-  p.MoneyInputFrame.GoldBox = CreateFrame("EditBox", nil, p.MoneyInputFrame)
-  p.MoneyInputFrame.SilverBox = CreateFrame("EditBox", nil, p.MoneyInputFrame)
-  p.MoneyInputFrame.CopperBox = CreateFrame("EditBox", nil, p.MoneyInputFrame)
-  p.amount = 0
+  p:SetSize(w or 200, h or 30)
+  p.Label = p:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+  p.Label:SetSize(93, 12)
+  p.Label:SetPoint("LEFT", p, "LEFT", 0, 0)
+  p.Label:SetText("Unit Price")
+  local mif = CreateFrame("Frame", nil, p)
+  mif:SetSize(190, 33)
+  mif:SetPoint("LEFT", p.Label, "RIGHT", 18, -2)
+  p.MoneyInputFrame = mif
+  mif.CopperBox = makeCoinBox(mif)
+  mif.CopperBox:SetWidth(50)
+  mif.CopperBox:SetPoint("RIGHT", mif, "RIGHT", 0, 0)
+  mif.SilverBox = makeCoinBox(mif)
+  mif.SilverBox:SetWidth(50)
+  mif.SilverBox:SetPoint("RIGHT", mif.CopperBox, "LEFT", -6, 0)
+  mif.GoldBox = makeCoinBox(mif)
+  mif.GoldBox:SetPoint("LEFT", mif, "LEFT", 0, 0)
+  mif.GoldBox:SetPoint("RIGHT", mif.SilverBox, "LEFT", -6, 0)
+  mif.GoldBox:SetMaxLetters(7)
+  if not C_AuctionHouse.SupportsCopperValues() then
+    mif.CopperBox:Hide()
+    mif.SilverBox:ClearAllPoints()
+    mif.SilverBox:SetPoint("RIGHT", mif.CopperBox, "RIGHT")
+  end
+  function mif:SetAmount(amount)
+    self.CopperBox:SetNumber(amount % 100)
+    self.SilverBox:SetNumber(math.floor((amount % 10000) / 100))
+    self.GoldBox:SetNumber(math.floor(amount / 10000))
+  end
+  function mif:GetAmount()
+    return self.CopperBox:GetNumber() + self.SilverBox:GetNumber() * 100 + self.GoldBox:GetNumber() * 10000
+  end
+  function mif:Clear()
+    self.CopperBox:SetText("")
+    self.SilverBox:SetText("")
+    self.GoldBox:SetText("")
+  end
   function p:SetAmount(amount)
     if type(amount) ~= "number" or amount ~= amount or amount < 0 or amount ~= math.floor(amount) then
       error("PriceInput:SetAmount: bad amount " .. tostring(amount), 2)
     end
     if not C_AuctionHouse.SupportsCopperValues() then amount = amount - amount % 100 end
-    self.amount = amount
-    self.MoneyInputFrame.GoldBox:SetText(math.floor(amount / 10000))
-    self.MoneyInputFrame.SilverBox:SetText(math.floor(amount / 100) % 100)
-    self.MoneyInputFrame.CopperBox:SetText(amount % 100)
+    if amount == 0 then self.MoneyInputFrame:Clear() else self.MoneyInputFrame:SetAmount(amount) end
   end
-  function p:GetAmount() return self.amount end
-  function p:Clear() self:SetAmount(0) end
+  function p:GetAmount() return self.MoneyInputFrame:GetAmount() end
+  function p:Clear() self.MoneyInputFrame:Clear() end
   return p
 end
 
@@ -2524,11 +2623,20 @@ local function makeSellFrame(ah, key, isCommodity)
   sf.isCommodity = isCommodity
   sf.ItemDisplay = CreateFrame("Frame", nil, sf)
   sf.ItemDisplay.ItemButton = CreateFrame("Button", nil, sf.ItemDisplay)
+  -- The rows as the sell frame's VerticalLayoutFrame stacks them (left padding
+  -- 11, top 12, item display 72 + 8, then 15 between rows): quantity, the bid
+  -- (item frame, when shown: 5 more on top), the price.
   sf.QuantityInput = CreateFrame("Frame", nil, sf)
+  sf.QuantityInput:SetSize(200, 30)
+  sf.QuantityInput:SetPoint("TOPLEFT", sf, "TOPLEFT", 11, -107)
   sf.QuantityInput.InputBox = CreateFrame("EditBox", nil, sf.QuantityInput)
+  sf.QuantityInput.InputBox:SetSize(134, 33)
+  sf.QuantityInput.InputBox:SetPoint("LEFT", sf.QuantityInput, "LEFT", 93 + 18, -2)
   sf.QuantityInput.MaxButton = CreateFrame("Button", nil, sf.QuantityInput)
+  sf.QuantityInput.MaxButton:SetSize(75, 22)
+  sf.QuantityInput.MaxButton:SetPoint("LEFT", sf.QuantityInput.InputBox, "RIGHT", 6, 2)
   sf.PriceInput = makeMoneyInput(sf)
-  sf.PriceInput:SetPoint("TOPLEFT", sf, "TOPLEFT", 0, -150)
+  sf.PriceInput:SetPoint("TOPLEFT", sf, "TOPLEFT", 11, -152)
   sf.Duration = CreateFrame("Frame", nil, sf)
   sf.Duration.Dropdown = CreateFrame("Frame", nil, sf.Duration)
   sf.PostButton = CreateFrame("Button", nil, sf, "UIPanelButtonTemplate")
@@ -2544,7 +2652,20 @@ local function makeSellFrame(ah, key, isCommodity)
       C_AuctionHouse.PostItem(loc, 2, 1, nil, sf.PriceInput:GetAmount())
     end
   end)
-  if not isCommodity then sf.SecondaryPriceInput = makeMoneyInput(sf) end
+  if not isCommodity then
+    -- The starting bid (hidden while buyout only is ticked), as in
+    -- AuctionHouseItemSellFrameMixin:SetSecondaryPriceInputEnabled.
+    sf.SecondaryPriceInput = makeMoneyInput(sf, 300, 20)
+    sf.SecondaryPriceInput:SetPoint("TOPLEFT", sf, "TOPLEFT", 11, -157)
+    sf.SecondaryPriceInput:Hide()
+    function sf:SetSecondaryPriceInputEnabled(enabled)
+      self.SecondaryPriceInput:SetShown(enabled)
+      self.SecondaryPriceInput:Clear()
+      self.PriceInput:ClearAllPoints()
+      self.PriceInput:SetPoint("TOPLEFT", self, "TOPLEFT", 11, enabled and -192 or -152)
+      self:UpdatePostState()
+    end
+  end
   sf.postStateUpdates = 0
   function sf:GetDefaultPrice()
     local loc = self:GetItem()
@@ -2801,6 +2922,24 @@ M.loadOnDemand["Blizzard_AuctionUI"] = function()
   CreateFrame("EditBox", "AuctionsNumStacksEntry", auctions):SetText("1")
   local sp = CreateFrame("Frame", "StartPrice", auctions); sp:SetSize(160, 20); sp:SetPoint("TOPLEFT", auctions, "TOPLEFT", 20, -200)
   local bp = CreateFrame("Frame", "BuyoutPrice", auctions); bp:SetSize(160, 20); bp:SetPoint("TOPLEFT", sp, "BOTTOMLEFT", 0, -20)
+  -- MoneyInputFrameTemplate (Blizzard_MoneyFrame/Classic/MoneyInputFrame.xml): <name>Gold 58x20
+  -- (6 letters), <name>Silver 30x20 26 right of it, <name>Copper 30x20 16 right of
+  -- that, each with its 13x13 coin 2 right of the box.
+  for _, mf in ipairs({ sp, bp }) do
+    local function box(key, word, w)
+      local b = CreateFrame("EditBox", mf:GetName() .. word, mf)
+      b:SetSize(w, 20)
+      b.texture = b:CreateTexture(nil, "BACKGROUND")
+      b.texture:SetSize(13, 13)
+      b.texture:SetPoint("LEFT", b, "RIGHT", 2, 0)
+      mf[key] = b
+      return b
+    end
+    box("gold", "Gold", 58):SetPoint("TOPLEFT", mf, "TOPLEFT", 0, 0)
+    mf.gold:SetMaxLetters(6)
+    box("silver", "Silver", 30):SetPoint("LEFT", mf.gold, "RIGHT", 26, 0)
+    box("copper", "Copper", 30):SetPoint("LEFT", mf.silver, "RIGHT", 16, 0)
+  end
   local create = CreateFrame("Button", "AuctionsCreateAuctionButton", auctions, "UIPanelButtonTemplate")
   create:SetSize(191, 20)
   create:SetPoint("BOTTOMLEFT", auctions, "BOTTOMLEFT", 18, 39)
@@ -2872,20 +3011,43 @@ ev:SetScript("OnEvent", function(_, event, t)
   price:SetHeight(7)
   price:SetPoint("TOPLEFT", sell.SaleItemFrame, "TOPLEFT", 70, -68)
   price:SetPoint("RIGHT", sell.SaleItemFrame, "RIGHT", 0, 0)
-  price.MoneyInput = CreateFrame("Frame", nil, price)
-  price.MoneyInput:SetSize(150, 20)
-  price.MoneyInput:SetPoint("TOPLEFT", price, "BOTTOMLEFT", 120, 0)
-  price.amount = 0
-  function price:SetAmount(v) self.amount = v end
-  function price:GetAmount() return self.amount end
+  -- The money box is assumed to be made of the game's own gold, silver and
+  -- copper boxes (GoldBox, SilverBox, CopperBox); its SetAmount / GetAmount
+  -- write and read them.
+  local function moneyInput(owner)
+    local mi = CreateFrame("Frame", nil, owner)
+    mi:SetSize(150, 20)
+    mi:SetPoint("TOPLEFT", owner, "BOTTOMLEFT", 120, 0)
+    local function box(w)
+      local b = CreateFrame("EditBox", nil, mi)
+      b:SetSize(w, 20)
+      return b
+    end
+    mi.CopperBox = box(36)
+    mi.CopperBox:SetPoint("RIGHT", mi, "RIGHT", 0, 0)
+    mi.SilverBox = box(36)
+    mi.SilverBox:SetPoint("RIGHT", mi.CopperBox, "LEFT", -6, 0)
+    mi.GoldBox = box(66)
+    mi.GoldBox:SetPoint("RIGHT", mi.SilverBox, "LEFT", -6, 0)
+    owner.MoneyInput = mi
+    owner.amount = 0
+    function owner:SetAmount(v)
+      self.amount = v
+      mi.CopperBox:SetNumber(v % 100)
+      mi.SilverBox:SetNumber(math.floor((v % 10000) / 100))
+      mi.GoldBox:SetNumber(math.floor(v / 10000))
+    end
+    function owner:GetAmount()
+      return mi.CopperBox:GetNumber() + mi.SilverBox:GetNumber() * 100 + mi.GoldBox:GetNumber() * 10000
+    end
+  end
+  moneyInput(price)
   sell.SaleItemFrame.Price = price
   local bid = CreateFrame("Frame", nil, sell.SaleItemFrame)
   bid:SetHeight(7)
   bid:SetPoint("TOPLEFT", price, "BOTTOMLEFT", 0, -30)
   bid:SetPoint("RIGHT", sell.SaleItemFrame, "RIGHT", 0, 0)
-  bid.MoneyInput = CreateFrame("Frame", nil, bid)
-  bid.MoneyInput:SetSize(150, 20)
-  bid.MoneyInput:SetPoint("TOPLEFT", bid, "BOTTOMLEFT", 120, 0)
+  moneyInput(bid)
   bid:Hide()
   sell.SaleItemFrame.BidPrice = bid
   local listener = {}
@@ -5064,6 +5226,476 @@ def sc_ah_no_copper(sc, ref, items):
             sc.eq(v % 100, 0, "no copper: whole silver (%d)" % k)
     w.close_ah_modern()
     sc.clean(w)
+
+
+# ---------------------------------------------------------------------------
+# Price arrows: a little up and down arrow in each gold, silver and copper box
+# ---------------------------------------------------------------------------
+ARROW_COINS = (("gold", "GoldBox", 10000), ("silver", "SilverBox", 100), ("copper", "CopperBox", 1))
+
+
+def lua_children(o):
+    ch = o._children
+    return [] if ch is None else [ch[i] for i in range(1, len(ch) + 1)]
+
+
+def arrows_of(box):
+    """([up arrows], [down arrows]) the addon put in a coin box."""
+    kids = [c for c in lua_children(box) if c.isPriceArrow]
+    return [c for c in kids if c.dir == 1], [c for c in kids if c.dir == -1]
+
+
+def arrow_pair(box):
+    up, down = arrows_of(box)
+    return (up[0] if up else None), (down[0] if down else None)
+
+
+def arrow_click(w, b):
+    """A click on an arrow: the mouse button goes down on it, then comes up."""
+    w.M.press(b)
+    w.M.release(b)
+
+
+def overlaps(a, b, eps=1e-6):
+    return a[0] < b[2] - eps and b[0] < a[2] - eps and a[1] < b[3] - eps and b[1] < a[3] - eps
+
+
+def inside(a, b, eps=1e-6):
+    return a[0] >= b[0] - eps and a[2] <= b[2] + eps and a[1] >= b[1] - eps and a[3] <= b[3] + eps
+
+
+def coin_texts(mif, keys=("GoldBox", "SilverBox", "CopperBox")):
+    return tuple(mif[k]._text for k in keys)
+
+
+def boxes_for(copper):
+    """What Blizzard's price box shows for a price: empty boxes for 0."""
+    if copper == 0:
+        return ("", "", "")
+    return (str(copper // 10000), str(copper // 100 % 100), str(copper % 100))
+
+
+def arrows_exist_ok(sc, w, label, mif):
+    """One up and one down arrow in each coin box, made by the addon, living in that box."""
+    for coin, key, _ in ARROW_COINS:
+        box = mif[key]
+        up, down = arrows_of(box)
+        sc.eq((len(up), len(down)), (1, 1), "%s %s: one up and one down arrow" % (label, coin))
+        if up and down:
+            sc.check(w.same(up[0].GetParent(up[0]), box) and w.same(down[0].GetParent(down[0]), box),
+                     "%s %s: the arrows live in the box (they hide with it)" % (label, coin))
+            sc.check(up[0].coin == coin and down[0].coin == coin, "%s %s: arrows know their coin" % (label, coin))
+
+
+def arrow_layout_ok(sc, w, label, mif, avoid=()):
+    """Arrows sit in the strip at each box's right end: inside the box, right of the
+    coin icon and of where typed digits can go, up just above the middle, down just
+    below, and clear of every other control named in avoid."""
+    M = w.M
+    for coin, key, _ in ARROW_COINS:
+        box = mif[key]
+        up, down = arrow_pair(box)
+        if up is None or down is None:
+            sc.check(False, "%s %s: arrows to measure" % (label, coin))
+            continue
+        rb, ru, rd = w.rect(box), w.rect(up), w.rect(down)
+        s = M.eff(box)
+        sc.eq((up._w, up._h, down._w, down._h), (9, 8, 9, 8), "%s %s: arrows are 9x8" % (label, coin))
+        sc.check(inside(ru, rb) and inside(rd, rb), "%s %s: both arrows inside the box (%s %s in %s)" % (label, coin, ru, rd, rb))
+        inset = box.textInsetR if box.textInsetR is not None else 10
+        sc.check(ru[0] >= rb[2] - inset * s - 1e-6 and rd[0] >= rb[2] - inset * s - 1e-6,
+                 "%s %s: arrows stay right of the typed digits (text inset %s)" % (label, coin, inset))
+        if box.Icon is not None:
+            ri = w.rect(box.Icon)
+            sc.check(not overlaps(ru, ri) and not overlaps(rd, ri), "%s %s: arrows do not cover the coin icon" % (label, coin))
+        sc.check(ru[1] >= rd[3] - 1e-6, "%s %s: up sits above down" % (label, coin))
+        cy = (rb[1] + rb[3]) / 2
+        sc.check(abs((ru[3] + rd[1]) / 2 - cy) < 1e-6, "%s %s: the pair is centred on the box" % (label, coin))
+        for other_key in ("GoldBox", "SilverBox", "CopperBox"):
+            if other_key != key and mif[other_key] is not None:
+                ro = w.rect(mif[other_key])
+                sc.check(not overlaps(ru, ro) and not overlaps(rd, ro), "%s %s: clear of the %s" % (label, coin, other_key))
+        for name, o in avoid:
+            if o is None:
+                continue
+            ro = w.rect(o)
+            sc.check(ro is not None and not overlaps(ru, ro) and not overlaps(rd, ro),
+                     "%s %s: clear of %s (%s)" % (label, coin, name, ro))
+
+
+def sc_price_arrows(sc, ref, items):
+    """Up and down arrows in each gold, silver and copper box of the auction house
+    price boxes: they change the price by one coin (carry and borrow), never below 0,
+    repeat while held, and fill the box the way the Sell now button does."""
+    w = World(ref, items)
+    ns, M = w.ns, w.M
+    AHS = ns.AHState
+    w.put_bag(0, 1, R.RUNE, 20)
+    w.put_bag(0, 2, R.ARCANE, 3)
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    csf, isf = ah.CommoditiesSellFrame, ah.ItemSellFrame
+    inputs = (("commodity price", csf.PriceInput), ("item price", isf.PriceInput), ("item bid", isf.SecondaryPriceInput))
+    for label, inp in inputs:
+        arrows_exist_ok(sc, w, label, inp.MoneyInputFrame)
+    first = {}
+    for label, inp in inputs:
+        for coin, key, _ in ARROW_COINS:
+            first[(label, coin)] = arrow_pair(inp.MoneyInputFrame[key])
+    # Made once: hooking again, or opening the auction house again, adds none.
+    AHS.AddSellArrows(csf)
+    AHS.AddSellArrows(isf)
+    for _ in range(2):
+        w.close_ah_modern()
+        w.open_ah_modern()
+    for label, inp in inputs:
+        for coin, key, _ in ARROW_COINS:
+            up, down = arrows_of(inp.MoneyInputFrame[key])
+            sc.eq((len(up), len(down)), (1, 1), "%s %s: still one pair after opening the AH three times" % (label, coin))
+            sc.check(up and w.same(up[0], first[(label, coin)][0]), "%s %s: the same arrows as before" % (label, coin))
+    # Hidden with the frame: nothing shows in the Buy view.
+    sc.check(not any(b.IsVisible(b) for v in first.values() for b in v), "arrows hidden while no sell frame is shown")
+
+    # Runecloth in the commodity sell frame
+    lowest = ref.items[R.RUNE]["cheapest"]
+    w.set_commodity_results(R.RUNE, [(lowest, 50, False)])
+    loc = w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1)
+    ah.SetPostItem(ah, loc)
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
+    w.settle(0.2)
+    pin = csf.PriceInput
+    mif = pin.MoneyInputFrame
+    arrows = {coin: arrow_pair(mif[key]) for coin, key, _ in ARROW_COINS}
+    sc.check(all(b.IsVisible(b) for v in arrows.values() for b in v), "commodity: all six arrows show with the sell frame")
+    sc.check(not any(b.IsVisible(b) for c in ("gold", "silver", "copper") for b in first[("item price", c)]),
+             "commodity: the item frame's arrows stay hidden with it")
+    now_btn, best_btn = find_sell_buttons(csf)
+    arrow_layout_ok(sc, w, "commodity", mif, avoid=(
+        ("the label", pin.Label), ("the quantity box", csf.QuantityInput.InputBox), ("Max", csf.QuantityInput.MaxButton),
+        ("Post", csf.PostButton), ("Sell now", now_btn), ("Suggested", best_btn)))
+
+    # The game's own arrow art (no new files): just the arrow part, down turned over
+    for coin, (u, d) in arrows.items():
+        for b, coord, word in ((u, (0, 0.8125, 0.1875, 0.875), "up"), (d, (0, 0.8125, 0.875, 0.1875), "down")):
+            tn, tp, th = b.GetNormalTexture(b), b.GetPushedTexture(b), b.GetHighlightTexture(b)
+            sc.check(b.GetScript(b, "OnEnter") is None, "%s %s: no tooltip to pop up" % (coin, word))
+            sc.check(tn is not None and tp is not None and th is not None, "%s %s: normal, pushed and highlight art" % (coin, word))
+            if tn is None or tp is None or th is None:
+                continue
+            sc.eq((tn._texture, tp._texture, th._texture, th._blend),
+                  ("Interface\\Buttons\\Arrow-Up-Up", "Interface\\Buttons\\Arrow-Up-Down", "Interface\\Buttons\\Arrow-Up-Up", "ADD"),
+                  "%s %s: the game's arrow textures" % (coin, word))
+            for t in (tn, tp, th):
+                c = t._coord
+                sc.eq(tuple(c[i] for i in range(1, 5)) if c is not None else None, coord,
+                      "%s %s: shows just the arrow%s" % (coin, word, ", turned over" if word == "down" else ""))
+
+    def amount():
+        return pin.GetAmount(pin)
+
+    def setp(v):
+        pin.SetAmount(pin, v)
+
+    MAXC = 9999999 * 10000 + 9999
+    cases = [
+        (199, "copper", 1, 200, "1s 99c + 1c carries to 2s"),
+        (200, "copper", -1, 199, "2s - 1c borrows to 1s 99c"),
+        (19999, "copper", 1, 20000, "1g 99s 99c + 1c = 2g"),
+        (20000, "copper", -1, 19999, "2g - 1c = 1g 99s 99c"),
+        (9999, "silver", 1, 10099, "99s 99c + 1s = 1g 99c"),
+        (10050, "silver", -1, 9950, "1g 50c - 1s = 99s 50c"),
+        (10000, "gold", 1, 20000, "1g + 1g"),
+        (10000, "gold", -1, 0, "1g - 1g = 0 (the boxes empty, as Blizzard shows 0)"),
+        (lowest, "silver", 1, lowest + 100, "the filled price + 1s"),
+        (0, "copper", -1, 0, "0 - 1c stays 0"),
+        (0, "gold", -1, 0, "0 - 1g stays 0"),
+        (500, "gold", -1, 500, "5s - 1g stays 5s (never below 0)"),
+        (50, "silver", -1, 50, "50c - 1s stays 50c"),
+        (MAXC, "gold", 1, MAXC, "the most the gold box holds + 1g stays"),
+        (MAXC, "copper", 1, MAXC, "the most the gold box holds + 1c stays"),
+        (MAXC - 1, "copper", 1, MAXC, "up to the most the gold box holds"),
+    ]
+    for start, coin, d, want, what in cases:
+        setp(start)
+        before = csf.postStateUpdates
+        b = arrows[coin][0 if d > 0 else 1]
+        arrow_click(w, b)
+        sc.eq(amount(), want, "commodity %s %s: %s" % (coin, "up" if d > 0 else "down", what))
+        sc.eq(coin_texts(mif), boxes_for(want), "commodity %s: the boxes show it (%s)" % (coin, what))
+        if want != start:
+            sc.eq(csf.postStateUpdates, before + 1, "commodity %s: the sell frame is refreshed (UpdatePostState) (%s)" % (coin, what))
+            sc.eq(csf.totalPrice, want * 20, "commodity %s: total price follows (%s)" % (coin, what))
+        else:
+            sc.eq(csf.postStateUpdates, before, "commodity %s: nothing written when nothing changes (%s)" % (coin, what))
+        sc.check(b.GetScript(b, "OnUpdate") is None, "commodity %s: nothing keeps running after a click" % coin)
+
+    # What was just typed counts (read from the boxes, not remembered)
+    setp(lowest)
+    arrow_click(w, arrows["copper"][0])
+    for k, t in (("GoldBox", "3"), ("SilverBox", "7"), ("CopperBox", "5")):
+        mif[k].SetText(mif[k], t)
+    arrow_click(w, arrows["copper"][0])
+    sc.eq(amount(), 30706, "typed 3g 7s 5c, then copper up: 3g 7s 6c")
+    mif.SilverBox.SetText(mif.SilverBox, "")
+    arrow_click(w, arrows["silver"][1])
+    sc.eq(amount(), 29906, "silver box emptied (3g 6c), then silver down: borrows from gold")
+    sc.eq(coin_texts(mif), ("2", "99", "6"), "the boxes show 2g 99s 6c")
+
+    # Only the left button; a turned-off box ignores its arrows
+    setp(1000)
+    M.press(arrows["silver"][0], "RightButton")
+    M.release(arrows["silver"][0], "RightButton")
+    sc.eq(amount(), 1000, "right-click does nothing")
+    mif.CopperBox.Disable(mif.CopperBox)
+    arrow_click(w, arrows["copper"][0])
+    sc.eq(amount(), 1000, "a turned-off box ignores its arrows")
+    mif.CopperBox.Enable(mif.CopperBox)
+
+    # Holding an arrow: one step at once, then after 0.4s one every 0.08s
+    up_c = arrows["copper"][0]
+    setp(0)
+    M.press(up_c)
+    sc.eq(amount(), 1, "hold: the first step comes at once")
+    w.tick(39, 0.01)
+    sc.eq(amount(), 1, "hold: nothing more before the 0.4s pause is over")
+    w.tick(5, 0.01)
+    sc.eq(amount(), 2, "hold: the pause is over, it starts repeating")
+    w.tick(81, 0.01)
+    sc.eq(amount(), 12, "hold: one step every 0.08s (12 after 1.25s)")
+    M.release(up_c)
+    sc.check(up_c.GetScript(up_c, "OnUpdate") is None, "hold: mouse up stops it")
+    w.tick(100, 0.01)
+    sc.eq(amount(), 12, "hold: nothing more after mouse up")
+    # A long frame does not make it jump
+    M.press(up_c)
+    w.tick(1, 0.4)
+    w.tick(1, 2.0)
+    sc.eq(amount(), 15, "hold: at most one step per frame, even after a long one")
+    w.tick(5, 0.01)
+    sc.eq(amount(), 16, "hold: after a long frame it does not race to catch up")
+    M.release(up_c)
+    # Holding down runs to 0 and stops there
+    dn_s = arrows["silver"][1]
+    setp(450)
+    M.press(dn_s)
+    w.tick(200, 0.01)
+    sc.eq(amount(), 50, "hold down: 4s 50c runs down to 50c and stays (never below 0)")
+    M.release(dn_s)
+    # The arrow hides while held: it stops, and does not start again when shown
+    up_s = arrows["silver"][0]
+    setp(0)
+    M.press(up_s)
+    w.tick(45, 0.01)
+    held = amount()
+    sc.eq(held, 200, "hold: 2 steps after 0.45s")
+    up_s.Hide(up_s)
+    sc.check(up_s.GetScript(up_s, "OnUpdate") is None, "hide: an arrow that hides stops repeating")
+    up_s.Show(up_s)
+    w.tick(100, 0.01)
+    sc.eq(amount(), held, "hide: shown again, it stays stopped")
+    M.release(None)
+    # The auction house closes while an arrow is held; the button comes up elsewhere
+    up_g = arrows["gold"][0]
+    setp(0)
+    M.press(up_g)
+    w.tick(10, 0.01)
+    sc.eq(amount(), 10000, "close while held: one step")
+    w.close_ah_modern()
+    sc.check(not any(b.IsVisible(b) for v in arrows.values() for b in v), "close: arrows hidden with the auction house")
+    M.release(None)
+    w.open_ah_modern()
+    ah.SetPostItem(ah, loc)
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
+    w.settle(0.2)
+    start = amount()
+    w.tick(100, 0.01)
+    sc.eq(amount(), start, "reopened: the arrow let go while away does not keep going")
+    sc.check(up_g.GetScript(up_g, "OnUpdate") is None, "reopened: the held arrow stopped")
+
+    # The item sell frame: its price, and the starting bid when buyout only is unticked
+    w.M["items"][R.ARCANE].commodity = False
+    loc2 = w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 2)
+    ah.SetPostItem(ah, loc2)
+    w.settle(0.2)
+    ipin, bid = isf.PriceInput, isf.SecondaryPriceInput
+    ia = {coin: arrow_pair(ipin.MoneyInputFrame[key]) for coin, key, _ in ARROW_COINS}
+    ba = {coin: arrow_pair(bid.MoneyInputFrame[key]) for coin, key, _ in ARROW_COINS}
+    sc.check(all(b.IsVisible(b) for v in ia.values() for b in v), "item: price arrows show")
+    sc.check(not any(b.IsVisible(b) for v in ba.values() for b in v), "item: bid arrows hidden while the bid box is")
+    ipin.SetAmount(ipin, 1200)
+    before = isf.postStateUpdates
+    arrow_click(w, ia["silver"][0])
+    sc.eq(ipin.GetAmount(ipin), 1300, "item: silver up")
+    sc.eq(isf.postStateUpdates, before + 1, "item: the item frame is refreshed")
+    isf.SetSecondaryPriceInputEnabled(isf, True)
+    sc.check(all(b.IsVisible(b) for v in ba.values() for b in v), "item bid: arrows show with the bid box")
+    before = isf.postStateUpdates
+    arrow_click(w, ba["gold"][0])
+    arrow_click(w, ba["copper"][0])
+    sc.eq(bid.GetAmount(bid), 10001, "item bid: gold up and copper up")
+    sc.eq(ipin.GetAmount(ipin), 1300, "item bid: the price box is left alone")
+    sc.eq(isf.postStateUpdates, before + 2, "item bid: the item frame is refreshed each time")
+    arrow_layout_ok(sc, w, "item price (bid shown)", ipin.MoneyInputFrame, avoid=(
+        ("the label", ipin.Label), ("the bid label", bid.Label), ("the bid boxes", bid.MoneyInputFrame),
+        ("the quantity box", isf.QuantityInput.InputBox), ("Post", isf.PostButton)))
+    arrow_layout_ok(sc, w, "item bid", bid.MoneyInputFrame, avoid=(
+        ("the bid label", bid.Label), ("the price boxes", ipin.MoneyInputFrame), ("the quantity box", isf.QuantityInput.InputBox),
+        ("Max", isf.QuantityInput.MaxButton)))
+    isf.SetSecondaryPriceInputEnabled(isf, False)
+    sc.check(not any(b.IsVisible(b) for v in ba.values() for b in v), "item bid: arrows hide again with the bid box")
+    w.M["items"][R.ARCANE].commodity = True
+    sc.eq(len(M.cah.posted), 0, "arrows never post")
+
+    # A money box with a box missing, or none, or a reader that fails: no errors
+    make = w.lua.eval('''function(AHS)
+      local mf = CreateFrame("Frame", nil, UIParent)
+      mf:SetSize(140, 33)
+      mf:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
+      mf.GoldBox = CreateFrame("EditBox", nil, mf)
+      mf.GoldBox:SetSize(78, 33)
+      mf.GoldBox:SetPoint("LEFT", mf, "LEFT", 0, 0)
+      mf.SilverBox = CreateFrame("EditBox", nil, mf)
+      mf.SilverBox:SetSize(50, 33)
+      mf.SilverBox:SetPoint("LEFT", mf.GoldBox, "RIGHT", 6, 0)
+      local state = { amount = 105 }
+      local set = AHS.AddPriceArrows(mf, function() return state.amount end, function(v) state.amount = v end)
+      local none = AHS.AddPriceArrows(CreateFrame("Frame", nil, UIParent), function() return 0 end, function() end)
+      local nothing = AHS.AddPriceArrows(nil, function() return 0 end, function() end)
+      local bad = CreateFrame("Frame", nil, UIParent)
+      bad.GoldBox = CreateFrame("EditBox", nil, bad)
+      local badSet = AHS.AddPriceArrows(bad, function() error("cannot read") end, function() error("cannot write") end)
+      local good = CreateFrame("Frame", nil, UIParent)
+      good.GoldBox = CreateFrame("EditBox", nil, good)
+      local putFails = AHS.AddPriceArrows(good, function() return 5 end, function() error("cannot write") end)
+      return mf, set, state, none, nothing, badSet, putFails
+    end''')
+    mf2, set2, state, none, nothing, bad_set, put_fails = make(AHS)
+    sc.check(set2 is not None and set2.gold is not None and set2.silver is not None and set2.copper is None,
+             "no copper box: arrows for gold and silver only")
+    sc.eq(len(arrows_of(mf2.GoldBox)[0]), 1, "no copper box: the gold box has its arrows")
+    sc.check(none is None and nothing is None, "no boxes at all (or no frame): no arrows, no error")
+    if set2 is not None and set2.gold is not None:
+        arrow_click(w, set2.gold.up)
+        sc.eq(state.amount, 10105, "no copper box: gold up still works")
+        state.amount = 105
+        arrow_click(w, set2.gold.down)
+        arrow_click(w, set2.silver.down)
+        arrow_click(w, set2.silver.down)
+        sc.eq(state.amount, 5, "a box that takes anything: 1s 5c - 1g stays, - 1s = 5c, - 1s stays 5c (never below 0)")
+    for s, what in ((bad_set, "reading fails"), (put_fails, "writing fails")):
+        if s is not None and s.gold is not None:
+            arrow_click(w, s.gold.up)
+            arrow_click(w, s.gold.down)
+            M.press(s.gold.up)
+            w.tick(60, 0.01)
+            M.release(s.gold.up)
+            sc.check(True, "%s: clicks and holds pass quietly" % what)
+        else:
+            sc.check(False, "%s: arrows made" % what)
+    w.close_ah_modern()
+    sc.clean(w, "price arrows")
+
+    # No copper on this client: the copper box (and its arrows) hide
+    w2 = World(ref, items, copper_values=False)
+    w2.put_bag(0, 1, R.LINEN, 20)
+    w2.open_ah_modern()
+    ah2 = w2.g.AuctionHouseFrame
+    ah2.SetPostItem(ah2, w2.g.ItemLocation.CreateFromBagAndSlot(w2.g.ItemLocation, 0, 1))
+    w2.settle(0.2)
+    m2 = ah2.CommoditiesSellFrame.PriceInput.MoneyInputFrame
+    a2 = {coin: arrow_pair(m2[key]) for coin, key, _ in ARROW_COINS}
+    sc.check(not any(b.IsVisible(b) for b in a2["copper"]), "no copper: the copper arrows hide with the copper box")
+    sc.check(all(b.IsVisible(b) for c in ("gold", "silver") for b in a2[c]), "no copper: gold and silver arrows show")
+    p2 = ah2.CommoditiesSellFrame.PriceInput
+    p2.SetAmount(p2, 9900)
+    arrow_click(w2, a2["silver"][0])
+    sc.eq(p2.GetAmount(p2), 10000, "no copper: 99s + 1s = 1g")
+    w2.close_ah_modern()
+    sc.clean(w2, "price arrows, no copper")
+
+    # Auctionator's Selling tab: its buyout and bid boxes
+    w3 = World(ref, items, auctionator=True)
+    w3.open_ah_modern()
+    sell = w3.g.AuctionatorSellingFrame
+    sell.Show(sell)
+    sale = sell.SaleItemFrame
+    for label, box in (("Auctionator buyout", sale.Price), ("Auctionator bid", sale.BidPrice)):
+        arrows_exist_ok(sc, w3, label, box.MoneyInput)
+    price = sale.Price
+    price.SetAmount(price, 19999)
+    pa = {coin: arrow_pair(price.MoneyInput[key]) for coin, key, _ in ARROW_COINS}
+    arrow_click(w3, pa["copper"][0])
+    sc.eq(price.GetAmount(price), 20000, "Auctionator buyout: 1g 99s 99c + 1c = 2g")
+    arrow_click(w3, pa["gold"][1])
+    sc.eq(price.GetAmount(price), 10000, "Auctionator buyout: gold down")
+    price.MoneyInput.SilverBox.SetText(price.MoneyInput.SilverBox, "42")
+    arrow_click(w3, pa["silver"][0])
+    sc.eq(price.GetAmount(price), 14300, "Auctionator buyout: what was typed counts")
+    price.SetAmount(price, 50)
+    arrow_click(w3, pa["silver"][1])
+    arrow_click(w3, pa["gold"][1])
+    sc.eq(price.GetAmount(price), 50, "Auctionator buyout: 50c stays 50c (never below 0)")
+    price.SetAmount(price, 14300)
+    bidp = sale.BidPrice
+    bidp.Show(bidp)
+    ba3 = {coin: arrow_pair(bidp.MoneyInput[key]) for coin, key, _ in ARROW_COINS}
+    sc.check(all(b.IsVisible(b) for v in ba3.values() for b in v), "Auctionator bid: arrows show with its box")
+    arrow_click(w3, ba3["silver"][0])
+    sc.eq(bidp.GetAmount(bidp), 100, "Auctionator bid: silver up")
+    sc.eq(price.GetAmount(price), 14300, "Auctionator bid: the buyout is left alone")
+    w3.close_ah_modern()
+    w3.open_ah_modern()
+    for label, box in (("Auctionator buyout", sale.Price), ("Auctionator bid", sale.BidPrice)):
+        for coin, key, _ in ARROW_COINS:
+            up, down = arrows_of(box.MoneyInput[key])
+            sc.eq((len(up), len(down)), (1, 1), "%s %s: one pair after reopening" % (label, coin))
+    w3.close_ah_modern()
+    sc.clean(w3, "price arrows, Auctionator")
+
+    # The old auction house: starting bid and buyout boxes (MoneyInputFrame)
+    w4 = World(ref, items, client="legacy")
+    M4 = w4.M
+    for _ in range(2):
+        M4.fire("AUCTION_HOUSE_SHOW")
+        w4.settle(0.3)
+        M4.fire("AUCTION_HOUSE_CLOSED")
+        w4.settle(0.3)
+    M4.fire("AUCTION_HOUSE_SHOW")
+    w4.settle(0.3)
+    g = w4.g
+    keys = ("gold", "silver", "copper")
+    for label, mfl in (("legacy start", g.StartPrice), ("legacy buyout", g.BuyoutPrice)):
+        for coin in keys:
+            up, down = arrows_of(mfl[coin])
+            sc.eq((len(up), len(down)), (1, 1), "%s %s: one up and one down arrow (AH opened 3 times)" % (label, coin))
+            if up and down:
+                rb, ru, rd = w4.rect(mfl[coin]), w4.rect(up[0]), w4.rect(down[0])
+                sc.check(inside(ru, rb) and inside(rd, rb), "%s %s: arrows inside the box" % (label, coin))
+                ri = w4.rect(mfl[coin].texture)
+                sc.check(not overlaps(ru, ri) and not overlaps(rd, ri), "%s %s: arrows clear of the coin" % (label, coin))
+    bp = g.BuyoutPrice
+    la = {coin: arrow_pair(bp[coin]) for coin in keys}
+    g.MoneyInputFrame_SetCopper(bp, 199)
+    arrow_click(w4, la["copper"][0])
+    sc.eq(g.MoneyInputFrame_GetCopper(bp), 200, "legacy buyout: 1s 99c + 1c = 2s")
+    sc.eq(coin_texts(bp, keys), ("0", "2", "0"), "legacy buyout: the boxes show 0g 2s 0c")
+    bp.gold.SetText(bp.gold, "4")
+    arrow_click(w4, la["silver"][1])
+    sc.eq(g.MoneyInputFrame_GetCopper(bp), 40100, "legacy buyout: typed 4g, then silver down: 4g 1s")
+    g.MoneyInputFrame_SetCopper(bp, 0)
+    arrow_click(w4, la["gold"][1])
+    sc.eq(g.MoneyInputFrame_GetCopper(bp), 0, "legacy buyout: never below 0")
+    sp = g.StartPrice
+    arrow_click(w4, arrow_pair(sp.silver)[0])
+    sc.eq(g.MoneyInputFrame_GetCopper(sp), 100, "legacy start: silver up")
+    g.MoneyInputFrame_SetCopper(bp, 999999 * 10000 + 9999)
+    arrow_click(w4, la["copper"][0])
+    sc.eq(g.MoneyInputFrame_GetCopper(bp), 999999 * 10000 + 9999, "legacy buyout: never past the 6-digit gold box")
+    sc.eq(len(M4.cah.posted), 0, "legacy: arrows never post")
+    M4.fire("AUCTION_HOUSE_CLOSED")
+    w4.settle(0.3)
+    sc.check(not any(b.IsVisible(b) for v in la.values() for b in v), "legacy: arrows hidden with the auction house")
+    sc.clean(w4, "price arrows, legacy")
 
 
 # ---------------------------------------------------------------------------
@@ -14046,6 +14678,7 @@ SCENARIOS = [
     ("ah-no-copper", sc_ah_no_copper),
     ("ah-legacy", sc_ah_legacy),
     ("ah-auctionator", sc_auctionator),
+    ("ah-price-arrows", sc_price_arrows),
     ("horde+hardcore", sc_horde),
     ("edge-data", sc_edge),
     ("sidebar", sc_sidebar),
