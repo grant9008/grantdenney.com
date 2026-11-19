@@ -51,7 +51,7 @@ local DROP_MAX_QUALITY = 2  -- one-click drop only below Rare (the game makes yo
 local DROP_GUARD = 0.5      -- seconds: Drop it ignores a click this soon after the box opens or after
                             -- the last click on it, so a double-click (the OS allows 0.5 s) or a burst never drops
 local CONFIRM_H = 120       -- the panel is at least this tall while the drop box shows
-local BAGS_BUILD = "2026-11-19a"   -- /gl bagcheck names it, so a screenshot says which Bags.lua runs
+local BAGS_BUILD = "2026-11-19b"   -- /gl bagcheck names it, so a screenshot says which Bags.lua runs
 
 local CLASS_CONSUMABLE, CLASS_WEAPON, CLASS_REAGENT, CLASS_PROJECTILE = 0, 2, 5, 6
 local CLASS_QUIVER, CLASS_QUEST, CLASS_KEY = 11, 12, 13
@@ -614,7 +614,8 @@ end
 --           the world and hand in to a librarian, a token, an item for a
 --           quest you dropped. Such a quest is never in your log before you
 --           hand the item in, so closed headers do not change this, and a
---           quest above your level is for later.
+--           quest above your level (or above your skill) is for later. Not a
+--           quest you can never take: see never below.
 --   starts  it starts a quest you have not done
 --   maybe   not sure, so never "can drop": the quest that gave you a note
 --           (one you read, not use) is done but the one right after it is
@@ -623,7 +624,10 @@ end
 --           yet (why "reading")
 --   done    they are all done, or shut for you (shut = true: you did one
 --           that excludes it or the quest its breadcrumb leads to, or you
---           are past its top level): you can drop it
+--           are past its top level), or the one that asks for it is one you
+--           can never take (never = "pre": it comes after quests that are
+--           not for your race or class; "skill": it needs a profession you
+--           have not learned): you can drop it
 --   open    left over: only quests that give you the item when you take
 --           them (fresh = true: taking one gives you a new one), none of
 --           them done or in your log
@@ -847,14 +851,18 @@ local function QuestInfo(L, q)
     end
   end
   -- The quests it comes after (preQuestSingle: one of them, preQuestGroup:
-  -- all of them; a negative id there is that quest too).
-  local pre = {}
+  -- all of them; a negative id there is that quest too). one and all: the
+  -- two lists as QuestieDB has them.
+  local pre, one, all = {}, {}, {}
   for _, key in ipairs(PRE_KEYS) do
     list = Q.Get(q, key)
     if type(list) == "table" then
       for _, x in pairs(list) do
         x = Num(x)
-        if x and x ~= 0 then pre[#pre + 1] = x < 0 and -x or x end
+        if x and x ~= 0 then
+          pre[#pre + 1] = x < 0 and -x or x
+          if key == "preQuestSingle" then one[#one + 1] = x else all[#all + 1] = x end
+        end
       end
     end
   end
@@ -871,7 +879,7 @@ local function QuestInfo(L, q)
     -- top level shuts once you are past it.
     crumbFor = Num(Q.Get(q, "breadcrumbForQuestId")),
     maxLevel = Num(Q.Get(q, "requiredMaxLevel")),
-    pre = pre,
+    pre = pre, one = one, all = all,
   }
   QI.info[q] = c
   return c
@@ -1123,6 +1131,71 @@ function QX.HandInName(L, q)
   return at or false
 end
 
+-- The skill lines you have, from the game's skill list: skill line id ->
+-- rank. nil when it cannot be told (no skill list with ids, none read yet,
+-- or a closed header hides some lines): then no quest counts as needing a
+-- profession you lack.
+function QX.Skills()
+  local C = _G.C_SkillInfo
+  if type(C) ~= "table" or type(C.GetNumSkillLines) ~= "function" or type(C.GetSkillLineInfo) ~= "function" then
+    return nil
+  end
+  local ok, n = pcall(C.GetNumSkillLines)
+  n = ok and Num(n) or 0
+  local s, any = {}, false
+  for i = 1, min(n, 200) do
+    local ok2, line = pcall(C.GetSkillLineInfo, i)
+    if not ok2 or type(line) ~= "table" then return nil end
+    if line.isHeader then
+      if line.isCollapsed then return nil end
+    else
+      local id = Num(line.skillID)
+      if id then s[id], any = Num(line.rank) or 0, true end
+    end
+  end
+  return any and s or nil
+end
+
+-- Whether quest p, which you have not done, can never be done by you:
+-- QuestieDB has it and it is not for your race or class. ex: unless it
+-- shuts other quests, one of which does instead (QuestieDB's own rule for
+-- preQuestGroup; a negative id there has to be that quest).
+function QX.NotMine(L, p, ex)
+  p = Num(p)
+  if not p or p == 0 then return false end
+  if p < 0 then p, ex = -p, false end
+  local pi = QuestInfo(L, p)
+  if not pi or QuestDone(p) or ForPlayer(L, pi) then return false end
+  return not (ex and #pi.ex > 0)
+end
+
+-- Why you can never take quest q, or false: it comes after quests that
+-- are not for you (every one of preQuestSingle, or one of preQuestGroup):
+-- "pre"; it needs a profession you have not learned: "skill" (a lower
+-- skill is for later). A quest QuestieDB does not have, or a skill list
+-- that cannot be read, leaves it open.
+function QX.Never(L, q, info)
+  if #info.one > 0 then
+    local none = true
+    for _, p in ipairs(info.one) do
+      if not QX.NotMine(L, p, false) then none = false break end
+    end
+    if none then return "pre" end
+  end
+  for _, p in ipairs(info.all) do
+    if QX.NotMine(L, p, true) then return "pre" end
+  end
+  if info.skill == nil then
+    local t = L.Quest.Get(q, "requiredSkill")
+    info.skill = type(t) == "table" and Num(t[1]) or false
+  end
+  if info.skill and info.skill > 0 then
+    local s = QX.Skills()
+    if s and not s[info.skill] then return "skill" end
+  end
+  return false
+end
+
 -- QuestieDB's verdict on a quest item (see above): { kind = "keep",
 -- "starts", "maybe", "done" or "open", quest = id, name = its name, rep =
 -- true when it is kept for a repeatable quest, why = "next", "hidden" or
@@ -1131,8 +1204,9 @@ end
 -- quest for you gives you the item (it cannot be had again), later = true
 -- when it is kept for a quest you have not taken (turnin = true when that
 -- quest asks for it, at = who takes it in), shut = true for done when the
--- quest it names is shut for you rather than done, fresh = true for open
--- when taking the quest it names gives you a new one }. nil when
+-- quest it names is shut for you rather than done, never = "pre" or
+-- "skill" for done when it is one you can never take (see above), fresh =
+-- true for open when taking the quest it names gives you a new one }. nil when
 -- there is none: QuestieDB is not loaded or not usable, the index is still
 -- being made, or no quest for you uses the item (and none in your log
 -- names it). log: ReadQuestLog() when the caller has it. startQ: the quest
@@ -1308,8 +1382,12 @@ local function QuestieVerdict(id, log, startQ)
   -- A quest you can still do asks for it, and taking that quest does not
   -- give you one: kept for it, whatever your quest log shows. A book you
   -- find in the world and hand in to a librarian is never in your log
-  -- before you hand it in; a quest above your level is for later.
-  local t = pick(function(x) return R[x].role == "use" and not closed[x] and not gives[x] end)
+  -- before you hand it in; a quest above your level is for later. Not one
+  -- you can never take (it comes after a quest for another class, or needs
+  -- a profession you lack).
+  local t = pick(function(x)
+    return R[x].role == "use" and not closed[x] and not gives[x] and not QX.Never(L, x, R[x].info)
+  end)
   if t then
     local v = verdict("keep", t)
     v.later, v.turnin = true, not QX.Carried(L, t, id)
@@ -1320,6 +1398,14 @@ local function QuestieVerdict(id, log, startQ)
   -- the one after such a quest), none done or in your log: taking one gives
   -- you a new one. While closed headers hide whether one is, not sure.
   local g = pick(function(x) return not closed[x] and (R[x].role == "give" or gives[x]) end)
+  -- None gives it, and you can never take the one that asks for it: you
+  -- can drop it, and the line says why.
+  local nv = not g and QX.Never(L, q, R[q].info)
+  if nv then
+    local d = verdict("done", q)
+    d.shut, d.never = true, nv
+    return final(d)
+  end
   local v = verdict("open", g or q)
   v.fresh = g ~= nil
   return final(v)
@@ -1352,6 +1438,8 @@ end
 local function QuestLineText(v)
   local n = v.name
   if v.kind == "done" then
+    if v.never == "skill" then return "Can drop: " .. (n or "its quest") .. " needs a profession you do not have", "pos" end
+    if v.never then return "Can drop: " .. (n or "its quest") .. " is not open to you", "pos" end
     if v.shut then return "Can drop: " .. (n or "its quest") .. " is no longer open to you", "pos" end
     return "Can drop: done with " .. (n or "its quests"), "pos"
   end
@@ -1524,7 +1612,7 @@ local WHY_ORDER = { done = 1, open = 2, none = 3, maybe = 4 }
 QX.LISTED = { done = true, open = true, maybe = true }
 function QX.Entry(e, v)
   e.why, e.sure, e.quest, e.qdb, e.maybe = v.kind, v.kind ~= "maybe", v.name, true, v.why
-  e.shut, e.fresh = v.shut, v.fresh
+  e.shut, e.fresh, e.never = v.shut, v.fresh, v.never
 end
 
 function ns.BagScan()
@@ -2093,7 +2181,8 @@ local function RowTooltip(row)
     QI.lastItem = e.id
     tt:AddLine(Paint("Old quest item", "buy"))
     if e.qdb and (e.why == "done" or e.why == "open") then
-      tt:AddLine(QuestLineText({ kind = e.why, name = e.quest, shut = e.shut, fresh = e.fresh }) .. ".", 0.8, 0.8, 0.8, true)
+      tt:AddLine(QuestLineText({ kind = e.why, name = e.quest, shut = e.shut, fresh = e.fresh, never = e.never }) .. ".",
+        0.8, 0.8, 0.8, true)
     elseif e.qdb and e.why == "maybe" and e.maybe == "hidden" then
       tt:AddLine("Not sure: some quest log headers are closed. Open them so it can be checked.", 0.8, 0.8, 0.8, true)
     elseif e.qdb and e.why == "maybe" and e.maybe == "reading" then
@@ -3072,7 +3161,8 @@ local function Report()
         if e.maybe == "reading" then return ItemText(e) .. " (still reading your quest log)" end
         return ItemText(e) .. " (maybe needed for " .. (e.quest or "the next quest") .. ")"
       elseif e.qdb then
-        local why = e.why == "done" and (e.shut and "no longer open" or "done") or "not started"
+        local why = e.why ~= "done" and "not started" or (e.never == "skill" and "needs a profession")
+          or (e.never and "not open") or (e.shut and "no longer open") or "done"
         return ItemText(e) .. " (" .. why .. (e.quest and (": " .. e.quest) or "") .. ")"
       end
       return ItemText(e) .. " (" .. (e.why == "done" and "quest done" or (e.sure and "no quest needs it" or "check your quest log")) .. ")"
@@ -3334,6 +3424,9 @@ function QX.State(L, q, ctx)
   if not ForPlayer(L, info) then return "not for you" end
   if QuestDone(q) then return "done" end
   if Closed(info, q) then return "no longer open to you" end
+  local nv = QX.Never(L, q, info)
+  if nv == "skill" then return "needs a profession you do not have" end
+  if nv then return "not open to you" end
   if s == nil then return "headers closed" end
   return "not started"
 end

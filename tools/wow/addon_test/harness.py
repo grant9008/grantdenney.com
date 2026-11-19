@@ -11554,7 +11554,7 @@ def bagcheck(sc, w, label, cmd="/gl bagcheck"):
     body = [re.sub(r"^(Forever AH|Goblin Ledger): ", "", t) for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
-    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-19a", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-19b", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
     num = {}
     for t in body:
         m = re.match(r"^(\d+)\. (.*)$", t)
@@ -11827,8 +11827,17 @@ QDB_NPCS = {
     1470: {"name": "Ghak Healtouch", "friendlyToFaction": "A", "subName": "Journeyman Alchemist"},
     6868: {"name": "Jarkal Mossmeld", "friendlyToFaction": "H"},
     257558: {"name": "Demar Brant", "friendlyToFaction": "A", "subName": "Knight Commander"},
+    294: {"name": "Marshal Haggard", "friendlyToFaction": "A"},
+    273: {"name": "Tavernkeep Smitts", "friendlyToFaction": "A"},
+    1217: {"name": "Glorin Steelbrow", "friendlyToFaction": "A"},
+    10918: {"name": "Lorax", "friendlyToFaction": "AH"},
+    3446: {"name": "Mebok Mizzyrix", "friendlyToFaction": "AH"},
+    2909: {"name": "Hammertoe Grez", "friendlyToFaction": "A"},
+    2910: {"name": "Prospector Ryedol", "friendlyToFaction": "A", "subName": "Explorers' League"},
+    2916: {"name": "Historian Karnik", "friendlyToFaction": "A"},
 }
-QDB_OBJECTS = {441254: {"name": "Book"}, 423900: {"name": "Waterlogged Book"}, 950900: {"name": "Archive Lectern"}}
+QDB_OBJECTS = {441254: {"name": "Book"}, 423900: {"name": "Waterlogged Book"}, 950900: {"name": "Archive Lectern"},
+               2734: {"name": "Waterlogged Chest"}}
 QDB_ITEMS = {
     6866: {"name": "Symbol of Life", "class": 12, "flags": 64, "questRewards": [1789, 1790, 94435]},
     7666: {"name": "Shattered Necklace", "class": 12, "flags": 2048, "startQuest": 2198},
@@ -11856,6 +11865,12 @@ QDB_ITEMS = {
     900623: {"name": "Librarian's Note", "class": 12},
     900624: {"name": "Novice Token", "class": 12},
     900625: {"name": "Letter for Brant", "class": 12},
+    12806: {"name": "Unforged Rune Covered Breastplate", "class": 12, "itemLevel": 60, "objectDrops": [175970]},
+    12847: {"name": "Soul Stained Pike", "class": 12, "npcDrops": [10899]},
+    5056: {"name": "Root Sample", "class": 12, "objectDrops": [3724, 3725, 3726, 3727, 3729, 3730]},
+    921: {"name": "A Faded Journal Page", "class": 12, "objectDrops": [1562]},
+    2702: {"name": "Lightforge Ingot", "class": 12, "npcDrops": [1418], "questRewards": [321]},
+    4635: {"name": "Hammertoe's Amulet", "class": 12, "flags": 2048, "npcDrops": [2932]},
 }
 # The bags: (bag, slot, item, count, name, fields for the mock game).
 QUEST_BAG = [
@@ -12066,7 +12081,7 @@ def ref_hand_in(quests, q, race):
 
 
 def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None, usable=True,
-                      hidden=None, named_by=None, titles=None, level=60, npcs=True):
+                      hidden=None, named_by=None, titles=None, level=60, npcs=True, skills=None):
     """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it.
     kind: keep, starts, done, open, or maybe-next / maybe-hidden (not sure);
     keep-turnin / keep-later: kept for a quest you can still do that asks for it as
@@ -12084,7 +12099,12 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
     a note you only read (usable False) is maybe needed while the quest
     right after its giver is not done.
     hidden: closed headers hide quests (default: not log_known), so nothing
-    is done or not started (both are not sure). named_by: the title of a
+    is done or not started (both are not sure). skills: the skill line ids
+    the game lists (None: it cannot be told). done-pre / done-skill: the
+    quest that asks for it (none gives it) is one you can never take: every
+    quest of its preQuestSingle, or one of its preQuestGroup (unless that one
+    has exclusiveTo quests; a negative id has none), is not for you and not
+    done, or it needs a profession you have not learned. named_by: the title of a
     quest in the log that names the item: it keeps it, whatever QuestieDB
     says (also when no quest QuestieDB knows uses it for you). A next quest
     QuestieDB has no row for counts by its id (titles: its title in the log)."""
@@ -12144,6 +12164,26 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
                 or any(x in done for x in row.get("exclusiveTo", []))
                 or bool(crumb and crumb in done) or bool(top and level > top))
 
+    def not_mine(p, ex):
+        if p < 0:
+            p, ex = -p, False
+        row = quests.get(p)
+        if not row or p in done or mine(row):
+            return False
+        return not (ex and row.get("exclusiveTo"))
+
+    def never(q):
+        row = quests[q]
+        one = [p for p in row.get("preQuestSingle", []) if p]
+        if one and all(not_mine(p, False) for p in one):
+            return "pre"
+        if any(not_mine(p, True) for p in row.get("preQuestGroup", []) if p):
+            return "pre"
+        sk = row.get("requiredSkill")
+        if sk and sk[0] > 0 and skills is not None and sk[0] not in skills:
+            return "skill"
+        return None
+
     def logged(q):
         return True if q in in_log else (False if log_known else None)
     def name(q):
@@ -12152,7 +12192,7 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
     def final(v):
         if named_by:
             return ("keep", named_by, False)
-        if v[0] in ("done", "done-shut", "open", "open-fresh") and hidden:
+        if v[0].split("-")[0] in ("done", "open") and hidden:
             return ("maybe-hidden", v[1], False)
         return v
 
@@ -12236,12 +12276,15 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
         return ("keep", name(q2), False)
     # A quest you can still do asks for it (and does not give it to you): kept,
     # whatever the log shows.
-    t = pick(lambda x: R[x] == "use" and not closed(x) and x not in gives)
+    t = pick(lambda x: R[x] == "use" and not closed(x) and x not in gives and not never(x))
     if t:
         if iid not in quests[t].get("requiredSourceItems", []):
             return qv("keep-turnin", name(t), False, at=ref_hand_in(quests, t, race) if npcs else None)
         return ("keep-later", name(t), False)
     g = pick(lambda x: not closed(x) and (R[x] == "give" or x in gives))
+    nv = None if g else never(q)
+    if nv:
+        return final(("done-" + nv, name(q), False))
     return final(("open-fresh" if g else "open", name(g or q), False))
 
 
@@ -12252,6 +12295,10 @@ def quest_line_text(v):
         return "Can drop: done with %s" % n, "pos"
     if kind == "done-shut":
         return "Can drop: %s is no longer open to you" % n, "pos"
+    if kind == "done-pre":
+        return "Can drop: %s is not open to you" % n, "pos"
+    if kind == "done-skill":
+        return "Can drop: %s needs a profession you do not have" % n, "pos"
     if kind == "open":
         return "Only for %s, not in your quest log" % n, "muted"
     if kind == "open-fresh":
@@ -12277,7 +12324,8 @@ def quest_line_text(v):
 def lua_verdict(w, iid):
     """Bags.lua's verdict as (kind, quest name, repeatable); a not sure one is maybe-next or maybe-hidden,
     one kept for a quest not taken keep-turnin (at: who takes it in) or keep-later, a done one whose
-    quests are shut for you done-shut, an open one whose quest gives a new one open-fresh."""
+    quests are shut for you done-shut (done-pre / done-skill: one you can never take), an open one
+    whose quest gives a new one open-fresh."""
     v = w.ns.QuestItemVerdict(iid)
     if v is None:
         return None
@@ -12287,7 +12335,7 @@ def lua_verdict(w, iid):
     elif kind == "keep" and v.later:
         kind = "keep-turnin" if v.turnin else "keep-later"
     elif kind == "done" and v.shut:
-        kind = "done-shut"
+        kind = ("done-" + str(v.never)) if v.never else "done-shut"
     elif kind == "open" and v.fresh:
         kind = "open-fresh"
     return qv(kind, v.name, bool(v.rep), at=v.at)
@@ -12329,7 +12377,7 @@ def plain_tip(fields):
 
 
 def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None, bag_list=None,
-                 hidden=None, named=None, titles=None, level=60, npcs=True):
+                 hidden=None, named=None, titles=None, level=60, npcs=True, skills=None):
     """Every bag item's verdict, tooltip line and colour against the model.
     named: item -> the title of the quest in the log that names it. titles:
     quest -> its title in the log, for a quest QuestieDB has no row for."""
@@ -12338,7 +12386,7 @@ def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=Tr
             continue
         want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"),
                                  usable="useSpell" in fields, hidden=hidden, named_by=(named or {}).get(iid),
-                                 titles=titles, level=level, npcs=npcs)
+                                 titles=titles, level=level, npcs=npcs, skills=skills)
         sc.eq(lua_verdict(w, iid), want, "%s: %s verdict" % (label, name))
         tip = quest_tip(w, bag, slot)
         if want is None:
@@ -13585,12 +13633,13 @@ TURNIN_BAG = [
 
 
 def books_world(ref, items, level, race=BOOK_HUMAN, cls=BOOK_MAGE, faction="Alliance", vendor=0, bag_list=BOOK_BAG,
-                no_npcs=False, lua=None):
+                no_npcs=False, lua=None, extra=None):
     """A character of `level` with these items (books worth `vendor` copper), a Broken Tooth,
-    QuestieDB loaded (then the `lua` code run) and its index made, the cleanup panel open."""
+    QuestieDB loaded (with the `extra` quest rows, then the `lua` code run) and its index made,
+    the cleanup panel open."""
     w = World(ref, items, faction=faction)
     w.M.race, w.M["class"], w.M.level = w.to_lua(race), w.to_lua(cls), level
-    quests = install_questie(w, no_npcs=no_npcs)
+    quests = install_questie(w, no_npcs=no_npcs, extra=extra)
     if lua:
         w.lua.execute(lua)
     for bag, slot, iid, count, name, fields in bag_list:
@@ -13654,7 +13703,7 @@ def sc_bag_questie_books(sc, ref, items):
         sc.eq(quest_rows(BP), [(267256, "maybe", buy)], "%s, headers open: the panel shows the log only" % lab)
         body = questcheck(sc, w, "220353", lab + " questcheck")
         later = " (level 45: for later)" if level < 45 else ""
-        sc.eq(body, ["quest check: [Conjurer's Codex] (item 220353, Use effect no), Bags.lua 2026-11-19a",
+        sc.eq(body, ["quest check: [Conjurer's Codex] (item 220353, Use effect no), Bags.lua 2026-11-19b",
                      "QuestieDB: 81956 Conjurer's Codex (needs it): not started",
                      "quest log: no quest names it; 1 quest read",
                      "verdict: Keep: turn in for Conjurer's Codex at Garion Wendell",
@@ -13669,7 +13718,7 @@ def sc_bag_questie_books(sc, ref, items):
         sc.eq(quest_rows(BP), [(267256, "check log", buy)], "%s, headers closed: the panel says check log for the log only" % lab)
         later = " (level 35: for later)" if level < 35 else ""
         sc.eq(questcheck(sc, w, "RwlRwlRwlRwl!", lab + " questcheck closed"),
-              ["quest check: [RwlRwlRwlRwl!] (item 215822, Use effect no), Bags.lua 2026-11-19a",
+              ["quest check: [RwlRwlRwlRwl!] (item 215822, Use effect no), Bags.lua 2026-11-19b",
                "QuestieDB: 79952 RwlRwlRwlRwl! (needs it): headers closed",
                "quest log: no quest names it; 0 quests read, some headers closed",
                "verdict: Keep: turn in for RwlRwlRwlRwl! at Garion Wendell",
@@ -13775,6 +13824,8 @@ def sc_bag_questie_turnins(sc, ref, items):
     sc.eq(qr.get(900625), ("not started", mu), "turn-ins panel: the letter, not started")
     lines = row_lines(sc, w, 900625) or []
     sc.check("Can drop: taking A Letter for Brant gives you a new one." in lines, "turn-ins panel: the letter's row says why (%s)" % lines)
+    sc.check("Can drop: taking A Letter for Brant gives you a new one" not in lines,
+             "turn-ins panel: the item tooltip's own quest line is left out of the row's (%s)" % lines)
     # Burn the Pages done (it shuts The Lost Page), The Librarian's Request done (the breadcrumb is shut).
     rows = state(LOG_ELSEWHERE, (950203, 950205), "turn-ins, shut")
     sc.eq(lua_verdict(w, 900622), ("done-shut", "The Lost Page", False), "turn-ins: an exclusive quest done shuts it: can drop")
@@ -13792,6 +13843,9 @@ def sc_bag_questie_turnins(sc, ref, items):
     sc.eq(body[1:], ["QuestieDB: 950202 The Lost Page (needs it): no longer open to you",
                      "quest log: no quest names it; 1 quest read",
                      "verdict: Can drop: The Lost Page is no longer open to you"], "turn-ins: /gl questcheck says shut")
+    # Level 39: at Novice Tokens' top level it is still open (QuestieDB: the highest level it can be done at).
+    state(LOG_ELSEWHERE, (), "turn-ins, warrior 39", level=39)
+    sc.eq(lua_verdict(w, 900624), ("keep-turnin", "Novice Tokens", False), "turn-ins: at its top level: still keep")
     # Level 40: past Novice Tokens' top level (39).
     state(LOG_ELSEWHERE, (), "turn-ins, warrior 40", level=40)
     sc.eq(lua_verdict(w, 900624), ("done-shut", "Novice Tokens", False), "turn-ins: past its top level: can drop")
@@ -13811,18 +13865,28 @@ def sc_bag_questie_turnins(sc, ref, items):
     sc.clean(wm, "turn-ins mage")
 
     # Cloth a quest you have not taken asks for: Keep, but cloth the auction house trades can be
-    # had again, so it stays on the cheapest list; a weave nobody sells there is held.
+    # had again, so it stays on the cheapest list; a weave nobody sells there is held, and so is
+    # traded cloth that is soulbound or binds when picked up (worth 10c each at a vendor).
     priced = [i for i in other_items(ref, items, 40, avoid=SIDEBAR_WATCH) if ref.items[i]["cheapest"] >= 3]
-    if sc.check(len(priced) >= 1, "turn-ins cloth: a priced item to test with"):
-        p = priced[0]
+    if sc.check(len(priced) >= 3, "turn-ins cloth: priced items to test with"):
+        p, pb, pp = priced[:3]
         wc = World(ref, items)
-        quests = install_questie(wc, extra={950208: {"name": "Cloth for the Quartermaster", "objectives": qobj(p, 900612)}})
+        quests = install_questie(wc, extra={950208: {"name": "Cloth for the Quartermaster",
+                                                     "objectives": qobj(p, 900612, pb, pp)}})
         bag_add_item(wc, 900612, "Unpriced Weave", 1, 25, classID=7, maxStack=20)
         bag_put(wc, 0, 1, 900612, 5)
         bag_put(wc, 0, 2, p, 5)
+        wc.M["items"][pb].vendor, wc.M["items"][pp].vendor = 10, 10
+        wc.M["items"][pp].bind = 1
+        bag_put(wc, 0, 3, pb, 5, bound=True)
+        bag_put(wc, 0, 4, pp, 5)
         bag_quests(wc, LOG_ELSEWHERE)
         wc.settle(6.0)
         s = wc.ns.BagScan()
+        for i, how in ((pb, "soulbound"), (pp, "binds when picked up")):
+            sc.eq(lua_verdict(wc, i), ("keep-turnin", "Cloth for the Quartermaster", False), "turn-ins cloth: %s cloth is Keep" % how)
+            sc.check(i not in scan_ids(s, "drop") and i not in scan_ids(s, "quest"),
+                     "turn-ins cloth: %s traded cloth is held (%s)" % (how, scan_ids(s, "drop")))
         sc.eq(lua_verdict(wc, p), ("keep-turnin", "Cloth for the Quartermaster", False), "turn-ins cloth: the priced cloth is Keep")
         sc.eq(lua_verdict(wc, 900612), ("keep-turnin", "Cloth for the Quartermaster", False), "turn-ins cloth: the weave too")
         sc.check(p in scan_ids(s, "drop"), "turn-ins cloth: cloth the auction house trades stays on the cheapest list (%s)"
@@ -13834,6 +13898,8 @@ def sc_bag_questie_turnins(sc, ref, items):
         wc.M.questDone[950208] = True
         s = wc.ns.BagScan()
         sc.check(900612 in scan_ids(s, "drop"), "turn-ins cloth: once handed in, the weave is on the cheapest list")
+        sc.check(pb in scan_ids(s, "drop") and pp in scan_ids(s, "drop"),
+                 "turn-ins cloth: once handed in, the bound cloth is on the cheapest list too (%s)" % scan_ids(s, "drop"))
         sc.clean(wc, "turn-ins cloth")
 
     # An Orc mage: the Alliance's archive notes are not theirs.
@@ -13845,6 +13911,243 @@ def sc_bag_questie_turnins(sc, ref, items):
     wo.settle(0.2)
     sc.clean(wo, "turn-ins orc")
 
+
+
+# Quests you can never take (bag-questie-reach), the player's QuestieDB_Forever rows (read with the
+# scratchpad's questie_lookup.py): The Demon Forge (5127) asks for the Unforged Rune Covered
+# Breastplate and the Soul Stained Pike, needs Blacksmithing (164) 270 and comes after Lorax's Tale
+# (5126), which only a warrior, paladin or shaman can take; Root Samples (866) needs Herbalism (182).
+# Along chains: The Legend of Stalvan (75 asks for A Faded Journal Page, 78 gives you one, 79 comes
+# next); the Lightforge Ingot (The Lost Ingots and Lightforge Ingots ask for it and shut each other,
+# Lightforge Iron rewards it); Hammertoe's Amulet (Amulet of Secrets asks for it, both Prospect of
+# Faith quests give it). Made up (950220-950226): orders that come after a Horde quest (one with
+# exclusiveTo quests: one of those may do instead, as QuestieDB's prerequisite check has it; one
+# without; the first by a negative id, which has to be that quest), and after one of a Horde and an
+# Alliance quest.
+REACH_QUESTS = {
+    74: {"name": "The Legend of Stalvan", "requiredLevel": 22, "questLevel": 28, "requiredRaces": QDB_ALLY,
+         "sourceItemId": 916, "nextQuestInChain": 75, "preQuestSingle": [72], "startedBy": {2: [1561]},
+         "finishedBy": {1: [294]}},
+    75: {"name": "The Legend of Stalvan", "requiredLevel": 22, "questLevel": 28, "requiredRaces": QDB_ALLY,
+         "nextQuestInChain": 78, "preQuestSingle": [74], "startedBy": {1: [294]}, "finishedBy": {1: [294]},
+         "objectives": qobj(921)},
+    78: {"name": "The Legend of Stalvan", "requiredLevel": 22, "questLevel": 28, "requiredRaces": QDB_ALLY,
+         "sourceItemId": 921, "nextQuestInChain": 79, "preQuestSingle": [75], "startedBy": {1: [294]},
+         "finishedBy": {1: [273]}},
+    79: {"name": "The Legend of Stalvan", "requiredLevel": 22, "questLevel": 28, "requiredRaces": QDB_ALLY,
+         "sourceItemId": 938, "nextQuestInChain": 80, "preQuestSingle": [78], "startedBy": {1: [273]},
+         "finishedBy": {1: [264]}},
+    321: {"name": "Lightforge Iron", "requiredLevel": 20, "questLevel": 29, "requiredRaces": QDB_ALLY,
+          "nextQuestInChain": 324, "preQuestSingle": [270], "startedBy": {1: [1217]}, "finishedBy": {2: [2734]}},
+    324: {"name": "The Lost Ingots", "requiredLevel": 20, "questLevel": 29, "requiredRaces": QDB_ALLY,
+          "nextQuestInChain": 322, "preQuestSingle": [321], "exclusiveTo": [526], "startedBy": {2: [2734]},
+          "finishedBy": {1: [1217]}, "objectives": qobj(2702)},
+    526: {"name": "Lightforge Ingots", "requiredLevel": 20, "questLevel": 29, "requiredRaces": QDB_ALLY,
+          "nextQuestInChain": 322, "preQuestSingle": [321], "exclusiveTo": [324], "startedBy": {1: [1217]},
+          "finishedBy": {1: [1217]}, "objectives": qobj(2702)},
+    5126: {"name": "Lorax's Tale", "requiredLevel": 55, "questLevel": 60, "requiredClasses": 67, "nextQuestInChain": 5127,
+           "specialFlags": 2, "requiredSkill": [164, 270], "startedBy": {1: [10918]}, "finishedBy": {1: [10918]},
+           "objectives": {1: [[10918, None, 5]]}},
+    5127: {"name": "The Demon Forge", "requiredLevel": 55, "questLevel": 60, "sourceItemId": 12848, "questFlags": 64,
+           "preQuestSingle": [5126], "requiredSkill": [164, 270], "startedBy": {1: [10918]}, "finishedBy": {1: [10918]},
+           "objectives": qobj(12847, 12806)},
+    866: {"name": "Root Samples", "requiredLevel": 9, "questLevel": 16, "requiredSkill": [182, 1],
+          "startedBy": {1: [3446]}, "finishedBy": {1: [3446]}, "objectives": qobj(5056)},
+    722: {"name": "Amulet of Secrets", "requiredLevel": 35, "questLevel": 40, "requiredRaces": QDB_ALLY,
+          "nextQuestInChain": 723, "preQuestSingle": [721], "startedBy": {1: [2909]}, "finishedBy": {1: [2909]},
+          "objectives": qobj(4635)},
+    723: {"name": "Prospect of Faith", "requiredLevel": 35, "questLevel": 40, "requiredRaces": QDB_ALLY,
+          "sourceItemId": 4635, "nextQuestInChain": 724, "preQuestSingle": [722], "startedBy": {1: [2909]},
+          "finishedBy": {1: [2910]}},
+    724: {"name": "Prospect of Faith", "requiredLevel": 35, "questLevel": 40, "requiredRaces": QDB_ALLY,
+          "sourceItemId": 4635, "nextQuestInChain": 725, "preQuestSingle": [723], "startedBy": {1: [2910]},
+          "finishedBy": {1: [2916]}},
+    950220: {"name": "Orders for the Horde", "requiredRaces": QDB_HORDE, "exclusiveTo": [950221]},
+    950221: {"name": "Orders for the Alliance", "requiredRaces": QDB_ALLY, "exclusiveTo": [950220]},
+    950222: {"name": "Sealed Orders", "preQuestGroup": [950220], "objectives": qobj(900630)},
+    950223: {"name": "Warchief's Orders", "requiredRaces": QDB_HORDE},
+    950224: {"name": "Stolen Orders", "preQuestGroup": [950223], "objectives": qobj(900631)},
+    950225: {"name": "Doubled Orders", "preQuestGroup": [-950220], "objectives": qobj(900632)},
+    950226: {"name": "Either Orders", "preQuestSingle": [950223, 950221], "objectives": qobj(900633)},
+}
+REACH_BAG = [
+    (0, 1, 12806, 1, "Unforged Rune Covered Breastplate", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 2, 12847, 1, "Soul Stained Pike", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 3, 5056, 2, "Root Sample", {"classID": 12, "bind": 4, "maxStack": 10}),
+    (0, 4, 921, 1, "A Faded Journal Page", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 5, 2702, 1, "Lightforge Ingot", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 6, 4635, 1, "Hammertoe's Amulet", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 7, 900630, 1, "Sealed Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 9, 900631, 1, "Stolen Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 10, 900632, 1, "Doubled Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
+    (0, 11, 900633, 1, "Either Orders", {"classID": 12, "bind": 4, "maxStack": 1}),
+]
+SKILLS_LUA = r'''
+-- C_SkillInfo as Forever has it (Questie's QuestieCompat reads it so): the skill list by
+-- index, a table each (name, skillID, rank, isHeader, isCollapsed), from MOCK.skills.
+C_SkillInfo = {
+  GetNumSkillLines = function() return #(MOCK.skills or {}) end,
+  GetSkillLineInfo = function(i)
+    local s = MOCK.skills and MOCK.skills[i]
+    if type(s) ~= "table" then return nil end
+    local o = {}
+    for k, v in pairs(s) do o[k] = v end
+    return o
+  end,
+}
+'''
+
+
+def set_skills(w, lines):
+    """The game's skill list: None takes C_SkillInfo away; else (skill line id, rank) each, or
+    ("header", collapsed). Returns the skill line ids the model sees (None: it cannot be told)."""
+    if lines is None:
+        w.g.C_SkillInfo = None
+        return None
+    if w.g.C_SkillInfo is None:
+        w.lua.execute(SKILLS_LUA)
+    t, ids, sure = [], set(), True
+    for a, b in lines:
+        if a == "header":
+            t.append({"name": "Professions", "isHeader": True, "isCollapsed": b})
+            sure = sure and not b
+        else:
+            t.append({"name": "Skill %d" % a, "skillID": a, "rank": b, "isHeader": False})
+            ids.add(a)
+    w.M.skills = w.to_lua(t)
+    return ids if sure and ids else None
+
+
+def sc_bag_questie_reach(sc, ref, items):
+    """An item only a quest you can never take asks for is Can drop, saying why: The Demon Forge
+    comes after a quest only a warrior, paladin or shaman can take ("not open to you"), Root
+    Samples needs Herbalism ("needs a profession you do not have"); listed as shut, in /gl bags
+    and /gl questcheck. A skill list that cannot be read (no C_SkillInfo, a closed header, no
+    lines) keeps it, a lower skill is for later; a warrior keeps the Demon Forge items. Along
+    chains: a quest you handed in that asks for the item does not keep it (taking the next
+    gives a new one), Can drop names the quest you did (not the one it shut), and /gl
+    questcheck stays at 6 lines for a kept item two quests give."""
+    buy, pos, mu = QDB_COLORS["buy"], QDB_COLORS["pos"], QDB_COLORS["muted"]
+    w, quests = books_world(ref, items, 60, bag_list=REACH_BAG, extra=REACH_QUESTS)
+    M, ns = w.M, w.ns
+    BP = ns.BagPanel
+    sc.eq(ns.QuestIndex.state, "ready", "reach: the index is ready")
+
+    def state(log, done, label, skills=None, **kw):
+        return chain_state(sc, w, quests, REACH_BAG, log, done, label, race=1, cls=8, level=60, skills=skills, **kw)
+    # A human mage, no skill list: the Demon Forge items can go; the rest is kept.
+    rows = state(LOG_ELSEWHERE, (), "reach, mage")
+    for iid, slot in ((12806, 1), (12847, 2)):
+        sc.eq(lua_verdict(w, iid), ("done-pre", "The Demon Forge", False), "reach: %d, after a quest for other classes: can drop" % iid)
+        sc.eq(quest_tip(w, 0, slot), [("Can drop: The Demon Forge is not open to you", pos)], "reach: %d tooltip" % iid)
+        sc.check((iid, "done", "The Demon Forge") in rows, "reach: %d is listed (%s)" % (iid, rows))
+    sc.eq(quest_tip(w, 0, 3), [("Keep: turn in for Root Samples at Mebok Mizzyrix", buy)], "reach: no skill list: Root Samples keep")
+    sc.eq(quest_tip(w, 0, 4), [("Keep: turn in for The Legend of Stalvan at Marshal Haggard", buy)], "reach: the page, nothing done")
+    sc.eq(quest_tip(w, 0, 5), [("Keep: turn in for The Lost Ingots at Glorin Steelbrow", buy)], "reach: the ingot, nothing done")
+    sc.eq(quest_tip(w, 0, 6), [("Keep: turn in for Amulet of Secrets at Hammertoe Grez", buy)], "reach: the amulet, nothing done")
+    for iid, slot, want in ((900630, 7, "keep-turnin"), (900631, 9, "done-pre"), (900632, 10, "done-pre"),
+                            (900633, 11, "keep-turnin")):
+        sc.eq(lua_verdict(w, iid)[0], want, "reach: orders %d (%s)" % (iid, want))
+    sc.eq(sorted(r[0] for r in rows), [12806, 12847, 900631, 900632],
+          "reach: only the Demon Forge items and the orders you cannot take are listed (%s)" % rows)
+    qr = dict((r[0], r[1:]) for r in quest_rows(BP))
+    sc.eq((qr.get(12806), qr.get(12847)), (("shut", pos), ("shut", pos)), "reach panel: both say shut")
+    lines = row_lines(sc, w, 12806) or []
+    sc.check("Can drop: The Demon Forge is not open to you." in lines, "reach panel: the row says why (%s)" % lines)
+    sc.check("Can drop: The Demon Forge is not open to you" not in lines,
+             "reach panel: the item tooltip's own quest line is left out of the row's (%s)" % lines)
+    out = [plain(x) for x in w.slash("/gl bags")]
+    sc.check(any("[Unforged Rune Covered Breastplate] (not open: The Demon Forge)" in t for t in out),
+             "reach /gl bags: not open (%s)" % out)
+    sc.eq(questcheck(sc, w, "12806", "reach questcheck pre")[1:],
+          ["QuestieDB: 5127 The Demon Forge (needs it): not open to you",
+           "quest log: no quest names it; 1 quest read",
+           "verdict: Can drop: The Demon Forge is not open to you"], "reach: /gl questcheck says not open to you")
+    sc.eq(questcheck(sc, w, "4635", "reach questcheck amulet"),
+          ["quest check: [Hammertoe's Amulet] (item 4635, Use effect no), Bags.lua 2026-11-19b",
+           "QuestieDB: 722 Amulet of Secrets (needs it): not started, 723 Prospect of Faith (gives it): not started, "
+           "724 Prospect of Faith (gives it): not started",
+           "after 723: 724 Prospect of Faith: not started",
+           "quest log: no quest names it; 1 quest read",
+           "verdict: Keep: turn in for Amulet of Secrets at Hammertoe Grez",
+           "why: 722 Amulet of Secrets is not done and you can still do it, so it is kept; "
+           "your quest log does not change that"], "reach: /gl questcheck of an item two quests give, kept: one chain line")
+
+    # The skill list without Herbalism: Root Samples can go.
+    sk = set_skills(w, [("header", False), (197, 75), (333, 60)])
+    rows = state(LOG_ELSEWHERE, (), "reach, mage, no herbalism", skills=sk)
+    sc.eq(lua_verdict(w, 5056), ("done-skill", "Root Samples", False), "reach: Root Samples without Herbalism: can drop")
+    sc.eq(quest_tip(w, 0, 3), [("Can drop: Root Samples needs a profession you do not have", pos)], "reach: its tooltip")
+    sc.check((5056, "done", "Root Samples") in rows, "reach: Root Sample is listed (%s)" % rows)
+    sc.eq(dict((r[0], r[1:]) for r in quest_rows(BP)).get(5056), ("shut", pos), "reach panel: Root Sample says shut")
+    lines = row_lines(sc, w, 5056) or []
+    sc.check("Can drop: Root Samples needs a profession you do not have." in lines, "reach panel: its row says why (%s)" % lines)
+    out = [plain(x) for x in w.slash("/gl bags")]
+    sc.check(any("[Root Sample] x2 (needs a profession: Root Samples)" in t for t in out), "reach /gl bags: profession (%s)" % out)
+    sc.eq(questcheck(sc, w, "5056", "reach questcheck skill")[1:],
+          ["QuestieDB: 866 Root Samples (needs it): needs a profession you do not have",
+           "quest log: no quest names it; 1 quest read",
+           "verdict: Can drop: Root Samples needs a profession you do not have"], "reach: /gl questcheck says the profession")
+    # Herbalism learned, a closed header, no lines yet: kept.
+    for lines_in, how in (([("header", False), (182, 1), (197, 75)], "with Herbalism"),
+                          ([("header", True), (197, 75)], "a skill header closed"),
+                          ([], "no skill lines yet")):
+        sk = set_skills(w, lines_in)
+        state(LOG_ELSEWHERE, (), "reach, mage, " + how, skills=sk)
+        sc.eq(lua_verdict(w, 5056), ("keep-turnin", "Root Samples", False), "reach: Root Samples, %s: keep" % how)
+    # Quest log headers closed: not sure, as any item you can drop.
+    sk = set_skills(w, [("header", False), (197, 75)])
+    state(farholde(collapsed=True), (), "reach, mage, log headers closed", skills=sk, log_known=False, hidden=True)
+    sc.eq(lua_verdict(w, 5056), ("maybe-hidden", "Root Samples", False), "reach: log headers closed: not sure")
+    sc.eq(lua_verdict(w, 12806), ("maybe-hidden", "The Demon Forge", False), "reach: log headers closed: not sure either")
+    set_skills(w, None)
+
+    # The Legend of Stalvan: 74 and 75 done, 78 (it gives you a page) not taken: can drop.
+    state(LOG_ELSEWHERE, (74, 75), "reach, Stalvan handed in")
+    sc.eq(lua_verdict(w, 921), ("open-fresh", "The Legend of Stalvan", False), "reach: the page once 75 is handed in")
+    sc.eq(quest_tip(w, 0, 4), [("Can drop: taking The Legend of Stalvan gives you a new one", mu)], "reach: the page's line")
+    state(qlog(78, "The Legend of Stalvan"), (74, 75), "reach, Stalvan 78 taken")
+    sc.eq(lua_verdict(w, 921), ("keep", "The Legend of Stalvan", False), "reach: the page while 78 is in the log")
+    state(LOG_ELSEWHERE, (74, 75, 78), "reach, Stalvan 78 done")
+    sc.eq(lua_verdict(w, 921), ("maybe-next", "The Legend of Stalvan", False), "reach: the page 78 gave, 79 not done: maybe")
+    state(LOG_ELSEWHERE, (74, 75, 78, 79), "reach, Stalvan 79 done")
+    sc.eq(lua_verdict(w, 921), ("done", "The Legend of Stalvan", False), "reach: the page once 79 is done too")
+    # The ingot: Lightforge Iron rewards it, so it is kept for the next step; then done with the one you did.
+    state(LOG_ELSEWHERE, (321,), "reach, Lightforge Iron done")
+    sc.eq(lua_verdict(w, 2702), ("keep", "The Lost Ingots", False), "reach: the ingot after Lightforge Iron")
+    state(LOG_ELSEWHERE, (321, 526), "reach, Lightforge Ingots done")
+    sc.eq(lua_verdict(w, 2702), ("done", "Lightforge Ingots", False), "reach: done with the one you did, not the one it shut")
+    sc.eq(quest_tip(w, 0, 5), [("Can drop: done with Lightforge Ingots", pos)], "reach: the ingot's line")
+    state(LOG_ELSEWHERE, (321, 324), "reach, The Lost Ingots done")
+    sc.eq(lua_verdict(w, 2702), ("done", "The Lost Ingots", False), "reach: done with The Lost Ingots")
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "reach")
+
+    # A human warrior can take Lorax's Tale: the Demon Forge items are kept unless the skill list
+    # shows no Blacksmithing; a lower Blacksmithing is for later.
+    ww, quests = books_world(ref, items, 60, cls=["Warrior", "WARRIOR", 1], bag_list=REACH_BAG, extra=REACH_QUESTS)
+
+    def wstate(log, done, label, skills=None):
+        return chain_state(sc, ww, quests, REACH_BAG, log, done, label, race=1, cls=1, level=60, skills=skills)
+    wstate(LOG_ELSEWHERE, (), "reach, warrior")
+    sc.eq(quest_tip(ww, 0, 1), [("Keep: turn in for The Demon Forge at Lorax", buy)], "reach: a warrior keeps the breastplate")
+    sc.eq(questcheck(sc, ww, "12847", "reach questcheck warrior")[1:],
+          ["QuestieDB: 5127 The Demon Forge (needs it): not started",
+           "quest log: no quest names it; 1 quest read",
+           "verdict: Keep: turn in for The Demon Forge at Lorax",
+           "why: 5127 The Demon Forge is not done and you can still do it, so it is kept; "
+           "your quest log does not change that"], "reach: /gl questcheck for a warrior")
+    sk = set_skills(ww, [("header", False), (186, 120), (182, 110)])
+    wstate(LOG_ELSEWHERE, (), "reach, warrior, no blacksmithing", skills=sk)
+    sc.eq(lua_verdict(ww, 12806), ("done-skill", "The Demon Forge", False), "reach: a warrior without Blacksmithing: can drop")
+    sc.eq(quest_tip(ww, 0, 2), [("Can drop: The Demon Forge needs a profession you do not have", pos)], "reach: the pike's line")
+    sk = set_skills(ww, [("header", False), (164, 150)])
+    wstate(LOG_ELSEWHERE, (), "reach, warrior, blacksmithing 150", skills=sk)
+    sc.eq(lua_verdict(ww, 12806), ("keep-turnin", "The Demon Forge", False), "reach: Blacksmithing under 270 is for later: keep")
+    ww.M.CloseBags()
+    ww.settle(0.2)
+    sc.clean(ww, "reach warrior")
 
 
 def questcheck(sc, w, arg, label):
@@ -13860,7 +14163,7 @@ def sc_bag_questcheck(sc, ref, items):
     """/gl questcheck (no name: the last quest item hovered): the item, QuestieDB's quests for it
     and their roles and states, the quests after the one that gave it, the quests in the log
     that name it, and the verdict, in a few short lines."""
-    head = "quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-19a"
+    head = "quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-19b"
     w, quests = marshal_world(ref, items)
     M = w.M
     sc.eq(questcheck(sc, w, "", "questcheck nothing hovered"),
@@ -13916,7 +14219,7 @@ def sc_bag_questcheck(sc, ref, items):
     w2, _ = marshal_world(ref, items, questie=False)
     bag_quests(w2, farholde((94892, "Dying Wish")))
     body = questcheck(sc, w2, "Field Marshal's Log", "questcheck no questie")
-    sc.eq(body, ["quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-19a",
+    sc.eq(body, ["quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-19b",
                  "QuestieDB: not loaded",
                  "quest log: no quest names it; 1 quest read",
                  "verdict (quest log only): not sure, no quest in your log names it"], "questcheck: without QuestieDB")
@@ -16077,6 +16380,7 @@ SCENARIOS = [
     ("bag-questcheck", sc_bag_questcheck),
     ("bag-questie-books", sc_bag_questie_books),
     ("bag-questie-turnins", sc_bag_questie_turnins),
+    ("bag-questie-reach", sc_bag_questie_reach),
     ("bag-quest-unsure", sc_bag_quest_unsure),
     ("enchants-data", sc_enchants_data),
     ("enchants-bag", sc_enchants_bag),
