@@ -286,10 +286,10 @@ WARN = (1.00, 0.86, 0.25)   # Core.lua ns.COLORS.warn
 
 
 def vs(pct_text):
-    """The AH value's badge as Core.lua writes it: "+3% vs avg", yellow from 25% either
+    """The AH value's badge as Core.lua writes it: "+3% vs avg", yellow from 40% either
     way, grey under that (never green or red)."""
     p = abs(int(pct_text.rstrip("%")))
-    return "|c%s%s vs avg|r" % (lua_hex(WARN if p >= 25 else MUTED), pct_text)
+    return "|c%s%s vs avg|r" % (lua_hex(WARN if p >= 40 else MUTED), pct_text)
 
 
 def old_hint(text):

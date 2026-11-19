@@ -48,8 +48,11 @@ local AH = {
   liveLoaded = {},       -- itemID -> true once all its listings have loaded (gear: every version's cheapest is known)
   suffix = {},           -- itemID -> true once seen with a random suffix ("of the Monkey")
   expectVid = nil,       -- the version the sidebar searched for (its item shows as that version)
-  browse = {},           -- itemID -> cheapest buyout per unit on its browse row (plain items only; ns.LivePrice)
+  browse = {},           -- itemID -> { price (per unit), own (you have one listed), at, gen } from its browse row (ns.LivePrice)
+  browseGen = 0,         -- counts browse searches (rows of one search: the cheapest of them wins)
   lastSearch = nil,      -- the text of the latest browse search, as typed (cleaned)
+  queryFiltered = false, -- that search had a category, a level range or filters that can hide items
+  queryExact = false,    -- that search matched whole names only (the ExactMatch filter)
   emptyLines = nil,      -- the lines shown under "No items found", while they show
 }
 ns.AHState = AH
@@ -291,11 +294,19 @@ local function RefreshSoon()
   end)
 end
 
+-- Seconds of game time (GetTime): which of two live prices came in last.
+local function Clock()
+  local f = _G.GetTime
+  if type(f) ~= "function" then return 0 end
+  local ok, t = pcall(f)
+  return ok and Num(t) or 0
+end
+
 local function StoreLive(id, price, own)
   id = Num(id)
   if not id then return end
   local old = AH.live[id]
-  if price then AH.live[id] = { price = price, own = own == true } else AH.live[id] = nil end
+  if price then AH.live[id] = { price = price, own = own == true, at = Clock() } else AH.live[id] = nil end
   if not old and not price then return end
   if old and price and old.price == price and old.own == (own == true) then return end
   if type(ns.ChartItem) == "function" and ns.ChartItem() == id then chartDirty = true end
@@ -314,19 +325,30 @@ function ns.LiveCheapest(itemID)
 end
 
 -- The cheapest buyout per unit the open auction house showed for an item (or
--- a version's id), or nil: its loaded listings first (AH.live), else the price
--- on its browse row (AH.browse: rows without a suffix, of items whose versions
--- do not differ). For prices shown to the player (the tooltip's AH value,
--- craft costs). The sell buttons keep using ns.LiveCheapest: a browse row
--- cannot say whether its cheapest listing is yours.
+-- a version's id), or nil: its loaded listings (AH.live) or the price on its
+-- browse row (AH.browse: per-unit rows without a suffix, of items whose
+-- versions do not differ, from the last 10 minutes), whichever came in last.
+-- nil at another market (ns.MarketMismatch: a goblin or other-faction auction
+-- house, Hardcore): those prices do not mix with the data's. For prices
+-- shown to the player (the tooltip's AH value, Sell now, craft costs).
+-- Also returns own (that listing is yours; for a browse row: you have one of
+-- them listed somewhere) and where the price is from, "listings" or
+-- "browse". The sell buttons keep using ns.LiveCheapest.
+local BROWSE_MAX_AGE = 600
 function ns.LivePrice(itemID)
   if not AH.open then return nil end
+  if type(ns.MarketMismatch) == "function" and ns.MarketMismatch() then return nil end
   local id = tonumber(itemID) or -1
-  local r = AH.live[id]
+  local r, b = AH.live[id], AH.browse[id]
   local p = r and Num(r.price)
-  if p and p > 0 then return p end
-  p = Num(AH.browse[id])
-  if p and p > 0 and not (type(ns.PricesMixVersions) == "function" and ns.PricesMixVersions(id)) then return p end
+  if p and p <= 0 then p = nil end
+  local bp = type(b) == "table" and Num(b.price) or nil
+  if bp and (bp <= 0 or Clock() - (Num(b.at) or 0) > BROWSE_MAX_AGE
+             or (type(ns.PricesMixVersions) == "function" and ns.PricesMixVersions(id))) then
+    bp = nil
+  end
+  if bp and (not p or (Num(b.at) or 0) > (Num(r.at) or 0)) then return bp, b.own == true, "browse" end
+  if p then return p, r.own == true, "listings" end
   return nil
 end
 
@@ -699,34 +721,73 @@ end
 local EMPTY_MAX_LINES = 7
 local emptyFS, emptyParent   -- our text under "No items found", and the frame it is on
 
--- The price and time of the last listing the data saw (hourly prices of the
--- last week first, then the daily ones), or nil.
+-- An item's prices of one timeframe (ns.GetSeries), or nil without any.
+local function SeriesOf(id, tf)
+  local s = type(ns.GetSeries) == "function" and ns.GetSeries(id, tf) or nil
+  if type(s) == "table" and (Num(s.n) or 0) > 0 and type(s.cheap) == "table" and type(s.sold) == "table" then return s end
+  return nil
+end
+
+-- Of two series, the one that goes further back.
+local function Longer(a, b)
+  if not a then return b end
+  if not b then return a end
+  return (b.n * (Num(b.step) or 0) > a.n * (Num(a.step) or 0)) and b or a
+end
+
+-- How far back a series goes, for "in the last ...": "hour", "47 hours",
+-- "day", "3 days" (the data only holds what the collector has seen so far).
+local function SpanText(s)
+  local n = Num(s.n) or 0
+  if (Num(s.step) or 0) >= 86400 then return n <= 1 and "day" or (n .. " days") end
+  if n <= 1 then return "hour" end
+  if n < 48 then return n .. " hours" end
+  return floor(n / 24) .. " days"
+end
+
+-- The price and time of the last listing the data saw (the hourly prices of
+-- the last week first, then the daily ones), or nil and the series that goes
+-- furthest back (for "none listed in the last ...").
 local function LastListed(id)
   local db = type(ns.db) == "table" and ns.db or {}
   -- Snapshots are taken a few minutes into each hour: that many minutes after the hour's start.
   local off = (tonumber(db.updated) or 0) - (tonumber(db.hourEnd) or 0)
   if off < 0 or off >= 3600 then off = 0 end
+  local longest
   for _, tf in ipairs({ "1W", "1Y" }) do
-    local s = type(ns.GetSeries) == "function" and ns.GetSeries(id, tf) or nil
-    if type(s) == "table" then
-      for i = (Num(s.n) or 0), 1, -1 do
+    local s = SeriesOf(id, tf)
+    if s then
+      longest = Longer(longest, s)
+      for i = s.n, 1, -1 do
         local p = Num(s.cheap[i])
         if p and p > 0 then
-          return p, (Num(s.times[i]) or 0) + (((s.step or 0) >= 86400) and 43200 or off)
+          return p, (Num(s.times[i]) or 0) + (((Num(s.step) or 0) >= 86400) and 43200 or off)
         end
       end
     end
   end
-  return nil
+  return nil, longest
 end
 
-local function SoldIn(id, tf)
-  local s = type(ns.GetSeries) == "function" and ns.GetSeries(id, tf) or nil
-  local n = 0
-  if type(s) == "table" then
-    for i = 1, (Num(s.n) or 0) do n = n + (Num(s.sold[i]) or 0) end
+-- How many sold: "About 45 sold a day." (ns.SoldPerDay, as the chart says
+-- it), else the sales of the hours, or the days, the data has ("About 7 sold
+-- in the last 3 days."), else "No sales seen in the last 3 days.".
+local function SoldLine(id, item)
+  local num = type(ns.Num) == "function" and ns.Num or tostring
+  local per = type(ns.SoldPerDay) == "function" and ns.SoldPerDay(item) or nil
+  if Num(per) and per > 0 then return "About " .. num(per) .. " sold a day." end
+  local longest
+  for _, tf in ipairs({ "1W", "1M" }) do
+    local s = SeriesOf(id, tf)
+    if s then
+      local n = 0
+      for i = 1, s.n do n = n + (Num(s.sold[i]) or 0) end
+      if n > 0 then return "About " .. num(n) .. " sold in the last " .. SpanText(s) .. "." end
+      longest = Longer(longest, s)
+    end
   end
-  return n
+  if longest then return "No sales seen in the last " .. SpanText(longest) .. "." end
+  return "No sales seen yet."
 end
 
 -- What the game knows about an item by its name (only items it has loaded):
@@ -743,11 +804,13 @@ local function InfoByName(text)
 end
 
 -- The lines for a search with no results, and the item to chart (or nil).
+-- "Not listed now" only when that search would have found the item: its name
+-- is the text or holds the whole text (a name that only has every word of it
+-- may not match what the server searched for: "try its full name"), and no
+-- category, level range or filter could have hidden it.
 local function EmptyLines(text)
   local lines, chartID = {}, nil
   local function add(l) lines[#lines + 1] = l end
-  local money = type(ns.MoneyText) == "function" and ns.MoneyText or function(c) return tostring(c) .. "c" end
-  local num = type(ns.Num) == "function" and ns.Num or tostring
   local id, how
   if type(ns.FindSearchItem) == "function" then
     local ok, a, b = pcall(ns.FindSearchItem, text)
@@ -756,23 +819,23 @@ local function EmptyLines(text)
   local item = id and type(ns.GetItem) == "function" and ns.GetItem(id) or nil
   if item then
     chartID = id
-    if how ~= "exact" and type(ns.ItemName) == "function" then add("Best match: " .. ns.ItemName(id)) end
+    local loose = how == "words" or (how ~= "exact" and AH.queryExact)
+    local sure = not loose and not AH.queryFiltered
+    if how ~= "exact" and type(ns.ItemName) == "function" then
+      add("Best match: " .. ns.ItemName(id) .. (loose and " - try its full name" or ""))
+    end
+    if AH.queryFiltered then add("Your AH filters may hide it.") end
+    local lead = sure and "Not listed now. " or ""
     local p, t = LastListed(id)
     if p then
       local ago = type(ns.AgeText) == "function" and ns.AgeText(max(0, NowSeconds() - t)) or ""
-      add("Not listed now. Last listed " .. money(p) .. ", " .. ago .. ".")
+      add(lead .. "Last listed " .. ago .. " at " .. MoneyI(p) .. ".")
+    elseif t then
+      add(lead .. "None listed in the last " .. SpanText(t) .. ".")
     else
-      add("Not listed now. No listings seen in the last 30 days.")
+      add(lead .. "None listed yet.")
     end
-    local week = max(SoldIn(id, "1W"), Num(item.sold24) or 0)
-    local month = week > 0 and week or SoldIn(id, "1M")
-    if week > 0 then
-      add("About " .. num(week) .. " sold in the last 7 days.")
-    elseif month > 0 then
-      add("About " .. num(month) .. " sold in the last 30 days.")
-    else
-      add("No sales seen in 30 days.")
-    end
+    add(SoldLine(id, item))
   else
     id = nil
     local bind, gid = InfoByName(text)
@@ -781,7 +844,7 @@ local function EmptyLines(text)
     elseif bind == 4 then
       add("Quest item: never on the AH.")
     else
-      add("No listings seen in the last 30 days.")
+      add("Goblin Ledger has no prices for that name.")
     end
     chartID = gid
   end
@@ -859,19 +922,78 @@ local function ShowEmptySearch(text)
   local lines, chartID = EmptyLines(text)
   ShowEmptyLines(lines)
   if chartID then
+    -- 30 days once its daily prices go back further than the week of hourly
+    -- ones; until then the week (many more points).
     local item = type(ns.GetItem) == "function" and ns.GetItem(chartID) or nil
     local days = (item and type(ns.DailyPoints) == "function") and ns.DailyPoints(chartID) or 0
-    SetItemSoon(chartID, item and (days >= 2 and "1M" or "1W") or nil)
+    SetItemSoon(chartID, item and (days > 7 and "1M" or "1W") or nil)
   end
 end
 AH.ShowEmptySearch = ShowEmptySearch
 
-local function OnSearch(text)
+-- A browse search: a new set of rows (the cheapest per item of them wins),
+-- and what shows under "No items found" was for the last one. text is nil
+-- for searches nobody typed (Favorites, an addon's list of items).
+local function NewBrowseSearch(text, filtered, exact)
+  AH.browseGen = (AH.browseGen or 0) + 1
+  AH.lastSearch = text
+  AH.queryFiltered, AH.queryExact = filtered == true, exact == true
+  ClearEmptySearch()
+end
+
+-- Whether a browse query could hide an item that has the text in its name:
+-- a category, a level range, or filters other than Blizzard's defaults
+-- (every quality; "usable only" and the like hide items). Also whether it
+-- matched whole names only (ExactMatch). An empty filter list hides nothing.
+local function QueryFiltered(query)
+  if type(query) ~= "table" then return false, false end
+  local E = type(_G.Enum) == "table" and _G.Enum.AuctionHouseFilter or nil
+  local exactF = type(E) == "table" and E.ExactMatch or nil
+  local filtered = false
+  local cf = query.itemClassFilters
+  if type(cf) == "table" and next(cf) ~= nil then filtered = true end
+  if (Num(query.minLevel) or 0) > 0 or (Num(query.maxLevel) or 0) > 0 then filtered = true end
+  local f, exact = query.filters, false
+  if type(f) == "table" and #f > 0 then
+    local quality = {}
+    local D = _G.AUCTION_HOUSE_DEFAULT_FILTERS
+    if type(D) == "table" then
+      for k, v in pairs(D) do if v == true then quality[k] = true end end
+    elseif type(E) == "table" then
+      for _, n in ipairs({ "PoorQuality", "CommonQuality", "UncommonQuality", "RareQuality", "EpicQuality", "LegendaryQuality" }) do
+        if E[n] ~= nil then quality[E[n]] = true end
+      end
+    end
+    local seen, n, total = {}, 0, 0
+    for _ in pairs(quality) do total = total + 1 end
+    for _, v in ipairs(f) do
+      if exactF ~= nil and v == exactF then
+        exact = true
+      elseif not quality[v] then
+        filtered = true
+      elseif not seen[v] then
+        seen[v], n = true, n + 1
+      end
+    end
+    if n > 0 and n < total then filtered = true end
+  end
+  return filtered, exact
+end
+AH.QueryFiltered = QueryFiltered
+
+-- query: the browse query (C_AuctionHouse.SendBrowseQuery), which says
+-- whether filters were on. Without it (the frame's own SendBrowseQuery, which
+-- calls that one first) the filters stay as that query left them.
+local function OnSearch(text, query)
   if not AH.open then return end
   local s = CleanSearch(text)
   -- A new search: what shows under "No items found" was for the last one.
-  AH.lastSearch = s
-  ClearEmptySearch()
+  if type(query) == "table" then
+    NewBrowseSearch(s, QueryFiltered(query))
+  else
+    AH.lastSearch = s
+    ClearEmptySearch()
+  end
   if not s then return end -- empty text is a full scan, not the player searching
   AH.pendingSearch, AH.pendingIDs = s:lower(), nil
   local ids
@@ -919,29 +1041,72 @@ local function PickFromIDs(ids)
   return first
 end
 
--- Each browse row's price (the cheapest buyout; per unit for commodities, per
--- item for anything else) for ns.LivePrice. Rows of a version ("of the Bear":
--- the item key has a suffix) and pets are skipped.
-local function StoreBrowsePrices(list)
+-- True when a browse row's price is per unit: a commodity's (Blizzard shows
+-- its minPrice as the unit price), or an item's that never stacks. A
+-- stackable item's row may be the price of a whole stack: left out.
+local function PerUnitRow(key)
+  local CAH = _G.C_AuctionHouse
+  if type(CAH) == "table" and type(CAH.GetItemKeyInfo) == "function" then
+    local ok, info = pcall(CAH.GetItemKeyInfo, key)
+    if ok and type(info) == "table" and info.isCommodity == true then return true end
+  end
+  local CI = _G.C_Item
+  local f = (type(CI) == "table" and CI.GetItemInfo) or _G.GetItemInfo
+  if type(f) == "function" then
+    local r = { pcall(f, key.itemID) }
+    if r[1] and Num(r[9]) == 1 then return true end   -- itemStackCount is the 8th value
+  end
+  return false
+end
+
+-- Each browse row's price for ns.LivePrice: the cheapest buyout per unit,
+-- whether you have one listed (containsOwnerItem) and when it came in. Rows
+-- of a version ("of the Bear": the item key has a suffix), pets and prices
+-- that may be per stack are skipped; a row with none available now drops
+-- what the item had. Rows of one search (several per item, or added a page
+-- at a time) keep the cheapest. added: rows added to the list (the event's
+-- own list), else the whole list.
+local function StoreBrowsePrices(list, added)
+  if type(list) ~= "table" then return end
+  local gen, t, seen = AH.browseGen, Clock(), {}
   for i, r in ipairs(list) do
     if i > 500 then break end
     local key = type(r) == "table" and r.itemKey or nil
     local id = type(key) == "table" and Num(key.itemID) or nil
-    local p = id and Num(r.minPrice) or nil
-    if p and p > 0 and (key.itemSuffix == nil or Num(key.itemSuffix) == 0)
+    if id and (key.itemSuffix == nil or Num(key.itemSuffix) == 0)
       and (key.battlePetSpeciesID == nil or Num(key.battlePetSpeciesID) == 0) then
-      AH.browse[id] = p
+      local old = AH.browse[id]
+      local same = seen[id] or (added and type(old) == "table" and old.gen == gen)
+      local p, q = Num(r.minPrice), Num(r.totalQuantity)
+      if p and p > 0 and q and q > 0 and PerUnitRow(key) then
+        if not (same and type(old) == "table" and (Num(old.price) or 0) <= p) then
+          AH.browse[id] = { price = p, own = r.containsOwnerItem == true, at = t, gen = gen }
+        end
+        seen[id] = true
+      elseif not same then
+        AH.browse[id] = nil
+      end
     end
   end
 end
 
-local function OnBrowseResults()
+-- added: AUCTION_HOUSE_BROWSE_RESULTS_ADDED's rows (only those are read for
+-- prices; the whole list only while a search waits for its item).
+local function OnBrowseResults(added)
   if not AH.open then return end
   local CAH = _G.C_AuctionHouse
-  if type(CAH) ~= "table" or type(CAH.GetBrowseResults) ~= "function" then return end
+  if type(CAH) ~= "table" then return end
+  if type(added) == "table" then
+    StoreBrowsePrices(added, true)
+    if #added == 0 then return end
+    AH.lastSearch = nil   -- this search found something
+    ClearEmptySearch()
+    if not AH.pendingSearch then return end
+  end
+  if type(CAH.GetBrowseResults) ~= "function" then return end
   local ok, list = pcall(CAH.GetBrowseResults)
   if not ok or type(list) ~= "table" then return end
-  StoreBrowsePrices(list)
+  if type(added) ~= "table" then StoreBrowsePrices(list) end
   if #list == 0 then
     -- "No items found" for a search the player typed (once all results are in).
     local full = true
@@ -956,6 +1121,7 @@ local function OnBrowseResults()
     end
     return
   end
+  AH.lastSearch = nil   -- this search found something
   ClearEmptySearch()
   if not AH.pendingSearch then return end
   local ids = {}
@@ -1612,13 +1778,12 @@ local function HookCAuctionHouse()
   if type(CAH) ~= "table" then return end
   AH.hookedC = true
   SafeHook(CAH, "SendBrowseQuery", function(query)
-    if type(query) == "table" then OnSearch(query.searchString) end
+    if type(query) == "table" then OnSearch(query.searchString, query) end
   end)
-  -- The Favorites search: a new search too (what shows under "No items found" goes).
-  SafeHook(CAH, "SearchForFavorites", function()
-    AH.lastSearch = nil
-    ClearEmptySearch()
-  end)
+  -- The Favorites search and an addon's search for a list of items: new
+  -- searches too, nobody typed a name (what shows under "No items found" goes).
+  SafeHook(CAH, "SearchForFavorites", function() NewBrowseSearch(nil) end)
+  SafeHook(CAH, "SearchForItemKeys", function() NewBrowseSearch(nil) end)
   -- Sell searches come from many places (undercut scans too), so only follow
   -- them while Auctionator's Selling tab is on screen.
   SafeHook(CAH, "SendSellSearchQuery", function(itemKey)
@@ -2010,6 +2175,11 @@ local function AfterOpen()
     ns.ShowChart(AH.itemID or (ns.settings and ns.settings.lastItem), "ah")
   end
   for sf in pairs(useButtons) do UpdateUseButton(sf) end
+  -- A second later, list the names a search that finds nothing looks through
+  -- (a few thousand a frame), so that search does not stall the game.
+  After(1, function()
+    if AH.open and type(ns.PrepareSearchList) == "function" then pcall(ns.PrepareSearchList) end
+  end)
 end
 
 OnOpen = function()
@@ -2037,7 +2207,7 @@ local function OnClose()
   for id in pairs(AH.liveV) do AH.liveV[id] = nil end
   for id in pairs(AH.liveLoaded) do AH.liveLoaded[id] = nil end
   for id in pairs(AH.browse) do AH.browse[id] = nil end
-  AH.lastSearch = nil
+  AH.lastSearch, AH.queryFiltered, AH.queryExact = nil, false, false
   ClearEmptySearch()
   chartDirty = false
   for sf in pairs(sellIDs) do sellIDs[sf] = nil end
@@ -2089,7 +2259,7 @@ local handlers = {
   COMMODITY_SEARCH_RESULTS_ADDED = function(itemID) OnCommodityResults(itemID) end,
   ITEM_SEARCH_RESULTS_UPDATED = function(itemKey) OnItemResults(itemKey) end,
   ITEM_SEARCH_RESULTS_ADDED = function(itemKey) OnItemResults(itemKey) end,
-  AUCTION_HOUSE_BROWSE_RESULTS_ADDED = function() OnBrowseResults() end,
+  AUCTION_HOUSE_BROWSE_RESULTS_ADDED = function(added) OnBrowseResults(type(added) == "table" and added or nil) end,
   AUCTION_ITEM_LIST_UPDATE = function() OnLegacyResults() end,
   NEW_AUCTION_UPDATE = function() OnLegacySellItem() end,
 }

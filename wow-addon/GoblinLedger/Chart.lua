@@ -1057,10 +1057,11 @@ function Chart:SetFooter(item, rec, extraNote)
   local age = type(ns.DataAge) == "function" and ns.DataAge() or nil
   local house = tostring((ns.db and ns.db.houseName) or "Alliance Auction House")
   if age then
-    -- Over 80 minutes old: a newer file is most likely installed, waiting for a /reload.
+    -- Over 80 minutes old: a newer file is most likely installed, waiting for a
+    -- /reload (said as short as the tooltip says it: the notes left of it do not wrap).
     local a = AgeText(age)
     if type(ns.ReloadHint) == "function" and ns.ReloadHint(age) and type(ns.Hex) == "function" then
-      a = "|c" .. ns.Hex(Col("warn")) .. a .. " - /reload for newer|r"
+      a = "|c" .. ns.Hex(Col("warn")) .. a .. " - /reload|r"
     end
     self.age:SetText("Data: " .. a .. DOT .. house)
   else

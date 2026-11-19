@@ -693,11 +693,14 @@ end
 -- The item a search text most likely means (for a search the auction house
 -- found nothing for). An exact name, ignoring case, first (several items
 -- with it: the one sold most). Else, from 3 letters on, the best name that
--- contains the text, or failing that every word of it ("plans mithril
--- spurs" finds "Plans: Mithril Spurs"): a plain item before a version ("of the
--- Bear"), then the most sold, the shortest name, the lowest id. The
--- lower-case names it scans are listed once, the first time it needs them.
--- Returns the id and "exact" or "contains", or nil.
+-- contains the text where a word starts ("mithril sp" in "Mithril Spurs"),
+-- then inside a word ("the" in "Leather"), or failing that every word of it
+-- ("plans mithril spurs" finds "Plans: Mithril Spurs"): a plain item before a
+-- version ("of the Bear"), then the most sold, the shortest name, the lowest
+-- id. The lower-case names it scans are listed once (ns.PrepareSearchList
+-- lists them a few at a time while the auction house is open).
+-- Returns the id and "exact", "contains" (the whole text is in the name) or
+-- "words" (only every word is), or nil.
 local searchList   -- { n = count, names = { lower-case }, ids = {}, sold = { sold24 } }
 
 local function soldField(raw)
@@ -711,8 +714,10 @@ local function soldField(raw)
   return tonumber(j and ssub(raw, pos, j - 1) or ssub(raw, pos)) or 0
 end
 
-local function buildSearchList()
+-- step: yield (in a coroutine) after that many items.
+local function buildSearchList(step)
   local L = { n = 0, names = {}, ids = {}, sold = {} }
+  local k = 0
   for id, raw in pairs(db.items) do
     local nid = tonumber(id)
     if nid and type(raw) == "string" then
@@ -724,10 +729,50 @@ local function buildSearchList()
         L.names[n], L.ids[n], L.sold[n] = slower(trim(nm)), nid, soldField(raw)
       end
     end
+    k = k + 1
+    if step and k % step == 0 then coroutine.yield() end
   end
   searchList = L
   ns.stats.searchList = (ns.stats.searchList or 0) + 1   -- how often the list was made (for tests)
   return L
+end
+
+-- Lists the names a few thousand per frame, so the first search that finds
+-- nothing does not stall the game (AH.lua calls this when the auction house
+-- opens). A search that needs them before that finishes the list at once.
+local searchBuild   -- the coroutine while it lists them
+ns.SEARCH_LIST_STEP = 1000
+function ns.PrepareSearchList()
+  if searchList or searchBuild then return end
+  local co = coroutine.create(function() buildSearchList(ns.SEARCH_LIST_STEP) end)
+  searchBuild = co
+  local function step()
+    if searchBuild ~= co then return end
+    ns.stats.searchSteps = (ns.stats.searchSteps or 0) + 1
+    local ok = coroutine.resume(co)
+    if not ok or coroutine.status(co) == "dead" then
+      searchBuild = nil
+      return
+    end
+    local T = _G.C_Timer
+    if type(T) == "table" and type(T.After) == "function" then T.After(0, step) else step() end
+  end
+  step()
+end
+
+local function getSearchList()
+  if searchList then return searchList end
+  local co = searchBuild
+  searchBuild = nil
+  while co and coroutine.status(co) == "suspended" do
+    if not coroutine.resume(co) then break end
+  end
+  return searchList or buildSearchList()
+end
+
+-- A letter or digit (or a byte of a non-English letter): part of a word.
+local function wordByte(b)
+  return b ~= nil and ((b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b >= 128)
 end
 
 -- True when item a (with s1 sold and a name l1 long) ranks before item b.
@@ -762,15 +807,21 @@ function ns.FindSearchItem(text)
     if w ~= "" then words[#words + 1] = w end
   end
   local byWords = #words > 1 or (#words == 1 and words[1] ~= key)
-  local L = searchList or buildSearchList()
+  local L = getSearchList()
   local names, ids, sold = L.names, L.ids, L.sold
   local best, tierB, bs, bl
   for i = 1, L.n do
     local nm, tier = names[i], nil
-    if sfind(nm, key, 1, true) then
-      tier = 1
-    elseif byWords and tierB ~= 1 then
+    local pos = sfind(nm, key, 1, true)
+    if pos then
+      -- 1: where a word starts (the start, or after a space or a sign); 2: inside a word
       tier = 2
+      while pos do
+        if pos == 1 or not wordByte(sbyte(nm, pos - 1)) then tier = 1 break end
+        pos = sfind(nm, key, pos + 1, true)
+      end
+    elseif byWords and (tierB == nil or tierB > 2) then
+      tier = 3
       for k = 1, #words do
         if not sfind(nm, words[k], 1, true) then tier = nil break end
       end
@@ -782,7 +833,7 @@ function ns.FindSearchItem(text)
       end
     end
   end
-  if best then return best, "contains" end
+  if best then return best, (tierB == 3) and "words" or "contains" end
   return nil
 end
 
@@ -1345,12 +1396,23 @@ local function mightBeTradeable(tt, data, id)
 end
 ns.MightBeTradeable = mightBeTradeable
 
--- The live cheapest listing the open auction house showed for an id (AH.lua).
+-- The live cheapest listing the open auction house showed for an id (AH.lua),
+-- for Sell now and the verdict: its loaded listings (ns.LiveCheapest), or the
+-- price on its browse row when that came in later (ns.LivePrice, "browse"),
+-- so they follow the price the AH value line shows. A browse row cannot say
+-- whose its cheapest listing is, only that you have one of it listed: then
+-- it is matched, as your own (1 copper off at most), not undercut.
 local function liveFor(id)
-  if type(ns.LiveCheapest) ~= "function" then return nil end
-  local ok, p, own = pcall(ns.LiveCheapest, id)
-  if ok and type(p) == "number" and p > 0 then return p, own == true end
-  return nil
+  local p, own
+  if type(ns.LiveCheapest) == "function" then
+    local ok, a, b = pcall(ns.LiveCheapest, id)
+    if ok and type(a) == "number" and a > 0 then p, own = a, b == true end
+  end
+  if type(ns.LivePrice) == "function" then
+    local ok, a, b, src = pcall(ns.LivePrice, id)
+    if ok and src == "browse" and type(a) == "number" and not isSecret(a) and a > 0 then p, own = a, b == true end
+  end
+  return p, own
 end
 
 -- The live cheapest buyout the open auction house showed for an id, from its
@@ -1365,9 +1427,10 @@ end
 -- How far a price sits from the average, said plainly: "+92% vs avg" or
 -- "-44% vs avg" (whole percent, rounded toward 0 so it never says more than
 -- it is). Neither good nor bad news by itself (dear to buy, good to sell), so
--- no green or red: yellow from 25% either way, grey under that, a grey
--- "0% vs avg" under 1%. nil with no average to compare with.
-ns.VS_LOUD = 25
+-- no green or red: yellow from 40% either way (about a quarter of traded
+-- items), grey under that, a grey "0% vs avg" under 1%. nil with no average
+-- to compare with.
+ns.VS_LOUD = 40
 local function vsAverage(value, avg)
   value, avg = tonumber(value) or 0, tonumber(avg) or 0
   if value <= 0 or avg <= 0 then return nil end
@@ -1447,6 +1510,11 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local livep = (not other) and livePriceFor(item.id) or nil
   local shown = livep or item.market
   local vs = vsAverage(shown, item.avg7)
+  -- "AH value", "AH value (x20)", "AH value (live)", "AH value (live, x20)"
+  local function ahLabel(base)
+    if livep then return base .. " (live" .. (mult > 1 and (", x" .. mult) or "") .. ")" end
+    return base .. tag
+  end
   -- Sell now: 1 copper under the cheapest listing (the live one when the
   -- auction house showed it). Suggested price: the sell target from the
   -- price history. Both, and the verdict, only for one exact item or version.
@@ -1460,12 +1528,14 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local vline, xline   -- the lines to enlarge (the verdict, the price that wins), once all our lines are in
   if S.compact then
     local m = money(shown)
-    -- Compact mode shows the age only when it is old: a short grey "(2h old - /reload)".
-    local old = reload and ("  |c" .. ns.Hex(mu) .. "(" .. (sgsub(ns.AgeText(age), " ago$", "")) .. " old - /reload)|r") or ""
+    -- Compact mode shows the age only when it is old: a short grey "(2h old - /reload)"
+    -- (not next to a live price: that one is from now).
+    local old = (reload and not livep)
+      and ("  |c" .. ns.Hex(mu) .. "(" .. (sgsub(ns.AgeText(age), " ago$", "")) .. " old - /reload)|r") or ""
     if V then
       local lc = C[V.lc]
       if m then
-        tt:AddDoubleLine(V.left .. ": " .. V.right, (livep and "AH (live)" or "AH") .. tag .. " " .. m
+        tt:AddDoubleLine(V.left .. ": " .. V.right, ahLabel("AH") .. " " .. m
           .. (vs and ("  " .. vs) or "") .. old, lc[1], lc[2], lc[3], 1, 1, 1)
       else
         tt:AddDoubleLine(V.left .. ": " .. V.right, "AH: none listed" .. old, lc[1], lc[2], lc[3], mu[1], mu[2], mu[3])
@@ -1473,7 +1543,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     else
       local line
       if m then
-        line = (livep and "AH value (live)" or "AH value") .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
+        line = ahLabel("AH value") .. ": " .. m .. (vs and ("  " .. vs) or "")
       else
         line = "AH value: none listed now"
       end
@@ -1497,7 +1567,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     end
     local m = money(shown)
     if m then
-      tt:AddDoubleLine((livep and "AH value (live)" or "AH value") .. tag, vs and (m .. "  " .. vs) or m,
+      tt:AddDoubleLine(ahLabel("AH value"), vs and (m .. "  " .. vs) or m,
         tx[1], tx[2], tx[3], 1, 1, 1)
       -- "Auction it": the AH value is bigger with the verdict.
       if clearCut and V.kind == "auction" then xline = numLines(tt) end

@@ -1729,6 +1729,9 @@ Enum = {
     Vendor = 12, PetitionVendor = 13, GuildTabardVendor = 14, TalentMaster = 15, SpecializationMaster = 16,
     MailInfo = 17, SpiritHealer = 18, AreaSpiritHealer = 19, Binder = 20, Auctioneer = 21 },
   ItemCommodityStatus = { Unknown = 0, Item = 1, Commodity = 2 },
+  AuctionHouseFilter = { None = 0, UncollectedOnly = 1, UsableOnly = 2, CurrentExpansionOnly = 3, UpgradesOnly = 4,
+    ExactMatch = 5, PoorQuality = 6, CommonQuality = 7, UncommonQuality = 8, RareQuality = 9, EpicQuality = 10,
+    LegendaryQuality = 11, ArtifactQuality = 12, LegendaryCraftedItemOnly = 13 },
 }
 
 TooltipDataProcessor = { AllTypes = "ALL" }
@@ -2538,6 +2541,7 @@ q("SendSellSearchQuery", function(itemKey, sorts, separate) table.insert(M.cah.s
 q("RefreshCommoditySearchResults", function() end)
 q("RefreshItemSearchResults", function() end)
 q("SearchForFavorites", function() end)
+q("SearchForItemKeys", function(itemKeys, sorts) end)
 q("QueryOwnedAuctions", function() end)
 q("QueryBids", function() end)
 q("RequestMoreBrowseResults", function() end)
@@ -2880,6 +2884,17 @@ end
 M.loadOnDemand = M.loadOnDemand or {}
 BROWSE_NO_RESULTS = "No items found"
 M.loadOnDemand["Blizzard_AuctionHouseUI"] = function()
+  -- Classic's Blizzard_AuctionHouseUtil.lua: every quality on, "usable only" off. The search bar
+  -- sends the filters that are on (M.ahFilters, Blizzard's g_auctionHouseFilters), the level range
+  -- and the selected category (M.ahCategory, Blizzard's itemClassFilters).
+  local AF = Enum.AuctionHouseFilter
+  AUCTION_HOUSE_DEFAULT_FILTERS = { [AF.UncollectedOnly] = false, [AF.UsableOnly] = false, [AF.PoorQuality] = true,
+    [AF.CommonQuality] = true, [AF.UncommonQuality] = true, [AF.RareQuality] = true, [AF.EpicQuality] = true,
+    [AF.LegendaryQuality] = true }
+  if not M.ahFilters then
+    M.ahFilters = { minLevel = 0, maxLevel = 0, filters = {} }
+    for k, v in pairs(AUCTION_HOUSE_DEFAULT_FILTERS) do M.ahFilters.filters[k] = v end
+  end
   local f = CreateFrame("Frame", "AuctionHouseFrame", UIParent)
   f:SetSize(M.ahWidth or 800, 538)
   f:SetFrameStrata("MEDIUM")
@@ -2932,7 +2947,10 @@ M.loadOnDemand["Blizzard_AuctionHouseUI"] = function()
   function sb:GetAuctionHouseFrame() return f end
   function sb:StartSearch()
     local s = self.SearchBox:GetSearchString()
-    self:GetAuctionHouseFrame():SendBrowseQuery(s, 0, 0, {})
+    local arr = {}
+    for k, v in pairs(M.ahFilters.filters) do if v then arr[#arr + 1] = k end end
+    table.sort(arr)
+    self:GetAuctionHouseFrame():SendBrowseQuery(s, M.ahFilters.minLevel, M.ahFilters.maxLevel, arr)
   end
   sb.SearchBox:SetScript("OnEnterPressed", function(self) self:ClearFocus(); sb:StartSearch() end)
   sb.SearchButton:SetScript("OnClick", function() sb:StartSearch() end)
@@ -3011,7 +3029,7 @@ M.loadOnDemand["Blizzard_AuctionHouseUI"] = function()
   end
   function f:SendBrowseQuery(searchString, minLevel, maxLevel, filtersArray)
     local query = { searchString = searchString, minLevel = minLevel, maxLevel = maxLevel,
-                    filters = filtersArray or {}, itemClassFilters = {}, sorts = { { sortOrder = 0, reverseSort = false } } }
+                    filters = filtersArray or {}, itemClassFilters = M.ahCategory or {}, sorts = { { sortOrder = 0, reverseSort = false } } }
     C_AuctionHouse.SendBrowseQuery(query)
     self:SetDisplayMode(AuctionHouseFrameDisplayMode.Buy)
     -- BrowseSearchStarted: the list empties and waits (no "No items found" while it does).
@@ -3472,7 +3490,8 @@ class World:
         return r
 
     def set_browse(self, rows):
-        """rows: (itemID, minPrice, quantity[, itemSuffix[, battlePetSpeciesID]])"""
+        """rows: (itemID, minPrice, quantity[, itemSuffix[, battlePetSpeciesID[, own]]]); own: you have
+        one listed (containsOwnerItem)."""
         t = self.lua.table()
         for i, row in enumerate(rows):
             iid, minp, qty = row[:3]
@@ -3482,8 +3501,27 @@ class World:
                 r.suffix = row[3]
             if len(row) > 4:
                 r.pet = row[4]
+            if len(row) > 5:
+                r.own = bool(row[5])
             t[i + 1] = r
         self.M.browseResults = t
+
+    def browse_rows_added(self, rows):
+        """More rows arrive for the current search (a page of results): added to the list, and
+        AUCTION_HOUSE_BROWSE_RESULTS_ADDED fires with only them, as the game sends it."""
+        old = self.M.browseResults
+        n0 = len(old)
+        self.set_browse(rows)
+        new = self.M.browseResults
+        full = self.lua.table()
+        for i in range(1, n0 + 1):
+            full[i] = old[i]
+        for i in range(1, len(new) + 1):
+            full[n0 + i] = new[i]
+        self.M.browseResults = full
+        added = self.lua.eval("function(n0) local out = {}; local all = C_AuctionHouse.GetBrowseResults(); "
+                              "for i = n0 + 1, #all do out[#out + 1] = all[i] end; return out end")(n0)
+        self.M.fire("AUCTION_HOUSE_BROWSE_RESULTS_ADDED", added)
 
     def lua_list(self, t, n):
         out = []
@@ -3582,12 +3620,12 @@ TT_WARN_RGB = (1.00, 0.86, 0.25)   # Core.lua ns.COLORS.warn: yellow
 TT_POS, TT_NEG, TT_MUTED = lua_hex(TT_POS_RGB), lua_hex(TT_NEG_RGB), lua_hex(TT_MUTED_RGB)
 TT_WARN = lua_hex(TT_WARN_RGB)
 RELOAD_SECONDS = 80 * 60   # Core.lua ns.RELOAD_SECONDS: older data gets the "/reload" hint
-VS_LOUD = 25               # Core.lua ns.VS_LOUD: the badge is yellow from 25% either way
+VS_LOUD = 40               # Core.lua ns.VS_LOUD: the badge is yellow from 40% either way
 
 
 def vs_average(value, avg):
     """Core.lua vsAverage: how far the AH value is from the average, "+92% vs avg" /
-    "-44% vs avg" (whole percent, rounded toward 0), yellow from 25% either way,
+    "-44% vs avg" (whole percent, rounded toward 0), yellow from 40% either way,
     grey under that (never green or red), a grey "0% vs avg" under 1%, None with
     no average."""
     if value <= 0 or avg <= 0:
@@ -3618,9 +3656,9 @@ def compact_age(age):
 
 
 def chart_age(age):
-    """The chart footer's age: "2h ago", or a yellow "2h ago - /reload for newer"."""
+    """The chart footer's age: "2h ago", or a yellow "2h ago - /reload"."""
     if reload_hint(age):
-        return "|c%s%s - /reload for newer|r" % (TT_WARN, age_text(age))
+        return "|c%s%s - /reload|r" % (TT_WARN, age_text(age))
     return age_text(age)
 
 
@@ -3672,7 +3710,11 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     if live_value == "auto":
         live_value = live
     shown = live_value if live_value else it["market"]
-    ahl = "AH value (live)" if live_value else "AH value"
+
+    def ah_label(base):   # "AH value (x20)", "AH value (live)", "AH value (live, x20)"
+        if live_value:
+            return base + (" (live, x%d)" % mult if mult > 1 else " (live)")
+        return base + tag
 
     def m(v):
         return money_icons(v * mult) if v > 0 else None
@@ -3686,15 +3728,15 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     V = ref_verdict(ref, iid, tf, live, own) if (P is not None and verdict) else None
     if compact:
         mk = m(shown)
-        old = compact_age(age)
+        old = "" if live_value else compact_age(age)   # a live price is from now
         if V:
             if mk:
-                add("%s: %s" % (V["left"], V["right"]), "%s%s %s" % ("AH (live)" if live_value else "AH", tag, mk)
+                add("%s: %s" % (V["left"], V["right"]), "%s %s" % (ah_label("AH"), mk)
                     + ("  " + vs if vs else "") + old, V["lc"], "white")
             else:
                 add("%s: %s" % (V["left"], V["right"]), "AH: none listed" + old, V["lc"], "muted")
         else:
-            add((("%s%s: %s" % (ahl, tag, mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now") + old,
+            add((("%s: %s" % (ah_label("AH value"), mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now") + old,
                 None, "text", None)
     else:
         ha, hc = header_age(age)
@@ -3706,7 +3748,7 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
             add("Vendor pays" + tag, m(it["vendor"]), "text", "white", True)
         mk = m(shown)
         if mk:
-            add(ahl + tag, mk + ("  " + vs if vs else ""), "text", "white", clear_cut and V["kind"] == "auction")
+            add(ah_label("AH value"), mk + ("  " + vs if vs else ""), "text", "white", clear_cut and V["kind"] == "auction")
         else:
             add("AH value", "none listed", "text", "muted")
         if m(it["avg7"]):
@@ -4521,9 +4563,9 @@ def sc_tooltip(sc, ref, items):
     sc.eq(w.lines(tt), [], "excludeLines tooltip gets nothing")
     sc.clean(w)
     # The average says how many days of prices it covers (up to 7), and the AH value how far
-    # it sits from it, said plainly ("+25% vs avg"): yellow from 25% either way, grey under that
+    # it sits from it, said plainly ("+45% vs avg"): yellow from 40% either way, grey under that
     # (never green or red: up is dear to a buyer, good to a seller).
-    cases = {R.LINEN: (3, 1250, 1000, "+25%"), R.RUNE: (9, 900, 1000, "-10%"), R.ARCANE: (9, 1000, 1004, "0%")}
+    cases = {R.LINEN: (3, 1450, 1000, "+45%"), R.RUNE: (9, 900, 1000, "-10%"), R.ARCANE: (9, 1000, 1004, "0%")}
 
     def fn(iid, f):
         if iid in cases:
@@ -4542,7 +4584,7 @@ def sc_tooltip(sc, ref, items):
         sc.eq(lines, expected_tooltip(r2, iid, w2.now - r2.updated), "average test %d" % iid)
         label = "%d-day average" % min(days, 7)
         sc.check(any(a == label for a, _ in lines), "%d: a %r line (%s)" % (iid, label, lines))
-        col = TT_WARN if abs(int(pct_txt.rstrip("%"))) >= 25 else TT_MUTED
+        col = TT_WARN if abs(int(pct_txt.rstrip("%"))) >= VS_LOUD else TT_MUTED
         ahv = [x for x in lines if x[0] == "AH value"]
         sc.check(len(ahv) == 1 and (ahv[0][1] or "").endswith("  |c%s%s vs avg|r" % (col, pct_txt)),
                  "%d: AH value %s from the average, in its colour (%s)" % (iid, pct_txt, ahv))
@@ -4649,7 +4691,7 @@ def sc_stale(sc, ref, items):
     sc.check("updated 7h ago" in out, "status shows 7h")
     sc.check("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload." in out, "status stale warning")
     w.slash("/gl chart " + N(R.LINEN))
-    sc.eq(w.ns.ChartPanel.age._text, "Data: |c%s7h ago - /reload for newer|r \u00b7 %s" % (TT_WARN, ref.houseName),
+    sc.eq(w.ns.ChartPanel.age._text, "Data: |c%s7h ago - /reload|r \u00b7 %s" % (TT_WARN, ref.houseName),
           "chart footer shows 7h, in yellow, with /reload")
     sc.clean(w)
 
@@ -19620,6 +19662,7 @@ def sc_consumes_picks(sc, ref, items):
 ES_SPUR, ES_PLANS, ES_SABER, ES_SABER_V = 991101, 991102, 991103, 991103001
 ES_DUST, ES_ORB, ES_FRAG, ES_SHARD, ES_TWIN1, ES_TWIN2 = 991104, 991105, 991106, 991107, 991108, 991109
 ES_TOME, ES_RELIC, ES_MAP, ES_CANDLE = 991110, 991111, 991112, 991113
+ES_GHOST, ES_HOURS, ES_LONG, ES_TWIG = 991114, 991115, 991116, 991117
 ES_BOP, ES_QUEST, ES_TUNIC = 251398, 990911, 990912     # the game knows these by name; the data does not
 
 
@@ -19656,6 +19699,16 @@ def es_items():
                  ([8800, None, None], [9000, None, None], [2, 0, 0])),
         # the day's sales without hourly ones (a version just after the collector started on versions)
         ES_CANDLE: ("Quillwax Candle", 300, 310, 6, 5, 305, (flat(300, 6), flat(310, 6), flat(0, 6)), ([300], [310], [0])),
+        # never listed, never sold in the 2 days the data has
+        ES_GHOST: ("Ghostly Quillcharm", 0, 0, 0, 0, 0, (flat(None, 5), flat(None, 5), flat(0, 5)), ([None, None], [None, None], [0, 0])),
+        # none sold in the last day, 4 in the 30 hours the data has
+        ES_HOURS: ("Quillfeather Stylus", 400, 410, 3, 0, 405, (flat(400, 30), flat(410, 30), flat(1, 4) + flat(0, 26)),
+                   ([400], [410], [0])),
+        # 100 hours (4 days) of hourly prices, 9 days of daily ones: the chart's 30 days
+        ES_LONG: ("Longwick Quillcandle", 600, 610, 2, 0, 605, (flat(600, 100), flat(610, 100), [1, 1] + flat(0, 98)),
+                  (flat(600, 9), flat(610, 9), flat(0, 9))),
+        # "lbright" where a word starts: before the names with it inside a word ("Quillbright"), though they sold more
+        ES_TWIG: ("Lbrightling Twig", 50, 52, 3, 1, 51, (flat(50, 4), flat(52, 4), [0, 0, 0, 1]), ([50], [52], [1])),
     }
 
 
@@ -19720,8 +19773,26 @@ def es_names(ref, w=None):
     return _ES_NAMES[k]
 
 
+def word_char(c):
+    """Core.lua wordByte: a letter or digit, or any non-ASCII letter."""
+    return ("0" <= c <= "9") or ("a" <= c <= "z") or ("A" <= c <= "Z") or ord(c) >= 128
+
+
+def match_tier(low, key):
+    """1: the text where a word starts, 2: only inside a word, None: not in the name."""
+    pos = low.find(key)
+    if pos < 0:
+        return None
+    while pos >= 0:
+        if pos == 0 or not word_char(low[pos - 1]):
+            return 1
+        pos = low.find(key, pos + 1)
+    return 2
+
+
 def ref_find_search(ref, text, w=None):
-    """Core.lua ns.FindSearchItem: (id, "exact" or "contains"), or (None, None)."""
+    """Core.lua ns.FindSearchItem: (id, "exact", "contains" (the whole text is in the name) or
+    "words" (only every word is)), or (None, None)."""
     key = name_key(text)
     if not key:
         return None, None
@@ -19738,52 +19809,102 @@ def ref_find_search(ref, text, w=None):
     by_words = len(words) > 1 or (len(words) == 1 and words[0] != key)
     best = None
     for iid, low, sold in flat:
-        if key in low:
-            tier = 1
-        elif by_words and all(x in low for x in words):
-            tier = 2
-        else:
-            continue
+        tier = match_tier(low, key)
+        if tier is None:
+            if by_words and all(x in low for x in words):
+                tier = 3
+            else:
+                continue
         r = (tier,) + rank(iid, sold, len(low))
         if best is None or r < best[0]:
             best = (r, iid)
-    return (best[1], "contains") if best else (None, None)
+    if not best:
+        return None, None
+    return best[1], ("words" if best[0][0] == 3 else "contains")
+
+
+def ref_longer(a, b):
+    """AH.lua Longer: of two windows, the one that goes further back."""
+    if a is None:
+        return b
+    if b is None:
+        return a
+    return b if b["n"] * b["step"] > a["n"] * a["step"] else a
+
+
+def ref_span(win):
+    """AH.lua SpanText: "hour", "47 hours", "day", "3 days"."""
+    n = win["n"]
+    if win["step"] >= 86400:
+        return "day" if n <= 1 else "%d days" % n
+    if n <= 1:
+        return "hour"
+    if n < 48:
+        return "%d hours" % n
+    return "%d days" % (n // 24)
 
 
 def ref_last_listed(ref, iid):
-    """AH.lua LastListed: (price, time) of the last listing in the hourly week, else the daily prices."""
+    """AH.lua LastListed: (price, time) of the last listing in the hourly week, else the daily
+    prices; else (None, the window that goes furthest back, or None)."""
     off = ref.updated - (ref.hourEnd or 0)
     if off < 0 or off >= 3600:
         off = 0
+    longest = None
     for tf in ("1W", "1Y"):
         win = ref.window(iid, tf)
+        if win["n"] <= 0:
+            continue
+        longest = ref_longer(longest, win)
         for i in range(win["n"] - 1, -1, -1):
             p = win["cheap"][i]
             if p:
                 return p, win["times"][i] + (43200 if win["step"] >= 86400 else off)
-    return None
+    return None, longest
 
 
-def ref_empty_lines(w, ref, text, extra=()):
-    """The lines under "No items found" for a search with no results, and the item the chart shows."""
+def ref_sold_line(ref, iid):
+    """AH.lua SoldLine: "About 45 sold a day." (Core.lua ns.SoldPerDay), else the hours' or the
+    days' sales the data has, else "No sales seen in the last ..."."""
+    it = ref.items[iid]
+    per, _ = rec_model.sold_per_day(it["sold24"], ref.salesHours)
+    if per is not None and per > 0:
+        return "About %s sold a day." % commas(per)
+    longest = None
+    for tf in ("1W", "1M"):
+        win = ref.window(iid, tf)
+        if win["n"] <= 0:
+            continue
+        n = sum(x or 0 for x in win["sold"])
+        if n > 0:
+            return "About %s sold in the last %s." % (commas(n), ref_span(win))
+        longest = ref_longer(longest, win)
+    if longest:
+        return "No sales seen in the last %s." % ref_span(longest)
+    return "No sales seen yet."
+
+
+def ref_empty_lines(w, ref, text, extra=(), filtered=False, exact=False):
+    """The lines under "No items found" for a search with no results, and the item the chart shows.
+    filtered: the search had a category, a level range or filters that hide items; exact: it matched
+    whole names only (ExactMatch)."""
     iid, how = ref_find_search(ref, text, w)
     out = []
     if iid is not None:
+        loose = how == "words" or (how != "exact" and exact)
+        lead = "Not listed now. " if not loose and not filtered else ""
         if how != "exact":
-            out.append("Best match: " + w.display_name(iid))
-        last = ref_last_listed(ref, iid)
-        if last:
-            out.append("Not listed now. Last listed %s, %s." % (money_text(last[0]), age_text(max(0, w.M.now - last[1]))))
+            out.append("Best match: " + w.display_name(iid) + (" - try its full name" if loose else ""))
+        if filtered:
+            out.append("Your AH filters may hide it.")
+        p, t = ref_last_listed(ref, iid)
+        if p:
+            out.append("%sLast listed %s at %s." % (lead, age_text(max(0, w.M.now - t)), money_icons(p)))
+        elif t:
+            out.append("%sNone listed in the last %s." % (lead, ref_span(t)))
         else:
-            out.append("Not listed now. No listings seen in the last 30 days.")
-        week = max(sum(ref.window(iid, "1W")["sold"]), ref.items[iid]["sold24"])
-        month = sum(ref.window(iid, "1M")["sold"])
-        if week > 0:
-            out.append("About %s sold in the last 7 days." % commas(week))
-        elif month > 0:
-            out.append("About %s sold in the last 30 days." % commas(month))
-        else:
-            out.append("No sales seen in 30 days.")
+            out.append("%sNone listed yet." % lead)
+        out.append(ref_sold_line(ref, iid))
         chart = iid
     else:
         gid, bind = None, None
@@ -19793,7 +19914,7 @@ def ref_empty_lines(w, ref, text, extra=()):
                 gid, bind = k, it.bind or 0
                 break
         out.append({1: "Bind on pickup: never on the AH.", 4: "Quest item: never on the AH."}.get(
-            bind, "No listings seen in the last 30 days."))
+            bind, "Goblin Ledger has no prices for that name."))
         chart = gid
     out += list(extra)
     return out[:7], chart
@@ -19819,8 +19940,8 @@ def es_shown(w):
     return fs._text.split("\n")
 
 
-def es_lines_ok(sc, w, ref, text, label, extra=(), tf=None):
-    want, chart = ref_empty_lines(w, ref, text, extra)
+def es_lines_ok(sc, w, ref, text, label, extra=(), tf=None, filtered=False, exact=False):
+    want, chart = ref_empty_lines(w, ref, text, extra, filtered=filtered, exact=exact)
     sc.eq(es_shown(w), want, "%s: lines under No items found" % label)
     al = w.ns.AHState.emptyLines
     sc.eq([al[i] for i in range(1, len(al) + 1)] if al is not None else None, want, "%s: AHState.emptyLines" % label)
@@ -19847,46 +19968,85 @@ def sc_empty_search(sc, ref, items):
     es_game_items(w)
     w.open_ah_modern()
     C = ns.ChartPanel
-    sc.eq(ns.stats.searchList, None, "names are not listed for searching before a search needs them")
-    # exact name, any case: last listed 3 hours ago at 4g 99c, 27 sold this week; the chart's 30 days
+    # the names a search looks through: listed a few at a time a second after the AH opens
+    sc.eq(ns.stats.searchList, None, "names not listed for searching the moment the AH opens")
+    ns.SEARCH_LIST_STEP = max(7, len(r2.items) // 3)
+    w.settle(1.2)
+    for _ in range(40):
+        if ns.stats.searchList:
+            break
+        w.settle(0.25)
+    sc.eq(ns.stats.searchList, 1, "a second after the AH opens: the names are listed once")
+    sc.check((ns.stats.searchSteps or 0) >= 2, "listed over several frames, not at once (%s steps)" % ns.stats.searchSteps)
+    # exact name, any case: last listed 3 hours ago at 4g 99c, 21 sold a day; the week's prices
+    # (its daily ones go back only 3 days)
     es_search(w, "QUILLBRIGHT spur")
-    want, _ = es_lines_ok(sc, w, r2, "QUILLBRIGHT spur", "exact", tf="1M")
-    sc.eq(want, ["Not listed now. Last listed 4g 99c, 3h ago.", "About 27 sold in the last 7 days."], "exact: the model's lines")
-    chart_check(sc, w, r2, ES_SPUR, "1M", "exact: the chart shows 30 days", saved_tf="1D")
+    want, _ = es_lines_ok(sc, w, r2, "QUILLBRIGHT spur", "exact", tf="1W")
+    sc.eq(want, ["Not listed now. Last listed 3h ago at %s." % money_icons(40099),
+                 "About %s sold a day." % commas(rec_model.sold_per_day(21, r2.salesHours)[0])], "exact: the model's lines")
+    chart_check(sc, w, r2, ES_SPUR, "1W", "exact: the chart shows the week", saved_tf="1D")
     sc.check(int(C.pools.vol.used) > 0, "exact: the chart has its sales bars (%d)" % int(C.pools.vol.used))
     sc.eq(ns.settings.chartTF, "1D", "exact: the saved timeframe is kept")
     # a timeframe button: the chart and the setting follow it
     M.click(C.tfButtons["5D"])
     chart_check(sc, w, r2, ES_SPUR, "5D", "exact: 5D clicked")
     M.click(C.tfButtons["1D"])
+    # daily prices for more than a week: the chart's 30 days
+    es_search(w, "longwick quillcandle")
+    want, _ = es_lines_ok(sc, w, r2, "longwick quillcandle", "9 days of daily prices", tf="1M")
+    chart_check(sc, w, r2, ES_LONG, "1M", "9 days of daily prices: the chart shows 30 days", saved_tf="1D")
+    sc.eq(want[-1], "About 2 sold in the last 4 days.", "100 hours of hourly prices: sold in the last 4 days")
+    # one day of daily prices: the week
+    es_search(w, "glimmerquartz dust")
+    chart_check(sc, w, r2, ES_DUST, "1W", "1 day of daily prices: the chart shows the week", saved_tf="1D")
     # a real item, exact (its last listing is the latest snapshot)
     es_search(w, N(R.LINEN).upper())
-    es_lines_ok(sc, w, r2, N(R.LINEN).upper(), "real item exact", tf="1M")
+    es_lines_ok(sc, w, r2, N(R.LINEN).upper(), "real item exact", tf="1W")
     # contains: the whole text, and every word of it
-    for q, want_id in (("quillbright spurs", ES_PLANS), ("plans quillbright", ES_PLANS), ("quillbright: plans", ES_PLANS),
-                       ("vorpalite sab", ES_SABER), ("of the tiger vorpalite", ES_SABER_V), ("glimmerquartz", ES_DUST),
-                       ("nightquartz shard", ES_FRAG), ("shard nightquartz", ES_SHARD), ("twinquartz token", ES_TWIN2)):
+    # (only every word in the name: "words"; the whole text where a word starts beats inside a word)
+    for q, want_id, how in (("quillbright spurs", ES_PLANS, "contains"), ("plans quillbright", ES_PLANS, "words"),
+                            ("quillbright: plans", ES_PLANS, "words"), ("vorpalite sab", ES_SABER, "contains"),
+                            ("of the tiger vorpalite", ES_SABER_V, "words"), ("glimmerquartz", ES_DUST, "contains"),
+                            ("nightquartz shard", ES_FRAG, "contains"), ("shard nightquartz", ES_SHARD, "words"),
+                            ("twinquartz token", ES_TWIN2, "exact"), ("lbright", ES_TWIG, "contains")):
         es_search(w, q)
-        sc.eq(ref_find_search(r2, q)[0], want_id, "%r: the model finds %d" % (q, want_id))
+        sc.eq(ref_find_search(r2, q), (want_id, how), "%r: the model finds %d (%s)" % (q, want_id, how))
         got = ns.FindSearchItem(q)
-        sc.eq(got, (want_id, "exact" if q == "twinquartz token" else "contains"), "%r: ns.FindSearchItem" % q)
-        es_lines_ok(sc, w, r2, q, "%r" % q, tf="1M")
-        if q != "twinquartz token":
-            sc.eq(es_shown(w)[:1], ["Best match: " + r2.items[want_id]["name"]], "%r: names the item it found" % q)
+        sc.eq(got, (want_id, how), "%r: ns.FindSearchItem" % q)
+        es_lines_ok(sc, w, r2, q, "%r" % q, tf="1W")
+        if how != "exact":
+            sc.eq(es_shown(w)[:1], ["Best match: " + r2.items[want_id]["name"] + (" - try its full name" if how == "words" else "")],
+                  "%r: names the item it found" % q)
+        # only a name that holds the whole text says it is not listed now
+        sc.eq(es_shown(w)[1 if how != "exact" else 0].startswith("Not listed now. "), how != "words",
+              "%r: 'Not listed now' only when the whole text is in the name (%s)" % (q, es_shown(w)))
         sc.eq(ns.ChartItem(), want_id, "%r: chart item" % q)
-    sc.eq(ns.stats.searchList, 1, "the names are listed once, the first time a search needs them")
-    # sales: none in 30 days; none this week but some in the month; listed only on an older day
+    sc.eq(ns.stats.searchList, 1, "the names are listed once")
+    # sales over the time the data really has: none in its 2 days; none in the last day but some
+    # in its 30 hours, or its 3 days; the day's count; listed only on an older day; never listed
     es_search(w, "mildewed quillbook")
-    sc.eq(es_shown(w)[-1], "No sales seen in 30 days.", "never sold: says so")
+    sc.eq(es_shown(w)[-1], "No sales seen in the last 2 days.", "never sold: in the 2 days of data")
     es_lines_ok(sc, w, r2, "mildewed quillbook", "never sold")
     es_search(w, "corroded quillrelic")
-    sc.eq(es_shown(w)[-1], "About 7 sold in the last 30 days.", "sold earlier in the month")
+    sc.eq(es_shown(w)[-1], "About 7 sold in the last 3 days.", "sold in the 3 days of data, not today")
+    es_search(w, "quillfeather stylus")
+    sc.eq(es_shown(w)[-1], "About 4 sold in the last 30 hours.", "sold in the 30 hours of data, not today")
+    es_lines_ok(sc, w, r2, "quillfeather stylus", "30 hours of sales")
     es_search(w, "quillwax candle")
-    sc.eq(es_shown(w)[-1], "About 5 sold in the last 7 days.", "the day's sales count when the hours have none")
+    sc.eq(es_shown(w)[-1], "About %s sold a day." % commas(rec_model.sold_per_day(5, r2.salesHours)[0]),
+          "the day's sales count when the hours have none")
     es_lines_ok(sc, w, r2, "quillwax candle", "the day's sales")
     es_search(w, "faded quillmap")
-    es_lines_ok(sc, w, r2, "faded quillmap", "daily prices only", tf="1M")
-    sc.check(es_shown(w)[0].startswith("Not listed now. Last listed 88s, "), "daily prices: the last listing (%s)" % es_shown(w))
+    es_lines_ok(sc, w, r2, "faded quillmap", "daily prices only", tf="1W")
+    sc.check(es_shown(w)[0].startswith("Not listed now. Last listed ") and es_shown(w)[0].endswith(" at %s." % money_icons(8800)),
+             "daily prices: the last listing (%s)" % es_shown(w))
+    es_search(w, "ghostly quillcharm")
+    sc.eq(es_shown(w), ["Not listed now. None listed in the last 2 days.", "No sales seen in the last 2 days."],
+          "never listed: in the 2 days of data")
+    es_lines_ok(sc, w, r2, "ghostly quillcharm", "never listed")
+    # the coins are icons ("3s" with letters reads like a time)
+    es_search(w, "quillbright spur")
+    sc.check("|TInterface\\MoneyFrame\\UI-GoldIcon" in es_shown(w)[0], "the price has coin icons (%s)" % es_shown(w)[0])
     # names the data does not have: bind on pickup (the game knows it by name), a quest item, unknown
     es_search(w, "plans: officer's boots")
     sc.eq(es_shown(w), ["Bind on pickup: never on the AH."], "bind on pickup by name")
@@ -19895,20 +20055,23 @@ def sc_empty_search(sc, ref, items):
              "bind on pickup: the chart says no recent listings (%s)" % C.msg._text)
     es_search(w, "Sealed Quillorders")
     sc.eq(es_shown(w), ["Quest item: never on the AH."], "quest item by name")
+    NOPRICE = "Goblin Ledger has no prices for that name."
     es_search(w, "plans officer")
     if ref_find_search(r2, "plans officer")[0] is None:
-        sc.eq(es_shown(w), ["No listings seen in the last 30 days."], "a name nobody knows (the user's search)")
+        sc.eq(es_shown(w), [NOPRICE], "a name nobody knows (the user's search)")
     es_lines_ok(sc, w, r2, "plans officer", "plans officer")
+    es_search(w, "quillbrigt spur")
+    sc.eq(es_shown(w), [NOPRICE], "a typo: no prices for that name (not a claim about the item)")
     es_search(w, "moonlit quilltunic")
-    sc.eq(es_shown(w), ["No listings seen in the last 30 days."], "known to the game, not in the data")
+    sc.eq(es_shown(w), [NOPRICE], "known to the game, not in the data")
     sc.eq(ns.ChartItem(), ES_TUNIC, "known to the game: the chart shows it")
     M.infoByName = False
     es_search(w, "plans: officer's boots")
-    sc.eq(es_shown(w), ["No listings seen in the last 30 days."], "the game has not loaded it: no bind type to say")
+    sc.eq(es_shown(w), [NOPRICE], "the game has not loaded it: no bind type to say")
     M.infoByName = None
     # two letters: no guessing
     es_search(w, "qu")
-    sc.eq(es_shown(w), ["No listings seen in the last 30 days."], "two letters: no best match")
+    sc.eq(es_shown(w), [NOPRICE], "two letters: no best match")
     sc.eq(ns.FindSearchItem("qu"), None, "two letters: FindSearchItem finds nothing")
     # other files' lines: every function's, after ours; a failing one and one with nothing are left out
     ns.EmptySearchLines[len(ns.EmptySearchLines) + 1] = w.lua.eval(
@@ -19922,11 +20085,60 @@ def sc_empty_search(sc, ref, items):
     sc.eq((M.esArgs[1], M.esArgs[2]), ("quillbright spur", ES_SPUR), "other files get the search text and the item id")
     sc.check("boom" in str(ns.AHState.emptyError), "the failing function's error is kept, its lines left out")
     es_search(w, "plans officer")
-    sc.eq(es_shown(w), ["No listings seen in the last 30 days."] + extra, "other files' lines for an unknown name too")
+    sc.eq(es_shown(w), [NOPRICE] + extra, "other files' lines for an unknown name too")
     sc.eq((M.esArgs[1], M.esArgs[2]), ("plans officer", None), "unknown name: no item id")
     for k in range(len(ns.EmptySearchLines), 0, -1):
         ns.EmptySearchLines[k] = None
     ns.EmptySearchLines.zzNamed = None
+    # at most 7 lines: ours (2), then the first 5 of 6 other lines
+    six = ["Extra line %d" % k for k in range(1, 7)]
+    ns.EmptySearchLines[1] = w.lua.eval("function() return { %s } end" % ", ".join("'%s'" % x for x in six))
+    es_search(w, "quillbright spur")
+    sc.eq(len(es_shown(w)), 7, "at most 7 lines (%d)" % len(es_shown(w)))
+    es_lines_ok(sc, w, r2, "quillbright spur", "8 lines cut to 7", extra=six)
+    sc.eq(es_shown(w)[-1], "Extra line 5", "the 7th line is the 5th other line")
+    ns.EmptySearchLines[1] = None
+    # filters that can hide the item (Blizzard's saved per character): no "Not listed now", and a
+    # line that says so. Every quality, nothing else: not filtered; no filters at all: not filtered.
+    AF = w.g.Enum.AuctionHouseFilter
+    qf = lambda q: tuple(ns.AHState.QueryFiltered(w.to_lua(q)))
+    allq = [AF.PoorQuality, AF.CommonQuality, AF.UncommonQuality, AF.RareQuality, AF.EpicQuality, AF.LegendaryQuality]
+    sc.eq(qf({"filters": allq}), (False, False), "QueryFiltered: every quality")
+    sc.eq(qf({"filters": []}), (False, False), "QueryFiltered: no filters")
+    sc.eq(qf({"filters": allq[1:]}), (True, False), "QueryFiltered: not every quality")
+    sc.eq(qf({"filters": allq + [AF.UsableOnly]}), (True, False), "QueryFiltered: usable only")
+    sc.eq(qf({"filters": allq + [AF.ExactMatch]}), (False, True), "QueryFiltered: exact names")
+    sc.eq(qf({"filters": allq, "minLevel": 50}), (True, False), "QueryFiltered: a level range")
+    sc.eq(qf({"filters": allq, "maxLevel": 60}), (True, False), "QueryFiltered: a top level")
+    sc.eq(qf({"filters": allq, "itemClassFilters": [{"classID": 2}]}), (True, False), "QueryFiltered: a category")
+    saved = w.g.AUCTION_HOUSE_DEFAULT_FILTERS
+    w.g.AUCTION_HOUSE_DEFAULT_FILTERS = None
+    sc.eq(qf({"filters": allq}), (False, False), "QueryFiltered without Blizzard's defaults: every quality")
+    sc.eq(qf({"filters": allq[:3]}), (True, False), "QueryFiltered without Blizzard's defaults: some qualities")
+    w.g.AUCTION_HOUSE_DEFAULT_FILTERS = saved
+    F = M.ahFilters
+    for label, setup in (("usable only", lambda: F.filters.__setitem__(AF.UsableOnly, True)),
+                         ("no poor items", lambda: F.filters.__setitem__(AF.PoorQuality, False)),
+                         ("levels 50-60", lambda: (setattr(F, "minLevel", 50), setattr(F, "maxLevel", 60))),
+                         ("a category", lambda: setattr(M, "ahCategory", w.to_lua([{"classID": 7, "subClassID": 0}])))):
+        setup()
+        for q in ("quillbright spur", "quillbright spurs"):
+            es_search(w, q)
+            es_lines_ok(sc, w, r2, q, "%s: %r" % (label, q), filtered=True)
+            sc.check("Your AH filters may hide it." in es_shown(w) and not any(l.startswith("Not listed now") for l in es_shown(w)),
+                     "%s: %r: the filters may hide it, not 'Not listed now' (%s)" % (label, q, es_shown(w)))
+        F.filters[AF.UsableOnly], F.filters[AF.PoorQuality], F.minLevel, F.maxLevel, M.ahCategory = False, True, 0, 0, None
+    es_search(w, "quillbright spur")
+    sc.eq(es_shown(w)[0].startswith("Not listed now. "), True, "filters back to Blizzard's defaults: not listed now")
+    # whole names only (ExactMatch): an exact name is sure, a name that holds the text is not
+    F.filters[AF.ExactMatch] = True
+    es_search(w, "quillbright spur")
+    es_lines_ok(sc, w, r2, "quillbright spur", "exact names only, exact", exact=True)
+    sc.eq(es_shown(w)[0].startswith("Not listed now. "), True, "exact names only: the exact name is not listed now")
+    es_search(w, "quillbright spurs")
+    es_lines_ok(sc, w, r2, "quillbright spurs", "exact names only, contains", exact=True)
+    sc.eq(es_shown(w)[0], "Best match: Plans: Quillbright Spurs - try its full name", "exact names only: try its full name")
+    F.filters[AF.ExactMatch] = False
     # cleared: a new search, results arriving, the Favorites search, the AH closing
     es_search(w, "quillbright spur")
     sb = w.g.AuctionHouseFrame.SearchBar
@@ -19943,6 +20155,31 @@ def sc_empty_search(sc, ref, items):
     w.g.C_AuctionHouse.SearchForFavorites()
     M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
     sc.eq(es_shown(w), [], "the Favorites search (no favourites): our lines go, not shown again")
+    # a typed search with results, then an addon searches a list of items and finds none: nothing
+    # (the lines would be the typed search's)
+    es_search(w, N(R.LINEN), results=[(R.LINEN, 46, 900)])
+    key = w.to_lua({"itemID": ES_SPUR, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0})
+    w.g.C_AuctionHouse.SearchForItemKeys(w.to_lua([key]), w.to_lua([]))
+    w.set_browse([])
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.4)
+    sc.eq(es_shown(w), [], "an addon's item list search finds nothing: no lines")
+    # a typed search still waiting for its results when an addon searches a list of items that
+    # finds none: the empty list is the addon's, not the typed search's
+    sb = w.g.AuctionHouseFrame.SearchBar
+    sb.SearchBox.SetText(sb.SearchBox, "quillbright spur")
+    M.fireScript(sb.SearchBox, "OnEnterPressed")
+    w.g.C_AuctionHouse.SearchForItemKeys(w.to_lua([key]), w.to_lua([]))
+    w.set_browse([])
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.4)
+    sc.eq(es_shown(w), [], "an addon's item list search while a typed one waits: no lines")
+    # a typed search with results whose list then empties (no new search): nothing either
+    es_search(w, N(R.LINEN), results=[(R.LINEN, 46, 900)])
+    w.set_browse([])
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.4)
+    sc.eq(es_shown(w), [], "the list of a search that found something empties: no lines")
     es_search(w, "")
     sc.eq(es_shown(w), [], "an empty search (a category) shows nothing")
     # results still coming: nothing yet; then all in: the lines
@@ -19951,13 +20188,13 @@ def sc_empty_search(sc, ref, items):
     M.browsePartial = False
     M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
     w.settle(0.4)
-    es_lines_ok(sc, w, r2, "quillbright spur", "all results in", tf="1M")
+    es_lines_ok(sc, w, r2, "quillbright spur", "all results in", tf="1W")
     # the same item shown again without a timeframe (the Chart button): the saved timeframe again
     sc.eq(ns.ChartItem(), ES_SPUR, "all results in: the chart shows the spur")
     ns.ShowChart(ES_SPUR, "ah")
     chart_check(sc, w, r2, ES_SPUR, "1D", "the same item shown again: the saved timeframe")
     es_search(w, "quillbright spur")
-    chart_check(sc, w, r2, ES_SPUR, "1M", "searched again: 30 days", saved_tf="1D")
+    chart_check(sc, w, r2, ES_SPUR, "1W", "searched again: the week", saved_tf="1D")
     # another item opened: the saved timeframe again
     r = w.lua.table()
     r.itemKey = w.to_lua({"itemID": R.RUNE, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0})
@@ -19970,6 +20207,19 @@ def sc_empty_search(sc, ref, items):
     sc.eq(ns.AHState.lastSearch, None, "AH closed: the search is forgotten")
     sc.eq(len(M.cah.posted), 0, "nothing posted")
     sc.clean(w)
+    # a search that needs the names while they are still being listed: it finishes the list at once
+    w = World(r2, items, data_src=text)
+    ns = w.ns
+    ns.SEARCH_LIST_STEP = 7
+    ns.PrepareSearchList()
+    sc.eq((ns.stats.searchSteps, ns.stats.searchList), (1, None), "listing the names: one step done, not finished")
+    sc.eq(ns.FindSearchItem("quillbright spurs"), (ES_PLANS, "contains"), "a search before the list is done: found")
+    sc.eq(ns.stats.searchList, 1, "a search before the list is done: it finished the list")
+    w.settle(1.0)
+    sc.eq((ns.stats.searchList, ns.stats.searchSteps), (1, 1), "the list is not made again, the steps stop")
+    ns.PrepareSearchList()
+    sc.eq(ns.stats.searchSteps, 1, "PrepareSearchList with the list made: nothing to do")
+    sc.clean(w, "list finished at once")
 
 
 def sc_empty_search_skins(sc, ref, items):
@@ -19993,8 +20243,8 @@ def sc_empty_search_skins(sc, ref, items):
     il.backdrop = bd
     il.ResultsText.SetFontObject(il.ResultsText, w.g.GameFontHighlightLarge)
     es_search(w, "quillbright spur")
-    es_lines_ok(sc, w, r2, "quillbright spur", "ElvUI", tf="1M")
-    chart_check(sc, w, r2, ES_SPUR, "1M", "ElvUI: the chart shows 30 days", saved_tf="1D")
+    es_lines_ok(sc, w, r2, "quillbright spur", "ElvUI", tf="1W")
+    chart_check(sc, w, r2, ES_SPUR, "1W", "ElvUI: the chart shows the week", saved_tf="1D")
     es_search(w, N(R.LINEN), results=[(R.LINEN, 46, 900)])
     sc.eq(es_shown(w), [], "ElvUI: results arrive, our lines go")
     w.close_ah_modern()
@@ -20023,12 +20273,17 @@ def sc_empty_search_skins(sc, ref, items):
 
 
 def sc_live_price(sc, ref, items):
-    """ns.LivePrice: the cheapest buyout the open auction house showed (loaded listings, or a browse
-    row's price for an item without versions), apart from the sell buttons' live prices; gone on close."""
+    """ns.LivePrice: the cheapest buyout per unit the open auction house showed (loaded listings, or a
+    browse row's price for an item without versions, whichever came in last; browse rows for 10
+    minutes), apart from the sell buttons' live prices; nil at another market; gone on close."""
     text, r2 = es_data(ref)
     w = World(r2, items, data_src=text)
     ns, M = w.ns, w.M
-    lp = lambda iid: ns.LivePrice(iid)
+
+    def full(iid):
+        r = ns.LivePrice(iid)
+        return tuple(r) if isinstance(r, tuple) else ((None, None, None) if r is None else (r, None, None))
+    lp = lambda iid: full(iid)[0]
     sc.eq(lp(R.LINEN), None, "AH closed: no live price")
     w.open_ah_modern()
     # browse rows: a plain item's price per unit; a row with a suffix, a pet, and an item whose
@@ -20038,20 +20293,68 @@ def sc_live_price(sc, ref, items):
     if base is not None:
         rows.append((base, 4321, 2))
     es_search(w, "c", results=rows)
-    sc.eq(lp(R.LINEN), 61, "browse row: the cheapest per unit")
+    sc.eq(full(R.LINEN), (61, False, "browse"), "browse row: the cheapest per unit, not yours, from the browse row")
     sc.eq(lp(R.RUNE), 1500, "browse row: another item")
     sc.eq(lp(R.ARCANE), None, "browse row with a suffix: left out")
     sc.eq(lp(R.LOTUS), None, "a pet's row: left out")
     if base is not None:
         sc.eq(lp(base), None, "an item whose versions differ: left out")
     sc.eq(w.live(R.LINEN), None, "browse rows never feed the sell buttons' live price (LiveCheapest)")
-    # commodity results (the item's own listings) beat the browse row
+    # an exact name (the search knows its item at once): its row's price too
+    es_search(w, N(R.RUNE), results=[(R.RUNE, 1490, 40)])
+    sc.eq(lp(R.RUNE), 1490, "an exact name's search: its browse row's price")
+    # one search, two rows of one item (item levels): the cheaper; a later page with a dearer row
+    # keeps it, a cheaper one replaces it; a new search starts over
+    es_search(w, "c", results=[(R.LINEN, 10, 5), (R.LINEN, 99, 5)])
+    sc.eq(lp(R.LINEN), 10, "two rows of one item: the cheaper")
+    es_search(w, "c", results=[(R.LINEN, 99, 5), (R.LINEN, 10, 5)])
+    sc.eq(lp(R.LINEN), 10, "two rows of one item, the cheaper second: the cheaper")
+    w.browse_rows_added([(R.LINEN, 50, 5), (R.RUNE, 1300, 40)])
+    sc.eq(lp(R.LINEN), 10, "a later page with a dearer row: the cheaper stays")
+    sc.eq(lp(R.RUNE), 1300, "a later page: its rows' prices (the event's own rows)")
+    w.browse_rows_added([(R.LINEN, 7, 5)])
+    sc.eq(lp(R.LINEN), 7, "a later page with a cheaper row: that one")
+    es_search(w, "c", results=[(R.LINEN, 44, 5)])
+    sc.eq(lp(R.LINEN), 44, "a new search: its rows, not the last search's cheapest")
+    es_search(w, "d", results=[(R.RUNE, 1300, 40)])
+    w.browse_rows_added([(R.LINEN, 52, 5)])
+    sc.eq(lp(R.LINEN), 52, "a new search's later page: its row, not an older search's cheaper one")
+    # whether you have one listed
+    es_search(w, "c", results=[(R.LINEN, 45, 5, 0, 0, True)])
+    sc.eq(full(R.LINEN), (45, True, "browse"), "a row with one of yours: own")
+    # none available now (Blizzard shows "None available"): no price, and the old one goes
+    es_search(w, "c", results=[(R.LINEN, 999, 0)])
+    sc.eq(lp(R.LINEN), None, "a row with none available: no price, the old one dropped")
+    # a row that may be a whole stack's price (not a commodity, stacks): left out; gear (no stacks): in
+    gear = next(i for i in sorted(r2.items) if i not in (R.LINEN, R.RUNE, R.ARCANE, R.LOTUS) and i not in r2.base_of
+                and i not in r2.variants and M["items"][i] is not None)
+    it = M["items"][gear]
+    old_c, old_s = it.commodity, it.maxStack
+    it.commodity, it.maxStack = False, 20
+    es_search(w, "c", results=[(gear, 5000, 3)])
+    sc.eq(lp(gear), None, "a stackable item that is not a commodity: may be a stack's price, left out")
+    it.maxStack = 1
+    es_search(w, "c", results=[(gear, 5000, 3)])
+    sc.eq(lp(gear), 5000, "an item that never stacks: its row's price is per item")
+    it.commodity, it.maxStack = old_c, old_s
+    # commodity results (the item's own listings), loaded after the row: they win
+    es_search(w, "c", results=[(R.LINEN, 61, 900)])
+    w.tick(1, 0.5)
     w.set_commodity_results(R.LINEN, [(70, 10, False), (65, 4, True)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.3)
-    sc.eq(lp(R.LINEN), 65, "commodity results: the cheapest listing (yours too)")
+    sc.eq(full(R.LINEN), (65, True, "listings"), "commodity results after the row: the cheapest listing (yours)")
     sc.eq(w.live(R.LINEN), 65, "the sell buttons' live price is unchanged")
     sc.eq(ns.LiveCheapest(R.LINEN), (65, True), "LiveCheapest still says the listing is yours")
+    # a browse row after the listings: the row (it is newer)
+    w.tick(1, 0.5)
+    es_search(w, "c", results=[(R.LINEN, 80, 900)])
+    sc.eq(full(R.LINEN), (80, False, "browse"), "a browse row after the listings: the newer price")
+    sc.eq(w.live(R.LINEN), 65, "the sell buttons keep the loaded listings")
+    w.tick(1, 0.5)
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
+    w.settle(0.3)
+    sc.eq(lp(R.LINEN), 65, "the listings again (after you bought one, say): the newer price")
     # item search results (gear without versions): per unit
     M.itemResults[ES_TOME] = w.to_lua([{"buyout": 1500, "quantity": 2}, {"buyout": 900, "quantity": 1}])
     key = w.to_lua({"itemID": ES_TOME, "itemLevel": 0, "itemSuffix": 0, "battlePetSpeciesID": 0})
@@ -20062,6 +20365,12 @@ def sc_live_price(sc, ref, items):
     es_search(w, "c", results=[(R.RUNE, 1400, 40)])
     sc.eq(lp(R.RUNE), 1400, "a newer browse row replaces the old price")
     sc.eq(lp(R.LINEN), 65, "an item missing from the new rows keeps what it had")
+    # browse rows count as live for 10 minutes
+    M.t = M.t + 599
+    sc.eq(lp(R.RUNE), 1400, "a browse row 10 minutes old: still live")
+    M.t = M.t + 2
+    sc.eq(lp(R.RUNE), None, "a browse row over 10 minutes old: no longer live")
+    sc.eq(lp(R.LINEN), 65, "loaded listings stay")
     w.close_ah_modern()
     for iid in (R.LINEN, R.RUNE, ES_TOME):
         sc.eq(lp(iid), None, "AH closed: live price %d dropped" % iid)
@@ -20069,12 +20378,22 @@ def sc_live_price(sc, ref, items):
     w.open_ah_modern()
     sc.eq(lp(R.RUNE), None, "AH open again: nothing until rows arrive")
     w.close_ah_modern()
+    # another market (a goblin auction house): none (its prices do not mix with the data's)
+    M.npc, M.subzone = w.to_lua({}), "Booty Bay"
+    w.open_ah_modern()
+    es_search(w, "c", results=[(R.LINEN, 61, 900)])
+    sc.check(bool(ns.AHState.otherHouse), "goblin auction house: another market")
+    sc.eq(lp(R.LINEN), None, "goblin auction house: no live price")
+    w.close_ah_modern()
+    M.npc, M.subzone = None, None
     sc.clean(w)
 
 
 def sc_tooltip_live(sc, ref, items):
-    """The tooltip's AH value while the AH shows a live price: "AH value (live)", and the badge
-    compares that price with the average. Never at another market, never with the AH closed."""
+    """The tooltip while the AH shows a live price: "AH value (live)" and the badge compare that
+    price with the average, and Sell now, Suggested price and the verdict follow the same price
+    (a browse row with one of yours: matched, not undercut). Never at another market, never with
+    the AH closed."""
     w = World(ref, items)
     ns, M = w.ns, w.M
     tt = w.g.GameTooltip
@@ -20093,7 +20412,7 @@ def sc_tooltip_live(sc, ref, items):
             tt.SetItemByID(tt, how)
         return w.lines(tt)
     lines = hover()
-    want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, live_value=live, styles=True)
+    want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, live=live, styles=True)
     sc.eq(lines, want, "live: the tooltip lines")
     tooltip_style_ok(sc, w, tt, want_st, "live")
     ahv = [x for x in lines if x[0].startswith("AH value")]
@@ -20101,19 +20420,39 @@ def sc_tooltip_live(sc, ref, items):
     if it["avg7"] > 0:
         sc.eq(ahv[0][1], money_icons(live) + "  " + vs_average(live, it["avg7"]), "live: the badge compares the live price")
         sc.check(" vs avg|r" in ahv[0][1] and TT_WARN in ahv[0][1], "live: twice the average is yellow (%s)" % ahv[0][1])
-    sc.check(not any(l.startswith("Sell now (live)") for l, _ in lines),
-             "live: Sell now is not made live by a browse row (%s)" % [l for l, _ in lines])
+    sn = [r for l, r in lines if l.startswith("Sell now")]
+    sc.eq(sn, [money_icons(live - 1)], "live: Sell now 1 copper under the live price, not the old snapshot's")
+    sc.check(any(l == "Sell now (live)" for l, _ in lines), "live: Sell now says it is live (%s)" % [l for l, _ in lines])
+    verdict_line_ok(sc, ref, R.LINEN, lines, "live: the verdict judges the live price", live=live)
     M.shift = True
     lines = hover()
-    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, mult=20, live_value=live), "live: Shift x20")
-    sc.check(any(l == "AH value (live) (x20)" for l, _ in lines), "live: Shift tag after the live tag")
+    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, mult=20, live=live), "live: Shift x20")
+    sc.check(any(l == "AH value (live, x20)" for l, _ in lines), "live: Shift: 'AH value (live, x20)' (%s)" % [l for l, _ in lines])
     M.shift = False
     w.slash("/gl compact")
-    sc.eq(hover(), expected_tooltip(ref, R.LINEN, age, count=20, compact=True, live_value=live), "live: compact")
+    sc.eq(hover(), expected_tooltip(ref, R.LINEN, age, count=20, compact=True, live=live), "live: compact")
     sc.check("(live)" in (hover()[0][1] or hover()[0][0]), "live: compact says live (%s)" % hover())
     w.slash("/gl compact")
-    sc.eq(hover(R.RUNE), expected_tooltip(ref, R.RUNE, age, live_value=ref.items[R.RUNE]["market"]), "live: another item")
+    sc.eq(hover(R.RUNE), expected_tooltip(ref, R.RUNE, age, live=ref.items[R.RUNE]["market"]), "live: another item")
     sc.eq(hover(R.LOTUS), expected_tooltip(ref, R.LOTUS, age), "live: an item with no live price keeps the data's AH value")
+    # a cheaper row than the snapshot: Sell now follows it down
+    low = max(2, it["market"] // 2)
+    es_search(w, "c", results=[(R.LINEN, low, 900)])
+    sc.eq(hover(), expected_tooltip(ref, R.LINEN, age, count=20, live=low), "live: a cheaper row (Sell now follows it down)")
+    # you have one listed somewhere: the cheapest may be yours, so it is matched
+    es_search(w, "c", results=[(R.LINEN, live, 900, 0, 0, True)])
+    lines = hover()
+    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, count=20, live=live, own=True), "live: a row with one of yours")
+    sc.eq([r for l, r in lines if l.startswith("Sell now")], [money_icons(live)], "live: one of yours: Sell now matches it")
+    # the data over 80 minutes old: compact mode has no age note next to a live price
+    M.now = ref.updated + 2 * 3600
+    w.slash("/gl compact")
+    lines = hover()
+    sc.eq(lines, expected_tooltip(ref, R.LINEN, 2 * 3600, count=20, compact=True, live=live, own=True), "live: compact, old data")
+    sc.check("/reload" not in str(lines), "live: compact: no '(2h old - /reload)' next to a live price (%s)" % lines)
+    sc.eq(hover(R.LOTUS), expected_tooltip(ref, R.LOTUS, 2 * 3600, compact=True), "old data, no live price: the age note")
+    w.slash("/gl compact")
+    M.now = w.now
     # another market (a goblin auction house): the data's prices, no live tag
     w.close_ah_modern()
     M.npc, M.subzone = w.to_lua({}), "Booty Bay"
@@ -20131,7 +20470,7 @@ def sc_tooltip_live(sc, ref, items):
 
 def sc_data_age(sc, ref, items):
     """Prices over 80 minutes old: the header's age turns yellow and says "/reload" (full mode),
-    compact mode gets a short grey "(2h old - /reload)", the chart footer "- /reload for newer"."""
+    compact mode gets a short grey "(2h old - /reload)", the chart footer "- /reload"."""
     w = World(ref, items)
     ns, M = w.ns, w.M
     tt = w.g.GameTooltip
@@ -20169,16 +20508,16 @@ def sc_data_age(sc, ref, items):
         C = ns.ChartPanel
         sc.eq(C.age._text, "Data: %s \u00b7 %s" % (chart_age(age), house), "age %d: chart footer" % age)
         if hint:
-            sc.check("/reload for newer" in C.age._text and TT_WARN in C.age._text, "age %d: footer says /reload, yellow" % age)
+            sc.check(" - /reload|r" in C.age._text and TT_WARN in C.age._text, "age %d: footer says /reload, yellow" % age)
     M.now = w.now
     sc.clean(w)
 
 
 def sc_vs_badge(sc, ref, items):
-    """The badge next to the AH value: "+92% vs avg" / "-44% vs avg", yellow from 25% either way,
+    """The badge next to the AH value: "+92% vs avg" / "-44% vs avg", yellow from 40% either way,
     grey under that and "0% vs avg" under 1%; never green or red. The average keeps its honest label."""
-    cases = {R.LINEN: (3, 1250, 1000, "+25%", "warn"), R.RUNE: (9, 1249, 1000, "+24%", "muted"),
-             R.ARCANE: (9, 750, 1000, "-25%", "warn"), R.LOTUS: (2, 751, 1000, "-24%", "muted")}
+    cases = {R.LINEN: (3, 1400, 1000, "+40%", "warn"), R.RUNE: (9, 1399, 1000, "+39%", "muted"),
+             R.ARCANE: (9, 600, 1000, "-40%", "warn"), R.LOTUS: (2, 601, 1000, "-39%", "muted")}
     zero = next(i for i in sorted(ref.items) if i not in cases and known_name(ref.items[i]["name"])
                 and i not in ref.base_of and i not in ref.variants)
     cases[zero] = (5, 1004, 1000, "0%", "muted")
@@ -20223,6 +20562,17 @@ def sc_empty_search_real(sc, ref, items):
     w = World(ref, items)
     ns, M = w.ns, w.M
     w.open_ah_modern()
+    # the names are listed a thousand a frame from a second after the AH opens
+    w.settle(1.2)
+    sc.check((ns.stats.searchSteps or 0) >= 1, "a second after the AH opens: listing the names (%s steps)" % ns.stats.searchSteps)
+    for _ in range(40):
+        if ns.stats.searchList:
+            break
+        w.settle(0.25)
+    sc.eq(ns.stats.searchList, 1, "the names are listed once, a frame at a time")
+    steps = ns.stats.searchSteps or 0
+    want = len(ref.items) // 1000 + 1
+    sc.check(steps >= want, "listed over %d frames (%d items: at least %d)" % (steps, len(ref.items), want))
     ids = [i for i in sample_ids(ref) if known_name(ref.items[i]["name"])
            and all(ord(c) < 128 for c in ref.items[i]["name"])][:120]
     for iid in ids:
