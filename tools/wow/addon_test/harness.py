@@ -3434,6 +3434,14 @@ def chart_check(sc, w, ref, iid, tf, label):
             sc.check(not extra, "%s: old %s marks hidden" % (label, key))
         sc.check(C.view is None, "%s: no plot to hover" % label)
         return
+    if not any(v is not None for v in win["market"] + win["cheap"]):
+        # Points but no price in the window (a gear version that only sold in it,
+        # nothing listed): the chart says so instead of drawing (Chart:DrawPlot).
+        sc.check(C.msg._shown, "%s: empty-state message shown" % label)
+        sc.eq(C.msg._text, "Nothing was listed in this timeframe. Try a longer one.", "%s: empty-state message" % label)
+        for key in ("dot", "vol", "dash", "ring"):
+            sc.eq(int(pools[key].used), 0, "%s: nothing drawn when nothing was listed (%s)" % (label, key))
+        return
     sc.check(not C.msg._shown, "%s: no empty-state message (%s)" % (label, C.msg._text))
 
     # Dots: one per non-null price, placed on one straight price scale.
