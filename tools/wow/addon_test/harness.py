@@ -737,7 +737,8 @@ end
 local function baseSize(o)
   local w, h = o._w, o._h
   if o._otype == "FontString" then
-    if w == 0 then w = #(o._text or "") * 6 end
+    -- As wide as its words (6 a letter, like GetStringWidth): colour codes take no room.
+    if w == 0 then w = #((o._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) * 6 end
     if h == 0 then h = 12 end
   end
   return w, h
@@ -18999,7 +19000,8 @@ CS_LOW = ["CharacterMainHandSlot", "CharacterSecondaryHandSlot", "CharacterRange
           "MockPawnRight", "MockGearMaticPrev", "MockGearMaticNext"]
 # A UI 1080 units tall (ElvUI's pixel-perfect scale at 1080p, the player's): 480 under the frame.
 CS_SCREEN = (1920, 1080, 1)
-CS_HELP = "/gl consumes : the best food, potions, elixirs and scrolls for you, under the character screen (on or off)"
+CS_HELP = ("/gl consumes : the best food, potions, elixirs and scrolls for you, under the character screen (on or off; "
+           "best or budget)")
 CS_OFF = "Goblin Ledger: the consumes list is off. /gl consumes on brings it back."
 CS_ON = "Goblin Ledger: the consumes list is on: it shows under the character screen."
 CS_COLOURS = {"text": (0.90, 0.88, 0.84), "muted": (0.55, 0.51, 0.45), "pos": (0.25, 0.80, 0.45),
@@ -19231,9 +19233,9 @@ def cs_left(iid, level):
     it = cs_source_items()[iid]
     t = it[1] or it[0]
     if it[5]:
-        t += "  " + it[5]
+        t += " " + it[5]
     if it[6] > 0 and level < 60:
-        t += "  +%d%% XP" % it[6]
+        t += " +%d%% XP" % it[6]
     return t
 
 
@@ -19252,7 +19254,7 @@ def cs_rows_ok(sc, w, prices, level, label, counts=None, stale=False, live=None,
         want_l = cs_left(iid, level)
         words, kind = cs_price(prices, iid, live.get(iid), data)
         col = CS_COLOURS["muted"] if kind == "muted" or (kind == "price" and stale) else CS_COLOURS["text"]
-        want_r = ("x%d  " % counts[iid] if counts.get(iid) else "") + words
+        want_r = ("x%d " % counts[iid] if counts.get(iid) else "") + words
         if strip_codes(left) != want_l:
             bad.append((iid, "left", strip_codes(left), want_l))
         if not left.startswith("|c%s%s|r" % (cs_hex(CS_QC[it[4]]), it[1] or it[0])):
@@ -19960,7 +19962,8 @@ def sc_consumes_slash(sc, ref, items):
     cs_reopen(w)
     sc.check(F.IsVisible(F), "slash: the setting on again")
     out = [strip_codes(x) for x in w.slash("/gl consumes sideways")]
-    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl consumes on or /gl consumes off (alone: switches)."], "slash: unknown")
+    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl consumes on, off, best, budget or status (alone: switches it on or off)."],
+          "slash: unknown")
     sc.check(F.IsVisible(F), "slash: unknown changes nothing")
     out = [strip_codes(x) for x in w.slash("/gl help")]
     sc.eq([t for t in out if "/gl consumes" in t], ["Goblin Ledger: " + CS_HELP], "slash: /gl help names it in one line")
@@ -20142,6 +20145,1002 @@ def sc_consumes_picks(sc, ref, items):
     sc.clean(w, "picks")
 
 
+# --- consumes: Best / Budget and the % of best ---
+# Best shows the strongest; Budget, for each Best pick, one for less gold: the pick itself when it is
+# cheap (10c a level at most), else the best value of the cheaper ones that do the same job and are
+# better value, at least half as strong (a dear pick, over 25c a level: else a third); none: the pick,
+# unless it is dear (then the row goes). Never PvP-only, random or unpriced; below 60, when no food
+# shown gives +5% XP, the cheapest that does. Each row's grey number is its strength in % of the
+# strongest usable one of its kind.
+CS_MODE_TIP = "Best: the strongest. Budget: good value for less gold. Click to switch."
+CS_BUDGET_SAY = ("Goblin Ledger: the consumes list shows Budget picks: good value for less gold. "
+                 "/gl consumes best for the strongest.")
+CS_BEST_SAY = ("Goblin Ledger: the consumes list shows the Best ones: the strongest. "
+               "/gl consumes budget for good value for less gold.")
+CS_STATUS_BEST = "Best: the strongest (/gl consumes budget for good value for less gold)"
+CS_STATUS_BUDGET = "Budget: good value for less gold (/gl consumes best for the strongest)"
+CS_FLOORS, CS_CHEAP, CS_DEAR, CS_NOXP = (1 / 2, 1 / 3), 10, 25, 0.25
+CS_PCT_GAP = 4   # the grey number's gap to the words and to the price
+_CS_SCORES = {}
+
+
+def cs_lua_list(t):
+    return [t[i] for i in range(1, len(t) + 1)] if t is not None else []
+
+
+def cs_scores(w, role, lst):
+    """{id: strength} for a role's list, in the order of ALL (from the data in Consumes.lua)."""
+    key = (ADDON, role, lst)
+    if key not in _CS_SCORES:
+        D = w.ns.Consumes.DATA
+        a = D.all[role][lst] if D.all[role] is not None else None
+        s = D.scores[role][lst] if D.scores[role] is not None else None
+        _CS_SCORES[key] = dict(zip([int(x) for x in cs_lua_list(a)], [float(x) for x in cs_lua_list(s)]))
+    return _CS_SCORES[key]
+
+
+def cs_ok_list(lst, cls):
+    if lst == "potion-rage":
+        return cls in ("WARRIOR", "DRUID")
+    if lst == "potion-mana":
+        return cls not in ("WARRIOR", "ROGUE")
+    return True
+
+
+def cs_can(iid, level, cls):
+    it = cs_source_items()[iid]
+    return it[3] <= level and (it[9] is None or cls in it[9])
+
+
+def cs_pvp(w, iid):
+    return bool(w.ns.Consumes.DATA.pvp[iid])
+
+
+def cs_kind(w, lst, iid):
+    """What one is measured against: its list; a stone or oil: those for the same weapons; a
+    protection potion: those of its kind; a utility potion: itself."""
+    it = cs_source_items()[iid]
+    if lst == "potion-utility":
+        return lst + ":" + it[8]
+    if lst == "potion-protection":
+        return lst + ":" + (w.ns.Consumes.DATA.kind[iid] or "")
+    if lst == "weapon":
+        return lst + ":" + it[8].split(":")[1]
+    return lst
+
+
+def cs_strength(w, role, lst, iid, level):
+    s = cs_scores(w, role, lst).get(iid)
+    if s is not None and lst == "food" and level < 60 and cs_source_items()[iid][6] <= 0:
+        s *= CS_NOXP
+    return s
+
+
+def cs_cost(prices, iid):
+    """What one costs for the Budget picks: a vendor's price when it is the cheaper, else today's AH
+    value in the price data (never a live listing); None: no price."""
+    vend = cs_source_items()[iid][7]
+    ah = prices.get(iid, 0)
+    if vend > 0 and (ah <= 0 or vend <= ah):
+        return vend
+    return ah if ah > 0 else None
+
+
+def cs_lists(w, role, key):
+    D = w.ns.Consumes.DATA
+    for k, _, lists in CS_SECTIONS:
+        if k == key:
+            return lists if lists is not None else [D.potions[role][i] for i in range(1, len(D.potions[role]) + 1)]
+    return []
+
+
+def cs_band(level):
+    return 5 if level >= 60 else 4 if level >= 50 else 3 if level >= 40 else 2 if level >= 20 else 1
+
+
+def cs_rank_order(w, role, lst, level):
+    D = w.ns.Consumes.DATA
+    b = D.best[role][lst] if D.best[role] is not None else None
+    first = [int(x) for x in cs_lua_list(b[cs_band(level)])] if b is not None and b[cs_band(level)] is not None else []
+    return first + list(cs_scores(w, role, lst))
+
+
+def cs_refs(w, role, cls, level, lists):
+    """kind -> (strength, id) of the strongest usable one (the first of equals; no PvP-only one)."""
+    ref = {}
+    for lst in lists:
+        if not cs_ok_list(lst, cls):
+            continue
+        for iid in cs_scores(w, role, lst):
+            if cs_can(iid, level, cls) and not cs_pvp(w, iid):
+                s, k = cs_strength(w, role, lst, iid, level), cs_kind(w, lst, iid)
+                if k not in ref or s > ref[k][0]:
+                    ref[k] = (s, iid)
+    return ref
+
+
+def cs_turns(per, lists, level, cls):
+    """The next one of each list in turn, a group once, 4 at most: [(id, list)]."""
+    it = cs_source_items()
+    out, groups, pos, more = [], set(), [0] * len(per), True
+    while len(out) < 4 and more:
+        more = False
+        for k, lids in enumerate(per):
+            while pos[k] < len(lids):
+                i = lids[pos[k]]
+                pos[k] += 1
+                if cs_can(i, level, cls) and it[i][8] not in groups:
+                    groups.add(it[i][8])
+                    out.append((i, lists[k]))
+                    more = True
+                    break
+            if len(out) >= 4:
+                break
+    return out
+
+
+def cs_peer(w, lst, iid):
+    """Who can stand in for a Best pick: food, elixirs, scrolls, flasks, stones and oils of its group;
+    a protection potion of its school; other potions of its list."""
+    if lst == "potion-protection":
+        return cs_kind(w, lst, iid)
+    if lst.startswith("potion-"):
+        return lst
+    return lst + ":" + cs_source_items()[iid][8]
+
+
+def cs_chancy(lst, iid):
+    """A potion with a random amount from next to nothing ("heals 1-1499")."""
+    m = re.search(r"(\d+)-(\d+)", cs_source_items()[iid][5]) if lst.startswith("potion-") else None
+    return bool(m) and int(m.group(1)) * 3 < int(m.group(2))
+
+
+def cs_minutes(iid):
+    b = cs_source_items()[iid][5]
+    m = re.search(r"(\d+) hr", b)
+    if m:
+        return int(m.group(1)) * 60
+    m = re.search(r"(\d+) min", b)
+    return int(m.group(1)) if m else None
+
+
+def cs_value(lst, iid, s, c):
+    """Strength per copper; an elixir, flask or scroll lasting over 30 minutes priced for 30 of them."""
+    m = cs_minutes(iid) if lst in ("elixir", "flask", "scroll") else None
+    if m and m > 30:
+        c = c * 30 / m
+    return s / c
+
+
+def cs_stand_in(w, role, lst, b, level, cls, seen, prices):
+    it = cs_source_items()
+    cb, sb = cs_cost(prices, b), cs_strength(w, role, lst, b, level) or 0
+    own = not cs_pvp(w, b) and not cs_chancy(lst, b)
+    if own and cb and cb <= level * CS_CHEAP:
+        return b
+    dear = not own or not cb or cb > level * CS_DEAR
+    vb = cs_value(lst, b, sb, cb) if own and cb else 0
+    peer = cs_peer(w, lst, b)
+    for f in (CS_FLOORS if dear else CS_FLOORS[:1]):
+        top = None
+        for iid in cs_scores(w, role, lst):
+            if (iid == b or not cs_can(iid, level, cls) or cs_pvp(w, iid) or it[iid][8] in seen or cs_chancy(lst, iid)
+                    or cs_peer(w, lst, iid) != peer):
+                continue
+            c, s = cs_cost(prices, iid), cs_strength(w, role, lst, iid, level)
+            if c and s is not None and (not cb or c < cb) and s >= f * sb - 1e-9:
+                v = cs_value(lst, iid, s, c)
+                if v > vb and (top is None or v > top[1] or (v == top[1] and (s > top[2] or (s == top[2] and c < top[3])))):
+                    top = (iid, v, s, c)
+        if top:
+            return top[0]
+    return None if dear else b
+
+
+def cs_budget(w, role, key, lists, level, cls, prices):
+    """The Budget rows [(id, list, the Best pick it stands in for (None: the XP food))]."""
+    it = cs_source_items()
+    per = [cs_rank_order(w, role, lst, level) if cs_ok_list(lst, cls) else [] for lst in lists]
+    out, seen = [], set()
+    for b, lst in cs_turns(per, lists, level, cls):
+        iid = cs_stand_in(w, role, lst, b, level, cls, seen, prices)
+        if iid is not None and it[iid][8] not in seen:
+            seen.add(it[iid][8])
+            out.append((iid, lst, b))
+    if key == "food" and level < 60 and not any(it[r[0]][6] > 0 for r in out):
+        cheap = None
+        for iid in cs_scores(w, role, "food"):
+            if it[iid][6] > 0 and cs_can(iid, level, cls) and not cs_pvp(w, iid) and it[iid][8] not in seen:
+                c, s = cs_cost(prices, iid), cs_strength(w, role, "food", iid, level) or 0
+                if c and (cheap is None or c < cheap[1] or (c == cheap[1] and s > cheap[2])):
+                    cheap = (iid, c, s)
+        if cheap:
+            out = out[:3] + [(cheap[0], "food", None)]
+    return out
+
+
+def cs_pct_of(w, role, level, ref, iid, lst):
+    r, s = ref.get(cs_kind(w, lst, iid)), cs_strength(w, role, lst, iid, level)
+    if r is None or s is None or r[0] <= 0:
+        return (iid, lst, None, None)
+    p = 100 if s >= r[0] - 1e-9 else max(1, min(99, int(math.floor(s * 100 / r[0] + 1e-9))))
+    return (iid, lst, p, r[1])
+
+
+def cs_picks(w, role, cls, level, budget=False, all_=False, prices=None):
+    """[(title, [(id, list, %, strongest id)])]: what the list should show, worked out here from the
+    data in Consumes.lua (the scores, the research's ranking) and the prices: Best, Budget or All
+    (with Budget: the Budget picks first, then cheapest first, no price last)."""
+    prices = prices or {}
+    out = []
+    for key, title, _ in CS_SECTIONS:
+        lists = cs_lists(w, role, key)
+        ref = cs_refs(w, role, cls, level, lists)
+        if all_:
+            lead = [(r[0], r[1]) for r in cs_budget(w, role, key, lists, level, cls, prices)] if budget else []
+            rows, seen = list(lead), set(r[0] for r in lead)
+            for lst in lists:
+                if cs_ok_list(lst, cls):
+                    for iid in cs_scores(w, role, lst):
+                        if cs_can(iid, level, cls) and iid not in seen:
+                            seen.add(iid)
+                            rows.append((iid, lst))
+            if budget:
+                rest = rows[len(lead):]
+                cost = [cs_cost(prices, iid) for iid, _ in rest]
+                order = sorted(range(len(rest)), key=lambda k: (cost[k] is None, cost[k] or 0, k))
+                rows = lead + [rest[k] for k in order]
+        elif budget:
+            rows = [(r[0], r[1]) for r in cs_budget(w, role, key, lists, level, cls, prices)]
+        else:
+            per = [cs_rank_order(w, role, lst, level) if cs_ok_list(lst, cls) else [] for lst in lists]
+            rows = cs_turns(per, lists, level, cls)
+        if rows:
+            out.append((title, [cs_pct_of(w, role, level, ref, iid, lst) for iid, lst in rows]))
+    return out
+
+
+def cs_ids(picks):
+    return [(t, [r[0] for r in rows]) for t, rows in picks]
+
+
+def cs_model(w):
+    """The model's sections: [(title, [(id, list, %, strongest id)])]."""
+    m = w.ns.Consumes.Model()
+    out = []
+    for k in range(1, len(m.sections) + 1):
+        s = m.sections[k]
+        n = len(s.ids)
+        out.append((s.title, [(int(s.ids[i]), s.lists[i], None if s.pct[i] is None else int(s.pct[i]),
+                               None if s.ref[i] is None else int(s.ref[i])) for i in range(1, n + 1)]))
+    return out
+
+
+def cs_pct_word(p):
+    return "" if p is None else ("best" if p >= 100 else "%d%%" % p)
+
+
+def cs_pcts(w):
+    """{name: the grey number} of the rows shown."""
+    it = cs_source_items()
+    return {it[r[0]][0]: r[5].pct.GetText(r[5].pct) for r in cs_cells(w)[1]}
+
+
+def cs_rgb(fs):
+    c = fs._textColor
+    return tuple(round(c[i], 3) for i in (1, 2, 3)) if c is not None else None
+
+
+def cs_live(w, prices):
+    """ns.LivePrice as the live prices give it: while the auction house is open, these ids at these
+    prices (copper, the cheapest listing), the rest none; with it closed, none."""
+    w.M.lp = w.to_lua({int(k): v for k, v in prices.items()})
+    w.lua.eval("function(ns) ns.LivePrice = function(id) if not ns.AH_IsOpen() then return nil end "
+               "return MOCK.lp[id] end end")(w.ns)
+
+
+def cs_set_prices(w, px):
+    """Today's AH values in the price data as the addon reads them (ns.GetItem): these ids at these
+    prices (0: not listed), the rest as they are. None: back as they were."""
+    if px is None:
+        w.lua.eval("function(ns) if MOCK.getItem0 then ns.GetItem = MOCK.getItem0; MOCK.getItem0 = nil end end")(w.ns)
+        return
+    w.M.px = w.to_lua({int(k): v for k, v in px.items()})
+    w.lua.eval("""function(ns)
+      MOCK.getItem0 = MOCK.getItem0 or ns.GetItem
+      local orig = MOCK.getItem0
+      ns.GetItem = function(id, ...)
+        local p = MOCK.px[id]
+        if p == nil then return orig(id, ...) end
+        if p <= 0 then return nil end
+        local g, t = orig(id, ...), {}
+        if type(g) == "table" then for k, v in pairs(g) do t[k] = v end end
+        t.market, t.cheapest = p, p
+        return t
+      end
+    end""")(w.ns)
+
+
+def cs_picks_ok(sc, w, role, cls, level, label, budget=False, all_=False, prices=None):
+    """The model and the rows shown: the picks, each row's grey number and what it is measured against."""
+    want = cs_picks(w, role, cls, level, budget=budget, all_=all_, prices=prices)
+    got = cs_model(w)
+    sc.eq(cs_ids(got), cs_ids(want), "%s: the picks" % label)
+    sc.eq(got, want, "%s: each row's list, %% and strongest one" % label)
+    pct = {r[0]: cs_pct_word(r[2]) for _, rows in want for r in rows}
+    shown = [(r[0], r[5].pct.GetText(r[5].pct)) for r in cs_cells(w)[1]]
+    sc.eq([s for s in shown if pct.get(s[0]) != s[1]], [], "%s: every row's grey number" % label)
+    sc.check(all(cs_rgb(r[5].pct) == CS_COLOURS["muted"] for r in cs_cells(w)[1]), "%s: the numbers in grey" % label)
+    return want
+
+
+def cs_head_ok(sc, w, label):
+    """Best / Budget in the header strip, left of All and apart from it, clear of the title's words and
+    the arrow, its word inside it, as tall as All."""
+    F = cs_frame(w)
+    mb, al = F.modeButton, F.allButton
+    es = F.GetEffectiveScale(F)
+    fr, mr, ar = w.rect(F), w.rect(mb), w.rect(al)
+    if not sc.check(mb.IsVisible(mb) and mr is not None and ar is not None, "%s: the switch is up" % label):
+        return
+    tr, rr = w.rect(F.title), w.rect(F.arrow)
+    sc.check(fr[0] - 0.01 <= mr[0] and mr[2] <= fr[2] + 0.01 and mr[3] <= fr[3] + 0.01
+             and mr[1] >= fr[3] - CS_HEAD_H * es - 0.01, "%s: the switch in the header (%s, list %s)" % (label, mr, fr))
+    sc.check(not _overlap(mr, ar) and mr[2] <= ar[0] - 3 * es + 0.01, "%s: left of All, apart (%s, %s)" % (label, mr, ar))
+    right = tr[0] + F.title.GetStringWidth(F.title) * es
+    sc.check(right + 4 * es <= mr[0] + 0.01, "%s: clear of the title's words (%s, switch at %s)" % (label, right, mr[0]))
+    sc.check(rr[2] <= tr[0] + 0.01 and rr[2] < mr[0], "%s: clear of the arrow" % label)
+    tw = mb.text.GetStringWidth(mb.text) * es
+    sc.check(tw <= mr[2] - mr[0] - 4 * es + 0.01, "%s: its word fits (%s in %s)" % (label, tw, mr[2] - mr[0]))
+    sc.check(abs((mr[3] - mr[1]) - (ar[3] - ar[1])) < 0.01 and abs(mr[3] - ar[3]) < 0.01, "%s: in line with All" % label)
+
+
+def cs_pct_place_ok(sc, w, label):
+    """Every row: the grey number between the words and the price, inside the row, a gap each side;
+    the words give way (cut short) before the number or the price would."""
+    bad = []
+    F = cs_frame(w)
+    es = F.GetEffectiveScale(F)
+    for iid, key, left, right, rect, row in cs_cells(w)[1]:
+        pr, rr, tr, ir = w.rect(row.pct), w.rect(row.right), w.rect(row.text), w.rect(row.icon)
+        if pr is None or rr is None or tr is None:
+            bad.append((iid, "no place"))
+            continue
+        if not (rect[0] - 0.01 <= ir[2] + 4 * es <= pr[0] + 0.01 and pr[2] <= rr[0] - CS_PCT_GAP * es + 0.01
+                and rr[2] <= rect[2] + 0.01):
+            bad.append((iid, "out of the row or over the price", pr, rr, rect))
+        if abs(tr[2] - (pr[0] - CS_PCT_GAP * es)) > 0.01 or abs(tr[0] - (ir[2] + 4 * es)) > 0.01:
+            bad.append((iid, "the words not between the icon and the number", tr, pr))
+        if _overlap(pr, rr) or _overlap(pr, tr):
+            bad.append((iid, "the number covers the price or the words"))
+        if abs((pr[1] + pr[3]) / 2 - (rect[1] + rect[3]) / 2) > 0.01:
+            bad.append((iid, "not in the row's middle"))
+        if abs((pr[2] - pr[0]) - row.pct.GetStringWidth(row.pct) * es) > 0.01:
+            bad.append((iid, "the number cut short"))
+    sc.eq(bad, [], "%s: every row's number in its place" % label)
+
+
+def sc_consumes_budget(sc, ref, items):
+    """Best / Budget in the header: Best at first (grey); a click: Budget (gold), saved, the Budget picks
+    at once; again: Best. Hover: what the two are. With All: cheapest first. Folded: no switch.
+    /gl consumes budget, best and status; saved after a reload."""
+    _, prices = cs_data(ref)
+    w = cs_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    S, C = ns.settings, ns.Consumes
+    F = cs_frame(w)
+    cs_open(w)
+    mb = F.modeButton
+    if not sc.check(mb is not None and mb.IsVisible(mb), "budget: the switch is up in the header"):
+        sc.clean(w)
+        return
+    sc.eq((mb.text.GetText(mb.text), cs_rgb(mb.text), S.consumesBudget), ("Best", CS_COLOURS["muted"], None),
+          "budget: Best at first, grey, nothing saved")
+    hl = F.header.GetFrameLevel(F.header)
+    sc.check(mb.GetFrameLevel(mb) > hl and F.allButton.GetFrameLevel(F.allButton) > hl,
+             "budget: the switch and All above the header (a click on them is theirs, not the fold's)")
+    best = cs_sections(w)
+    sc.eq(best, cs_expect(w, "melee", "WARRIOR", 60), "budget: Best: the best 4 as before")
+    cs_picks_ok(sc, w, "melee", "WARRIOR", 60, "budget: Best")
+    tt = g.GameTooltip
+    M.enter(mb)
+    sc.check(tt.IsShown(tt) and w.same(tt.GetOwner(tt), mb), "budget: hover: a tooltip on the switch")
+    sc.eq([l for l, _ in w.all_lines(tt)], [CS_MODE_TIP], "budget: hover: what Best and Budget are")
+    M.leave(mb)
+    sc.check(not tt.IsShown(tt), "budget: hover: gone with the mouse")
+    M.click(mb)
+    sc.eq((S.consumesBudget, C.Model().budget, mb.text.GetText(mb.text), cs_rgb(mb.text)),
+          (True, True, "Budget", CS_COLOURS["buy"]), "budget: a click: Budget (gold), saved")
+    want = cs_picks_ok(sc, w, "melee", "WARRIOR", 60, "budget", budget=True, prices=prices)
+    sc.eq(cs_sections(w), cs_ids(want), "budget: the Budget picks shown at once")
+    sc.check(cs_sections(w) != best, "budget: not the same as Best")
+    sc.eq(C.Layout().n, 4, "budget: room for 4 a section")
+    cs_rows_ok(sc, w, prices, 60, "budget")
+    cs_place_ok(sc, w, "budget")
+    cs_head_ok(sc, w, "budget")
+    cs_reopen(w)
+    sc.eq(cs_sections(w), cs_ids(want), "budget: still Budget when it opens again")
+    M.click(mb)
+    sc.eq((S.consumesBudget, C.Model().budget, mb.text.GetText(mb.text), cs_rgb(mb.text)),
+          (None, False, "Best", CS_COLOURS["muted"]), "budget: a second click: Best again")
+    sc.eq(cs_sections(w), best, "budget: the best 4 again")
+    # All with Budget: the Budget picks first, then every other usable one cheapest first (no price
+    # last); with Best: strongest first.
+    M.click(F.allButton)
+    M.click(mb)
+    sc.eq((S.consumesAll, S.consumesBudget), (True, True), "budget: All and Budget both on")
+    M.enter(F.allButton)
+    sc.eq([l for l, _ in w.all_lines(tt)], ["Show the 4 Budget picks"], "budget: All's hover says what it goes back to")
+    M.leave(F.allButton)
+    allb = cs_picks_ok(sc, w, "melee", "WARRIOR", 60, "budget: All", budget=True, all_=True, prices=prices)
+    lead = dict(cs_ids(want))
+    for title, rows in allb:
+        first = lead.get(title, [])
+        sc.eq([r[0] for r in rows[:len(first)]], first, "budget: All: %s: the Budget picks first" % title)
+        cost = [cs_cost(prices, r[0]) for r in rows[len(first):]]
+        priced = [c for c in cost if c is not None]
+        sc.check(priced == sorted(priced) and cost[:len(priced)] == priced,
+                 "budget: All: %s: then the rest cheapest first, no price last" % title)
+    sc.eq({t: sorted(ids) for t, ids in cs_ids(allb)},
+          {t: sorted(ids) for t, ids in cs_expect(w, "melee", "WARRIOR", 60, all_=True)}, "budget: All: every usable one, as with Best")
+    cs_rows_ok(sc, w, prices, 60, "budget: All")
+    cs_place_ok(sc, w, "budget: All")
+    cs_head_ok(sc, w, "budget: All")
+    M.click(mb)
+    sc.eq(cs_ids(cs_model(w)), cs_expect(w, "melee", "WARRIOR", 60, all_=True), "budget: All with Best: strongest first")
+    # Scrolled down, then switched (a click, or /gl consumes): the list from its top again.
+    for how in ("click", "slash"):
+        M.fireScript(F, "OnMouseWheel", -1)
+        M.fireScript(F, "OnMouseWheel", -1)
+        titles = cs_cells(w)[0]
+        sc.check(not titles or titles[0][0] != "FOOD", "budget: All scrolled down (%s)" % how)
+        if how == "click":
+            M.click(mb)
+        else:
+            w.slash("/gl consumes best")
+        titles = cs_cells(w)[0]
+        sc.check(titles and titles[0][0] == "FOOD" and C.Layout().total > C.Layout().lines,
+                 "budget: switched (%s): the list from its top (%s)" % (how, [t[0] for t in titles[:2]]))
+    M.click(F.allButton)
+    # Folded: the header only, no switch; open again: back.
+    M.click(F.header)
+    sc.check(not mb.IsVisible(mb) and not F.allButton.IsVisible(F.allButton), "budget: folded: no switches")
+    M.click(F.header)
+    sc.check(mb.IsVisible(mb), "budget: open again: the switch is back")
+    # /gl consumes budget, best, status.
+    out = [strip_codes(x) for x in w.slash("/gl consumes budget")]
+    sc.eq(out, [CS_BUDGET_SAY], "budget: /gl consumes budget says so")
+    sc.eq((S.consumesBudget, mb.text.GetText(mb.text), cs_sections(w)), (True, "Budget", cs_ids(want)),
+          "budget: /gl consumes budget: saved, shown at once")
+    out = [strip_codes(x) for x in w.slash("/gl consumes status")]
+    sc.eq(out, ["Goblin Ledger: the consumes list is on. %s." % CS_STATUS_BUDGET], "budget: status says Budget")
+    out = [strip_codes(x) for x in w.slash("/gl consumes best")]
+    sc.eq(out, [CS_BEST_SAY], "budget: /gl consumes best says so")
+    sc.eq((S.consumesBudget, mb.text.GetText(mb.text), cs_sections(w)), (None, "Best", best), "budget: /gl consumes best: back at once")
+    out = [strip_codes(x) for x in w.slash("/gl consumes status")]
+    sc.eq(out, ["Goblin Ledger: the consumes list is on. %s." % CS_STATUS_BEST], "budget: status says Best")
+    w.slash("/gl consumes off")
+    out = [strip_codes(x) for x in w.slash("/gl consumes status")]
+    sc.eq(out, ["Goblin Ledger: the consumes list is off. %s." % CS_STATUS_BEST], "budget: status while off")
+    # Switched while it is off: it says so.
+    out = [strip_codes(x) for x in w.slash("/gl consumes budget")]
+    sc.eq(out, [CS_BUDGET_SAY + " It is off: /gl consumes on brings it back."], "budget: /gl consumes budget while off says it is off")
+    out = [strip_codes(x) for x in w.slash("/gl consumes best")]
+    sc.eq(out, [CS_BEST_SAY + " It is off: /gl consumes on brings it back."], "budget: /gl consumes best while off says it is off")
+    w.slash("/gl consumes on")
+    # Switched while the character screen is closed: Budget when it opens.
+    char_close(w)
+    w.slash("/gl consumes budget")
+    cs_open(w)
+    sc.eq((mb.text.GetText(mb.text), cs_sections(w)), ("Budget", cs_ids(want)), "budget: switched while closed: Budget when it opens")
+    sc.clean(w, "budget")
+    # Saved: Budget after a reload.
+    w = cs_world(ref, items, saved={"consumesBudget": True})
+    cs_open(w)
+    F = cs_frame(w)
+    sc.eq((F.modeButton.text.GetText(F.modeButton.text), w.ns.Consumes.Model().budget), ("Budget", True), "budget: Budget after a reload")
+    sc.eq(cs_sections(w), cs_ids(want), "budget: after a reload: the Budget picks")
+    sc.clean(w, "budget: saved")
+
+
+def sc_consumes_budget_place(sc, ref, items):
+    """Best / Budget never covers the title, All or the arrow: 631 and 398 wide, the game's look and
+    ElvUI's, ElvUI's 0.62 scale, the longest header, both words."""
+    def both(w, label):
+        F = cs_frame(w)
+        for _ in range(2):
+            cs_head_ok(sc, w, "%s (%s)" % (label, F.modeButton.text.GetText(F.modeButton.text)))
+            cs_pct_place_ok(sc, w, "%s (%s)" % (label, F.modeButton.text.GetText(F.modeButton.text)))
+            cs_place_ok(sc, w, "%s (%s)" % (label, F.modeButton.text.GetText(F.modeButton.text)))
+            w.M.click(F.modeButton)
+
+    def fold(w, wide):
+        cf = w.g.CharacterFrame
+        cf.SetWidth(cf, wide)
+        pane = w.g.CharacterFrameRightPaneHost
+        (pane.Show if wide > 400 else pane.Hide)(pane)
+        w.settle(0.3)
+    # The longest header ("Consumes for agility, level 60"), at 631 and 398.
+    w = cs_world(ref, items, cls="ROGUE", points=(5, 31, 15))
+    cs_open(w)
+    sc.eq(cs_header(w), "Consumes for agility, level 60", "place2: the longest header")
+    both(w, "place2: 631")
+    fold(w, 398)
+    sc.eq(round(cs_frame(w).GetWidth(cs_frame(w)), 3), 398, "place2: folded to 398")
+    both(w, "place2: 398")
+    fold(w, 631)
+    sc.clean(w, "place2")
+    # ElvUI's look, its enchant labels, 631 and 398.
+    w = cs_elv_world(ref, items)
+    w.M.ElvUIEnchantLabels(w.to_lua(["Encha: Fiery Blaze", "Encha: Crusader", ""]))
+    cs_open(w)
+    sc.eq(w.ns.Consumes.look, "elvui", "place2: ElvUI's look")
+    both(w, "place2: elvui 631")
+    fold(w, 398)
+    both(w, "place2: elvui 398")
+    sc.clean(w, "place2: elvui")
+    # ElvUI at 0.62 (a 768 high window): all of it in that scale.
+
+    def setup(w_):
+        w_.M.InstallBlizzardBags()
+        w_.M.InstallElvUIAddon(w_.to_lua({}))
+    w = cs_world(ref, items, cls="ROGUE", points=(5, 31, 15), screen=(1395, 768, 0.62), before=setup)
+    w.M.ElvUICharacterLayout()
+    cs_open(w)
+    sc.check(abs(cs_frame(w).GetEffectiveScale(cs_frame(w)) - 0.62) < 1e-6, "place2: 0.62 scale")
+    both(w, "place2: elvui 0.62")
+    fold(w, 398)
+    both(w, "place2: elvui 0.62 398")
+    sc.clean(w, "place2: elvui 0.62")
+    # Bag counts and vendor prices make the price long: at 398 the number still fits by it.
+    w = cs_world(ref, items, level=35)
+    cs_open(w)
+    fold(w, 398)
+    k = 0
+    for r in cs_cells(w)[1]:
+        w.put_bag(k // 16, k % 16 + 1, r[0], 200)
+        k += 1
+    w.M.fire("BAG_UPDATE_DELAYED")
+    w.settle(0.1)
+    sc.check(all(strip_codes(r[3]).startswith("x200 ") for r in cs_cells(w)[1]), "place2: 398: every row x200")
+    both(w, "place2: 398 with bag counts")
+    sc.clean(w, "place2: counts")
+
+
+def sc_consumes_percent(sc, ref, items):
+    """Each row's grey % of the strongest usable one of its kind for the role and level: "best" on the
+    strongest (two as strong: both), then 62% ...; the same in Best, Budget and All; a section of one:
+    best; below 60 a food without the +5% XP counts a quarter; the tooltip says it in words."""
+    _, prices = cs_data(ref)
+    # The player's list (a level 47 warrior, the screenshot), by name.
+    w = cs_world(ref, items, level=47)
+    cs_open(w)
+    sc.eq(cs_pcts(w), {
+        "Poached Sunscale Salmon": "best", "Smoked Desert Dumplings": "best", "Grilled Squid": "62%", "Flank au Poivre": "50%",
+        "Major Healing Potion": "best", "Superior Frenzy Potion": "best", "Mighty Rage Potion": "best",
+        "Limited Invulnerability Potion": "best", "Elixir of the Mongoose": "best", "Elixir of Brute Force": "57%",
+        "Winterfall Firewater": "31%", "Scroll of Strength III": "best", "Scroll of Agility III": "50%",
+        "Dense Weightstone": "best", "Dense Sharpening Stone": "best"},
+        "percent: a level 47 warrior's list (+40 AP = +20 Str = best; +1% crit 62%; +20 Agi 50%; Mongoose 75, Brute Force 43, "
+        "Firewater 35 AP for 20 of 30 min 23)")
+    cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "percent: 47 Best")
+    cs_pct_place_ok(sc, w, "percent: 47")
+    # The tooltip says it in words.
+    tt = w.g.GameTooltip
+    rows = {cs_source_items()[r[0]][0]: r[5] for r in cs_cells(w)[1]}
+    for name, line in (("Grilled Squid", "62% as strong as Poached Sunscale Salmon for a level 47 melee"),
+                       ("Poached Sunscale Salmon", "Best: the strongest for a level 47 melee"),
+                       ("Smoked Desert Dumplings", "Best: the strongest for a level 47 melee"),
+                       ("Winterfall Firewater", "31% as strong as Elixir of the Mongoose for a level 47 melee"),
+                       ("Scroll of Agility III", "50% as strong as Scroll of Strength III for a level 47 melee")):
+        w.M.enter(rows[name])
+        lines = [l or "" for l, _ in w.all_lines(tt)]
+        sc.check(lines and lines[-1] == line and lines.count(line) == 1 and name in lines[0],
+                 "percent: %s's tooltip says it, once (%s)" % (name, lines[-2:]))
+        # The game builds the tooltip again (item data arriving, a modifier key): still there, once; the
+        # post calls again without a clear: no second copy.
+        tt.RefreshData(tt)
+        lines = [l or "" for l, _ in w.all_lines(tt)]
+        sc.check(lines and lines[-1] == line and lines.count(line) == 1 and name in lines[0],
+                 "percent: %s's tooltip built again: the line still there, once (%s)" % (name, lines[-2:]))
+        for fn_i in range(1, len(w.M.postCalls[0]) + 1):
+            w.M.postCalls[0][fn_i](tt, tt.processingInfo.tooltipData)
+        sc.eq([l or "" for l, _ in w.all_lines(tt)].count(line), 1, "percent: %s: a second post call adds no copy" % name)
+        w.M.leave(rows[name])
+    # Another item's tooltip (not a row's) never gets the line.
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_NONE")
+    tt.SetItemByID(tt, 13928)
+    sc.check(not any("as strong as" in (l or "") or (l or "").startswith("Best: the strongest") for l, _ in w.all_lines(tt)),
+             "percent: an item's tooltip elsewhere has no such line")
+    tt.Hide(tt)
+    # The words have room at 631 (two columns), at the player's prices: on the screenshot's food no row loses
+    # more than 8px (in the mock a space is as wide as a letter), Smoked Desert Dumplings shows +5% XP whole.
+    cs_set_prices(w, cs_px_all(CS_SHOT_PX))
+    cs_reopen(w)
+    sc.eq(round(cs_frame(w).GetWidth(cs_frame(w))), 631, "percent: 631 wide")
+    cut = {}
+    for r in cs_cells(w)[1]:
+        if r[1] == "food":
+            tr = w.rect(r[5].text)
+            cut[cs_source_items()[r[0]][0]] = r[5].text.GetStringWidth(r[5].text) - (tr[2] - tr[0])
+    sc.check(len(cut) == 4 and max(cut.values()) <= 8 and cut["Smoked Desert Dumplings"] <= 0,
+             "percent: 631: the food rows' words fit, or nearly (%s)" % cut)
+    cs_set_prices(w, None)
+    cs_reopen(w)
+    w.M.click(cs_frame(w).modeButton)
+    want = cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "percent: 47 Budget", budget=True, prices=prices)
+    sc.check(any(r[2] is not None and r[2] < 100 for _, rs in want for r in rs), "percent: Budget shows weaker ones too")
+    for r in cs_cells(w)[1]:
+        p = r[5].pct.GetText(r[5].pct)
+        if p.endswith("%"):
+            w.M.enter(r[5])
+            ln = [l or "" for l, _ in w.all_lines(tt)][-1]
+            refname = cs_source_items()[dict((x[0], x[3]) for _, xs in want for x in xs)[r[0]]][0]
+            sc.eq(ln, "%s as strong as %s for a level 47 melee" % (p, refname), "percent: Budget: %s's tooltip" % cs_source_items()[r[0]][0])
+            w.M.leave(r[5])
+            break
+    cs_pct_place_ok(sc, w, "percent: 47 Budget")
+    sc.clean(w, "percent: 47")
+    # Many players, both picks and All: the numbers agree with the strength data.
+    w = cs_world(ref, items)
+    for cls, pts, lvl, role in (("WARRIOR", (31, 5, 0), 60, "melee"), ("MAGE", (0, 31, 20), 60, "caster"),
+                                ("WARRIOR", (0, 5, 31), 45, "tank"), ("PRIEST", (31, 20, 0), 52, "healer"),
+                                ("HUNTER", (31, 20, 0), 60, "hunter"), ("ROGUE", (5, 31, 15), 30, "agility"),
+                                ("WARRIOR", (0, 0, 0), 12, "melee"), ("DRUID", (0, 31, 0), 60, "agility")):
+        en_player(w, cls, pts, "forever", lvl)
+        for budget, all_ in ((False, False), (True, False), (False, True), (True, True)):
+            w.ns.settings.consumesBudget = budget or None
+            w.ns.settings.consumesAll = all_ or None
+            cs_reopen(w)
+            label = "percent: %s %d %s%s" % (cls, lvl, "Budget" if budget else "Best", " All" if all_ else "")
+            got = cs_picks_ok(sc, w, role, cls, lvl, label, budget=budget, all_=all_, prices=prices)
+            sc.check(all(r[2] is not None for _, rs in got for r in rs), label + ": every row has its number")
+            if not all_ and not budget:
+                firsts = [rs[0] for t, rs in got if t != "POTIONS"]
+                sc.check(all(r[2] == 100 for r in firsts), label + ": the first of each section is the best (%s)" % firsts)
+                ups = [(t, [r[2] for r in rs]) for t, rs in got if t in ("FOOD", "ELIXIRS", "SCROLLS", "FLASKS")
+                       and any(rs[k][2] < rs[k + 1][2] for k in range(len(rs) - 1))]
+                sc.eq(ups, [], label + ": the numbers never rise down a section")
+        w.ns.settings.consumesBudget = None
+        w.ns.settings.consumesAll = None
+    # Levelling casters (15-24): a food without the +5% XP (Goblin Deviled Clams) never above an XP one by its number.
+    for cls, pts in (("MAGE", (0, 31, 20)), ("WARLOCK", (31, 0, 0))):
+        for lvl in range(15, 25):
+            en_player(w, cls, pts, "forever", lvl)
+            cs_reopen(w)
+            food = [r[2] for r in dict(cs_model(w)).get("FOOD", [])]
+            sc.check(all(food[k] >= food[k + 1] for k in range(len(food) - 1)),
+                     "percent: %s %d: the food numbers never rise down the list (%s)" % (cls, lvl, food))
+    # A section of one: a hunter's flask.
+    en_player(w, "HUNTER", (31, 20, 0), "forever", 60)
+    cs_reopen(w)
+    sc.eq(dict(cs_sections(w)).get("FLASKS"), [13511], "percent: a hunter's one flask")
+    sc.eq(cs_pcts(w).get("Flask of Distilled Wisdom"), "best", "percent: a section of one: best")
+    # Two as strong: both best (Dense Weightstone and Dense Sharpening Stone, +8 weapon damage).
+    en_player(w, "WARRIOR", (31, 5, 0), "forever", 60)
+    cs_reopen(w)
+    p = cs_pcts(w)
+    sc.eq((p.get("Dense Weightstone"), p.get("Dense Sharpening Stone")), ("best", "best"), "percent: two as strong: both best")
+    # Below 60 a food without the +5% XP counts a quarter: Clamlette Surprise (+12 Sta, +12 Spi = 30 for a
+    # tank) next to Savory Turtle Stew (+20 Sta = 50): 15% at 45, 60% at 60.
+    w.ns.settings.consumesAll = True
+    for lvl, want_p in ((45, 15), (60, 60)):
+        en_player(w, "WARRIOR", (0, 5, 31), "forever", lvl)
+        cs_reopen(w)
+        food = dict(cs_model(w)).get("FOOD", [])
+        row = [r for r in food if r[0] == 16971]
+        sc.eq([(r[2], r[3]) for r in row], [(want_p, 250068)], "percent: tank %d: Clamlette Surprise (no XP) %d%% of Savory Turtle Stew" % (lvl, want_p))
+    w.ns.settings.consumesAll = None
+    sc.clean(w, "percent")
+    # The data: the strengths are the role weights times the buff (spot checks by name), and ALL is
+    # strongest first (food: the +5% XP ones first).
+    D = w.ns.Consumes.DATA
+    for role, lst, iid, v in (("melee", "food", 13932, 40), ("melee", "food", 20452, 40), ("melee", "food", 13928, 25),
+                              ("melee", "food", 250069, 20), ("melee", "elixir", 13452, 75), ("melee", "elixir", 13453, 43.2),
+                              ("melee", "elixir", 12820, 23.33), ("melee", "potion-heal", 13446, 1400),
+                              ("melee", "potion-rage", 13442, 720), ("caster", "food", 13933, 28), ("tank", "food", 250068, 50),
+                              ("caster", "potion-heal", 18253, 2080), ("melee", "weapon", 12643, 40)):
+        sc.eq(cs_scores(w, role, lst).get(iid), v, "percent: the data: %s %s %s" % (role, cs_source_items()[iid][0], lst))
+    unsorted = []
+    for role in ("melee", "agility", "tank", "caster", "healer", "hunter"):
+        for lst in ("food", "potion-heal", "potion-mana", "potion-rage", "potion-buff", "potion-protection", "potion-utility",
+                    "elixir", "flask", "scroll", "weapon"):
+            sco = cs_scores(w, role, lst)
+            key = [((0 if cs_source_items()[i][6] > 0 or lst != "food" else 1), -s) for i, s in sco.items()]
+            if key != sorted(key):
+                unsorted.append((role, lst))
+    sc.eq(unsorted, [], "percent: the data: each list strongest first")
+    sc.eq(sorted(int(k) for k in D.pvp.keys()), [17348, 17349, 17351, 17352, 18839, 18841], "percent: the data: the PvP-only potions")
+    for iid in (17348, 17349, 17351, 17352):
+        sc.check(cs_source_items()[iid][5].endswith("battlegrounds only"), "percent: %s says battlegrounds only" % cs_source_items()[iid][0])
+
+
+def cs_px_all(px):
+    """Made-up AH values for every consumable: these, the rest not listed (vendor prices still count)."""
+    out = {iid: 0 for iid in cs_source_items()}
+    out.update(px)
+    return out
+
+
+# The level 47 warrior's list (the screenshot) and what can stand in for it, about as on the player's AH;
+# Elixir of Ogre Strength (1 hr) made dearer than Elixir of Strength (30 min), Wildvine Potion 1c.
+CS_SHOT_PX = {
+    13932: 323, 8364: 96, 20452: 2500, 274976: 230, 250070: 1655, 13928: 419, 250069: 2098, 12212: 423, 4592: 13,
+    13446: 2700, 3928: 785, 1710: 448, 9144: 1, 250942: 5999, 250940: 965, 250941: 6299, 13442: 12495, 5633: 239,
+    5631: 68, 3387: 6499, 5634: 1192, 2459: 1257,
+    13452: 7890, 9187: 3277, 8949: 1263, 13453: 13854, 3391: 1500, 250349: 1000, 12820: 4940, 246948: 0,
+    4426: 1089, 2289: 268, 4425: 995, 1477: 699, 3012: 239,
+    12643: 542, 7965: 273, 12404: 486, 7964: 266}
+
+
+def cs_patch_items(w, changes):
+    """Items' fields changed in the addon's data and the test's copy of it: {id: {Lua index: value}}
+    (7: % XP, 8: vendor copper); returns what puts the test's copy back."""
+    items = cs_source_items()
+    old = dict(items)
+    D = w.ns.Consumes.DATA["items"]
+    for iid, ch in changes.items():
+        t = list(items[iid])
+        for k, v in ch.items():
+            t[k - 1] = v
+            D[iid][k] = v
+        items[iid] = tuple(t)
+
+    def undo():
+        items.clear()
+        items.update(old)
+    return undo
+
+
+def cs_xp_only(w, keep):
+    """Every food's +5% XP taken away but these; returns what puts the test's copy back."""
+    return cs_patch_items(w, {iid: {7: 0} for iid, t in cs_source_items().items()
+                              if t[2] == "food" and t[6] > 0 and iid not in keep})
+
+
+def sc_consumes_budget_rule(sc, ref, items):
+    """Budget by name, with made-up AH values in the price data: for each Best pick, a cheap one (10c a
+    level at most) stays; a dearer one gives way to the best value of the cheaper ones that do the same
+    job and are better value, at least half as strong (a dear one, over 25c a level: else a third); a
+    dear one with nothing like it goes; an hour's elixir priced for 30 minutes; never a random,
+    PvP-only or unpriced one, a protection potion of another school or a cheaper one that is worse
+    value; the auction house's live listings never move the picks; below 60 the cheapest +5% XP food
+    when no food shown gives it; the level, class and potion rules hold."""
+    _, prices = cs_data(ref)
+    it = cs_source_items()
+    w = cs_world(ref, items, level=47, saved={"consumesBudget": True})
+    C = w.ns.Consumes
+    px = cs_px_all(CS_SHOT_PX)
+    cs_set_prices(w, px)
+    cs_reopen(w)
+
+    def names():
+        return {t: [it[i][0] for i in ids] for t, ids in cs_sections(w)}
+    got = names()
+    sc.eq(got.get("FOOD"), ["Poached Sunscale Salmon", "Plain Ol' Paletusk", "Grilled Squid", "Jungle Stew"],
+          "rule: 47 food: the cheap ones stay (Salmon 3s 23c, Squid 4s 19c, though Mithril Head Trout is better value), "
+          "+10 Str for Smoked Desert Dumplings, +15 Agi for Flank au Poivre")
+    sc.eq(got.get("POTIONS"), ["Superior Healing Potion", "Frenzy Potion", "Great Rage Potion", "Free Action Potion"],
+          "rule: 47 potions: the best value at least half as strong; never the 1c Wildvine Potion (random) or a "
+          "battleground or PvP hall potion; Free Action for Limited Invulnerability")
+    sc.eq(got.get("ELIXIRS"), ["Elixir of Greater Agility", "Elixir of Ogre Strength"],
+          "rule: 47 elixirs: a third as strong when none is half (Greater Agility for Mongoose); the hour's Ogre Strength "
+          "at 15s over the 30 min Elixir of Strength at 10s; Winterfall Firewater (dear, nothing like it priced) goes")
+    sc.eq(got.get("SCROLLS"), ["Scroll of Strength II", "Scroll of Agility III"],
+          "rule: 47 scrolls: Strength II for III; Agility III (9s 95c) stays: Agility II is cheaper but worse value")
+    sc.eq(got.get("STONES AND OILS"), ["Solid Weightstone", "Solid Sharpening Stone"], "rule: 47 stones: Solid for Dense")
+    want = cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "rule: 47", budget=True, prices=px)
+    pct = cs_pcts(w)
+    sc.eq((pct.get("Elixir of Greater Agility"), pct.get("Plain Ol' Paletusk"), pct.get("Free Action Potion")),
+          ("33%", "50%", "best"), "rule: 47: the grey numbers (Free Action: nothing does what it does)")
+    sc.check(sum(len(ids) for _, ids in cs_sections(w)) < sum(len(ids) for _, ids in cs_ids(cs_picks(w, "melee", "WARRIOR", 47))),
+             "rule: 47: fewer rows than Best")
+    # Each row the Best pick itself or a cheaper one for it.
+    for key, title, _ in CS_SECTIONS:
+        for iid, lst, b in cs_budget(w, "melee", key, cs_lists(w, "melee", key), 47, "WARRIOR", px):
+            sc.check(b is None or iid == b or cs_cost(px, iid) < (cs_cost(px, b) or 10 ** 12),
+                     "rule: 47: %s is %s or cheaper" % (it[iid][0], it[b][0] if b else "the XP food"))
+    # The Salmon dearer than 4s 70c: Mithril Head Trout (better value, half as strong); the Mighty Rage's
+    # Great Rage gone: Rage Potion (a third as strong) for the dear one.
+    for sal in (1000, 2000):
+        cs_set_prices(w, {**px, 13932: sal, 5633: 0})
+        cs_reopen(w)
+        got = names()
+        sc.check(got.get("FOOD", [])[:1] == ["Mithril Head Trout"],
+                 "rule: Salmon at %s: Mithril Head Trout instead (%s)" % (short_money(sal), got.get("FOOD")))
+        sc.check("Rage Potion" in got.get("POTIONS", []), "rule: no Great Rage: Rage Potion, a third as strong (%s)" % got.get("POTIONS"))
+        cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "rule: Salmon at %d" % sal, budget=True, prices={**px, 13932: sal, 5633: 0})
+    # A cheaper one that is worse value never: Lesser Agility (13s 6c) for a level 20 has only Minor Agility
+    # (half as strong, 12s 21c): the row goes (it is dear for a level 20).
+    en_player(w, "WARRIOR", (20, 0, 0), "forever", 20)
+    p20 = {**px, 3390: 1306, 2457: 1221, 3391: 440}
+    cs_set_prices(w, p20)
+    cs_reopen(w)
+    el = dict(cs_sections(w)).get("ELIXIRS", [])
+    sc.check(3390 in dict(cs_ids(cs_picks(w, "melee", "WARRIOR", 20)))["ELIXIRS"] and 2457 not in el and 3390 not in el,
+             "rule: 20: not Minor Agility for Lesser Agility, and the dear Lesser Agility goes (%s)" % cs_names(w, "ELIXIRS"))
+    sc.check(3391 in el, "rule: 20: Elixir of Ogre Strength (4s 40c, mid-price, the best value) stays")
+    cs_picks_ok(sc, w, "melee", "WARRIOR", 20, "rule: 20", budget=True, prices=p20)
+    # A food above the level is never one: Smoked Desert Dumplings (level 45) at 1c, level 20.
+    cs_set_prices(w, {**p20, 20452: 1})
+    cs_reopen(w)
+    sc.check(all(it[i][3] <= 20 for i in dict(cs_sections(w)).get("FOOD", [])), "rule: 20: not the 1c level 45 food")
+    # A protection potion: only one of its school stands in (rogue 60: Greater Arcane Protection made dear,
+    # Greater Fire Protection 1c): none here, so the row goes.
+    en_player(w, "ROGUE", (21, 30, 0), "forever", 60)
+    pr = {**px, 13461: 5800, 13457: 1, 6049: 1}
+    cs_set_prices(w, pr)
+    cs_reopen(w)
+    best_p = dict(cs_ids(cs_picks(w, "agility", "ROGUE", 60)))["POTIONS"]
+    pots = dict(cs_sections(w)).get("POTIONS", [])
+    sc.check(13461 in best_p and not any(C.DATA.kind[i] is not None for i in pots),
+             "rule: rogue 60: no fire potion for the arcane one (%s)" % cs_names(w, "POTIONS"))
+    cs_picks_ok(sc, w, "agility", "ROGUE", 60, "rule: rogue 60", budget=True, prices=pr)
+    # A random one is never the pick, also when Best shows it: a level 40 hunter's Wildvine Potion.
+    en_player(w, "HUNTER", (21, 10, 0), "forever", 40)
+    cs_set_prices(w, {**px, 9144: 836})
+    cs_reopen(w)
+    best_p = dict(cs_ids(cs_picks(w, "hunter", "HUNTER", 40)))["POTIONS"]
+    pots = dict(cs_sections(w)).get("POTIONS", [])
+    sc.check(9144 in best_p and 9144 not in pots and 1710 in pots,
+             "rule: hunter 40: Greater Healing Potion for the random Wildvine Potion (%s)" % cs_names(w, "POTIONS"))
+    cs_picks_ok(sc, w, "hunter", "HUNTER", 40, "rule: hunter 40", budget=True, prices={**px, 9144: 836})
+    sc.clean(w, "rule")
+    # The auction house's live listings never move the picks: open there with every one at 1c (ns.LivePrice),
+    # the same picks; the rows show the live price. A failing ns.LivePrice or ns.GetItem: no error.
+    w = cs_world(ref, items, level=47, saved={"consumesBudget": True})
+    cs_set_prices(w, px)
+    cs_open(w)
+    shut = cs_sections(w)
+    cs_live(w, {iid: 1 for iid in it})
+    w.open_ah_modern()
+    cs_reopen(w)
+    sc.eq(cs_sections(w), shut, "rule: at the auction house, every one 1c live: the same picks")
+    cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "rule: at the auction house", budget=True, prices=px)
+    shown = [strip_codes(r[3]) for r in cs_cells(w)[1] if it[r[0]][7] == 0]
+    sc.check(shown and all(s == short_money(1) for s in shown), "rule: at the auction house: the rows show the live 1c (%s)" % shown[:3])
+    w.close_ah_modern()
+    w.settle(0.1)
+    cs_rows_ok(sc, w, px, 47, "rule: auction house closed: the price data again")
+    w.lua.eval("function(ns) ns.LivePrice = function() error('no live prices') end end")(w.ns)
+    w.open_ah_modern()
+    cs_reopen(w)
+    sc.eq(cs_sections(w), shut, "rule: a failing ns.LivePrice: the same picks")
+    w.close_ah_modern()
+    w.ns.LivePrice = None
+    sc.clean(w, "rule: live")
+    w = cs_world(ref, items, level=47, saved={"consumesBudget": True})
+    w.lua.eval("function(ns) ns.GetItem = function() error('no item') end end")(w.ns)
+    cs_open(w)
+    cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "rule: a failing ns.GetItem: as with no AH values", budget=True, prices={})
+    sc.check(w.ns.Consumes.lastError is None and len(cs_cells(w)[1]) > 0, "rule: a failing ns.GetItem: rows, no error")
+    w.ns.Consumes.lastError = None
+    # Below 60, when no food shown gives the +5% XP, the cheapest that does is the last food (in the 4th
+    # row's place when there are 4): a level 47 tank, only Longjaw Mud Snapper with XP, the Best foods cheap.
+    w = cs_world(ref, items, cls="WARRIOR", points=(0, 5, 31), level=47, saved={"consumesBudget": True})
+    undo = cs_xp_only(w, {4592})
+    try:
+        best_f = dict(cs_ids(cs_picks(w, "tank", "WARRIOR", 47)))["FOOD"]
+        pf = dict(px)
+        pf.update({i: 100 for i in best_f})
+        cs_set_prices(w, pf)
+        cs_open(w)
+        food = dict(cs_sections(w)).get("FOOD", [])
+        sc.check(len(best_f) == 4 and not any(it[i][8] == it[4592][8] for i in best_f), "rule: tank 47: 4 Best foods, none of +AP")
+        sc.eq(food, best_f[:3] + [4592], "rule: tank 47: Longjaw Mud Snapper (the only +5% XP food) in the 4th row's place")
+        cs_picks_ok(sc, w, "tank", "WARRIOR", 47, "rule: tank 47 XP food", budget=True, prices=pf)
+    finally:
+        undo()
+    sc.clean(w, "rule: XP food")
+    # With the Budget foods giving +5% XP: no extra XP food (Longjaw Mud Snapper, 13c, is not in).
+    w = cs_world(ref, items, level=47, saved={"consumesBudget": True})
+    cs_set_prices(w, px)
+    cs_open(w)
+    food = dict(cs_sections(w)).get("FOOD", [])
+    sc.check(4592 not in food and all(it[i][6] > 0 for i in food), "rule: 47: every food +5%% XP, no extra XP food (%s)" % cs_names(w, "FOOD"))
+    sc.clean(w, "rule: no XP food")
+    # Only XP foods of a stat already shown, or above the level: no extra row (a level 30 mage, +5% XP left
+    # only on Spiced Chili Crab (+Int, shown) and Grilled Squid (level 35), both 1c; the Best foods cheap).
+    w = cs_world(ref, items, cls="MAGE", points=(0, 31, 20), level=30, saved={"consumesBudget": True})
+    undo = cs_xp_only(w, {12216, 13928})
+    try:
+        best_f = dict(cs_ids(cs_picks(w, "caster", "MAGE", 30)))["FOOD"]
+        pf = dict(px)
+        pf.update({i: 100 for i in best_f})
+        pf.update({12216: 1, 13928: 1})
+        cs_set_prices(w, pf)
+        cs_open(w)
+        sc.check(it[12216][8] in [it[i][8] for i in best_f] and it[13928][3] > 30, "rule: mage 30: the crab's stat is shown, the squid is level 35")
+        sc.eq(dict(cs_sections(w)).get("FOOD"), best_f, "rule: mage 30: no XP food of a shown stat or above the level")
+        cs_picks_ok(sc, w, "caster", "MAGE", 30, "rule: mage 30 XP food", budget=True, prices=pf)
+    finally:
+        undo()
+    sc.clean(w, "rule: XP food shown or above")
+    # Never dearer than the Best pick: a level 45 mage's Combat Mana Potion (PvP hall, 11s); Superior Mana at
+    # 12s is better value than Greater Mana at 10s (no vendor here), but dearer: Greater Mana.
+    w = cs_world(ref, items, cls="MAGE", points=(0, 31, 20), level=45, saved={"consumesBudget": True})
+    undo = cs_patch_items(w, {6149: {8: 0}})
+    try:
+        pm = {**px, 13443: 1200, 6149: 1000, 17747: 0}
+        cs_set_prices(w, pm)
+        cs_open(w)
+        sc.check(18841 in dict(cs_ids(cs_picks(w, "caster", "MAGE", 45)))["POTIONS"], "rule: mage 45: Best shows Combat Mana Potion")
+        pots = dict(cs_sections(w)).get("POTIONS", [])
+        sc.check(6149 in pots and 13443 not in pots and 18841 not in pots,
+                 "rule: mage 45: Greater Mana, not the dearer Superior Mana (%s)" % cs_names(w, "POTIONS"))
+        cs_picks_ok(sc, w, "caster", "MAGE", 45, "rule: mage 45", budget=True, prices=pm)
+    finally:
+        undo()
+    sc.clean(w, "rule: never dearer")
+    # A potion already shown never stands in again: a level 8 mage, Minor Mana and Lesser Healing dear (no
+    # vendor here), Minor Rejuvenation 1c stands in for the mana one; the healing one gets Minor Healing.
+    w = cs_world(ref, items, cls="MAGE", points=(0, 0, 0), level=8, saved={"consumesBudget": True})
+    undo = cs_patch_items(w, {2455: {8: 0}, 858: {8: 0}})
+    try:
+        p8 = {**px, 2455: 1000, 858: 1000, 2456: 1, 118: 10}
+        cs_set_prices(w, p8)
+        cs_open(w)
+        bp = dict(cs_ids(cs_picks(w, "caster", "MAGE", 8)))["POTIONS"]
+        sc.check(bp[:2] == [2455, 858], "rule: mage 8: Best shows Minor Mana, Lesser Healing (%s)" % [it[i][0] for i in bp])
+        sc.eq(dict(cs_sections(w)).get("POTIONS", [])[:2], [2456, 118], "rule: mage 8: Minor Rejuvenation, then Minor Healing")
+        cs_picks_ok(sc, w, "caster", "MAGE", 8, "rule: mage 8", budget=True, prices=p8)
+    finally:
+        undo()
+    sc.clean(w, "rule: shown once")
+    # No price data at all: vendor prices only.
+    w = cs_world(ref, items, level=47, data_src=PLACEHOLDER, saved={"consumesBudget": True})
+    cs_open(w)
+    got = cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "rule: no price data", budget=True, prices={})
+    sc.check(all(it[r[0]][7] > 0 for _, rs in got for r in rs), "rule: no price data: only vendor items")
+    sc.clean(w, "rule: no data", ok_chat=())
+    # The level, class, list and potion rules in Budget, and the picks for many players (the test prices).
+    w = cs_world(ref, items, saved={"consumesBudget": True})
+    cases = [("WARRIOR", (31, 5, 0), 60, "melee"), ("WARRIOR", (0, 5, 31), 60, "tank"), ("MAGE", (0, 31, 20), 60, "caster"),
+             ("ROGUE", (5, 31, 15), 60, "agility"), ("PRIEST", (31, 20, 0), 60, "healer"), ("HUNTER", (31, 20, 0), 60, "hunter"),
+             ("PALADIN", (0, 31, 0), 60, "tank"), ("DRUID", (0, 31, 0), 60, "agility"), ("WARRIOR", (25, 5, 0), 35, "melee"),
+             ("MAGE", (0, 0, 20), 25, "caster"), ("WARRIOR", (0, 0, 0), 12, "melee"), ("PRIEST", (0, 20, 0), 44, "healer"),
+             ("ROGUE", (0, 30, 0), 52, "agility"), ("PALADIN", (0, 0, 31), 60, "melee"), ("SHAMAN", (0, 31, 5), 60, "melee"),
+             ("WARRIOR", (20, 0, 0), 20, "melee"), ("WARLOCK", (31, 0, 0), 60, "caster"), ("PRIEST", (31, 20, 0), 30, "healer"),
+             ("WARRIOR", (31, 5, 0), 47, "melee"), ("PALADIN", (0, 0, 31), 25, "melee"), ("DRUID", (0, 31, 0), 47, "agility"),
+             ("WARLOCK", (31, 0, 0), 40, "caster"), ("HUNTER", (31, 20, 0), 18, "hunter")]
+    for cls, pts, lvl, role in cases:
+        en_player(w, cls, pts, "forever", lvl)
+        cs_reopen(w)
+        label = "rule: %s %s level %d" % (cls, pts, lvl)
+        got = cs_picks_ok(sc, w, role, cls, lvl, label, budget=True, prices=prices)
+        cs_rows_ok(sc, w, prices, lvl, label, cls=cls)
+        rows = [(t, r) for t, rs in got for r in rs]
+        sc.eq([r[0] for t, r in rows if not cs_can(r[0], lvl, cls)], [], label + ": nothing above the level or for another class")
+        sc.eq([r[0] for t, r in rows if cs_pvp(w, r[0]) or cs_chancy(r[1], r[0])], [], label + ": nothing PvP-only or random")
+        sc.eq([r[0] for t, r in rows if cs_cost(prices, r[0]) is None], [], label + ": everything has a price")
+        rage = [r[0] for t, r in rows if r[1] == "potion-rage"]
+        sc.check(not rage or cls in ("WARRIOR", "DRUID"), label + ": rage potions only for warriors and druids")
+        mana = [r[0] for t, r in rows if t == "POTIONS" and cs_mana_only(r[0])]
+        sc.check(not mana or cls not in ("WARRIOR", "ROGUE"), label + ": no mana potions for warriors and rogues")
+        best = dict(cs_ids(cs_picks(w, role, cls, lvl)))
+        for t, rs in got:
+            groups = [it[r[0]][8] for r in rs]
+            sc.check(len(groups) == len(set(groups)) and len(rs) <= min(4, len(best.get(t, [])) + (t == "FOOD")),
+                     label + ": %s: a group once, no more rows than Best" % t)
+        bad = []
+        for key, title, _ in CS_SECTIONS:
+            for iid, lst, b in cs_budget(w, role, key, cs_lists(w, role, key), lvl, cls, prices):
+                if b is None or iid == b:
+                    continue
+                cb, sb, s = cs_cost(prices, b), cs_strength(w, role, lst, b, lvl), cs_strength(w, role, lst, iid, lvl)
+                dear = cs_pvp(w, b) or cs_chancy(lst, b) or not cb or cb > lvl * CS_DEAR
+                if (cb and cs_cost(prices, iid) >= cb) or s < (1 / 3 if dear else 1 / 2) * sb - 1e-9 or cs_peer(w, lst, iid) != cs_peer(w, lst, b):
+                    bad.append((it[iid][0], it[b][0]))
+        sc.eq(bad, [], label + ": each stand-in cheaper, of the same job, at least half as strong (a dear pick's: a third)")
+        if lvl < 60 and "FOOD" in dict(got):
+            food = [r[0] for r in dict(got)["FOOD"]]
+            sc.check(any(it[i][6] > 0 for i in food), label + ": a +5%% XP food in (%s)" % [it[i][0] for i in food])
+    sc.clean(w, "rule: players")
+
+
+# --- consumes: Best / Budget end ---
+
+
 # --- consumes: end ---
 
 
@@ -20273,6 +21272,10 @@ SCENARIOS = [
     ("consumes-all", sc_consumes_all),
     ("consumes-slash", sc_consumes_slash),
     ("consumes-picks", sc_consumes_picks),
+    ("consumes-budget", sc_consumes_budget),
+    ("consumes-budget-place", sc_consumes_budget_place),
+    ("consumes-budget-rule", sc_consumes_budget_rule),
+    ("consumes-percent", sc_consumes_percent),
 ]
 
 

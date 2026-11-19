@@ -7,9 +7,15 @@ local ADDON_NAME, ns = ...
 -- today's AH value (or a vendor's price) and how many you carry. Well Fed food
 -- gives +5% XP from kills in Forever (below level 60): those rows say so in
 -- green. A click on the header folds it to one line (remembered); All shows
--- every usable item instead of the best 4. Hover a row: the item's tooltip; a
--- click while the auction house is open searches it there; shift-click links
--- it in chat. /gl consumes off turns it off, /gl consumes on brings it back.
+-- every usable item instead of the best 4. Best / Budget (next to All) shows the
+-- strongest, or for each of them one for less gold: a cheaper one that does the
+-- same job and is better value (a cheap one stays; a dear one with nothing like it
+-- goes; with All: those first, then cheapest first). The
+-- grey number on each row is how strong it is next to the strongest one of its
+-- kind you can use ("best", "62%"). Hover a row: the item's tooltip (and that in
+-- words); a click while the auction house is open searches it there; shift-click
+-- links it in chat. /gl consumes off turns it off, /gl consumes on brings it back,
+-- /gl consumes budget or best switches the picks.
 -- The role is the one the enchant tips use (talents, or /gl enchants <role>).
 -- Plain ASCII only.
 
@@ -19,6 +25,7 @@ ns = ns or {}
 local _G = _G
 local type, tonumber, tostring, ipairs, pcall = type, tonumber, tostring, ipairs, pcall
 local floor, min, max = math.floor, math.min, math.max
+local tsort = table.sort
 local smatch, slower, sformat = string.match, string.lower, string.format
 
 local C = { lastError = nil, builds = 0, places = 0, draws = 0, polls = 0 }   -- state for /gl consumes and the tests
@@ -196,10 +203,10 @@ local ITEMS = {
   [13935] = { "Baked Salmon", nil, "food", 45, 1, "+28 spell dmg", 5, 0, "food:sp" },   -- spell 1249516
   [16971] = { "Clamlette Surprise", nil, "food", 40, 1, "+12 Sta, +12 Spi", 0, 0, "food:spi,sta" },   -- spell 10256
   [17222] = { "Spider Sausage", nil, "food", 35, 1, "+15 Sta", 5, 0, "food:sta" },   -- spell 1248394
-  [17348] = { "Major Healing Draught", nil, "potion", 45, 1, "heals 980-1260", 0, 1000, "name:Major Healing Draught" },   -- spell 21393
-  [17349] = { "Superior Healing Draught", nil, "potion", 35, 1, "heals 560-720", 0, 500, "name:Superior Healing Draught" },   -- spell 21394
-  [17351] = { "Major Mana Draught", nil, "potion", 45, 1, "980-1260 mana", 0, 1000, "name:Major Mana Draught" },   -- spell 21395
-  [17352] = { "Superior Mana Draught", nil, "potion", 35, 1, "560-720 mana", 0, 500, "name:Superior Mana Draught" },   -- spell 21396
+  [17348] = { "Major Healing Draught", nil, "potion", 45, 1, "heals 980-1260, battlegrounds only", 0, 1000, "name:Major Healing Draught" },   -- spell 21393
+  [17349] = { "Superior Healing Draught", nil, "potion", 35, 1, "heals 560-720, battlegrounds only", 0, 500, "name:Superior Healing Draught" },   -- spell 21394
+  [17351] = { "Major Mana Draught", nil, "potion", 45, 1, "980-1260 mana, battlegrounds only", 0, 1000, "name:Major Mana Draught" },   -- spell 21395
+  [17352] = { "Superior Mana Draught", nil, "potion", 35, 1, "560-720 mana, battlegrounds only", 0, 500, "name:Superior Mana Draught" },   -- spell 21396
   [17747] = { "Razorlash Root", nil, "potion", 40, 1, "heals 600, 600 mana", 0, 0, "name:Razorlash Root" },   -- spell 21955
   [18045] = { "Tender Wolf Steak", nil, "food", 35, 1, "+15 Agi", 5, 0, "food:agi" },   -- spell 1248395
   [18253] = { "Major Rejuvenation Potion", "Major Rejuvenation", "potion", 50, 1, "heals 1440-1760, 1440-1760 mana", 0, 0, "name:Major Rejuvenation Potion" },   -- spell 22729
@@ -866,6 +873,147 @@ local ALL = {
   },
 }
 
+-- Each item's strength for the role, in the order of ALL: the ranking's own score (the role's stat weights
+-- times the buff, times the duration's share of 30 min for elixirs, flasks and scrolls; a healing potion
+-- what it heals (Discolored: net of the 75% that comes back; mana users: +30% of its mana), a mana potion
+-- its mana, a rage potion 10 a point of rage plus its buff, a protection potion what it absorbs + 10 a
+-- point of resistance + its armor). The panel's '% of best' and its Budget picks read these.
+local SCORES = {
+  melee = {
+    ["food"] = {
+      40, 40, 40, 40, 40, 30, 30, 25, 20, 20, 20, 20, 20, 15, 15, 10,
+      10, 10, 10, 10, 10, 6, 6, 6, 6, 6, 5, 5, 5, 5, 3, 3,
+      2, 2, 2, 2, 1,
+    },
+    ["potion-heal"] = {
+      1600, 1400, 1120, 800, 800, 750, 700, 640, 600, 520, 400, 320, 260, 160, 160, 120,
+      94, 80, 80, 60, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-rage"] = { 720, 450, 300 },
+    ["potion-buff"] = { 80, 56, 40, 28, 12 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = { 100, 75, 54, 50, 43.2, 25, 25, 23.33, 23.33, 20, 16, 15, 8, 8, 4, 1.07 },
+    ["scroll"] = { 34, 26, 18, 17, 13, 10, 9, 5 },
+    ["weapon"] = { 40, 40, 30, 30, 20, 20, 15, 15, 10, 10 },
+  },
+  agility = {
+    ["food"] = {
+      40, 40, 40, 40, 30, 30, 30, 25, 20, 20, 20, 20, 20, 20, 20, 15,
+      10, 10, 10, 10, 10, 10, 10, 6, 6, 6, 5, 5, 3, 3, 3, 3,
+      2, 2, 1, 1, 1,
+    },
+    ["potion-heal"] = {
+      1600, 1400, 1120, 800, 800, 750, 700, 640, 600, 520, 400, 320, 260, 160, 160, 120,
+      94, 80, 80, 60, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-rage"] = { 660, 450, 300 },
+    ["potion-buff"] = { 80, 56, 40, 28, 12 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = { 100, 75, 54, 50, 50, 30, 25.2, 25, 23.33, 23.33, 16, 10, 8, 8, 4, 0.53 },
+    ["scroll"] = { 34, 26, 18, 17, 13, 10, 9, 5 },
+    ["weapon"] = { 40, 40, 30, 30, 20, 20, 15, 15, 10, 10 },
+  },
+  tank = {
+    ["food"] = {
+      50, 37.5, 37.5, 25, 25, 20, 20, 16, 16, 16, 15, 15, 15, 12.5, 12.5, 12.5,
+      12.5, 12, 12, 12, 10, 10, 10, 9, 8, 8, 7.5, 7.5, 7.5, 6, 5, 5,
+      5, 5, 4, 4, 3, 3, 3, 2.5, 2.5, 2.5, 2.5, 2.4, 2.4, 2.4, 2.4, 1.8,
+      1, 0.8, 0.8, 0.8, 0.6, 30, 15,
+    },
+    ["potion-heal"] = {
+      1600, 1400, 1120, 800, 800, 750, 700, 640, 600, 520, 400, 320, 260, 160, 160, 120,
+      94, 80, 80, 60, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-rage"] = { 648, 450, 300 },
+    ["potion-buff"] = { 24, 16.8, 12, 8.4, 3.6 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = {
+      150, 100, 59.4, 50, 45, 33, 32.4, 30, 28, 25, 25, 25, 20, 18, 15, 15,
+      13.5, 9, 8, 8, 7, 7, 6.75, 6.4, 5, 4, 3.2, 3, 0.43,
+    },
+    ["flask"] = { 300, 37.5 },
+    ["scroll"] = { 40, 30, 24, 20, 18, 17, 13.6, 13, 12, 10.4, 10, 9, 7.2, 6, 5, 4 },
+    ["weapon"] = { 8, 8, 6, 6, 4, 4, 3, 3, 2, 2 },
+  },
+  caster = {
+    ["food"] = {
+      28, 28, 22, 22, 14, 10, 10, 10, 7.5, 7.5, 7, 5, 5, 5, 4, 3,
+      2.5, 2.25, 1.5, 1.5, 1.5, 1.5, 1, 0.75, 0.5, 0.5, 0.5, 0.5, 0.5, 0.45, 0.15, 4.2,
+      2.1,
+    },
+    ["potion-heal"] = {
+      2080, 1400, 1120, 975, 800, 800, 780, 700, 640, 520, 400, 320, 260, 160, 160, 156,
+      94, 80, 80, 72, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-buff"] = { 47, 33, 23, 16, 11, 7 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = {
+      35, 32.5, 30, 24, 23.75, 23.75, 20, 20, 15, 15, 12.5, 12.5, 12, 11.7, 9, 6,
+      5, 5, 4.5, 3, 2.7, 1.5, 1.5, 0.9, 0.45,
+    },
+    ["flask"] = { 150, 66 },
+    ["scroll"] = { 8, 6, 6, 4, 3, 2.25, 2, 1.65, 1.05, 1, 0.45 },
+    ["weapon"] = { 24, 16, 15, 8, 7.5 },
+  },
+  healer = {
+    ["food"] = {
+      44, 33, 22, 12, 12, 11, 10, 9, 9, 7.5, 7, 6, 6, 6, 5, 3,
+      2.5, 2, 1.8, 1.8, 1.8, 1.5, 0.6, 0.6, 0.6, 0.6, 0.6, 0.5, 8.4, 4.2,
+    },
+    ["potion-heal"] = {
+      2080, 1400, 1120, 975, 800, 800, 780, 700, 640, 520, 400, 320, 260, 160, 160, 156,
+      94, 80, 80, 72, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-buff"] = { 88, 62, 44, 31, 20, 13 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = {
+      50, 40, 30, 27, 25, 24.5, 24.5, 20, 19.8, 15, 15, 15, 10, 9, 7.5, 6,
+      5, 3.6, 3, 1.8, 1.5,
+    },
+    ["flask"] = { 80 },
+    ["scroll"] = { 9.6, 7.5, 7.2, 7.2, 5.5, 4.8, 3.6, 3.5, 2.4, 1.5, 1.2 },
+    ["weapon"] = { 45, 24, 22.5, 16, 8 },
+  },
+  hunter = {
+    ["food"] = {
+      48, 48, 40, 40, 36, 30, 30, 25, 24, 20, 20, 20, 12, 10, 10, 10,
+      10, 7.2, 6, 6, 2.4, 2,
+    },
+    ["potion-heal"] = {
+      2080, 1400, 1120, 975, 800, 800, 780, 700, 640, 520, 400, 320, 260, 160, 160, 156,
+      94, 80, 80, 72, 40,
+    },
+    ["potion-mana"] = { 1800, 1600, 1200, 1200, 1120, 800, 750, 640, 600, 520, 320, 160, 120, 40 },
+    ["potion-buff"] = { 96, 67.2, 48, 33.6, 14.4 },
+    ["potion-protection"] = { 2600, 2600, 2600, 2600, 2000, 1800, 1800, 1300, 1000, 900, 500, 400, 250 },
+    ["potion-utility"] = { 1.45, 1.2, 1.05 },
+    ["elixir"] = { 100, 57.5, 50, 36, 30, 16, 8 },
+    ["flask"] = { 40 },
+    ["scroll"] = { 34, 26, 18, 10 },
+  },
+}
+
+-- What a protection potion guards against (one is only compared with others of its kind).
+local KIND = {
+  [3384] = "res", [4623] = "armor", [6048] = "shadow", [6049] = "fire", [6050] = "frost", [6051] = "holy",
+  [6052] = "nature", [9036] = "res", [13455] = "armor", [13456] = "frost", [13457] = "fire", [13459] = "shadow",
+  [13461] = "arcane",
+}
+
+-- Only for PvP: usable only in battlegrounds, or bound and sold only in the PvP halls (Champions' Hall,
+-- Hall of Legends), which need a PvP rank. Never a Budget pick.
+local PVP = { [17348] = true, [17349] = true, [17351] = true, [17352] = true, [18839] = true, [18841] = true }
+
 -- The potion lists a role sees, in order (one of each in the best 4).
 local POTIONS = {
   melee = { "potion-heal", "potion-buff", "potion-rage", "potion-mana", "potion-utility", "potion-protection" },
@@ -876,7 +1024,7 @@ local POTIONS = {
   hunter = { "potion-heal", "potion-mana", "potion-buff", "potion-utility", "potion-protection" },
 }
 -- END DATA
-C.DATA = { items = ITEMS, best = BEST, all = ALL, potions = POTIONS }
+C.DATA = { items = ITEMS, best = BEST, all = ALL, potions = POTIONS, scores = SCORES, kind = KIND, pvp = PVP }
 
 ---------------------------------------------------------------------------
 -- Small helpers
@@ -977,6 +1125,48 @@ local function whoAmI()
 end
 
 ---------------------------------------------------------------------------
+-- Prices: what one costs (the Budget picks and the rows)
+---------------------------------------------------------------------------
+local function dataStamp()
+  local db = ns.db
+  return type(db) == "table" and tonumber(db.updated) or 0
+end
+
+-- Today's AH value in the price data; 0 when there is none.
+local function dataValue(id)
+  if dataStamp() > 0 and type(ns.GetItem) == "function" then
+    local ok, g = pcall(ns.GetItem, id)
+    local v = ok and type(g) == "table" and plainNumber(g.market) or nil
+    if v and v > 0 then return v end
+  end
+  return 0
+end
+
+-- The AH value a row shows: Goblin Ledger's live price when it has one (ns.LivePrice), else the
+-- price data's; 0 when there is none.
+local function ahValue(id)
+  local f = ns.LivePrice
+  if type(f) == "function" then
+    local ok, v = pcall(f, id)
+    v = ok and plainNumber(v) or nil
+    if v and v > 0 then return v end
+  end
+  return dataValue(id)
+end
+
+-- What one costs for the Budget picks: a vendor's price when it is the cheaper, else today's AH
+-- value in the price data (never a live listing: one lowball listing does not move the picks, and
+-- they stay the same at the auction house); nil: no price.
+local function costOf(id)
+  local it = ITEMS[id]
+  local vendor, market = it and it[8] or 0, dataValue(id)
+  if vendor > 0 and (market <= 0 or vendor <= market) then return vendor, true end
+  if market > 0 then return market, false end
+  return nil
+end
+C.CostOf = costOf
+
+---------------------------------------------------------------------------
 -- What to show: the sections and their items
 ---------------------------------------------------------------------------
 -- The panel's sections, in order; one with nothing usable is left out.
@@ -989,6 +1179,9 @@ local SECTIONS = {
   { key = "weapon", title = "STONES AND OILS", lists = { "weapon" } },
 }
 local BEST_N = 4
+local FLOORS = { 1 / 2, 1 / 3 }   -- Budget: a stand-in at least half as strong as the Best pick (a dear one's: a third)
+local CHEAP, DEAR = 10, 25        -- copper a level: a Best pick this cheap stays in Budget; dearer with no stand-in: out
+local NO_XP = 0.25   -- below 60, a food without the +5% XP counts a quarter (below every XP food while levelling)
 
 local function bandOf(level)
   if level >= 60 then return 5 elseif level >= 50 then return 4 elseif level >= 40 then return 3 elseif level >= 20 then return 2 end
@@ -1017,21 +1210,60 @@ local function append(out, ids)
   return out
 end
 
--- The best ones: from the research's ranking for the level's band (then every usable one, for a
--- level low in its band), the next usable one of each list in turn (potions: one of each kind
--- first), skipping one whose group was shown (two elixirs of one stat line, two foods of one
--- stat, two stones of one kind, a potion of a name already in).
-local function bestIds(role, lists, level, class)
-  local band, per, pos, out, seen = bandOf(level), {}, {}, {}, {}
-  for i, list in ipairs(lists) do
-    local b = BEST[role] and BEST[role][list]
-    per[i] = {}
-    if listAllowed(list, class) then
-      append(per[i], b and b[band])
-      append(per[i], ALL[role] and ALL[role][list])
-    end
-    pos[i] = 1
+-- Each item's strength for a role and list, from SCORES (in ALL's order).
+local SCORE = {}
+for role, lists in pairs(ALL) do
+  SCORE[role] = {}
+  for list, ids in pairs(lists) do
+    local sc, map = SCORES[role] and SCORES[role][list], {}
+    for i, id in ipairs(ids) do map[id] = sc and sc[i] or nil end
+    SCORE[role][list] = map
   end
+end
+
+-- How strong one is for the role, list and level (the ranking's score); nil: not on the list.
+local function strength(role, list, id, level)
+  local s = SCORE[role] and SCORE[role][list] and SCORE[role][list][id]
+  if not s then return nil end
+  local it = ITEMS[id]
+  if list == "food" and level < 60 and it and it[7] <= 0 then s = s * NO_XP end
+  return s
+end
+
+-- What one is measured against: the rest of its list, except that a stone or oil only meets
+-- those for the same weapons, a protection potion those of its kind (fire, armor, ...) and a
+-- utility potion (Free Action, Swiftness, ...) only itself: nothing else does the same.
+local function kindOf(list, id)
+  local it = ITEMS[id]
+  if list == "potion-utility" then return list .. ":" .. (it and it[9] or tostring(id)) end
+  if list == "potion-protection" then return list .. ":" .. (KIND[id] or "") end
+  if list == "weapon" then return list .. ":" .. (it and smatch(it[9], "^weapon:([^:]*)") or "") end
+  return list
+end
+
+-- The strongest usable one of each kind for the role and level: kind -> { strength, id }
+-- (the first on the list when two are as strong; PvP-only ones are not counted).
+local function strongest(role, lists, level, class)
+  local ref = {}
+  for _, list in ipairs(lists) do
+    if listAllowed(list, class) then
+      for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
+        if usable(ITEMS[id], level, class) and not PVP[id] then
+          local s, k = strength(role, list, id, level), kindOf(list, id)
+          if s and (not ref[k] or s > ref[k][1]) then ref[k] = { s, id } end
+        end
+      end
+    end
+  end
+  return ref
+end
+
+-- The picks (Best and Budget): the next usable one of each list in turn (potions: one of each
+-- kind first), skipping one whose group was shown (two elixirs of one stat line, two foods of one
+-- stat, two stones of one kind, a potion of a name already in); 4 at most, and each one's list.
+local function takeTurns(per, lists, level, class)
+  local pos, out, from, seen = {}, {}, {}, {}
+  for i = 1, #lists do pos[i] = 1 end
   local more = true
   while #out < BEST_N and more do
     more = false
@@ -1044,6 +1276,7 @@ local function bestIds(role, lists, level, class)
         if usable(it, level, class) and not seen[it[9]] then
           seen[it[9]] = true
           out[#out + 1] = id
+          from[#out] = lists[i]
           more = true
           break
         end
@@ -1052,34 +1285,196 @@ local function bestIds(role, lists, level, class)
       if #out >= BEST_N then break end
     end
   end
-  return out
+  return out, from
 end
 
--- Every usable one (the All switch), best first.
-local function allIds(role, lists, level, class)
-  local out, seen = {}, {}
+-- A list as the best ones come: the research's ranking for the level's band, then every one (for a
+-- level low in its band).
+local function rankOrder(role, list, level)
+  local b = BEST[role] and BEST[role][list]
+  return append(append({}, b and b[bandOf(level)]), ALL[role] and ALL[role][list])
+end
+
+local function bestIds(role, lists, level, class)
+  local per = {}
+  for i, list in ipairs(lists) do
+    per[i] = listAllowed(list, class) and rankOrder(role, list, level) or {}
+  end
+  return takeTurns(per, lists, level, class)
+end
+
+-- Who can stand in for a Best pick in Budget: one that does the same job. Food, elixirs, scrolls,
+-- flasks, stones and oils: the same group (the stat, the elixir's stacking line, the weapons and
+-- what it adds); a protection potion: its school (or armor, or all); other potions: the same list
+-- (healing, mana, rage, a buff, a handy one: Free Action, Swiftness, ...).
+local function peerOf(list, id)
+  if list == "potion-protection" then return kindOf(list, id) end
+  if smatch(list, "^potion%-") then return list end
+  local it = ITEMS[id]
+  return list .. ":" .. (it and it[9] or tostring(id))
+end
+
+-- A potion that gives a random amount from next to nothing ("heals 1-1499"): never a Budget pick.
+local function chancy(list, id)
+  if not smatch(list, "^potion%-") then return false end
+  local it = ITEMS[id]
+  local lo, hi = smatch(it and it[6] or "", "(%d+)%-(%d+)")
+  lo, hi = tonumber(lo), tonumber(hi)
+  return lo ~= nil and hi ~= nil and lo * 3 < hi
+end
+
+-- How long a buff lasts in minutes, from its words ("+25 Agi, 1 hr", "+35 AP, 20 min"); nil: not said.
+local function minutesOf(id)
+  local b = ITEMS[id] and ITEMS[id][6] or ""
+  local h = tonumber(smatch(b, "(%d+) hr"))
+  if h then return h * 60 end
+  return tonumber(smatch(b, "(%d+) min"))
+end
+C.MinutesOf = minutesOf
+
+-- Strength per copper. An elixir, flask or scroll that lasts longer than 30 minutes is priced for 30
+-- of them (its strength counts 30 minutes at most): an hour's elixir is worth twice a 30 minute one.
+local LASTS = { elixir = true, flask = true, scroll = true }
+local function valueOf(list, id, s, c)
+  local m = LASTS[list] and minutesOf(id)
+  if m and m > 30 then c = c * 30 / m end
+  return s / c
+end
+
+-- What Budget shows for one Best pick b:
+--  * b when it costs at most CHEAP copper a level (a cheap one is not swapped to save pennies);
+--  * else the best value of the cheaper ones that do the same job (peerOf) and are better value than
+--    b, at least half as strong as b (when b is dear: over DEAR copper a level, no price, PvP-only or
+--    random, else at least a third);
+--  * none: b, unless it is dear: then nothing (a flask, a 50s elixir with nothing like it for less).
+-- Never a PvP-only one, a random one, one without a price or one of a group already shown.
+local function standIn(role, list, b, level, class, seen)
+  local cb, sb = costOf(b), strength(role, list, b, level) or 0
+  local own = not PVP[b] and not chancy(list, b)   -- may b itself be the Budget pick?
+  if own and cb and cb <= level * CHEAP then return b end
+  local dear = not own or not cb or cb > level * DEAR
+  local vb = own and cb and valueOf(list, b, sb, cb) or 0   -- one that cannot stay is no bar
+  local peer = peerOf(list, b)
+  for f = 1, dear and #FLOORS or 1 do
+    local top, tv, ts, tc
+    for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
+      local it = ITEMS[id]
+      if id ~= b and usable(it, level, class) and not PVP[id] and not seen[it[9]] and not chancy(list, id)
+         and peerOf(list, id) == peer then
+        local c, s = costOf(id), strength(role, list, id, level)
+        if c and c > 0 and s and (not cb or c < cb) and s >= FLOORS[f] * sb - 1e-9 then
+          local v = valueOf(list, id, s, c)
+          if v > vb and (not top or v > tv or (v == tv and (s > ts or (s == ts and c < tc)))) then
+            top, tv, ts, tc = id, v, s, c
+          end
+        end
+      end
+    end
+    if top then return top end
+  end
+  if not dear then return b end
+  return nil
+end
+
+-- The Budget picks: a stand-in for each Best pick, in its order (fewer when a dear one has none).
+-- Below 60, when no food shown gives the +5% XP, the cheapest one of the role that does is the last
+-- food (of a stat not shown yet).
+local function budgetIds(role, key, lists, level, class)
+  local best, bfrom = bestIds(role, lists, level, class)
+  local out, from, seen = {}, {}, {}
+  for i, b in ipairs(best) do
+    local id = standIn(role, bfrom[i], b, level, class, seen)
+    if id and not seen[ITEMS[id][9]] then
+      seen[ITEMS[id][9]] = true
+      out[#out + 1] = id
+      from[#out] = bfrom[i]
+    end
+  end
+  if key == "food" and level < 60 then
+    local xp = false
+    for _, id in ipairs(out) do
+      if ITEMS[id][7] > 0 then xp = true end
+    end
+    local cheap, cc, cs
+    for _, id in ipairs(not xp and ALL[role] and ALL[role].food or {}) do
+      local it = ITEMS[id]
+      if it and it[7] > 0 and usable(it, level, class) and not PVP[id] and not seen[it[9]] then
+        local c, s = costOf(id), strength(role, "food", id, level) or 0
+        if c and c > 0 and (not cc or c < cc or (c == cc and s > cs)) then cheap, cc, cs = id, c, s end
+      end
+    end
+    if cheap then
+      local n = min(#out + 1, BEST_N)
+      out[n], from[n] = cheap, "food"
+    end
+  end
+  return out, from
+end
+
+-- Every usable one (the All switch), best first; with Budget: the Budget picks first, then the rest
+-- cheapest first (no price last).
+local function allIds(role, key, lists, level, class, budget)
+  local out, from, seen = {}, {}, {}
+  if budget then
+    out, from = budgetIds(role, key, lists, level, class)
+    for _, id in ipairs(out) do seen[id] = true end
+  end
+  local lead = #out
   for _, list in ipairs(lists) do
     local ids = listAllowed(list, class) and ALL[role] and ALL[role][list] or {}
     for _, id in ipairs(ids) do
       if usable(ITEMS[id], level, class) and not seen[id] then
         seen[id] = true
         out[#out + 1] = id
+        from[#out] = list
       end
     end
   end
-  return out
+  if budget then
+    local rows = {}
+    for i = lead + 1, #out do rows[#rows + 1] = { id = out[i], list = from[i], i = i, c = costOf(out[i]) } end
+    tsort(rows, function(a, b)
+      if (a.c ~= nil) ~= (b.c ~= nil) then return a.c ~= nil end
+      if a.c and a.c ~= b.c then return a.c < b.c end
+      return a.i < b.i
+    end)
+    for k, r in ipairs(rows) do out[lead + k], from[lead + k] = r.id, r.list end
+  end
+  return out, from
 end
 
-local model   -- { role, class, level, all, sections = { { key, title, ids }, ... } }
+-- { role, class, level, all, budget, sections = { { key, title, ids, lists, pct, ref }, ... } }: each row's
+-- list, its strength in % of the strongest usable one of its kind (100: it is that strong), and which that is.
+local model
 
 local function buildModel()
   local role, class, level = whoAmI()
-  local all = settings().consumesAll == true
-  local m = { role = role, class = class, level = level, all = all, sections = {} }
+  local S = settings()
+  local all, budget = S.consumesAll == true, S.consumesBudget == true
+  local m = { role = role, class = class, level = level, all = all, budget = budget, sections = {} }
   for _, s in ipairs(SECTIONS) do
     local lists = s.lists or POTIONS[role] or {}
-    local ids = all and allIds(role, lists, level, class) or bestIds(role, lists, level, class)
-    if #ids > 0 then m.sections[#m.sections + 1] = { key = s.key, title = s.title, ids = ids } end
+    local ref = strongest(role, lists, level, class)
+    local ids, from
+    if all then
+      ids, from = allIds(role, s.key, lists, level, class, budget)
+    elseif budget then
+      ids, from = budgetIds(role, s.key, lists, level, class)
+    else
+      ids, from = bestIds(role, lists, level, class)
+    end
+    if #ids > 0 then
+      local pct, refs = {}, {}
+      for i, id in ipairs(ids) do
+        local list = from[i]
+        local r, sc = ref[kindOf(list, id)], strength(role, list, id, level)
+        if r and sc and r[1] > 0 then
+          pct[i] = sc >= r[1] - 1e-9 and 100 or max(1, min(99, floor(sc * 100 / r[1] + 1e-9)))
+          refs[i] = r[2]
+        end
+      end
+      m.sections[#m.sections + 1] = { key = s.key, title = s.title, ids = ids, lists = from, pct = pct, ref = refs }
+    end
   end
   model = m
   return m
@@ -1123,11 +1518,6 @@ local function countOf(id)
   return ok and plainNumber(n) or 0
 end
 
-local function dataStamp()
-  local db = ns.db
-  return type(db) == "table" and tonumber(db.updated) or 0
-end
-
 -- Prices older than Core's limit (6 hours) are grey, as on the enchant tips.
 local function stalePrices()
   local f, most = ns.DataAge, ns.STALE_SECONDS
@@ -1150,11 +1540,7 @@ local function priceOf(id, stale)
     live = ok and plainNumber(live) or nil
     if live and live > 0 then return money(live), "text" end
   end
-  local market = 0
-  if dataStamp() > 0 and type(ns.GetItem) == "function" then
-    local g = ns.GetItem(id)
-    market = g and tonumber(g.market) or 0
-  end
+  local market = ahValue(id)
   if vendor > 0 and (market <= 0 or vendor <= market) then return "vendor " .. money(vendor), "text" end
   if market > 0 then return money(market), stale and "muted" or "text" end
   if dataStamp() <= 0 then return "no prices", "muted" end
@@ -1167,8 +1553,8 @@ C.PriceOf = priceOf
 local function leftText(id, level)
   local it = ITEMS[id]
   local t = paint(it[2] or it[1], qualityColour(it[5]))
-  if it[6] ~= "" then t = t .. "  " .. paint(it[6], "muted") end
-  if it[7] > 0 and level < 60 then t = t .. "  " .. paint("+" .. it[7] .. "% XP", "pos") end
+  if it[6] ~= "" then t = t .. " " .. paint(it[6], "muted") end
+  if it[7] > 0 and level < 60 then t = t .. " " .. paint("+" .. it[7] .. "% XP", "pos") end
   return t
 end
 
@@ -1176,7 +1562,7 @@ local function rightText(id, stale)
   local words, key = priceOf(id, stale)
   local n = countOf(id)
   local t = paint(words, key)
-  if n > 0 then t = paint("x" .. n, "muted") .. "  " .. t end
+  if n > 0 then t = paint("x" .. n, "muted") .. " " .. t end
   return t
 end
 
@@ -1192,6 +1578,7 @@ end
 -- there it shows fewer rows, then goes above the character screen, then scrolls.
 local NAME = "GoblinLedgerConsumes"
 local HEAD_H, ROW_H, PAD, COL_GAP, GAP = 18, 16, 6, 12, 2
+local PCT_GAP = 4      -- the grey number's gap to the words and to the price
 local BODY_TOP, BODY_BOT = 1, 3
 local MAX_LINES = 16   -- the All list: at most this many lines, the rest scrolls
 local CAP = 24         -- a part more than this under the frame is not ours to avoid
@@ -1271,7 +1658,10 @@ local function cellsFor(m, cols, n)
         local k = #s.ids
         if n and k > n then k = n end
         cells[#cells + 1] = { line = line, col = c, title = s.title, key = s.key }
-        for i = 1, k do cells[#cells + 1] = { line = line + i, col = c, id = s.ids[i], key = s.key } end
+        for i = 1, k do
+          cells[#cells + 1] = { line = line + i, col = c, id = s.ids[i], key = s.key, pct = s.pct and s.pct[i],
+                                ref = s.ref and s.ref[i] }
+        end
         if k > tall then tall = k end
       end
     end
@@ -1315,10 +1705,18 @@ local function newRow(i)
   r.right = newFS(r)
   r.right:SetJustifyH("RIGHT")
   r.right:SetPoint("RIGHT", r, "RIGHT", -2, 0)
+  -- How strong it is next to the strongest of its kind ("best", "62%"), grey, left of the price;
+  -- the words give way to it (cut short) when the row is tight.
+  r.pct = newFS(r)
+  r.pct:SetJustifyH("RIGHT")
+  r.pct:SetPoint("RIGHT", r.right, "LEFT", -PCT_GAP, 0)
+  local mu = colour("muted")
+  r.pct:SetTextColor(mu[1], mu[2], mu[3], 1)
   r.text = newFS(r)
   r.text:SetPoint("LEFT", r.icon, "RIGHT", 4, 0)
-  r.text:SetPoint("RIGHT", r.right, "LEFT", -6, 0)
+  r.text:SetPoint("RIGHT", r.pct, "LEFT", -PCT_GAP, 0)
   r.glNoEnchants = true   -- Enchants.lua: no enchant lines on a tooltip a row owns
+  r.glConsumes = true     -- the tooltip post call: a row of this list
   r:SetScript("OnEnter", guarded(rowEnter))
   r:SetScript("OnLeave", guarded(rowLeave))
   r:SetScript("OnClick", guarded(rowClick))
@@ -1327,10 +1725,18 @@ local function newRow(i)
   return r
 end
 
-local function fillRow(r, id, stale)
-  r.glID = id
+local function pctText(p)
+  if not p then return "" end
+  if p >= 100 then return "best" end
+  return p .. "%"
+end
+C.PctText = pctText
+
+local function fillRow(r, id, stale, pct, ref)
+  r.glID, r.glPct, r.glRef = id, pct, ref
   r.icon:SetTexture(iconOf(id))
   r.text:SetText(leftText(id, model.level))
+  r.pct:SetText(pctText(pct))
   r.right:SetText(rightText(id, stale))
 end
 
@@ -1348,6 +1754,16 @@ local function draw()
   F.allButton:SetShown(not L.collapsed and #model.sections > 0)
   local on = model.all and colour("buy") or colour("muted")
   F.allButton.text:SetTextColor(on[1], on[2], on[3], 1)
+  -- Best / Budget: the word for the picks shown (gold while Budget is on), as wide as it.
+  local mb = F.modeButton
+  mb:SetShown(not L.collapsed and #model.sections > 0)
+  mb.text:SetText(model.budget and "Budget" or "Best")
+  local okW, wide = pcall(mb.text.GetStringWidth, mb.text)
+  wide = okW and plainNumber(wide) or 0
+  if wide <= 0 or wide > 80 then wide = 36 end
+  mb:SetWidth(max(28, floor(wide + 10)))
+  on = model.budget and colour("buy") or colour("muted")
+  mb.text:SetTextColor(on[1], on[2], on[3], 1)
   local vis, total = L.lines or 0, L.total or 0
   if offset > total - vis then offset = total - vis end
   if offset < 0 then offset = 0 end
@@ -1383,7 +1799,7 @@ local function draw()
           r:SetWidth(colW)
           r.glKey = cell.key
           if r.EnableMouseWheel then r:EnableMouseWheel(wheel) end
-          fillRow(r, cell.id, stale)
+          fillRow(r, cell.id, stale, cell.pct, cell.ref)
           r:Show()
         end
       end
@@ -1505,11 +1921,50 @@ local function owns(tt, f)
   return ok and o == f
 end
 
--- The game's tooltip for the item (Goblin Ledger's price lines come with it).
+-- The row's grey number in words, last on its tooltip ("62% as strong as ... for a level 47 melee").
+local tipDone, tipHooked = false, false   -- the line is on the tooltip (until the game clears it)
+
+local function addPctLine(tt, row)
+  local p = row.glPct
+  if not p or not model then return end
+  local who = sformat("a level %d %s", model.level, model.role)
+  local ref = ITEMS[row.glRef]
+  local line = p >= 100 and ("Best: the strongest for " .. who) or
+    sformat("%d%% as strong as %s for %s", p, ref and ref[1] or "the best one", who)
+  local mu = colour("muted")
+  tt:AddLine(line, mu[1], mu[2], mu[3])
+  tipDone = true
+end
+
+-- The game builds an item's tooltip again later (item data arriving: TOOLTIP_DATA_UPDATE, a
+-- modifier key), which drops lines added after it was set: the line comes from the tooltip post
+-- call each time, as Core's price lines do (after them: Core's post call is the older one).
+local function onTipData(tt, data)
+  if tt ~= _G.GameTooltip or (tipHooked and tipDone) then return end
+  local ok, row = pcall(tt.GetOwner, tt)
+  if not ok or type(row) ~= "table" or row.glConsumes ~= true or not row.glID then return end
+  local id = type(data) == "table" and plainNumber(data.id) or nil
+  if id and id ~= row.glID then return end
+  addPctLine(tt, row)
+end
+
+local function hookTips()
+  local tt, tdp, enum = _G.GameTooltip, _G.TooltipDataProcessor, _G.Enum
+  if type(tt) == "table" and type(tt.HookScript) == "function" then
+    tipHooked = pcall(tt.HookScript, tt, "OnTooltipCleared", function() tipDone = false end) and true or false
+  end
+  if type(tdp) == "table" and type(tdp.AddTooltipPostCall) == "function" and type(enum) == "table"
+     and type(enum.TooltipDataType) == "table" and enum.TooltipDataType.Item ~= nil then
+    pcall(tdp.AddTooltipPostCall, enum.TooltipDataType.Item, guarded(onTipData))
+  end
+end
+
+-- The game's tooltip for the item (Goblin Ledger's price lines come with it), and the line in words.
 rowEnter = function(self)
   local id, tt = self.glID, _G.GameTooltip
   if not id or type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
   tt:SetOwner(self, "ANCHOR_RIGHT")
+  tipDone = false
   local shown = false
   if type(tt.SetItemByID) == "function" then
     ns.tipQuiet = true
@@ -1520,6 +1975,7 @@ rowEnter = function(self)
     local it = ITEMS[id]
     tt:AddLine(it and it[1] or ("Item " .. id), 1, 1, 1)
   end
+  if not tipDone then addPctLine(tt, self) end   -- no post call on this client (or it failed)
   tt:Show()
 end
 
@@ -1675,6 +2131,15 @@ local function toggleAll()
   refresh()
 end
 
+local function toggleBudget()
+  local S = settings()
+  if S.consumesBudget then S.consumesBudget = nil else S.consumesBudget = true end
+  offset = 0
+  refresh()
+end
+
+local MODE_TIP = "Best: the strongest. Budget: good value for less gold. Click to switch."
+
 local function build()
   if F then return true end
   local parent, make = _G.PaperDollFrame, _G.CreateFrame
@@ -1725,11 +2190,38 @@ local function build()
     local tt = _G.GameTooltip
     if type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
     tt:SetOwner(self, "ANCHOR_RIGHT")
-    tt:SetText(settings().consumesAll and "Show the best 4" or "Show every usable one", 1, 1, 1)
+    local S = settings()
+    tt:SetText(S.consumesAll and (S.consumesBudget and "Show the 4 Budget picks" or "Show the best 4") or "Show every usable one",
+      1, 1, 1)
     tt:Show()
   end))
   all:SetScript("OnLeave", guarded(rowLeave))
   F.allButton = all
+  -- Best / Budget, left of All: the strongest, or good value for less gold (gold while Budget is on).
+  local mode = make("Button", nil, F)
+  mode:SetSize(40, 14)
+  mode:SetPoint("TOPRIGHT", all, "TOPLEFT", -4, 0)
+  if mode.SetFrameLevel and head.GetFrameLevel then mode:SetFrameLevel(min(10000, (head:GetFrameLevel() or 0) + 2)) end
+  local mbg = mode:CreateTexture(nil, "BACKGROUND")
+  mbg:SetAllPoints(mode)
+  mbg:SetColorTexture(p[1] + 0.05, p[2] + 0.05, p[3] + 0.06, 1)
+  local mhl = mode:CreateTexture(nil, "HIGHLIGHT")
+  mhl:SetAllPoints(mode)
+  mhl:SetColorTexture(1, 1, 1, 0.08)
+  mode.text = newFS(mode, "GameFontHighlightSmall")
+  mode.text:SetJustifyH("CENTER")
+  mode.text:SetPoint("CENTER", mode, "CENTER", 0, 0)
+  mode.text:SetText("Best")
+  mode:SetScript("OnClick", guarded(toggleBudget))
+  mode:SetScript("OnEnter", guarded(function(self)
+    local tt = _G.GameTooltip
+    if type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
+    tt:SetOwner(self, "ANCHOR_RIGHT")
+    tt:SetText(MODE_TIP, 1, 1, 1)
+    tt:Show()
+  end))
+  mode:SetScript("OnLeave", guarded(rowLeave))
+  F.modeButton = mode
   local bar = F:CreateTexture(nil, "OVERLAY")
   bar:SetColorTexture(mu[1], mu[2], mu[3], 0.7)
   bar:Hide()
@@ -1739,6 +2231,7 @@ local function build()
   F:SetScript("OnUpdate", guarded(onUpdate))
   F:SetScript("OnEvent", guarded(onEvent))
   for _, ev in ipairs(EVENTS) do pcall(F.RegisterEvent, F, ev) end   -- one this client lacks is skipped
+  hookTips()
   if not isOn() then F:Hide() end
   if F:IsVisible() then onShow(F) end
   return true
@@ -1786,6 +2279,19 @@ local function setOn(on)
 end
 C.SetOn = setOn
 
+-- Which picks it shows, in words, with the command for the other.
+local function modeWords()
+  if settings().consumesBudget then return "Budget: good value for less gold (/gl consumes best for the strongest)" end
+  return "Best: the strongest (/gl consumes budget for good value for less gold)"
+end
+
+local function setBudget(on)
+  settings().consumesBudget = on or nil
+  offset = 0
+  if F and F:IsVisible() then refresh() end
+end
+C.SetBudget = setBudget
+
 local function consumesCommand(rest)
   rest = slower(rest or "")
   local on
@@ -1795,8 +2301,20 @@ local function consumesCommand(rest)
     on = true
   elseif rest == "off" or rest == "hide" then
     on = false
+  elseif rest == "budget" or rest == "best" then
+    setBudget(rest == "budget")
+    local off = isOn() and "" or " It is off: /gl consumes on brings it back."
+    if rest == "budget" then
+      say("the consumes list shows Budget picks: good value for less gold. /gl consumes best for the strongest." .. off)
+    else
+      say("the consumes list shows the Best ones: the strongest. /gl consumes budget for good value for less gold." .. off)
+    end
+    return
+  elseif rest == "status" then
+    say("the consumes list is " .. (isOn() and "on" or "off") .. ". " .. modeWords() .. ".")
+    return
   else
-    say("unknown choice. Use /gl consumes on or /gl consumes off (alone: switches).")
+    say("unknown choice. Use /gl consumes on, off, best, budget or status (alone: switches it on or off).")
     return
   end
   setOn(on)
@@ -1824,6 +2342,7 @@ function ns.HandleSlash(msg)
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "enchants" or cmd == "enchant" then needModel = true end   -- a role picked by hand
   if cmd == "help" or cmd == "?" then
-    say("/gl consumes : the best food, potions, elixirs and scrolls for you, under the character screen (on or off)")
+    say("/gl consumes : the best food, potions, elixirs and scrolls for you, under the character screen (on or off; "
+      .. "best or budget)")
   end
 end
