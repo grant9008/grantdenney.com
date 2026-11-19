@@ -7,9 +7,11 @@ local ADDON_NAME, ns = ...
 -- use yourself are options too: Leatherworking armor kits, Engineering scopes,
 -- and Blacksmithing spikes and counterweights for a blacksmith. Only upgrades
 -- show: an item with the 3rd best gets the best and the 2nd, one with the best
--- gets nothing. The role comes from your talents; /gl enchants picks one by
--- hand or turns the lines off, and the Enchant tips box on the character panel
--- (with its Top 2 / Top 5 button) turns them off and on again.
+-- gets nothing. A warrior's or rogue's gun, bow or crossbow only pulls: Top 5
+-- lists its scopes with a grey "(pulling only)", Top 2 nothing. The role comes
+-- from your talents; /gl enchants picks one by hand or turns the lines off, and
+-- the Enchant tips box on the character panel (with its Top 2 / Top 5 button)
+-- turns them off and on again.
 --
 -- Core.lua calls ns.EnchantLines after its price lines (and the quest line),
 -- so these lines are made under a normal-size line and keep the normal font.
@@ -67,6 +69,7 @@ local MATS = {
   [11174] = "Lesser Nether Essence",
   [11175] = "Greater Nether Essence",
   [11176] = "Dream Dust",
+  [11177] = "Small Radiant Shard",
   [11178] = "Large Radiant Shard",
   [11563] = "Crystal Force",
   [11732] = "Libram of Rumination",
@@ -182,6 +185,9 @@ local ENCHANTS = {
   s7454 = { n = "Minor Resistance +2", id = 65, m = { 10940, 1, 10938, 1 } },
   -- Enchant Bracer - Minor Stamina (spell 7457, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-7457 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=66
   s7457 = { n = "Minor Stamina +3", id = 66, m = { 10940, 2 } },
+  -- Enchant 2H Weapon - Minor Impact (spell 7745, trainer, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-7745 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=805
+  -- On Forever it gives enchant 805 (Weapon Damage +4, the id Greater Striking gives) for two cheap mats.
+  s7745 = { n = "Minor Impact +4", id = 805, m = { 10940, 1, 10978, 1 } },
   -- Enchant Chest - Lesser Intellect (spell 7776, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-7776 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=246
   s7776 = { n = "Lesser Intellect +3", id = 246, m = { 10938, 2 } },
   -- Enchant Bracer - Minor Agility (spell 7779, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-7779 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=247
@@ -208,6 +214,9 @@ local ENCHANTS = {
   s13501 = { n = "Lesser Stamina +4", id = 254, m = { 11083, 1 } },
   -- Enchant Weapon - Lesser Striking (spell 13503, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-13503 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=241
   s13503 = { n = "Lesser Striking +2", id = 241, m = { 11083, 1, 11084, 1 } },
+  -- Enchant 2H Weapon - Lesser Impact (spell 13529, trainer, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-13529 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1897
+  -- Enchant 1897 (Weapon Damage +5) for Lesser Striking's mats (+2): on a 2H weapon it replaces Lesser Striking.
+  s13529 = { n = "Lesser Impact +5", id = 1897, m = { 11083, 1, 11084, 1 } },
   -- Enchant Bracer - Lesser Strength (spell 13536, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13536 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=823
   s13536 = { n = "Lesser Strength +4", id = 823, m = { 11083, 1 } },
   -- Enchant Chest - Intellect (spell 13607, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13607 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=843
@@ -254,6 +263,8 @@ local ENCHANTS = {
   s13858 = { n = "Superior Stamina +8", id = 908, m = { 11137, 3 } },
   -- Enchant Gloves - Strength (spell 13887, high): https://rankedboost.com/world-of-warcraft/forever/enchants/gloves/#e-recipe-13887 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=927
   s13887 = { n = "Strength +7", id = 927, m = { 11174, 1, 11137, 2 } },
+  -- Enchant Weapon - Fiery Weapon (spell 13898, high; formula 11207 drops from Pyromancer Loregrain in Blackrock Depths, on the AH): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-13898 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=803
+  s13898 = { n = "Fiery Weapon", id = 803, m = { 11177, 2, 7078, 1 } },
   -- Enchant Chest - Superior Intellect (spell 13917, high): https://rankedboost.com/world-of-warcraft/forever/enchants/chest/#e-recipe-13917 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=913
   s13917 = { n = "Superior Intellect +8", id = 913, m = { 11175, 1 } },
   -- Enchant Bracer - Deflection (spell 13931, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-13931 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=923
@@ -304,7 +315,9 @@ local ENCHANTS = {
   s20030 = { n = "Superior Impact +9", id = 1896, m = { 14344, 4, 16204, 10 } },
   -- Enchant Weapon - Superior Striking (spell 20031, high; formula 16250 drops in Blackrock Spire): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20031 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1897
   s20031 = { n = "Superior Striking +5", id = 1897, m = { 14344, 2, 16203, 10 } },
-  -- Enchant Weapon - Crusader (spell 20034, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20034 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1900
+  -- Enchant Weapon - Lifestealing (spell 20032, high; formula 16254 drops in Scholomance, on the AH): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20032 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1898
+  s20032 = { n = "Lifestealing", id = 1898, m = { 14344, 6, 12808, 6, 12803, 6 } },
+  -- Enchant Weapon - Crusader (spell 20034, high; formula 16252 drops from Scarlet Spellbinder, on the AH): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20034 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1900
   s20034 = { n = "Crusader", id = 1900, m = { 14344, 4, 12811, 2 } },
   -- Enchant 2H Weapon - Major Spirit (spell 20035, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20035 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1903
   s20035 = { n = "Major Spirit +9", id = 1903, m = { 16203, 12, 14344, 2 } },
@@ -389,13 +402,31 @@ local ENCHANTS = {
 -- above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list (it is worth less).
 -- Belts, shoulders, rings, trinkets: nothing (Forever has no belt buckle, and its Engineering belt
 -- tinkers need schematics and parts that are not in the game).
+-- Weapons: "Enchant Weapon" recipes fit every melee weapon, two-handers too (SpellEquippedItems), so
+-- the 2H lists weigh Fiery Weapon, Lifestealing, Crusader and the Striking ids against the Impact ones.
+-- A proc counts what it adds a second, 14 attack power for each damage a second (the weights' unit):
+-- Fiery Weapon 40 fire (spell 13897) about 6 times a minute (Forever's tables store no rate for it;
+-- rankedboost's players measure about 6) at 96% spell hit = 3.84 a second, 54 AP; Lifestealing 30
+-- (spell 20004) 6 a minute = 2.88, 40 AP (it heals as much); Crusader +100 Strength for 15 sec
+-- (spell 20007) once a minute, up 22% of the time = +22 Strength, 45 AP. A proc a minute adds the same
+-- on any weapon, +N weapon damage adds N / speed: on a 3.6 sec 2H Fiery Weapon is worth +13.8 weapon
+-- damage (more than Superior Impact +9), on a 2.6 sec 1H +10 (Superior Striking is +5). The 2H order
+-- holds for 2H speeds 2.9 to 3.9 sec, the 1H one for 2.3 to 2.9 sec. Enchant: Fiery Blaze (36, quest
+-- 706's reward) hits 15% of swings (its own table entry) for 9 to 13 fire: 0.47 a second on a 3.4 sec
+-- 2H (+1.6 weapon damage), so every 2H entry beats it; on a 1H it beats Minor Striking +1 only (a
+-- tank's Lesser Striking +2).
+-- Icy Chill, Unholy Weapon, Demonslaying and the Steel Weapon Chain deal no damage to most targets: not
+-- listed (an item with one gets the whole list). Lesser Striking +2 costs what Lesser Impact +5 does.
+-- Ranged for a warrior or rogue (pull = true): the scopes in Top 5 only, with a grey "(pulling only)".
+-- Scopes ask their item's level, not Engineering (ItemSparse.RequiredSkill 0), and fit bows, guns and
+-- crossbows only (SpellEquippedItems): thrown weapons and wands get nothing.
 local PICKS = {
   weapon = {
-    ["melee"] = { "s20034", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [2564] = 6, [2568] = 7 } },
-    ["agility"] = { "s20034", "s20031", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [2563] = 5 } },
-    ["tank"] = { "s20034", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503" },
-    ["agility/DRUID"] = { "s20034", "s23799", "s23800" },
-    ["tank/DRUID"] = { "s20034", "s23799", "s23800" },
+    ["melee"] = { "s13898", "s20034", "s20032", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 8, [2568] = 9 } },
+    ["agility"] = { "s13898", "s20032", "s20031", "s20034", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2563] = 8 } },
+    ["tank"] = { "s13898", "s20034", "s20032", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503", at = { [36] = 10 } },
+    ["agility/DRUID"] = { "s13898", "s20034", "s20032", "s23799", "s23800", at = { [36] = 6 } },
+    ["tank/DRUID"] = { "s13898", "s20032", "s20034", "s23799", "s23800", at = { [36] = 6 } },
     ["hunter"] = { "s23800" },
     ["caster"] = { "s23804", "s1248805", "s1248757", up = { 2504 } },
     ["caster/MAGE3"] = { "s23804", "s1248805", "s1248757", up = { 2504, 2443 } },
@@ -404,10 +435,10 @@ local PICKS = {
     ["healer/SHAMAN"] = { "s23804", "s1248757", up = { 2505 } },
   },
   weapon2h = {
-    ["melee"] = { "s20034", "b6043", "s20030", "s1248511", "s13937", "s13695", up = { 8215 }, at = { [2564] = 7, [2646] = 6 } },
-    ["agility"] = { "s27837", "s20034", "s1248511", "s1248510", at = { [2564] = 4 } },
+    ["melee"] = { "s13898", "s20034", "b6043", "s20032", "s20030", "s1248511", "s13937", "s13695", "s13529", "s7745", up = { 8215 }, at = { [36] = 11, [2564] = 11, [2646] = 9 } },
+    ["agility"] = { "s13898", "s27837", "s20034", "s20032", "s1248511", "s1248510", at = { [36] = 7, [2564] = 6 } },
     ["hunter"] = { "s27837", "s1248510", at = { [2564] = 2, [2568] = 2 } },
-    ["tank"] = { "s27837", "s20034", "s1248511", "s1248510", at = { [2564] = 4, [7662] = 4, [8211] = 4 } },
+    ["tank"] = { "s13898", "s20034", "s20032", "s27837", "s1248511", "s1248510", at = { [36] = 7, [2564] = 6, [7662] = 6, [8211] = 6 } },
     ["caster"] = { "s1219580", "s1248607", "s20036", "s7793", at = { [2568] = 3, [8212] = 3 } },
     ["healer"] = { "s1248636", "s1219580", "s20036", "s7793", "s20035", "s13380", at = { [2567] = 5, [2568] = 3, [8211] = 3 } },
   },
@@ -496,6 +527,9 @@ local PICKS = {
   },
   ranged = {
     ["hunter"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
+    ["melee"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
+    ["agility"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
+    ["tank"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 }, pull = true },
   },
 }
 -- END DATA
@@ -1172,8 +1206,8 @@ E.DetailText = detailText
 -- The labels by place among the entries the player can use.
 local LABELS = { "Best enchant: ", "2nd: ", "3rd: ", "4th: ", "5th: " }
 
--- The lines for the options: { left, right, grey } rows; mats rows have mats = true.
-local function buildLines(keys, full, stale)
+-- The lines for the options: { left, right, grey } rows; mats rows (and the note) have mats = true.
+local function buildLines(keys, full, stale, note)
   E.builds = E.builds + 1
   local out = {}
   for i, key in ipairs(keys) do
@@ -1181,20 +1215,21 @@ local function buildLines(keys, full, stale)
     out[#out + 1] = { (LABELS[i] or (i .. "th: ")) .. ENCHANTS[key].n, cost, grey }
     if full then out[#out + 1] = { "  " .. detailText(key), mats = true } end
   end
+  if note then out[#out + 1] = { note, mats = true } end   -- shown in compact mode too
   return out
 end
 
-local function linesFor(keys, full)
+local function linesFor(keys, full, note)
   local stamp = dataStamp()
   if lineStamp ~= stamp then
     lineMemo, costMemo, lineStamp = {}, {}, stamp
   end
   -- The age grows while the data stays the same: whether it is old is part of the key.
   local stale = stalePrices()
-  local k = tconcat(keys, "|") .. (full and "|f" or "|c") .. (stale and "|s" or "")
+  local k = tconcat(keys, "|") .. (full and "|f" or "|c") .. (stale and "|s" or "") .. (note and "|n" or "")
   local l = lineMemo[k]
   if not l then
-    l = buildLines(keys, full, stale)
+    l = buildLines(keys, full, stale, note)
     lineMemo[k] = l
   end
   return l
@@ -1228,7 +1263,11 @@ local function quietOwner(tt)
   return ok and type(owner) == "table" and owner.glNoEnchants == true
 end
 
--- The options for an item at a place, best first (a list of keys), or nil.
+-- A ranged weapon for a class that only pulls with it (a pull = true list): Top 5 only, with this note.
+local PULL_NOTE = "(pulling only)"
+E.PULL_NOTE = PULL_NOTE
+
+-- The options for an item at a place, best first (a list of keys), or nil; then the note under them.
 local function optionsFor(itemID, link, where)
   if not SHOW[where] then return nil end
   local f = facts(itemID)
@@ -1238,7 +1277,10 @@ local function optionsFor(itemID, link, where)
   if not role or not canWear(d.class, f) then return nil end
   local rec = pickFor(f.g, role, d.class, d.tab)
   if not rec then return nil end
-  return pickKeys(rec, f, d.level or 60, linkEnchant(link), topN())
+  local most = topN()
+  if rec.pull and most < 5 then return nil end
+  local keys = pickKeys(rec, f, d.level or 60, linkEnchant(link), most)
+  return keys, keys and rec.pull and PULL_NOTE or nil
 end
 E.OptionsFor = optionsFor
 
@@ -1255,9 +1297,9 @@ local function addLines(tt, itemID, link, info)
   if not itemID then return false end
   if type(link) ~= "string" or isSecret(link) then link = fallbackLink(info) end
   if not link then return false end   -- without the link the current enchant is unknown
-  local keys = optionsFor(itemID, link, where)
+  local keys, note = optionsFor(itemID, link, where)
   if not keys then return false end
-  draw(tt, linesFor(keys, not S.compact or shiftDown()))
+  draw(tt, linesFor(keys, not S.compact or shiftDown(), note))
   return true
 end
 
