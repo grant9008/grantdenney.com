@@ -1143,6 +1143,7 @@ local function elvCharacterSkin()
   if not (bz.enable and bz.character) then return nil end
   return EV, S
 end
+E.ElvCharacterSkin = elvCharacterSkin   -- Consumes.lua: ElvUI's look for its panel too
 
 -- With ElvUI's skin the box gets ElvUI's check box look too, once ElvUI is set
 -- up (at login). true = done (skinned, or nothing to do); false = ask again.
