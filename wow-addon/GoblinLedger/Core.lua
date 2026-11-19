@@ -1448,6 +1448,8 @@ local function onTooltipData(tt, data)
   ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not priced and type(ns.QuestItemLine) == "function" then ns.QuestItemLine(tt, id) end
+  -- Gear you could enchant: the best enchant for your role (Enchants.lua), after our other lines.
+  if type(ns.EnchantLines) == "function" then ns.EnchantLines(tt, id, link, info) end
 end
 
 -- OnTooltipSetItem script hook (fallback for clients without TooltipDataProcessor).
@@ -1458,7 +1460,8 @@ local function onTooltipSetItem(tt)
   local id = tooltipItemID(tt, nil)
   if not id then return end
   if guarded then done[tt] = id end
-  local pid, cover = ns.PriceIDForLink(id, tooltipLink(tt, nil))
+  local link = tooltipLink(tt, nil)
+  local pid, cover = ns.PriceIDForLink(id, link)
   pid = pid or id
   local hasData = ns.GetItem(pid) ~= nil
   local tradeable = mightBeTradeable(tt, nil, id)
@@ -1466,6 +1469,8 @@ local function onTooltipSetItem(tt)
   local added = ns.AddTooltipLines(tt, pid, 1, opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not hasData and type(ns.QuestItemLine) == "function" and ns.QuestItemLine(tt, id) then added = true end
+  -- Gear you could enchant (Enchants.lua). This path does not say where the item is.
+  if type(ns.EnchantLines) == "function" and ns.EnchantLines(tt, id, link, nil) then added = true end
   -- Show lays the tooltip out again, the bigger lines included.
   if added and type(tt.Show) == "function" then tt:Show() end
 end

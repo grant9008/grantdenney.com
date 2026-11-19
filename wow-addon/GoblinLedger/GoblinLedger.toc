@@ -12,3 +12,4 @@ Chart.lua
 AH.lua
 Sidebar.lua
 Bags.lua
+Enchants.lua

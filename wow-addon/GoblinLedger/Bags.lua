@@ -1954,9 +1954,12 @@ local function RowTooltip(row)
   local slot = kind == "merge" and e.from or e
   local shown = false
   if slot and type(tt.SetBagItem) == "function" then
-    -- The row says the quest itself, so the item tooltip leaves its quest line out.
+    -- The row says the quest itself, so the item tooltip leaves its quest line out,
+    -- and the enchant lines (Enchants.lua) too: the row is about dropping or selling it.
     rowTip = true
+    ns.tipQuiet = true
     shown = pcall(tt.SetBagItem, tt, slot.bag, slot.slot)
+    ns.tipQuiet = false
     rowTip = false
   end
   if not shown then tt:AddLine(e.name or ("Item " .. tostring(e.id)), QualityRGB(e.quality)) end

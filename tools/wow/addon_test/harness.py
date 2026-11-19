@@ -51,7 +51,7 @@ ITEMS_FILE = SIM_ITEMS_FILE
 SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in goblin-ledger/prices/_localdata
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
-TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua"]
+TOC_FILES = ["Data.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -1202,7 +1202,7 @@ function Tooltip:AddLine(text, r, g, b, wrap)
   if text ~= nil and type(text) ~= "string" and type(text) ~= "number" then apiError("AddLine: bad text") end
   local s = text ~= nil and tostring(text) or ""
   M.seeText(s)
-  table.insert(self._lines, { left = s, lr = r, lg = g, lb = b })
+  table.insert(self._lines, { left = s, lr = r, lg = g, lb = b, wrap = wrap })
   local L, R = ttLine(self, #self._lines)
   if L then
     L:SetText(s); L:SetTextColor(r or 1, g or 0.82, b or 0)   -- no colour: the game's gold
@@ -1240,7 +1240,7 @@ function Tooltip:GetItem()
   if self._legacyItem then
     local id = self._legacyItem
     local it = M["items"][id]
-    return it and it.name or "", M.ItemLink(id), id
+    return it and it.name or "", self._legacyLink or M.ItemLink(id), id
   end
   return nil, nil, nil
 end
@@ -1261,7 +1261,18 @@ function M.TooltipData(getterName, args)
     id = tonumber(tostring(args[1]):match("item:(%d+)"))
     link = tostring(args[1])   -- the very link, bonus ids and all
   elseif getterName == "GetInventoryItem" then
-    id = M.equipped and M.equipped[args[2]]
+    local src = args[1] == "player" and M.equipped or M.inspected
+    local s = src and src[args[2]]
+    if type(s) == "table" then
+      id = s.itemID
+      link = M.SlotLink(s)
+      if args[1] == "player" then
+        guid = "Item-1-0-inv-" .. tostring(args[2])
+        M.guids[guid] = ItemLocation:CreateFromEquipmentSlot(args[2])
+      end
+    else
+      id = s
+    end
   end
   if not id then return nil end
   local it = M["items"][id]
@@ -1301,6 +1312,7 @@ function Tooltip:_LegacyProcess(info)
   self:ClearLines()
   if not d then return false end
   self._legacyItem = d.id
+  self._legacyLink = d.link   -- the item's own link (a bag slot's carries its enchant)
   self.legacyInfo = info
   for _, ln in ipairs(d.lines) do self:AddLine(ln.leftText, 1, 1, 1) end
   self._blz = #self._lines
@@ -1650,22 +1662,23 @@ TooltipUtil = {}
 -- suffix:unique:level:spec:modifierMask:context:numBonus[:bonus...]:numModifiers
 -- [:type:value...]:relic fields. Gear with a random suffix carries its bonus
 -- ids (and, like the real API, a type 28 modifier).
-function M.ItemLink(id, suffix, bonus)
+function M.ItemLink(id, suffix, bonus, enchant)
   local it = M["items"][id]
   local name = it and it.name or ("item:" .. id)
+  local ench = enchant and tostring(enchant) or ""
   if bonus and #bonus > 0 then
-    local f = { "item:" .. id, "", "", "", "", "", suffix or "", "", "60", "", "", "1", tostring(#bonus) }
+    local f = { "item:" .. id, ench, "", "", "", "", suffix or "", "", "60", "", "", "1", tostring(#bonus) }
     for _, b in ipairs(bonus) do f[#f + 1] = tostring(b) end
     f[#f + 1] = "1"; f[#f + 1] = "28"; f[#f + 1] = "6874"
     f[#f + 1] = ""; f[#f + 1] = ""; f[#f + 1] = ""; f[#f + 1] = ""
     return "|cff1eff00|H" .. table.concat(f, ":") .. "|h[" .. name .. (M.suffixName or " of the Bear") .. "]|h|r"
   end
   if suffix then
-    return "|cff1eff00|Hitem:" .. id .. "::::::" .. suffix .. "::60:::::::::|h[" .. name .. " of the Monkey]|h|r"
+    return "|cff1eff00|Hitem:" .. id .. ":" .. ench .. ":::::" .. suffix .. "::60:::::::::|h[" .. name .. " of the Monkey]|h|r"
   end
-  return "|cffffffff|Hitem:" .. id .. "::::::::60:::::::::|h[" .. name .. "]|h|r"
+  return "|cffffffff|Hitem:" .. id .. ":" .. ench .. ":::::::60:::::::::|h[" .. name .. "]|h|r"
 end
-function M.SlotLink(s) return M.ItemLink(s.itemID, s.suffix, s.bonus) end
+function M.SlotLink(s) return M.ItemLink(s.itemID, s.suffix, s.bonus, s.enchant) end
 M.cursorSet = {}
 function SetCursor(c) M.cursorSet[#M.cursorSet + 1] = c or false; M.cursor = c; return true end
 function ResetCursor() M.cursor = nil end
@@ -1675,13 +1688,25 @@ function ItemLocation:CreateFromBagAndSlot(bag, slot)
   return setmetatable({ bagID = bag, slotIndex = slot }, { __index = ItemLocationMixin })
 end
 function ItemLocation:CreateEmpty() return setmetatable({}, { __index = ItemLocationMixin }) end
+function ItemLocation:CreateFromEquipmentSlot(slot)
+  return setmetatable({ equipmentSlotIndex = slot }, { __index = ItemLocationMixin })
+end
 function ItemLocationMixin:IsBagAndSlot() return self.bagID ~= nil and self.slotIndex ~= nil end
 function ItemLocationMixin:GetBagAndSlot() return self.bagID, self.slotIndex end
-function ItemLocationMixin:IsEquipmentSlot() return false end
-function ItemLocationMixin:IsValid() return self.bagID ~= nil and M.bags[self.bagID] ~= nil and M.bags[self.bagID][self.slotIndex] ~= nil end
-function ItemLocationMixin:HasAnyLocation() return self.bagID ~= nil end
+function ItemLocationMixin:IsEquipmentSlot() return self.equipmentSlotIndex ~= nil end
+function ItemLocationMixin:GetEquipmentSlot() return self.equipmentSlotIndex end
+local function equippedSlot(i)
+  local s = M.equipped and M.equipped[i]
+  return type(s) == "table" and s or nil
+end
+function ItemLocationMixin:IsValid()
+  if self.equipmentSlotIndex ~= nil then return equippedSlot(self.equipmentSlotIndex) ~= nil end
+  return self.bagID ~= nil and M.bags[self.bagID] ~= nil and M.bags[self.bagID][self.slotIndex] ~= nil
+end
+function ItemLocationMixin:HasAnyLocation() return self.bagID ~= nil or self.equipmentSlotIndex ~= nil end
 local function locSlot(loc)
   if type(loc) ~= "table" or type(loc.IsValid) ~= "function" then error("Invalid item location", 3) end
+  if loc.equipmentSlotIndex ~= nil then return equippedSlot(loc.equipmentSlotIndex) end
   return M.bags[loc.bagID] and M.bags[loc.bagID][loc.slotIndex]
 end
 M.locSlot = locSlot
@@ -1735,6 +1760,15 @@ end
 function C_Container.GetContainerItemLink(bag, slot) local s = M.bags[bag] and M.bags[bag][slot]; return s and M.SlotLink(s) end
 function C_Container.GetContainerNumSlots(bag) return M.bagSlots[bag] or 16 end
 function GetInventoryItemCount(unit, slot) return 1 end
+-- Worn gear (and the bank's own slots after 19): only the player's.
+function GetInventoryItemLink(unit, slot)
+  local s = unit == "player" and M.equipped and M.equipped[slot]
+  if type(s) == "table" then return M.SlotLink(s) end
+end
+function GetInventoryItemID(unit, slot)
+  local s = unit == "player" and M.equipped and M.equipped[slot]
+  if type(s) == "table" then return s.itemID end
+end
 
 -- Bag cleanup: free slots, quest info, the cursor, selling at a vendor.
 M.bagSlots, M.bagFamily, M.pickups, M.used, M.sold, M.money = {}, {}, {}, {}, {}, 0
@@ -1838,6 +1872,66 @@ function DeleteCursorItem()
   end)
 end
 function UnitLevel(unit) return M.level end
+-- Talents. M.talents.mode:
+--   "forever"   C_Traits node groups (WoW Forever 1.60.1: one tree, the classic trees are groups,
+--               returned out of order, with a fourth Legacy group that must not count; a group with
+--               nothing spent has no spent field); GetSpecializationInfo answers one class-named
+--               starter spec with 0 points, like the real client
+--   "starter"   only that starter spec (no C_Traits answer)
+--   "specinfo"  Classic Era 1.15.8+: GetSpecializationInfo(tab), points the 7th value
+--   "tabs-name" GetTalentTabInfo: name, icon, points (a string), file
+--   "tabs-id"   GetTalentTabInfo: id, name, description, icon, points, ...
+--   "none"      nothing readable
+M.talents = { mode = "forever", points = { 0, 0, 0 }, legacy = 9 }
+M.talentReads = 0
+local CONFIG_ID, TREE_ID = 7001, 900
+C_ClassTalents = { GetActiveConfigID = function() if M.talents.mode == "forever" then return CONFIG_ID end end }
+C_SpecializationInfo = {
+  GetActiveSpecGroup = function() return 1 end,
+  GetCombatConfigIDForSpecGroup = function(group) if M.talents.mode == "forever" and group == 1 then return CONFIG_ID end end,
+  GetSpecializationInfo = function(i)
+    local T = M.talents
+    if T.mode == "forever" or T.mode == "starter" then
+      if i == 1 then return 1, M.class[1], "", 134400, nil, nil, 0, "bg", 0, true end
+      return nil
+    end
+    if T.mode == "specinfo" then
+      if i < 1 or i > 3 then return nil end
+      return 100 + i, "Tree" .. i, "", 134400, "DAMAGER", 4, T.points[i] or 0, "bg", 0, true
+    end
+    return nil
+  end,
+}
+C_Traits = {
+  GetConfigInfo = function(id)
+    if M.talents.mode == "forever" and id == CONFIG_ID then return { ID = id, type = 1, name = "", treeIDs = { TREE_ID } } end
+  end,
+  GetGroupDisplayInfoByTreeID = function(tree)
+    if tree ~= TREE_ID then return {} end
+    return { { groupID = 53, displayName = "Third", orderIndex = 2 }, { groupID = 51, displayName = "First", orderIndex = 0 },
+             { groupID = 54, displayName = "Legacy", orderIndex = 3 }, { groupID = 52, displayName = "Second", orderIndex = 1 } }
+  end,
+  GetGroupCurrencyInfo = function(config, ids)
+    M.talentReads = M.talentReads + 1
+    if config ~= CONFIG_ID then return {} end
+    local out = {}
+    for _, gid in ipairs(ids) do
+      local p = gid == 54 and M.talents.legacy or M.talents.points[gid - 50]
+      out[#out + 1] = { traitNodeGroupID = gid, currencyInfos = { (p and p > 0) and { spent = p, quantity = 0 } or { quantity = 0 } } }
+    end
+    return out
+  end,
+}
+function GetNumTalentTabs()
+  local m = M.talents.mode
+  if m == "tabs-name" or m == "tabs-id" then return 3 end
+  return 0
+end
+function GetTalentTabInfo(i)
+  local T = M.talents
+  if T.mode == "tabs-name" then return "Tree" .. i, 134400, tostring(T.points[i] or 0), "bg" .. i end
+  if T.mode == "tabs-id" then return 200 + i, "Tree" .. i, "", 134400, T.points[i] or 0, "bg", 0, true end
+end
 C_QuestLog = {}
 function C_QuestLog.GetNumQuestLogEntries() return #M.quests, #M.quests end
 function C_QuestLog.GetInfo(i)
@@ -2340,11 +2434,14 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "AUCTION_HOUSE_BROWSE_FAILURE", "COMMODITY_SEARCH_RESULTS_UPDATED", "COMMODITY_SEARCH_RESULTS_ADDED",
   "ITEM_SEARCH_RESULTS_UPDATED", "ITEM_SEARCH_RESULTS_ADDED", "ITEM_KEY_ITEM_INFO_RECEIVED", "MODIFIER_STATE_CHANGED",
   "TOOLTIP_DATA_UPDATE", "GET_ITEM_INFO_RECEIVED", "PLAYER_MONEY", "BAG_UPDATE", "AUCTION_HOUSE_POST_WARNING",
-  "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED"}
+  "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED",
+  "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED"}
+-- The legacy client has no TRAIT_CONFIG_UPDATED or ACTIVE_TALENT_GROUP_CHANGED: registering them must not break anything.
 M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "AUCTION_ITEM_LIST_UPDATE", "NEW_AUCTION_UPDATE",
   "AUCTION_OWNED_LIST_UPDATE", "AUCTION_BIDDER_LIST_UPDATE", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
-  "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_MONEY"}
+  "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_MONEY",
+  "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE"}
 function M.SetClient(kind)
   M.client = kind
   M.knownEvents = {}
@@ -3064,6 +3161,9 @@ class Scenario:
         bp = ns.BagPanel
         if bp is not None:
             self.check(bp.lastError is None, "%s: BagPanel.lastError is nil (%s)" % (label, bp.lastError))
+        en = ns.Enchants
+        if en is not None:
+            self.check(en.lastError is None, "%s: Enchants.lastError is nil (%s)" % (label, en.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
@@ -12828,6 +12928,953 @@ def sc_settled_drop(sc, ref, items):
     sc.clean(w)
 
 
+# --- enchants: begin ---
+# ===========================================================================
+# Best enchants on gear tooltips (Enchants.lua)
+# ===========================================================================
+# Test gear the price data does not have: id -> (name, equipLoc, classID, subclassID, quality, worn slot).
+EN_GEAR = {
+    990101: ("Test Longsword", "INVTYPE_WEAPON", 2, 7, 2, 16),
+    990102: ("Test Greatsword", "INVTYPE_2HWEAPON", 2, 8, 2, 16),
+    990103: ("Test Staff", "INVTYPE_2HWEAPON", 2, 10, 2, 16),
+    990104: ("Test Dagger", "INVTYPE_WEAPONOFFHAND", 2, 15, 2, 17),
+    990105: ("Test Shield", "INVTYPE_SHIELD", 4, 6, 2, 17),
+    990106: ("Test Orb", "INVTYPE_HOLDABLE", 4, 0, 2, 17),
+    990107: ("Test Robe", "INVTYPE_ROBE", 4, 1, 2, 5),
+    990108: ("Test Cloak", "INVTYPE_CLOAK", 4, 1, 2, 15),
+    990109: ("Test Bracers", "INVTYPE_WRIST", 4, 1, 2, 9),
+    990110: ("Test Gloves", "INVTYPE_HAND", 4, 1, 2, 10),
+    990111: ("Test Boots", "INVTYPE_FEET", 4, 1, 2, 8),
+    990112: ("Test Necklace", "INVTYPE_NECK", 4, 0, 2, 2),
+    990113: ("Test Hood", "INVTYPE_HEAD", 4, 1, 2, 1),
+    990114: ("Test Leggings", "INVTYPE_LEGS", 4, 1, 2, 7),
+    990115: ("Test Bow", "INVTYPE_RANGED", 2, 2, 2, 18),
+    990116: ("Test Gun", "INVTYPE_RANGEDRIGHT", 2, 3, 2, 18),
+    990117: ("Test Wand", "INVTYPE_RANGEDRIGHT", 2, 19, 2, 18),
+    990118: ("Test Throwing Axe", "INVTYPE_THROWN", 2, 16, 2, 18),
+    990119: ("Test Fishing Pole", "INVTYPE_2HWEAPON", 2, 20, 1, 16),
+    990120: ("Test Ring", "INVTYPE_FINGER", 4, 0, 2, 11),
+    990121: ("Test Trinket", "INVTYPE_TRINKET", 4, 0, 2, 13),
+    990122: ("Test Mantle", "INVTYPE_SHOULDER", 4, 1, 2, 3),
+    990123: ("Test Belt", "INVTYPE_WAIST", 4, 1, 2, 6),
+    990124: ("Test Shirt", "INVTYPE_BODY", 4, 0, 1, 4),
+    990125: ("Test Tabard", "INVTYPE_TABARD", 4, 0, 1, 19),
+    990126: ("Test Breastplate", "INVTYPE_CHEST", 4, 4, 2, 5),
+    990127: ("Rusty Greatsword", "INVTYPE_2HWEAPON", 2, 8, 0, 16),
+    990128: ("Test Crossbow", "INVTYPE_RANGEDRIGHT", 2, 18, 2, 18),
+    990129: ("Test Mail Gloves", "INVTYPE_HAND", 4, 3, 2, 10),
+}
+EN_NONE = [990117, 990118, 990119, 990120, 990121, 990122, 990123, 990124, 990125, 990127]   # never any lines
+EN_GROUP_ITEM = [("weapon", 990101), ("weapon2h", 990102), ("shield", 990105), ("holdable", 990106),
+                 ("chest", 990107), ("cloak", 990108), ("wrist", 990109), ("hands", 990110), ("feet", 990111),
+                 ("neck", 990112), ("headlegs", 990113), ("headlegs", 990114), ("ranged", 990115),
+                 ("ranged", 990116), ("ranged", 990128), ("weapon", 990104), ("weapon2h", 990103)]
+EN_CLASS = {"WARRIOR": ("Warrior", 1), "PALADIN": ("Paladin", 2), "HUNTER": ("Hunter", 3), "ROGUE": ("Rogue", 4),
+            "PRIEST": ("Priest", 5), "SHAMAN": ("Shaman", 7), "MAGE": ("Mage", 8), "WARLOCK": ("Warlock", 9),
+            "DRUID": ("Druid", 11)}
+EN_TREES = {
+    "WARRIOR": [("Arms", "melee"), ("Fury", "melee"), ("Protection", "tank")],
+    "PALADIN": [("Holy", "healer"), ("Protection", "tank"), ("Retribution", "melee")],
+    "HUNTER": [("Beast Mastery", "hunter"), ("Marksmanship", "hunter"), ("Survival", "hunter")],
+    "ROGUE": [("Assassination", "agility"), ("Combat", "agility"), ("Subtlety", "agility")],
+    "PRIEST": [("Discipline", "healer"), ("Holy", "healer"), ("Shadow", "caster")],
+    "SHAMAN": [("Elemental", "caster"), ("Enhancement", "melee"), ("Restoration", "healer")],
+    "MAGE": [("Arcane", "caster"), ("Fire", "caster"), ("Frost", "caster")],
+    "WARLOCK": [("Affliction", "caster"), ("Demonology", "caster"), ("Destruction", "caster")],
+    "DRUID": [("Balance", "caster"), ("Feral Combat", "agility"), ("Restoration", "healer")],
+}
+EN_DEFAULT = {"WARRIOR": "melee", "PALADIN": "melee", "HUNTER": "hunter", "ROGUE": "agility", "PRIEST": "caster",
+              "SHAMAN": "melee", "MAGE": "caster", "WARLOCK": "caster", "DRUID": "agility"}
+# The name each enchant shows (the recipe's short name and its value).
+EN_NAMES = {
+    "s20034": "Crusader", "s13943": "Greater Striking +4", "s23800": "Agility +15", "s23804": "Mighty Intellect +22",
+    "s1248805": "Revelation", "s23803": "Mighty Spirit +22", "s1248757": "Insight", "s1248511": "Lesser Strength +15",
+    "s27837": "Agility +25", "s1248510": "Lesser Agility +15", "s1219580": "Spellblasting +65",
+    "s20036": "Major Intellect +9", "s1248636": "Mighty Healing Power +100", "s20017": "Greater Stamina +9",
+    "s13817": "Stamina +7", "s1219579": "Wisdom", "s20025": "Greater Stats +4", "s13941": "Stats +3",
+    "s20026": "Major Stamina +10", "s20028": "Major Intellect +10", "s1219587": "Agility +5",
+    "s13419": "Minor Agility +3", "s20015": "Superior Defense +70", "s13746": "Greater Defense +60",
+    "s20014": "Greater Resistance +5", "s13794": "Resistance +3", "s20010": "Superior Strength +9",
+    "s13939": "Greater Strength +7", "s1248599": "Superior Agility +9", "s1248500": "Greater Agility +7",
+    "s1248665": "Superior Deflection +9", "s13931": "Deflection +7", "s1220624": "Greater Spellpower +16",
+    "s20008": "Greater Intellect +7", "s23802": "Healing Power +24", "s1248498": "Lesser Healing Power +16",
+    "s1248640": "Superior Strength +15", "s20013": "Greater Strength +10", "s20012": "Greater Agility +10",
+    "s13815": "Agility +7", "s13948": "Minor Haste +1%", "s1213626": "Arcane Power +20",
+    "s1248645": "Natural Power +20", "s20023": "Greater Agility +7", "s13935": "Agility +5",
+    "s20020": "Greater Stamina +7", "s13836": "Stamina +5", "s20024": "Spirit +5", "s13687": "Lesser Spirit +4",
+    "s1249019": "Strength +5", "s1249059": "Agility +5", "s1249060": "Deflection +5", "s1249057": "Spell Power +6",
+    "s1249058": "Healing Power +11",
+    "a18329": "Arcanum of Rapidity", "a18330": "Arcanum of Focus", "a18331": "Arcanum of Protection",
+    "a11645": "Lesser Arcanum (Str +8)", "a11647": "Lesser Arcanum (Agi +8)", "a11648": "Lesser Arcanum (Int +8)",
+    "a11642": "Lesser Arcanum of Constitution", "a11622": "Lesser Arcanum of Rumination",
+    "i10548": "Sniper Scope +7", "i10546": "Deadly Scope +5", "i4407": "Accurate Scope +3",
+    "i4406": "Standard Scope +2", "i4405": "Crude Scope +1",
+}
+# Enchant ids in item links (SpellItemEnchantment, from the Forever client tables).
+EN_IDS = {"s20034": 1900, "s13943": 805, "s1248511": 2563, "s27837": 2646, "s1248510": 2618, "s23800": 2564,
+          "s20025": 1891, "s13941": 928, "i10548": 664, "i10546": 663, "i4407": 33, "a18329": 2543,
+          "a11645": 1506, "s1219587": 7667, "s13419": 247, "s20017": 1886, "s13817": 929}
+EN_SCOPES = [("i10548", 40), ("i10546", 30), ("i4407", 20), ("i4406", 10), ("i4405", 5)]
+
+
+def en_spec(group, role, cls, tab, level=60):
+    """The best and 2nd best the product asks for (keys), worn gear, nothing on: [] = no lines."""
+    int_healer = cls in ("PALADIN", "SHAMAN")
+    if group == "weapon":
+        if role == "melee":
+            return ["s20034", "s13943"]
+        if role in ("agility", "tank"):
+            return ["s23800"] if cls == "DRUID" else ["s20034", "s13943"]   # no procs in cat or bear form
+        if role == "hunter":
+            return ["s23800"]
+        if role == "caster":
+            return ["s23804", "s1248805"]
+        return ["s23804"] if int_healer else ["s23803", "s1248757"]
+    if group == "weapon2h":
+        return {"melee": ["s20034", "s1248511"], "caster": ["s1219580", "s20036"],
+                "healer": ["s1248636", "s20036"]}.get(role, ["s27837", "s1248510"])
+    if group == "shield":
+        if cls not in ("WARRIOR", "PALADIN", "SHAMAN"):
+            return []
+        return [] if role in ("agility", "hunter") else ["s20017", "s13817"]
+    if group == "holdable":
+        return ["s1219579"] if role in ("caster", "healer") else []
+    if group == "chest":
+        return {"tank": ["s20025", "s20026"], "caster": ["s20025", "s20028"],
+                "healer": ["s20025", "s20028"]}.get(role, ["s20025", "s13941"])
+    if group == "cloak":
+        return {"tank": ["s20015", "s13746"], "caster": ["s20014", "s13794"],
+                "healer": ["s20014", "s13794"]}.get(role, ["s1219587", "s13419"])
+    if group == "wrist":
+        return {"melee": ["s20010", "s13939"], "agility": ["s1248599", "s1248500"], "hunter": ["s1248599", "s1248500"],
+                "tank": ["s1248665", "s13931"], "caster": ["s1220624", "s20008"],
+                "healer": ["s23802", "s1248498"]}[role]
+    if group == "hands":
+        if role == "melee":
+            return ["s1248640", "s20013"]
+        if role in ("agility", "hunter", "tank"):
+            return ["s20012", "s13815"]
+        if role == "caster" and (cls, tab) in (("MAGE", 1), ("DRUID", 1)):
+            return ["s1213626", "s13948"]
+        if role == "caster" and (cls, tab) == ("SHAMAN", 1):
+            return ["s1248645", "s13948"]
+        return ["s13948"]
+    if group == "feet":
+        if role in ("melee", "agility", "hunter"):
+            return ["s20023", "s13935"]
+        if role == "healer" and not int_healer:
+            return ["s20024", "s13687"]
+        return ["s20020", "s13836"]
+    if group == "neck":
+        return [{"melee": "s1249019", "agility": "s1249059", "hunter": "s1249059", "tank": "s1249060",
+                 "caster": "s1249057", "healer": "s1249058"}[role]]
+    if group == "headlegs":
+        if level < 50:
+            return []
+        return {"melee": ["a18329", "a11645"], "agility": ["a18329", "a11647"], "hunter": ["a11647"],
+                "tank": ["a18331", "a11642"], "caster": ["a18330", "a11648"], "healer": ["a18330", "a11622"]}[role]
+    if group == "ranged":
+        if role != "hunter":
+            return []
+        return [k for k, lvl in EN_SCOPES if level >= lvl][:2]
+    raise AssertionError(group)
+
+
+def en_source_mats():
+    """Enchants.lua's mat names, read from the source (id -> name)."""
+    src = open(os.path.join(ADDON, "Enchants.lua"), "rb").read().decode("ascii")
+    block = src.split("local MATS = {", 1)[1].split("\n}", 1)[0]
+    return {int(m.group(1)): m.group(2) for m in re.finditer(r'\[(\d+)\]\s*=\s*"([^"]*)"', block)}
+
+
+# Quest turn-ins and other bind-on-pickup mats: never on the auction house.
+EN_BOUND = (12938, 12753, 12735, 11951, 11563, 8411, 11952, 11752, 8424)
+
+
+def en_test_price(mid):
+    return 500 + (mid * 7919) % 40000   # made up, copper
+
+
+def en_set_market(text, mid, value):
+    pat = re.compile(r'(\[%d\]\s*=\s*")((?:[^"\\\n]|\\.)*)"' % mid)
+
+    def one(m):
+        f = m.group(2).split("|")
+        f[2] = str(value)
+        if value == 0:
+            f[1] = "0"
+        return m.group(1) + "|".join(f) + '"'
+    span = block_span(text, "items")
+    a, b = span
+    return text[:a] + pat.sub(one, text[a:b], count=1) + text[b:]
+
+
+_EN_DATA = {}
+
+
+def en_data(ref, unlisted=()):
+    """The data text with every enchant mat priced (made-up prices where the data has
+    none) except the unlisted ones, and {mat id: AH value} as the addon reads it."""
+    unlisted = tuple(sorted(set(unlisted) | set(EN_BOUND)))
+    key = (DATA_FILE, unlisted)
+    if key in _EN_DATA:
+        return _EN_DATA[key]
+    text = open(DATA_FILE, "rb").read().decode("utf-8")
+    prices, add = {}, []
+    for mid, name in sorted(en_source_mats().items()):
+        it = ref.items.get(mid)
+        if mid in unlisted:
+            prices[mid] = 0
+            if it:
+                text = en_set_market(text, mid, 0)
+            continue
+        if it and it["market"] > 0:
+            prices[mid] = it["market"]
+            continue
+        v = en_test_price(mid)
+        prices[mid] = v
+        if it:
+            text = en_set_market(text, mid, v)
+        else:
+            add.append('[%d] = "%s|%d|%d|5|1|%d|0|;;|;;",' % (mid, name, v, v, v))
+    text = re.sub(r"(?m)^([ \t]*items[ \t]*=[ \t]*\{[ \t]*\r?\n)",
+                  lambda m: m.group(1) + "".join("    %s\n" % ln for ln in add), text, count=1)
+    _EN_DATA[key] = (text, prices)
+    return text, prices
+
+
+def en_round(c):
+    if c >= 10000:
+        return (c + 5000) // 10000 * 10000
+    if c >= 100:
+        return (c + 50) // 100 * 100
+    return c
+
+
+def en_entry(w, key):
+    e = w.ns.Enchants.DATA.enchants[key]
+    m = [int(e.m[i]) for i in range(1, len(e.m) + 1)]
+    return {"n": e.n, "id": e.id, "m": list(zip(m[0::2], m[1::2])), "lvl": e.lvl, "fee": e.fee}
+
+
+def en_cost(w, prices, key):
+    """(right text, right colour) of an option's line."""
+    e, names = en_entry(w, key), en_source_mats()
+    copper, missing = e["fee"] or 0, []
+    for mid, n in e["m"]:
+        v = prices.get(mid, 0)
+        if v > 0:
+            copper += v * n
+        else:
+            missing.append("%d %s" % (n, names[mid]))
+    if copper <= 0:
+        return "no AH price", "muted"
+    s = "~" + money_icons(en_round(copper))
+    if len(missing) == 1:
+        s += " + " + missing[0]
+    elif missing:
+        s += " + more"
+    return s, "white"
+
+
+def en_mats(w, key):
+    e, names = en_entry(w, key), en_source_mats()
+    parts = ["%d %s" % (n, names[mid]) for mid, n in e["m"]]
+    if e["fee"]:
+        parts.append(money_text(e["fee"]) + " quest fee")
+    return ", ".join(parts)
+
+
+def en_want(w, prices, keys, full=True):
+    """The enchant lines for these options: [(left, right)]; prices None = no price data."""
+    out = []
+    for label, key in zip(("Best enchant: ", "2nd best: "), keys):
+        out.append((label + EN_NAMES[key], en_cost(w, prices, key)[0] if prices is not None else None))
+        if full:
+            out.append(("  " + en_mats(w, key), None))
+    return out
+
+
+def en_block(w, tt):
+    """Our enchant lines: from the first Best enchant / 2nd best line to the end."""
+    lines = w.lines(tt)
+    for i, (l, r) in enumerate(lines):
+        if l and (l.startswith("Best enchant: ") or l.startswith("2nd best: ")):
+            return lines[i:]
+    return []
+
+
+def en_count(w, tt):
+    return sum(1 for l, _ in w.all_lines(tt) if l and ("Best enchant" in l or "2nd best" in l))
+
+
+def en_world(ref, items, unlisted=(), cls="WARRIOR", points=(31, 5, 0), level=60, mode="forever", **kw):
+    if kw.get("data_src") is None:
+        kw["data_src"], prices = en_data(ref, unlisted)
+    else:
+        prices = None
+    w = World(ref, items, **kw)
+    for iid, (name, loc, cid, sub, q, _) in EN_GEAR.items():
+        bag_add_item(w, iid, name, q, 125, classID=cid, subclassID=sub, equipLoc=loc, maxStack=1, bind=1)
+    w.M.equipped = w.lua.table()
+    w.M.inspected = w.lua.table()
+    en_player(w, cls, points, mode, level)
+    return w, prices
+
+
+def en_player(w, cls, points, mode="forever", level=60):
+    M = w.M
+    M["class"] = w.to_lua([EN_CLASS[cls][0], cls, EN_CLASS[cls][1]])
+    M.talents.mode = mode
+    M.talents.points = w.to_lua(list(points))
+    M.level = level
+    w.ns.Enchants.Invalidate()
+
+
+def en_hover(w, how, iid, enchant=None, slot=None):
+    """Shows an item's tooltip the way the game does from a place; returns the tooltip."""
+    M, g = w.M, w.g
+    tt = g.GameTooltip
+    if how == "link":
+        tt = g.ItemRefTooltip
+    elif how == "shopping":
+        tt = g.ShoppingTooltip1
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    if how == "bag":
+        bag_put(w, 0, 1, iid, 1, enchant=enchant, bound=True)
+        tt.SetBagItem(tt, 0, 1)
+    elif how in ("equipped", "bank", "inspect"):
+        slot = slot or (40 if how == "bank" else EN_GEAR[iid][5])
+        s = w.to_lua({"itemID": iid, "bound": True})
+        s.enchant = enchant
+        (M.inspected if how == "inspect" else M.equipped)[slot] = s
+        tt.SetInventoryItem(tt, "target" if how == "inspect" else "player", slot)
+    elif how in ("link", "gamelink", "shopping"):
+        tt.SetHyperlink(tt, M.ItemLink(iid, None, None, enchant))
+    elif how == "byid":
+        tt.SetItemByID(tt, iid)
+    else:
+        raise AssertionError(how)
+    return tt
+
+
+def en_styles_ok(sc, w, tt, label):
+    """Our enchant lines: the text colour (cost white, or grey with no AH price), mats grey and
+    wrapped, all on the game's normal font."""
+    st = tooltip_styles(w, tt)
+    n = len(tt._lines)
+    start = None
+    for i in range(1, n + 1):
+        l = tt._lines[i].left or ""
+        if l.startswith("Best enchant: ") or l.startswith("2nd best: "):
+            start = i
+            break
+    if not sc.check(start is not None, "%s: has enchant lines" % label):
+        return
+    bad = []
+    for i in range(start, n + 1):
+        ln, s = tt._lines[i], st[i - 1]
+        is_mats = (ln.left or "").startswith("  ")
+        want_l = "muted" if is_mats else "text"
+        want_r = None if ln.right is None else ("muted" if ln.right == "no AH price" else "white")
+        if s is None or (s[0], s[1]) != (want_l, want_r) or s[2] != "GameTooltipText" or s[3] != 12:
+            bad.append((i, ln.left, s))
+        if is_mats and ln.wrap is not True:
+            bad.append((i, ln.left, "not wrapped"))
+    sc.eq(bad, [], "%s: enchant line colours, wrap and font" % label)
+
+
+def sc_enchants_data(sc, ref, items):
+    """The enchant table: every pick exists, every mat has the game's name, nothing doubled, plain ASCII."""
+    w, _ = en_world(ref, items)
+    D = w.ns.Enchants.DATA
+    names = en_source_mats()
+    lua_mats = {int(k): v for k, v in D.mats.items()}
+    sc.eq(lua_mats, names, "enchants data: the source's mat table is the one the addon loads")
+    sc.check(len(lua_mats) >= 60, "enchants data: %d mats" % len(lua_mats))
+    sc.eq(len(set(lua_mats.values())), len(lua_mats), "enchants data: no two mat ids share a name")
+    for mid, nm in lua_mats.items():
+        sc.check(nm and all(32 <= ord(c) < 127 for c in nm) and nm == nm.strip(), "enchants data: mat %d name %r" % (mid, nm))
+    # The game's names: the price data's and the AH item list's, where they have the item.
+    seen = 0
+    for mid, nm in sorted(lua_mats.items()):
+        js = items.get(str(mid))
+        if js and js.get("name"):
+            seen += 1
+            sc.eq(nm, js["name"], "enchants data: mat %d has the auction house's name" % mid)
+        it = ref.items.get(mid)
+        if it and known_name(it["name"]):
+            seen += 1
+            sc.eq(nm, it["name"], "enchants data: mat %d has the price data's name" % mid)
+    sc.check(seen >= 1, "enchants data: %d mat names checked against the item lists" % seen)
+    ench = {k: en_entry(w, k) for k in D.enchants.keys()}
+    sc.eq(sorted(ench), sorted(EN_NAMES), "enchants data: exactly the enchants the picks use")
+    for k, e in sorted(ench.items()):
+        sc.eq(e["n"], EN_NAMES.get(k), "enchants data: %s's name" % k)
+        sc.check(float(e["id"]).is_integer() and e["id"] > 0, "enchants data: %s enchant id %r" % (k, e["id"]))
+        sc.check(e["m"] and all(mid in lua_mats and n >= 1 for mid, n in e["m"]), "enchants data: %s mats %r" % (k, e["m"]))
+        sc.eq(len(set(mid for mid, _ in e["m"])), len(e["m"]), "enchants data: %s lists each mat once" % k)
+        sc.check(e["lvl"] is None or 1 <= e["lvl"] <= 60, "enchants data: %s level %r" % (k, e["lvl"]))
+        sc.check(e["fee"] is None or e["fee"] > 0, "enchants data: %s fee %r" % (k, e["fee"]))
+    for k, want in EN_IDS.items():
+        sc.eq(ench[k]["id"], want, "enchants data: %s is enchant %d in item links" % (k, want))
+    sigs = [(e["id"], tuple(e["m"])) for e in ench.values()]
+    sc.eq(len(set(sigs)), len(sigs), "enchants data: no enchant listed twice")
+    used = set()
+    groups = {"weapon", "weapon2h", "shield", "holdable", "chest", "cloak", "wrist", "hands", "feet", "neck",
+              "headlegs", "ranged"}
+    roles = {"melee", "agility", "tank", "caster", "healer", "hunter"}
+    for g, recs in D.picks.items():
+        sc.check(g in groups, "enchants data: group %s" % g)
+        for rk, rec in recs.items():
+            m = re.match(r"^([a-z]+)(?:/([A-Z]+)([1-3])?)?$", rk)
+            sc.check(m and m.group(1) in roles and (m.group(2) is None or m.group(2) in EN_CLASS),
+                     "enchants data: %s.%s is a role (and class, tree)" % (g, rk))
+            keys = [rec[i] for i in range(1, len(rec) + 1)]
+            sc.check(keys and all(k in ench for k in keys), "enchants data: %s.%s picks exist (%s)" % (g, rk, keys))
+            used.update(keys)
+            ids = [ench[k]["id"] for k in keys if k in ench]
+            sc.eq(len(set(ids)), len(ids), "enchants data: %s.%s picks differ" % (g, rk))
+            up = [rec.up[i] for i in range(1, len(rec.up) + 1)] if rec.up else []
+            mid = [rec.mid[i] for i in range(1, len(rec.mid) + 1)] if rec.mid else []
+            sc.check(not (set(up) & set(ids)) and not (set(mid) & set(ids)) and not (set(up) & set(mid)),
+                     "enchants data: %s.%s up / mid / picks do not overlap" % (g, rk))
+    sc.eq(sorted(used), sorted(ench), "enchants data: every enchant is a pick")
+    # Every slot group and role has the picks the product asks for (one class per role and tree).
+    for cls, trees in EN_TREES.items():
+        for tab, (_, role) in enumerate(trees, 1):
+            for g, _ in EN_GROUP_ITEM:
+                rec = w.lua.eval("function(E, g, r, c, t) local P = E.DATA.picks[g]; if not P then return nil end "
+                                 "return P[r .. '/' .. c .. t] or P[r .. '/' .. c] or P[r] end")(
+                    w.ns.Enchants, g, role, cls, tab)
+                got = [rec[i] for i in range(1, len(rec) + 1)] if rec else []
+                if g == "ranged":
+                    got = [k for k, lvl in EN_SCOPES if k in got][:2]
+                want = en_spec(g, role, cls, tab) if g != "shield" else (
+                    [] if role in ("agility", "hunter") else ["s20017", "s13817"])
+                sc.eq(got[:2], want, "enchants data: %s %s (%s) %s" % (cls, trees[tab - 1][0], role, g))
+    # Slots with no option and the groups the slots map to.
+    for iid in EN_NONE:
+        sc.eq(w.ns.Enchants.SlotGroup(iid) if EN_GEAR[iid][4] != 0 else None, None,
+              "enchants data: %s gets no group" % EN_GEAR[iid][0])
+    for g, iid in EN_GROUP_ITEM:
+        sc.eq(w.ns.Enchants.SlotGroup(iid), g, "enchants data: %s is in %s" % (EN_GEAR[iid][0], g))
+    sc.eq(w.ns.Enchants.SlotGroup(R.LINEN), None, "enchants data: cloth is not gear")
+    src = open(os.path.join(ADDON, "Enchants.lua"), "rb").read()
+    sc.check(all(b < 128 for b in src) and b"\xe2\x80" not in src, "enchants data: Enchants.lua is plain ASCII")
+    sc.clean(w)
+
+
+def sc_enchants_bag(sc, ref, items):
+    """Bags show the best enchant (its mats and their AH value); nothing when it is on already."""
+    w, prices = en_world(ref, items)
+    g = w.g
+    E = w.ns.Enchants
+    sc.check(not any(iid in ref.items for iid in EN_GEAR), "enchants bag: the test gear has no price data")
+    best = ["s20034"]
+    for enchant, want, why in ((None, best, "no enchant"), (2563, best, "the 2nd best on (2H Lesser Strength)"),
+                               (1900, [], "Crusader on: nothing"), (8215, [], "2H Strength +25 counts as the best"),
+                               (1896, best, "Superior Impact (better than the 2nd)"), (15, best, "another enchant")):
+        tt = en_hover(w, "bag", 990102, enchant)
+        sc.eq(en_block(w, tt), en_want(w, prices, want), "enchants bag: Greatsword, %s" % why)
+        # Soulbound gear with no prices: our lines are the only ones (no Goblin Ledger header).
+        sc.eq(w.lines(tt), en_want(w, prices, want), "enchants bag: soulbound gear, %s: only our lines" % why)
+    tt = en_hover(w, "bag", 990102)
+    en_styles_ok(sc, w, tt, "enchants bag: Greatsword")
+    # One build a show: hovering again, refreshing and re-setting reuse the lines.
+    b0 = E.builds
+    for _ in range(5):
+        tt = en_hover(w, "bag", 990102)
+        tt.RefreshData(tt)
+    sc.eq(en_count(w, tt), 1, "enchants bag: a refresh does not add the lines twice")
+    sc.eq(E.builds, b0, "enchants bag: the lines are built once and reused")
+    for iid in EN_NONE:
+        tt = en_hover(w, "bag", iid)
+        sc.eq(en_count(w, tt), 0, "enchants bag: nothing on %s" % EN_GEAR[iid][0])
+    for iid in sorted(ref.items)[:SAMPLE]:
+        tt = g.GameTooltip
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        w.put_bag(0, 2, iid, 1)
+        tt.SetBagItem(tt, 0, 2)
+        if en_count(w, tt):
+            sc.check(False, "enchants bag: no enchant lines on non-gear item %d" % iid)
+            break
+    else:
+        sc.check(True, "enchants bag: no enchant lines on any non-gear item")
+    # Tradeable gear with no prices: the "no recent listings" line, then ours.
+    w.M["items"][990108].bind = 2
+    bag_put(w, 0, 3, 990108, 1)
+    tt = g.GameTooltip
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    tt.SetBagItem(tt, 0, 3)
+    sc.eq(w.lines(tt), [("Goblin Ledger: no recent listings", None)] + en_want(w, prices, ["s1219587"]),
+          "enchants bag: unpriced tradeable cloak: no recent listings, then the best enchant")
+    # Priced gear with the bigger verdict lines: our price lines are as before, ours follow at the normal size.
+    big = None
+    for iid in sorted(ref.items):
+        if iid in ROLE_IDS() or iid in en_source_mats():
+            continue
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetItemByID(tt, iid)
+        if big_fontstrings(w, tt):
+            big = iid
+            break
+    if sc.check(big is not None, "enchants bag: a priced item with big verdict lines"):
+        w.put_bag(1, 1, big, 1)
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetBagItem(tt, 1, 1)
+        before, st_before, big_before = w.lines(tt), tooltip_styles(w, tt), big_fontstrings(w, tt)
+        it = w.M["items"][big]
+        it.equipLoc, it.classID, it.subclassID = "INVTYPE_CLOAK", 4, 1
+        w.ns.Enchants.Invalidate()   # an item's slot never changes in game: it is remembered
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetBagItem(tt, 1, 1)
+        after = w.lines(tt)
+        sc.eq(after[:len(before)], before, "enchants bag: priced cloak keeps its price lines")
+        sc.eq(after[len(before):], en_want(w, prices, ["s1219587"]), "enchants bag: priced cloak: then the best enchant")
+        sc.eq(tooltip_styles(w, tt)[:len(st_before)], st_before, "enchants bag: priced cloak: price line styles unchanged")
+        sc.eq(big_fontstrings(w, tt), big_before, "enchants bag: priced cloak: the same lines are big")
+        en_styles_ok(sc, w, tt, "enchants bag: priced cloak")
+        it.equipLoc, it.classID, it.subclassID = None, None, None
+    sc.clean(w)
+
+
+def sc_enchants_equipped(sc, ref, items):
+    """Worn gear also shows the 2nd best; nothing for someone you inspect."""
+    w, prices = en_world(ref, items)
+    both = ["s20034", "s1248511"]
+    for enchant, want, why in ((None, both, "no enchant"), (2563, both[:1], "the 2nd best on: the best only"),
+                               (1900, [], "Crusader on: nothing"), (8215, [], "an enchant at least as good"),
+                               (1896, both[:1], "one between the two: the best only"),
+                               (15, both, "another enchant: both"), (0, both, "enchant field 0")):
+        tt = en_hover(w, "equipped", 990102, enchant)
+        sc.eq(w.lines(tt), en_want(w, prices, want), "enchants worn: Greatsword, %s" % why)
+    tt = en_hover(w, "equipped", 990102)
+    en_styles_ok(sc, w, tt, "enchants worn: Greatsword")
+    tt = en_hover(w, "inspect", 990102)
+    sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "enchants worn: an inspected Greatsword gets nothing")
+    tt = en_hover(w, "bank", 990102)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["s20034"]), "enchants worn: a bank slot counts as a bag (best only)")
+    # Shield and off-hand weapon (slot 17); a Prot warrior.
+    en_player(w, "WARRIOR", (5, 5, 31))
+    tt = en_hover(w, "equipped", 990105)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20017", "s13817"]), "enchants worn: a tank's shield")
+    tt = en_hover(w, "equipped", 990105, 929)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20017"]), "enchants worn: shield with Stamina +7: the best only")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s27837", "s1248510"]), "enchants worn: a tank's 2H")
+    # A rogue's off-hand dagger.
+    en_player(w, "ROGUE", (0, 31, 20))
+    tt = en_hover(w, "equipped", 990104)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s13943"]), "enchants worn: rogue off-hand dagger")
+    tt = en_hover(w, "equipped", 990104, 1900)
+    sc.eq(en_count(w, tt), 0, "enchants worn: rogue dagger with Crusader: nothing")
+    tt = en_hover(w, "equipped", 990104, 2564)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034"]), "enchants worn: rogue dagger with Agility +15: the best only")
+    tt = en_hover(w, "equipped", 990105)
+    sc.eq(en_count(w, tt), 0, "enchants worn: a rogue's shield (cannot carry one): nothing")
+    for iid in EN_NONE:
+        tt = en_hover(w, "equipped", iid)
+        sc.eq(en_count(w, tt), 0, "enchants worn: nothing on %s" % EN_GEAR[iid][0])
+    # Every class and tree: the picks on each slot of worn gear.
+    for cls, trees in EN_TREES.items():
+        for tab, (tname, role) in enumerate(trees, 1):
+            pts = [0, 0, 0]
+            pts[tab - 1] = 31
+            pts[tab % 3] = 11
+            en_player(w, cls, pts)
+            for g, iid in EN_GROUP_ITEM:
+                want = en_spec(g, role, cls, tab)
+                if g == "ranged" and EN_GEAR[iid][3] not in (2, 3, 18):
+                    want = []
+                tt = en_hover(w, "equipped", iid)
+                sc.eq(w.lines(tt), en_want(w, prices, want), "enchants worn: %s %s, %s" % (cls, tname, EN_GEAR[iid][0]))
+    # Armor the class cannot wear gets nothing; armor it can, does.
+    en_player(w, "MAGE", (0, 0, 31))
+    tt = en_hover(w, "equipped", 990126)
+    sc.eq(en_count(w, tt), 0, "enchants worn: a mage's plate chest: nothing")
+    tt = en_hover(w, "equipped", 990107)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20025", "s20028"]), "enchants worn: a mage's cloth robe")
+    tt = en_hover(w, "equipped", 990129)
+    sc.eq(en_count(w, tt), 0, "enchants worn: a mage's mail gloves: nothing")
+    en_player(w, "HUNTER", (31, 0, 0))
+    tt = en_hover(w, "equipped", 990129)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20012", "s13815"]), "enchants worn: a hunter's mail gloves")
+    en_player(w, "PALADIN", (0, 0, 31))
+    tt = en_hover(w, "equipped", 990126)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20025", "s13941"]), "enchants worn: a paladin's plate chest")
+    sc.clean(w)
+
+
+def sc_enchants_levels(sc, ref, items):
+    """Arcanums from level 50, scopes by the level they need, for hunters only."""
+    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 0, 0), level=49)
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(en_count(w, tt), 0, "enchants levels: no Arcanum at level 49")
+    tt = en_hover(w, "equipped", 990122)
+    sc.eq(en_count(w, tt), 0, "enchants levels: shoulders never")
+    en_player(w, "WARRIOR", (31, 0, 0), level=50)
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(w.lines(tt), en_want(w, prices, ["a18329", "a11645"]), "enchants levels: level 50 head: Arcanums")
+    sc.check(any("30g quest fee" in (l or "") for l, _ in w.lines(tt)), "enchants levels: the Lesser Arcanum's fee is named")
+    tt = en_hover(w, "equipped", 990114, 1506)
+    sc.eq(w.lines(tt), en_want(w, prices, ["a18329"]), "enchants levels: legs with the Lesser Arcanum: the best only")
+    tt = en_hover(w, "equipped", 990114, 2543)
+    sc.eq(en_count(w, tt), 0, "enchants levels: legs with Rapidity: nothing")
+    for level, want in ((60, ["i10548", "i10546"]), (40, ["i10548", "i10546"]), (39, ["i10546", "i4407"]),
+                        (25, ["i4407", "i4406"]), (9, ["i4405"]), (4, [])):
+        en_player(w, "HUNTER", (0, 31, 0), level=level)
+        for iid in (990115, 990116, 990128):
+            tt = en_hover(w, "equipped", iid)
+            sc.eq(w.lines(tt), en_want(w, prices, want), "enchants levels: hunter level %d, %s" % (level, EN_GEAR[iid][0]))
+    en_player(w, "HUNTER", (0, 31, 0), level=35)
+    for enchant, want, why in ((664, [], "Sniper Scope on (above what level 35 uses)"), (663, [], "Deadly Scope on"),
+                               (33, ["i10546"], "Accurate Scope on: the best only"), (32, ["i10546", "i4407"], "a lower scope"),
+                               (8720, [], "the new SAF-T scope")):
+        tt = en_hover(w, "equipped", 990116, enchant)
+        sc.eq(w.lines(tt), en_want(w, prices, want), "enchants levels: hunter 35 gun, %s" % why)
+    tt = en_hover(w, "equipped", 990117)
+    sc.eq(en_count(w, tt), 0, "enchants levels: a wand: nothing")
+    en_player(w, "WARRIOR", (31, 0, 0))
+    tt = en_hover(w, "equipped", 990116)
+    sc.eq(en_count(w, tt), 0, "enchants levels: a warrior's gun: nothing")
+    sc.clean(w)
+
+
+def sc_enchants_links(sc, ref, items):
+    """Chat links and other item tooltips: the best only; never on comparison or other tooltips."""
+    w, prices = en_world(ref, items)
+    tt = en_hover(w, "link", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034"]), "enchants links: a linked Greatsword")
+    tt = en_hover(w, "link", 990102, 1900)
+    sc.eq(en_count(w, tt), 0, "enchants links: a linked Greatsword with Crusader")
+    tt = en_hover(w, "gamelink", 990108)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s1219587"]), "enchants links: a link shown on GameTooltip")
+    tt = en_hover(w, "shopping", 990102)
+    sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "enchants links: the comparison tooltip gets nothing")
+    tt = en_hover(w, "byid", 990102)
+    sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "enchants links: an item shown by id (merchant, loot) gets nothing")
+    # Links as Forever writes them (|cnIQ2: colour, crafter fields): the enchant field is read.
+    E = w.ns.Enchants
+    for link, want in (("|cnIQ2:|Hitem:3473:15:::::::15:1491::::::::Player-6798-00C7A9D7:|h[Runed Copper Pants]|h|r", 15),
+                       ("|cnIQ2:|Hitem:3166::::::::15:1491::11:::::::|h[Ironheart Chain]|h|r", None),
+                       ("|cffffffff|Hitem:990102:1900::::::::60:::::::::|h[x]|h|r", 1900),
+                       ("|cffffffff|Hitem:990102:0:::::::60|h[x]|h|r", None), ("garbage", None), (None, None)):
+        sc.eq(E.LinkEnchant(link), want, "enchants links: enchant of %s" % (link or "nil")[:40])
+    sc.clean(w)
+
+
+def sc_enchants_roles(sc, ref, items):
+    """Role from the talents (every client's way of giving them), the class default, the cache."""
+    w, prices = en_world(ref, items)
+    E, M = w.ns.Enchants, w.M
+
+    def role():
+        r = E.DetectRole()
+        return tuple(r) if isinstance(r, tuple) else (r,)
+    for mode in ("forever", "specinfo", "tabs-name", "tabs-id"):
+        for cls, trees in EN_TREES.items():
+            for tab, (tname, want) in enumerate(trees, 1):
+                pts = [0, 0, 0]
+                pts[tab - 1] = 21
+                pts[(tab + 1) % 3] = 9
+                en_player(w, cls, pts, mode)
+                sc.eq(role()[:4], (want, "talents", tab, 21), "enchants roles: %s %s %s" % (mode, cls, tname))
+            en_player(w, cls, (3, 1, 0), mode, level=12)
+            sc.eq(role()[:2], (EN_DEFAULT[cls], "class"), "enchants roles: %s %s with 4 points: the class default" % (mode, cls))
+    en_player(w, "PALADIN", (10, 10, 0))
+    sc.eq(role()[:2], ("melee", "class"), "enchants roles: a Holy / Protection tie: the class default")
+    en_player(w, "WARRIOR", (10, 10, 0))
+    sc.eq(role()[:3], ("melee", "talents", 1), "enchants roles: an Arms / Fury tie is still melee")
+    # The Legacy group never counts; Forever's starter spec alone (0 points) is never trusted.
+    en_player(w, "PALADIN", (6, 0, 0))
+    M.talents.legacy = 40
+    E.Invalidate()
+    sc.eq(role()[:3], ("healer", "talents", 1), "enchants roles: Forever's groups by their order, the Legacy group not counted")
+    for mode in ("starter", "none"):
+        en_player(w, "PALADIN", (31, 0, 0), mode)
+        sc.eq(role()[:2], ("melee", "class"), "enchants roles: %s: the class default, not Holy" % mode)
+    # No talent API at all, no class.
+    en_player(w, "DRUID", (0, 31, 0))
+    for name in ("C_Traits", "C_ClassTalents", "C_SpecializationInfo", "GetTalentTabInfo", "GetNumTalentTabs"):
+        w.g[name] = None
+    E.Invalidate()
+    sc.eq(role()[:2], ("agility", "class"), "enchants roles: no talent API: the class default")
+    w.g.UnitClass = None
+    E.Invalidate()
+    sc.eq(role()[0], None, "enchants roles: no class: no role")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "enchants roles: no role: no lines")
+    w.slash("/gl enchants healer")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s1248636", "s20036"]), "enchants roles: no class, a role picked by hand")
+    sc.clean(w)
+
+    # The cache: one talent read for many hovers, again after an event or 10 seconds.
+    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 5, 0))
+    E, M = w.ns.Enchants, w.M
+    tt = en_hover(w, "equipped", 990102)
+    r0 = E.reads
+    for _ in range(25):
+        en_hover(w, "equipped", 990102)
+        en_hover(w, "bag", 990108)
+    sc.eq(E.reads, r0, "enchants roles: no talent reads while hovering")
+    M.talents.points = w.to_lua([0, 5, 31])
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "enchants roles: a respec waits for its event (cached)")
+    for ev in ("CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
+               "PLAYER_LEVEL_UP"):
+        M.talents.points = w.to_lua([0, 5, 31])
+        n = E.reads
+        M.fire(ev)
+        tt = en_hover(w, "equipped", 990102)
+        sc.eq((E.reads - n, w.lines(tt)), (1, en_want(w, prices, ["s27837", "s1248510"])),
+              "enchants roles: %s reads the talents again (Protection)" % ev)
+        M.talents.points = w.to_lua([31, 5, 0])
+        M.fire(ev)
+        tt = en_hover(w, "equipped", 990102)
+        sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "enchants roles: %s, back to Arms" % ev)
+    n = E.reads
+    M.talents.points = w.to_lua([0, 5, 31])
+    M.t = M.t + 9
+    en_hover(w, "equipped", 990102)
+    sc.eq(E.reads, n, "enchants roles: still cached after 9 seconds")
+    M.t = M.t + 2
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq((E.reads - n, w.lines(tt)), (1, en_want(w, prices, ["s27837", "s1248510"])), "enchants roles: read again after 10 seconds")
+    # Level 60 with nothing spent (talents not loaded yet): kept only 2 seconds.
+    M.talents.points = w.to_lua([0, 0, 0])
+    E.Invalidate()
+    en_hover(w, "equipped", 990102)
+    n = E.reads
+    M.t = M.t + 2.5
+    en_hover(w, "equipped", 990102)
+    sc.eq(E.reads, n + 1, "enchants roles: an unsure answer (no points at 60) is read again soon")
+    sc.clean(w)
+
+
+def sc_enchants_slash(sc, ref, items):
+    """/gl enchants: status, a role by hand, off, auto; kept in the saved settings; in /gl help."""
+    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 5, 0))
+    S = w.ns.settings
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)."], "enchants slash: status")
+    out = [strip_codes(x) for x in w.slash("/gl enchants tank")]
+    sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips are now for tank."], "tank"), "enchants slash: tank")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s27837", "s1248510"]), "enchants slash: tank picks on the 2H")
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.eq(out, ["Goblin Ledger: enchant tips are for tank (picked by hand; your talents say melee (Arms, 31 points)). "
+                "/gl enchants auto follows your talents."], "enchants slash: status with a pick")
+    out = [strip_codes(x) for x in w.slash("/gl enchant HEALER")]
+    sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips are now for healer."], "healer"), "enchants slash: /gl enchant alias")
+    out = [strip_codes(x) for x in w.slash("/gl enchants wizard")]
+    sc.eq((out, S.enchants), (["Goblin Ledger: unknown choice. Use /gl enchants auto, melee, agility, tank, caster, "
+                               "healer, hunter or off."], "healer"), "enchants slash: unknown choice")
+    out = [strip_codes(x) for x in w.slash("/gl enchants off")]
+    sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips are off. /gl enchants auto turns them back on."], "off"),
+          "enchants slash: off")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "enchants slash: off hides the lines")
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.eq(out, ["Goblin Ledger: enchant tips are off. /gl enchants auto turns them back on."], "enchants slash: status when off")
+    out = [strip_codes(x) for x in w.slash("/gl enchants auto")]
+    sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips follow your talents: melee (Arms, 31 points)."], None),
+          "enchants slash: auto")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "enchants slash: auto again")
+    # /gl tooltip off hides them with the prices.
+    w.slash("/gl tooltip")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "enchants slash: /gl tooltip off hides the enchant lines too")
+    w.slash("/gl tooltip")
+    en_player(w, "WARRIOR", (3, 0, 0), level=12)
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (the warrior default: fewer than 5 points in one talent tree)."],
+          "enchants slash: status at low level")
+    out = [strip_codes(x) for x in w.slash("/gl help")]
+    sc.check(any(t.endswith("/gl enchants : the best enchant on gear tooltips for your role: auto, melee, agility, tank, "
+                            "caster, healer, hunter or off (auto follows your talents)") for t in out),
+             "enchants slash: /gl help lists /gl enchants")
+    sc.check(any(t.endswith("the price is the mats at AH value; you still need an enchanter who knows the formula")
+                 for t in out), "enchants slash: /gl help says what the price is")
+    sc.check(any("/gl compact" in t for t in out) and any("/gl bags" in t for t in out) and any("/gl watch" in t for t in out),
+             "enchants slash: /gl help still lists the other commands")
+    sc.eq(sum(1 for t in out if "/gl enchants" in t), 1, "enchants slash: listed once")
+    out = [strip_codes(x) for x in w.slash("/gl")]
+    sc.check(not any("enchant" in t for t in out), "enchants slash: /gl status is unchanged")
+    sc.clean(w)
+    for saved, want, label in (({"enchants": "tank"}, "tank", "a saved pick"), ({"enchants": "off"}, "off", "saved off"),
+                               ({"enchants": "wizard"}, None, "an unknown saved value"), ({"enchants": 5}, None, "a number")):
+        text, prices = en_data(ref)
+        w = World(ref, items, data_src=text, saved=saved)
+        sc.eq(w.ns.settings.enchants, want, "enchants slash: %s after login" % label)
+        sc.check(w.same(w.g.ForeverAH_Settings, w.ns.settings), "enchants slash: %s is in the saved settings" % label)
+        sc.clean(w, "enchants slash " + label)
+
+
+def sc_enchants_modes(sc, ref, items):
+    """Compact mode: the name lines only (Shift shows the mats); prices with and without AH values; no data."""
+    w, prices = en_world(ref, items)
+    w.slash("/gl compact")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"], full=False), "enchants modes: compact: one line each")
+    w.M.shift = True
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "enchants modes: compact with Shift: the mats too")
+    w.slash("/gl compact")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "enchants modes: full with Shift: the same")
+    w.M.shift = False
+    # Head at 60: Rapidity's bound Blood of Heroes is named; the Lesser Arcanum has two bound mats: "+ more".
+    en_player(w, "WARRIOR", (31, 0, 0), level=60)
+    tt = en_hover(w, "equipped", 990113)
+    got = w.lines(tt)
+    sc.eq(got, en_want(w, prices, ["a18329", "a11645"]), "enchants modes: head, bound mats")
+    sc.check(got and got[0][1].endswith(" + 2 Blood of Heroes"), "enchants modes: a bound mat is named (%s)" % (got[:1],))
+    sc.check(len(got) > 2 and got[2][1].endswith(" + more"), "enchants modes: two mats with no AH value: + more (%s)" % (got[2:3],))
+    sc.clean(w)
+    # One mat with no AH value is named; two or more: "+ more"; none priced: grey "no AH price".
+    w, prices = en_world(ref, items, unlisted=(12811,))
+    tt = en_hover(w, "equipped", 990102)
+    got = w.lines(tt)
+    sc.eq(got, en_want(w, prices, ["s20034", "s1248511"]), "enchants modes: Righteous Orb not listed")
+    sc.check(got and got[0][1].endswith(" + 2 Righteous Orb"), "enchants modes: the unlisted mat is named (%s)" % (got[:1],))
+    sc.clean(w)
+    w, prices = en_world(ref, items, unlisted=(12811, 14344))
+    tt = en_hover(w, "equipped", 990102)
+    got = w.lines(tt)
+    sc.eq(got, en_want(w, prices, ["s20034", "s1248511"]), "enchants modes: no Crusader mat listed")
+    sc.eq(got[0][1] if got else None, "no AH price", "enchants modes: no AH price")
+    en_styles_ok(sc, w, tt, "enchants modes: no AH price is grey")
+    sc.clean(w)
+    # No price data: the names and mats, no price.
+    w, _ = en_world(ref, items, data_src=PLACEHOLDER)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, None, ["s20034", "s1248511"]), "enchants modes: no price data: names and mats")
+    tt = en_hover(w, "bag", 990102, 1900)
+    sc.eq(en_count(w, tt), 0, "enchants modes: no price data: Crusader on, nothing")
+    sc.clean(w)
+
+
+def sc_enchants_quiet(sc, ref, items):
+    """No enchant lines on the bag cleanup's rows or the sidebar's rows (they are about selling)."""
+    w, prices = en_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    w.M["items"][990108].vendor = 1
+    bag_put(w, 0, 1, 990108, 1)
+    tt = g.GameTooltip
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq(en_count(w, tt), 1, "enchants quiet: the cloak in the bag has the line")
+    M.OpenBags(1)
+    w.settle(0.2)
+    BP = ns.BagPanel
+    M.click(BP.tab)
+    w.settle(0.1)
+    row = None
+    for i in range(1, len(BP.rows) + 1):
+        r = BP.rows[i]
+        if r.IsShown(r) and r.entry is not None and r.entry.id == 990108:
+            row = r
+    # What the flag says while the rows set the tooltip.
+    w.g.GL_NS = ns
+    w.lua.execute("""
+      local tt = GameTooltip
+      QUIET_SEEN, QUIET_OLD = {}, { tt.SetBagItem, tt.SetHyperlink, tt.SetItemByID }
+      for i, k in ipairs({ "SetBagItem", "SetHyperlink", "SetItemByID" }) do
+        local orig = QUIET_OLD[i]
+        tt[k] = function(self, ...) QUIET_SEEN[#QUIET_SEEN + 1] = k .. "=" .. tostring(GL_NS.tipQuiet == true); return orig(self, ...) end
+      end""")
+    if sc.check(row is not None, "enchants quiet: the cloak has a bag cleanup row"):
+        M.enter(row)
+        flat = [strip_codes(l or "") for l, _ in w.all_lines(tt)]
+        sc.check("Test Cloak" in flat and en_count(w, tt) == 0, "enchants quiet: the bag cleanup row has no enchant lines (%s)" % flat)
+        M.leave(row)
+        seen = [w.g.QUIET_SEEN[i] for i in range(1, len(w.g.QUIET_SEEN) + 1)]
+        sc.eq(seen, ["SetBagItem=true"], "enchants quiet: the bag row sets the tooltip with the flag up")
+    sc.check(not ns.tipQuiet, "enchants quiet: the flag is down after the row")
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    tt.SetBagItem(tt, 0, 1)
+    sc.eq(en_count(w, tt), 1, "enchants quiet: the bag slot itself still has it")
+    w.open_ah_modern()
+    SB = ns.SidebarPanel
+    rows = shown_rows(SB, "watchRows") if SB is not None else []
+    if sc.check(len(rows) > 0, "enchants quiet: sidebar watch rows"):
+        r = rows[0]
+        it = M["items"][r.itemID]
+        it.equipLoc, it.classID, it.subclassID = "INVTYPE_CLOAK", 4, 1
+        ns.Enchants.Invalidate()
+        w.lua.execute("QUIET_SEEN = {}")
+        M.enter(r)
+        sc.check(len(w.all_lines(tt)) > 1 and en_count(w, tt) == 0, "enchants quiet: the sidebar row has no enchant lines")
+        seen = [w.g.QUIET_SEEN[i] for i in range(1, len(w.g.QUIET_SEEN) + 1)]
+        sc.check(len(seen) >= 1 and all(s.endswith("=true") for s in seen),
+                 "enchants quiet: the sidebar row sets the tooltip with the flag up (%s)" % seen)
+        M.leave(r)
+        sc.check(not ns.tipQuiet, "enchants quiet: the flag is down after the sidebar row")
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetHyperlink(tt, M.ItemLink(r.itemID))
+        sc.eq(en_count(w, tt), 1, "enchants quiet: the same item from a link has the line")
+        it.equipLoc, it.classID, it.subclassID = None, None, None
+    w.close_ah_modern()
+    w.lua.execute("""
+      local tt = GameTooltip
+      tt.SetBagItem, tt.SetHyperlink, tt.SetItemByID = QUIET_OLD[1], QUIET_OLD[2], QUIET_OLD[3]""")
+    sc.clean(w)
+
+
+def sc_enchants_legacy(sc, ref, items):
+    """The older client (OnTooltipSetItem): the best only, the tooltip laid out again; talent events it lacks are skipped."""
+    w, prices = en_world(ref, items, client="legacy", mode="tabs-name", points=(31, 0, 0))
+    sc.eq(w.ns.tooltipMode, "script", "enchants legacy: script hooks")
+    for iid, want in ((990102, ["s20034"]), (990108, ["s1219587"])):
+        tt = en_hover(w, "bag", iid)
+        sc.eq(en_block(w, tt), en_want(w, prices, want), "enchants legacy: %s in a bag" % EN_GEAR[iid][0])
+        tt = en_hover(w, "equipped", iid)
+        sc.eq(en_block(w, tt), en_want(w, prices, want), "enchants legacy: worn %s (the path does not say: best only)" % EN_GEAR[iid][0])
+    tt = en_hover(w, "bag", 990102, 1900)
+    sc.eq(en_count(w, tt), 0, "enchants legacy: Crusader on")
+    sc.clean(w)
+
+
+def sc_enchants_missing(sc, ref, items):
+    """Secret values and missing game functions: no lines, no errors."""
+    w, prices = en_world(ref, items)
+    w.lua.execute('issecretvalue = function(v) return type(v) == "string" and v:find("item:990102", 1, true) ~= nil end')
+    for how in ("bag", "equipped", "link"):
+        tt = en_hover(w, how, 990102)
+        sc.eq(en_count(w, tt), 0, "enchants missing: a secret link (%s): no lines" % how)
+    w.lua.execute('issecretvalue = function(v) return v == "INVTYPE_CLOAK" end')
+    tt = en_hover(w, "equipped", 990108)
+    sc.eq(en_count(w, tt), 0, "enchants missing: a secret slot: no lines")
+    w.lua.execute("issecretvalue = function() return false end")
+    tt = en_hover(w, "equipped", 990108)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s1219587", "s13419"]), "enchants missing: back once it is readable")
+    sc.clean(w)
+    # No GetItemInfoInstant: GetItemInfo still says the slot. Neither: no lines.
+    w, prices = en_world(ref, items)
+    w.g.C_Item.GetItemInfoInstant = None
+    tt = en_hover(w, "equipped", 990109)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20010", "s13939"]), "enchants missing: GetItemInfo gives the slot")
+    info = w.g.C_Item.GetItemInfo
+    w.g.C_Item.GetItemInfo = None
+    w.g.GetItemInfo, w.g.GetItemInfoInstant = None, None
+    tt = en_hover(w, "equipped", 990110)
+    sc.eq(en_count(w, tt), 0, "enchants missing: no item info: no lines")
+    w.g.C_Item.GetItemInfo = info
+    for name in ("GetTime", "UnitLevel", "IsShiftKeyDown"):
+        w.g[name] = None
+    w.ns.Enchants.Invalidate()
+    tt = en_hover(w, "equipped", 990109)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20010", "s13939"]), "enchants missing: no GetTime, UnitLevel or Shift: still the picks")
+    sc.check(w.ns.Enchants.lastError is None, "enchants missing: no error kept")
+    sc.clean(w, ok_chat=())
+
+
+# --- enchants: end ---
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -12918,6 +13965,17 @@ SCENARIOS = [
     ("bag-quest-hidden", sc_bag_quest_hidden),
     ("bag-questcheck", sc_bag_questcheck),
     ("bag-quest-unsure", sc_bag_quest_unsure),
+    ("enchants-data", sc_enchants_data),
+    ("enchants-bag", sc_enchants_bag),
+    ("enchants-equipped", sc_enchants_equipped),
+    ("enchants-levels", sc_enchants_levels),
+    ("enchants-links", sc_enchants_links),
+    ("enchants-roles", sc_enchants_roles),
+    ("enchants-slash", sc_enchants_slash),
+    ("enchants-modes", sc_enchants_modes),
+    ("enchants-quiet", sc_enchants_quiet),
+    ("enchants-legacy", sc_enchants_legacy),
+    ("enchants-missing", sc_enchants_missing),
 ]
 
 

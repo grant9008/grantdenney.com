@@ -613,7 +613,7 @@ def test_files():
                 "## X-Credits: Price data from Blizzard Entertainment\r\n"
                 "## X-Website: https://grantdenney.com/goblin-ledger/\r\n"
                 "## SavedVariables: ForeverAH_Settings\r\n## Version: 1.0.0\r\n"
-                "Data.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\n")
+                "Data.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\nEnchants.lua\r\n")
     # Git may check these out with either line ending; WoW reads both.
     def text(name):
         with open(os.path.join(ADDON, name), "rb") as fh:
@@ -1086,6 +1086,82 @@ def test_quest_item_hook():
         eq(G.QCALLS, 1, mode + ": not asked for a priced item")
         eq(show(99998), [("Goblin Ledger: no recent listings",)], mode + ": an unpriced item the hook has nothing for")
         eq(G.QCALLS, 2, mode + ": asked for an unpriced item")
+        G.C_Item = None
+        eq(ns.lastError, None, mode + ": no tooltip errors")
+
+
+def test_enchant_hook():
+    """Both tooltip handlers ask Enchants.lua (ns.EnchantLines) for the enchant lines once a
+    show, after the price and quest lines, with the base item id, the item's link and where
+    it is (the processor's info; nil on the script path). Also for unpriced soulbound gear,
+    where the price lines add nothing; the script path lays the tooltip out again for them."""
+    print("enchant hook (Enchants.lua's EnchantLines)")
+    for processor in (True, False):
+        mode = "processor" if processor else "script"
+        L, G, ns = new_env(fixture_lua(), processor=processor)
+        M = G.MOCK
+        M.now = UPDATED + 3600
+        G.ECALLS = G.loadstring("return {}")()
+        ns.QuestItemLine = G.loadstring("""return function(tt, id)
+            if id == 5000 then tt:AddLine("Done: you can drop it", 0.25, 0.8, 0.45) return true end
+            return false
+          end""")()
+        ns.EnchantLines = G.loadstring("""return function(tt, id, link, info)
+            ECALLS[#ECALLS + 1] = { id = id, link = link, info = info, at = #tt.lines, tt = tt:GetName() }
+            if id == 7777 or id == 2589 then tt:AddLine("Best enchant: Crusader", 0.9, 0.88, 0.84) return true end
+            return false
+          end""")()
+        G.C_Item = G.loadstring("""return { GetItemInfo = function(id)
+            local bind = ({ [7777] = 1, [5000] = 4 })[id] or 0
+            return "Item", "link", 2, 1, 0, "Weapon", "Two-Hand", 1, "INVTYPE_2HWEAPON", 134400, 0, 2, 8, bind end }""")()
+        tt = G.GameTooltip
+        bag_info = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
+
+        def show(iid, tip=None, info=None, enchant=""):
+            tip = tip or tt
+            link = "|cffffffff|Hitem:%d:%s:::::::60:::::|h[Item]|h|r" % (iid, enchant)
+            tip.itemLink = link
+            if processor:
+                return lines_of(M.ShowItem(tip, iid, info)), link
+            tip.Clear(tip)
+            tip.Fire(tip, "OnTooltipSetItem")
+            return lines_of(tip.lines), link
+
+        same = G.loadstring("return function(a, b) return rawequal(a, b) end")()
+
+        def calls():
+            c = G.ECALLS
+            return [(c[i].id, c[i].link, "bag_info" if same(c[i].info, bag_info) else c[i].info, c[i].at, c[i].tt)
+                    for i in range(1, len(c) + 1)]
+        shown0 = tt.shown
+        got, link = show(7777, info=bag_info, enchant="1900")
+        eq(got, [("Best enchant: Crusader",)], mode + ": unpriced soulbound gear gets the enchant line alone")
+        want_info = "bag_info" if processor else None
+        eq(calls(), [(7777, link, want_info, 0, "GameTooltip")], mode + ": called once with the id, the link and where it is")
+        if processor:
+            M.ShowItem(tt, 7777, bag_info, False)
+            eq(len(calls()), 1, mode + ": not called again when the same show fires again")
+        else:
+            eq(tt.shown, shown0 + 1, mode + ": Show lays the tooltip out again for the enchant line")
+        got, link = show(2589, info=bag_info)
+        check(len(got) > 2 and got[0][0] == "Goblin Ledger" and got[-1] == ("Best enchant: Crusader",),
+              mode + ": a priced item: the price lines first, the enchant line last (%s)" % got)
+        eq(calls()[-1][3], len(got) - 1, mode + ": asked after every price line")
+        got, link = show(5000, info=bag_info)
+        eq(got, [("Done: you can drop it",)], mode + ": a quest item: the quest line, then nothing from the hook")
+        eq(calls()[-1][:4], (5000, link, want_info, 1), mode + ": asked after the quest line")
+        n = len(calls())
+        if processor:
+            excl = G.loadstring("return { excludeLines = { 1 } }")()
+            show(7777, info=excl)
+            eq(len(calls()), n, mode + ": not for a tooltip that leaves lines out")
+        show(7777, tip=G.EmbeddedItemTooltip)
+        eq(len(calls()), n, mode + ": not for tooltips the addon does not hook")
+        got, _ = show(7777, tip=G.ShoppingTooltip1)
+        eq(calls()[-1][4], "ShoppingTooltip1", mode + ": comparison tooltips ask too (Enchants.lua says no)")
+        ns.EnchantLines = None
+        got, _ = show(7777, info=bag_info)
+        eq(got, [], mode + ": no hook, no line and no error")
         G.C_Item = None
         eq(ns.lastError, None, mode + ": no tooltip errors")
 
@@ -2413,6 +2489,7 @@ def main():
     test_placeholder()
     test_fallback_hooks()
     test_quest_item_hook()
+    test_enchant_hook()
     test_bare_environment()
     test_new_fields()
     test_sales_hours()

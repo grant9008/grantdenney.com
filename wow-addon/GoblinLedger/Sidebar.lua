@@ -1032,14 +1032,19 @@ end
 
 -- Shows the game's item tooltip for an id: a version through a link with its
 -- bonus ids (so the game shows that version and the price lines are its own).
+-- No enchant lines (Enchants.lua) on these: the row is about the price.
 local function SetItemTooltip(tt, id)
   local link = type(ns.VariantLink) == "function" and ns.VariantLink(id) or nil
   if link and type(tt.SetHyperlink) == "function" then
+    ns.tipQuiet = true
     local ok = pcall(tt.SetHyperlink, tt, link)
+    ns.tipQuiet = false
     if ok then return true end
   end
   if type(tt.SetItemByID) == "function" then
+    ns.tipQuiet = true
     local ok = pcall(tt.SetItemByID, tt, BaseID(id))
+    ns.tipQuiet = false
     return ok
   end
   return false
