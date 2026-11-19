@@ -1021,12 +1021,15 @@ E.IsOn = tipsOn
 -- The Enchant tips box on the character panel
 ---------------------------------------------------------------------------
 -- A small check box on the Character tab only (a child of PaperDollFrame, so
--- Reputation, Skills and the other tabs do not show it), just above the head
--- slot. Forever's panel (Blizzard_UIPanels_Game, Camelot PaperDollFrame.xml):
--- a 36px strip with the level line on top, the slots from 60px down, the
--- model's zoom and turn buttons in the middle 40px down, and the model scene
+-- Reputation, Skills and the other tabs do not show it). Forever's panel
+-- (Blizzard_UIPanels_Game, Camelot PaperDollFrame.xml): a 36px strip with the
+-- level line on top (the portrait over its left end), the slots from 60px down,
+-- the model's zoom and turn buttons in the middle 40px down, and the model scene
 -- (level 50) over PaperDollFrame's own children, so the box is raised to the
--- slots' level. Pawn's button and GearMatic's arrows are at the bottom.
+-- slots' level. There the box sits just above the head slot. ElvUI's skin hides
+-- the portrait and boxes the model in between the slot columns from 31px down,
+-- so there the box sits in the empty top left corner, over the left slot column.
+-- Pawn's button and GearMatic's arrows are at the bottom.
 local TOGGLE_NAME, TOGGLE_SIZE = "GoblinLedgerEnchantToggle", 22
 local TOGGLE_ART = {   -- the game's check box look, put back if a skin stops half way
   SetNormalTexture = "Interface\\Buttons\\UI-CheckBox-Up",
@@ -1035,7 +1038,9 @@ local TOGGLE_ART = {   -- the game's check box look, put back if a skin stops ha
   SetCheckedTexture = "Interface\\Buttons\\UI-CheckBox-Check",
 }
 local ROLE_HOW = { pick = "picked by hand", talents = "from your talents", class = "your class's usual role" }
+local GREY = { 0.5, 0.5, 0.5 }   -- the label while Goblin Ledger's tooltips are off (/gl tooltip)
 local toggle   -- the box, made once
+local labelColour = { 1, 0.82, 0 }   -- the label's own colour (GameFontNormalSmall's), read when it is made
 
 local function guarded(fn)
   return function(...)
@@ -1048,6 +1053,15 @@ local function owns(tt, f)
   if f == nil or type(tt) ~= "table" or type(tt.GetOwner) ~= "function" then return false end
   local ok, o = pcall(tt.GetOwner, tt)
   return ok and o == f
+end
+
+local function isFrame(f)
+  return type(f) == "table" and type(f.GetObjectType) == "function"
+end
+
+-- /gl tooltip turned all Goblin Ledger tooltip lines off: the box then changes nothing.
+local function tooltipsOff()
+  return settings().tooltip == false
 end
 
 -- The role the lines are for (or the one ticking the box brings back) and how it was found.
@@ -1069,13 +1083,20 @@ local function showToggleTip(self)
   tt:SetOwner(self, "ANCHOR_RIGHT")
   tt:SetText("Goblin Ledger: Enchant tips", 1, 1, 1)
   tt:AddLine("Best enchant for your role, its mats and cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
-  tt:AddLine(r .. " /gl enchants picks the role.", mu[1], mu[2], mu[3], true)
+  if tooltipsOff() then
+    tt:AddLine("Goblin Ledger tooltips are off: /gl tooltip turns them on.", mu[1], mu[2], mu[3], true)
+  else
+    tt:AddLine(r .. " /gl enchants picks the role.", mu[1], mu[2], mu[3], true)
+  end
   tt:Show()
 end
 
 local function refreshToggle()
   if not toggle then return end
   toggle:SetChecked(tipsOn())
+  -- The label goes grey while /gl tooltip has every tooltip line off.
+  local fs, c = toggle.Text, tooltipsOff() and GREY or labelColour
+  if type(fs) == "table" and type(fs.SetTextColor) == "function" and c then pcall(fs.SetTextColor, fs, c[1], c[2], c[3]) end
   if owns(_G.GameTooltip, toggle) then showToggleTip(toggle) end
 end
 
@@ -1107,18 +1128,29 @@ local function raiseToggle()
   if lvl < 10000 then toggle:SetFrameLevel(lvl + 1) end
 end
 
--- ElvUI skins the character panel: the box gets ElvUI's check box look too, once
--- ElvUI is set up. true = done (skinned, or nothing to do); false = ask again.
-local function elvSkin(cb)
+-- ElvUI's engine and Skins module when ElvUI skins the character panel (its
+-- Character skin, on by default; Skins\Skins.lua LoadSkin asks the same), nil
+-- when it does not, "later" while ElvUI has not read its settings yet.
+local function elvCharacterSkin()
   local eng = _G.ElvUI
   local EV = type(eng) == "table" and eng[1]
-  if type(EV) ~= "table" or type(EV.GetModule) ~= "function" then return true end
+  if type(EV) ~= "table" or type(EV.GetModule) ~= "function" then return nil end
+  local ok, S = pcall(EV.GetModule, EV, "Skins", true)
+  if not ok or type(S) ~= "table" or type(S.HandleCheckBox) ~= "function" then return nil end
   local P = EV.private
   local bz = type(P) == "table" and type(P.skins) == "table" and P.skins.blizzard
-  if type(bz) == "table" and (bz.enable == false or bz.character == false) then return true end
-  local ok, S = pcall(EV.GetModule, EV, "Skins", true)
-  if not ok or type(S) ~= "table" or type(S.HandleCheckBox) ~= "function" then return true end
-  if type(S.db) ~= "table" then return false end
+  if type(bz) ~= "table" then return "later" end
+  if not (bz.enable and bz.character) then return nil end
+  return EV, S
+end
+
+-- With ElvUI's skin the box gets ElvUI's check box look too, once ElvUI is set
+-- up (at login). true = done (skinned, or nothing to do); false = ask again.
+local function elvSkin(cb)
+  local EV, S = elvCharacterSkin()
+  if EV == "later" then return false end
+  if not EV then return true end
+  if type(S.db) ~= "table" or not (S.Initialized or EV.Initialized) then return false end
   if not pcall(S.HandleCheckBox, S, cb) then
     for k, v in pairs(TOGGLE_ART) do
       if type(cb[k]) == "function" then pcall(cb[k], cb, v) end
@@ -1127,7 +1159,30 @@ local function elvSkin(cb)
   return true
 end
 
+-- Where the box goes, asked again each time it shows. Just above the head slot
+-- (it follows the slot when a skin moves it). ElvUI's skin moves the head slot
+-- to the pane's edge and the model's framed box to 46px in, where the label
+-- would run over the model's border: there the box goes in the top left
+-- corner, over the slot column (the portrait and the strip are hidden there).
+local function placeToggle()
+  local EV = elvCharacterSkin()
+  local pane, head = _G.CharacterFrameLeftPaneHost, _G.CharacterHeadSlot
+  local where = "frame"
+  if EV and EV ~= "later" and isFrame(pane) then where = "corner" elseif isFrame(head) then where = "head" end
+  if toggle.glPlace == where then return end
+  toggle.glPlace = where
+  toggle:ClearAllPoints()
+  if where == "corner" then
+    toggle:SetPoint("TOPLEFT", pane, "TOPLEFT", 2, -4)
+  elseif where == "head" then
+    toggle:SetPoint("BOTTOMLEFT", head, "TOPLEFT", -3, 1)
+  else
+    toggle:SetPoint("TOPLEFT", toggle:GetParent(), "TOPLEFT", 21, -57)
+  end
+end
+
 local function onToggleShow(self)
+  placeToggle()
   raiseToggle()
   refreshToggle()
   if not self.glSkinDone then self.glSkinDone = elvSkin(self) end
@@ -1148,17 +1203,11 @@ end
 local function buildToggle()
   if toggle then return true end
   local parent, make = _G.PaperDollFrame, _G.CreateFrame
-  if type(parent) ~= "table" or type(parent.GetObjectType) ~= "function" or type(make) ~= "function" then return false end
+  if not isFrame(parent) or type(make) ~= "function" then return false end
   local cb = make("CheckButton", TOGGLE_NAME, parent, "UICheckButtonTemplate")
   toggle = cb
   cb:SetSize(TOGGLE_SIZE, TOGGLE_SIZE)
-  cb:ClearAllPoints()
-  local head = _G.CharacterHeadSlot
-  if type(head) == "table" and type(head.GetObjectType) == "function" then
-    cb:SetPoint("BOTTOMLEFT", head, "TOPLEFT", -3, 1)   -- follows the slot when a skin moves it
-  else
-    cb:SetPoint("TOPLEFT", parent, "TOPLEFT", 21, -57)
-  end
+  placeToggle()
   local fs = cb.Text or cb.text
   if type(fs) ~= "table" then
     fs = cb:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
@@ -1166,6 +1215,9 @@ local function buildToggle()
     cb.Text = fs
   end
   fs:SetText("Enchant tips")
+  local okC, r, g, b = pcall(fs.GetTextColor, fs)
+  r, g, b = plainNumber(r), plainNumber(g), plainNumber(b)
+  if okC and r and g and b then labelColour = { r, g, b } end
   -- A click on the words ticks the box too.
   local okW, wide = pcall(fs.GetStringWidth, fs)
   wide = okW and plainNumber(wide) or 0
@@ -1267,6 +1319,7 @@ local function enchantsCommand(rest)
   end
   if S.enchants ~= "off" then S.enchantsBeforeOff = nil end
   E.Invalidate()
+  refreshItemTips()
   refreshToggle()
   if rest == "off" then
     say("enchant tips are off. /gl enchants auto turns them back on.")
@@ -1293,6 +1346,7 @@ function ns.HandleSlash(msg)
     return
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
+  if cmd == "tooltip" or cmd == "tooltips" then pcall(refreshToggle) end   -- Core's /gl tooltip: the label greys or not
   if cmd == "help" or cmd == "?" then
     say("/gl enchants : the best enchant on gear tooltips for your role: " .. CHOICES .. " (auto follows your talents)")
     say("   the price is the mats at AH value; you still need an enchanter who knows the formula")
@@ -1319,7 +1373,6 @@ if type(_G.CreateFrame) == "function" then
         -- What the tips were before off: "auto" or a role, kept only while they are off.
         local was = S.enchantsBeforeOff
         if S.enchants ~= "off" or (was ~= "auto" and not ROLES[was]) then S.enchantsBeforeOff = nil end
-        pcall(refreshToggle)
       end
     end)
   end
