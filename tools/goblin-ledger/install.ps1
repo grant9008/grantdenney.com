@@ -17,7 +17,9 @@
        a new official Goblin Ledger version and installs it by itself
        (the choice is saved in %LOCALAPPDATA%\GoblinLedger\config.txt)
 
-  Running it again updates the addon and fetches fresh prices.
+  Running it again updates the addon and fetches fresh prices. A Goblin
+  Ledger that is newer than this download (it installed a new version by
+  itself since) is kept as it is, and so is a newer updater.
   It needs no administrator rights unless Windows protects the game folder.
 
     -GameDir         the WoW Forever folder (_forever_); skips the search
@@ -87,6 +89,8 @@ if (-not $AddonSource -or -not (Test-Path -LiteralPath (Join-Path $AddonSource '
            'Install-Goblin-Ledger.bat from the unzipped folder.')
 }
 $AddonSource = [IO.Path]::GetFullPath($AddonSource).TrimEnd('\')
+# The version of this download (both TOC files say it; make_release.ps1 checks that).
+$SourceVersion = Get-AddonVersion $AddonSource
 # The unzipped release: the folder with Install-Goblin-Ledger.bat and the
 # scripts folder (in the repo: this folder).
 $ReleaseRoot = $PSScriptRoot
@@ -207,19 +211,39 @@ Blank
 # longer has are removed. The prices already there are kept until new ones
 # are downloaded below. Unzipped straight into AddOns, the addon is already
 # in place (nothing to copy), and the unzipped files are never removed.
+# An installed Goblin Ledger that is newer than this download (it installed
+# a new version by itself) is kept: running an old download again for fresh
+# prices never takes it back to the old version.
+# While an automatic update runs, this waits for it (they share a lock).
+$lockWait = 60
+if ($script:TestMode -and $env:GOBLINLEDGER_TEST_LOCKWAIT -match '^\d+$') { $lockWait = [int]$env:GOBLINLEDGER_TEST_LOCKWAIT }
+$lock = Enter-UpdateLock $lockWait
+if (-not $lock.Owned) {
+    Fail @('A Goblin Ledger update is running right now and has not finished.',
+           'Wait a minute, then run Install-Goblin-Ledger.bat again. Nothing was changed.')
+}
 $sameDir = (Test-Within $AddonSource $Dest) -and (Test-Within $Dest $AddonSource)
+$staged = Join-Path $Dest '_update'
+$InstalledVersion = $null
+# An automatic update that stopped half way: the files there are no version at all.
+if (-not $sameDir -and -not (Test-Path -LiteralPath (Join-Path $staged 'swap.txt') -PathType Leaf)) {
+    try { $InstalledVersion = Get-AddonVersion $Dest } catch { }
+}
+$keepNewer = $SourceVersion -and $InstalledVersion -and ($InstalledVersion -gt $SourceVersion)
 if ($sameDir) {
     Say 'The addon is already in Interface\AddOns\GoblinLedger (unzipped there).'
+} elseif ($keepNewer) {
+    Say "You already have Goblin Ledger $InstalledVersion, newer than this download ($SourceVersion),"
+    Say 'so it was kept as it is.'
 } else {
     Say 'Copying the addon into Interface\AddOns\GoblinLedger ...'
 }
 try {
     New-Item -ItemType Directory -Path $Dest -Force | Out-Null
     # Left over from an automatic update that stopped half way: this copy replaces it.
-    $staged = Join-Path $Dest '_update'
     if (Test-Path -LiteralPath $staged -PathType Container) { Remove-Item -LiteralPath $staged -Recurse -Force }
     $keep = @{}
-    if (-not $sameDir) {
+    if (-not $sameDir -and -not $keepNewer) {
         foreach ($f in @(Get-ChildItem -LiteralPath $AddonSource -Recurse -File)) {
             $rel = $f.FullName.Substring($AddonSource.Length).TrimStart('\')
             if ($rel -ieq 'Data.lua') { continue }
@@ -231,6 +255,7 @@ try {
         }
     }
     foreach ($f in @(Get-ChildItem -LiteralPath $Dest -Recurse -File)) {
+        if ($keepNewer) { break }
         $rel = $f.FullName.Substring($Dest.Length).TrimStart('\')
         if ($rel -ieq 'Data.lua' -or $keep.ContainsKey($rel.ToLowerInvariant())) { continue }
         if ((Test-Within $f.FullName $AddonSource) -or (Test-Within $f.FullName $ReleaseRoot)) { continue }
@@ -244,10 +269,13 @@ try {
     }
     if (-not (Test-Path -LiteralPath $data)) { Set-Content -LiteralPath $data -Value $Placeholder -Encoding ASCII }
 } catch {
-    if (Test-AccessError $_) { Fail $AccessLines }
-    Fail @('Could not copy the addon into the game folder:', "    $($_.Exception.Message)",
+    $err = $_
+    Exit-UpdateLock $lock
+    if (Test-AccessError $err) { Fail $AccessLines }
+    Fail @('Could not copy the addon into the game folder:', "    $($err.Exception.Message)",
            'Close WoW and try again.')
 }
+Exit-UpdateLock $lock
 Say 'Done.'
 
 # Started with "Run as administrator": the updates run as you, not as
@@ -282,14 +310,31 @@ foreach ($mv in (Get-SettingsMoves $GameDir)) {
 if (-not (Remove-PriceTask $OldTaskName)) { Say "Could not remove the old ""$OldTaskName"" task. Task Scheduler can delete it." }
 
 # ---- 4. the price updater, outside the unzipped folder -----------------------------
+# config.txt says which version's installer put the updater there: a newer
+# one than this download stays.
+$ConfigFile = Join-Path $AppDir 'config.txt'
+$SavedInstaller = $null
+try {
+    if (Test-Path -LiteralPath $ConfigFile -PathType Leaf) {
+        $m = [regex]::Match([IO.File]::ReadAllText($ConfigFile), '(?m)^\s*installer\s*=\s*(\S+)\s*$')
+        if ($m.Success) { $SavedInstaller = ConvertTo-Version $m.Groups[1].Value }
+    }
+} catch { }
+$InstallerVersion = $SourceVersion
 try {
     New-Item -ItemType Directory -Path $AppDir -Force | Out-Null
     $upd = Join-Path $AppDir 'update_prices.ps1'
-    Copy-Item -LiteralPath $Updater -Destination $upd -Force
-    try { Unblock-File -LiteralPath $upd -ErrorAction Stop } catch { }
     $updBat = Join-Path $AppDir 'Update-Goblin-Ledger.bat'
-    Copy-Item -LiteralPath $UpdateBat -Destination $updBat -Force
-    try { Unblock-File -LiteralPath $updBat -ErrorAction Stop } catch { }
+    if ($SourceVersion -and $SavedInstaller -and $SavedInstaller -gt $SourceVersion -and
+            (Test-Path -LiteralPath $upd -PathType Leaf) -and (Test-Path -LiteralPath $updBat -PathType Leaf)) {
+        $InstallerVersion = $SavedInstaller
+        Say "Kept the newer updater (from Goblin Ledger $SavedInstaller)."
+    } else {
+        Copy-Item -LiteralPath $Updater -Destination $upd -Force
+        try { Unblock-File -LiteralPath $upd -ErrorAction Stop } catch { }
+        Copy-Item -LiteralPath $UpdateBat -Destination $updBat -Force
+        try { Unblock-File -LiteralPath $updBat -ErrorAction Stop } catch { }
+    }
     Save-PathFile (Join-Path $AppDir 'addon_dir.txt') $Dest
 } catch {
     Fail @("Could not save the price updater in $AppDir", "    $($_.Exception.Message)")
@@ -346,8 +391,8 @@ if ($auto) {
     else { $start = $start.AddMinutes(75) }
     $ok = $false
     if ($script:TestMode) {
-        Write-TaskLog "REGISTER $TaskName every 30 minutes from $($start.ToString('HH:mm')): $exe $taskArgs"
-        $ok = $true
+        $ok = ($env:GOBLINLEDGER_TEST_TASKFAIL -ne '1')
+        if ($ok) { Write-TaskLog "REGISTER $TaskName every 30 minutes from $($start.ToString('HH:mm')): $exe $taskArgs" }
     } else {
         try {
             $action = New-ScheduledTaskAction -Execute $exe -Argument $taskArgs
@@ -381,9 +426,11 @@ if ($auto) {
 }
 
 # ---- 7. new versions by themselves (optional, needs the task above) --------------------
+# Only asked when the task is really there: without it nothing checks by itself.
+$taskOn = $auto -and $ok
 Blank
 Say '------------------------------------------------------------'
-if ($auto) {
+if ($taskOn) {
     Say 'The same task can also keep Goblin Ledger itself up to date: when a'
     Say 'new version is out, it downloads it, checks it is the official one'
     Say 'and swaps in the new addon files. Your prices and settings are kept.'
@@ -402,9 +449,11 @@ if ($auto) {
     Say '------------------------------------------------------------'
 }
 try {
-    Set-Content -LiteralPath (Join-Path $AppDir 'config.txt') -Encoding ASCII -Value @(
-        '# Goblin Ledger: your answers to the installer (run Install-Goblin-Ledger.bat again to change them).',
-        ('addon_updates=' + $(if ($addonAuto) { 'yes' } else { 'no' })))
+    $lines = @('# Goblin Ledger: your answers to the installer (run Install-Goblin-Ledger.bat again to change them).',
+               ('addon_updates=' + $(if ($addonAuto) { 'yes' } else { 'no' })))
+    # The version of the installer that put the updater here.
+    if ($InstallerVersion) { $lines += ('installer=' + $InstallerVersion.ToString()) }
+    Set-Content -LiteralPath $ConfigFile -Encoding ASCII -Value $lines
     # Look for a newer version at the next run of the task (this copy may be old).
     foreach ($n in @('addon_update.txt', 'release.json')) {
         Remove-Item -LiteralPath (Join-Path $AppDir $n) -Force -ErrorAction SilentlyContinue
@@ -412,7 +461,7 @@ try {
 } catch {
     Say "Could not save that answer: $($_.Exception.Message)"
 }
-if ($auto) {
+if ($taskOn) {
     Blank
     if ($addonAuto) {
         Say 'Done: new versions install by themselves. After one, the game says'

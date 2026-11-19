@@ -4562,7 +4562,7 @@ def latest_lua(**f):
         if isinstance(v, int):
             return str(v)
         return '"%s"' % v
-    keys = ("version", "installed", "from", "installedAt", "auto", "restart")
+    keys = ("version", "installed", "from", "installedAt", "auto", "restart", "waiting")
     return ("-- Goblin Ledger: the newest version the updater found, and the one it installed.\r\n"
             "GoblinLedger_Latest = { %s }\r\n" % ", ".join("%s = %s" % (k, lv(f.get(k))) for k in keys))
 
@@ -4579,7 +4579,8 @@ def sc_update_notice(sc, ref, items):
     sc.eq(src.replace("\r\n", "\n"), LATEST_PLACEHOLDER, "repo Latest.lua is the placeholder")
     sc.check(src.count("\r\n") == src.count("\n"), "Latest.lua has Windows line ends")
     T = 1795000000
-    OUT = "Goblin Ledger 1.1.0 is out: double-click Update-Goblin-Ledger.bat."
+    OUT = "Goblin Ledger 1.1.0 is out. Type /gl update for how to get it."
+    WAITS = "Goblin Ledger 1.1.0 is out: it installs by itself after you close WoW."
 
     def world(latest, running="1.0.0", saved=None, login=(True, False), client="modern"):
         w = World(ref, items, latest_src=latest, running_version=running, saved=saved, login=login, client=client)
@@ -4658,10 +4659,57 @@ def sc_update_notice(sc, ref, items):
     w = world(BOTH, running="1.1.0")
     sc.eq(notices(w), ["Goblin Ledger updated to 1.1.0."], "both: the update line first, alone")
     w = world(BOTH, running="1.1.0", saved=seen(w))
-    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out: double-click Update-Goblin-Ledger.bat."], "both: 'is out' at the next login")
+    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out. Type /gl update for how to get it."], "both: 'is out' at the next login")
     w = world(BOTH, running="1.0.0", saved={"updateSeen": T})
-    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out: double-click Update-Goblin-Ledger.bat."],
+    sc.eq(notices(w), ["Goblin Ledger 1.2.0 is out. Type /gl update for how to get it."],
           "the installed version counts even before a restart")
+
+    # Installing by itself is on, but WoW was open at every check: the updater
+    # noted the version and waits; the line says it comes after WoW is closed.
+    WAIT = latest_lua(version="1.1.0", installedAt=0, auto=False, restart=False, waiting=True)
+    w = world(WAIT)
+    sc.eq(notices(w), [WAITS], "waiting for WoW to close: says it installs after you close WoW")
+    w = world(WAIT, saved=seen(w), login=(False, True))
+    sc.eq(notices(w), [], "waiting: not after a /reload")
+    w = world(WAIT, running="1.1.0")
+    sc.eq(notices(w), [], "waiting: already on 1.1.0: nothing")
+
+    # Versions are numbers, not text: 1.10.0 is newer than 1.9.0 (and 1.9.5).
+    for running, latest, want in [
+            ("1.9.0", latest_lua(version="1.10.0"), ["Goblin Ledger 1.10.0 is out. Type /gl update for how to get it."]),
+            ("1.10.0", latest_lua(version="1.9.0"), []),
+            ("1.10.0", latest_lua(version="1.9.5"), []),
+            ("1.9.0", latest_lua(version="1.9.5", installed="1.10.0", installedAt=T, auto=False), []),
+            ("2.0.0", latest_lua(version="10.0.0"), ["Goblin Ledger 10.0.0 is out. Type /gl update for how to get it."]),
+            ("1.2.10", latest_lua(version="1.2.9"), [])]:
+        w = world(latest, running=running, saved={"updateSeen": T})
+        sc.eq(notices(w), want, "running %s, the updater found %s" % (running, latest.split("version = ")[1].split(",")[0]))
+
+    # /gl update: the version, and where Update-Goblin-Ledger.bat is (the unzipped folder is often gone).
+    def upd(w, cmd="/gl update"):
+        return [plain(c) for c in w.slash(cmd)]
+    w = world(OFF)
+    out = upd(w)
+    sc.check(any(l.endswith("version 1.1.0 is out (you have 1.0.0).") for l in out), "/gl update: newer version (%s)" % out)
+    sc.check(any("press Windows+R, type %LOCALAPPDATA%\\GoblinLedger and press Enter" in l for l in out),
+             "/gl update: says where Update-Goblin-Ledger.bat is (%s)" % out)
+    sc.check(any("Update-Goblin-Ledger.bat" in l for l in out) and any("/reload" in l for l in out), "/gl update: what to do then")
+    sc.eq(upd(w, "/gl version"), out, "/gl version is the same")
+    sc.check(all(all(ord(c) < 128 for c in l) for l in out), "/gl update: plain ASCII")
+    w = world(WAIT)
+    out = upd(w)
+    sc.check(any("it installs by itself after you close WoW. To get it now:" in l for l in out), "/gl update, waiting (%s)" % out)
+    w = world(src)
+    out = upd(w)
+    sc.check(any(l.endswith("you have version 1.0.0. To look for a newer one now:") for l in out), "/gl update, nothing newer (%s)" % out)
+    sc.check(any("%LOCALAPPDATA%\\GoblinLedger" in l for l in out), "/gl update, nothing newer: still says where")
+    w = world(src, running=False)
+    out = upd(w)
+    sc.check(any(l.endswith("you have this version. To look for a newer one now:") for l in out), "/gl update, no version (%s)" % out)
+    sc.clean(w, "/gl update")
+    helpout = [plain(c) for c in w.slash("/gl help")]
+    sc.check(any("/gl update : which Goblin Ledger version you have, and how to get a newer one" in l for l in helpout),
+             "/gl help lists /gl update")
 
     # The legacy client works the same.
     w = world(L, running="1.1.0", client="legacy")
@@ -4670,7 +4718,7 @@ def sc_update_notice(sc, ref, items):
     w = world(OFF, client="legacy")
     sc.eq(notices(w), [OUT], "legacy client: 'is out'")
     # Plain ASCII, short.
-    for line in ("Goblin Ledger updated to 1.1.0. Restart WoW to finish.", OUT):
+    for line in ("Goblin Ledger updated to 1.1.0. Restart WoW to finish.", OUT, WAITS):
         sc.check(all(ord(c) < 128 for c in line) and len(line) <= 72, "short plain line: %s" % line)
 
 

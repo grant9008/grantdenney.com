@@ -2,7 +2,8 @@
   HOW TO SHIP AN UPDATE (friends get it by themselves)
     1. Bump "## Version: X.Y.Z" in BOTH wow-addon\GoblinLedger\GoblinLedger.toc
        and GoblinLedger_Forever.toc (higher than the last release, e.g. 1.0.0
-       -> 1.1.0). This script refuses to build when the two differ.
+       -> 1.1.0). This script refuses to build when the two differ, when
+       their file lists differ, or when they list a file that is not there.
     2. Build: powershell -NoProfile -ExecutionPolicy Bypass -File tools\goblin-ledger\make_release.ps1
     3. On GitHub (grant9008/grantdenney.com, Releases, "Draft a new release"):
        tag vX.Y.Z (exactly the TOC version with a v in front), attach
@@ -69,6 +70,24 @@ if ($versions[0] -ne $versions[1]) {
 }
 $Version = $versions[0]
 Write-Host "Goblin Ledger version $Version (GitHub release tag: v$Version)"
+# The files the TOCs load: both lists the same, and every file there (but
+# Data.lua, which the installer downloads). Friends' updaters refuse a zip
+# whose TOC lists a file it does not have.
+$lists = @()
+foreach ($t in @('GoblinLedger.toc', 'GoblinLedger_Forever.toc')) {
+    $names = @([IO.File]::ReadAllText((Join-Path $Addon $t)) -split "`r?`n" | ForEach-Object { $_.Trim() } |
+        Where-Object { $_ -and -not $_.StartsWith('#') })
+    foreach ($n in $names) {
+        if ($n -ieq 'Data.lua') { continue }
+        if (-not (Test-Path -LiteralPath (Join-Path $Addon $n) -PathType Leaf)) {
+            Stop-Build "$t lists $n, which is not in the addon folder. Add the file or take it out of the TOC."
+        }
+    }
+    $lists += , ($names -join "`n").ToLowerInvariant()
+}
+if ($lists[0] -ne $lists[1]) {
+    Stop-Build 'GoblinLedger.toc and GoblinLedger_Forever.toc list different files. Make the file lists the same.'
+}
 # The updater on friends' PCs installs only .lua and .toc files at the top of the addon folder.
 foreach ($f in @(Get-ChildItem -LiteralPath $Addon -Recurse -Force)) {
     if ($f.PSIsContainer) { Stop-Build "a folder inside the addon ($($f.Name)) would stop automatic updates. Keep the addon flat." }

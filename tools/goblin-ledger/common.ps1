@@ -9,6 +9,9 @@
       written to the file named by GOBLINLEDGER_TASKLOG instead, and the tasks
       listed in GOBLINLEDGER_TEST_TASKS (separated by ;) count as existing
     - answers to the questions come from GOBLINLEDGER_ANSWERS (separated by |)
+    - GOBLINLEDGER_TEST_TASKFAIL=1: creating the task fails, as when Windows
+      refuses it; GOBLINLEDGER_TEST_LOCKWAIT: seconds to wait for a running
+      update (default 60)
   Tests also point LOCALAPPDATA at a temporary folder.
 #>
 
@@ -95,8 +98,11 @@ function Resolve-GameDir([string]$text) {
 }
 
 # Is WoW Forever running? Only a Wow* program started from the game folder
-# counts (an addon manager such as WowUp does not). Test mode: the number in
-# GOBLINLEDGER_TEST_WOW says how many checks still find it running.
+# counts (an addon manager such as WowUp does not). When Windows will not say
+# where a program runs from (one started as administrator), only the game's
+# own names count (Wow, WowClassic, WowT ...), as in update_prices.ps1.
+# Test mode: the number in GOBLINLEDGER_TEST_WOW says how many checks still
+# find it running.
 $script:TestWowLeft = 0
 if ($env:GOBLINLEDGER_TEST_WOW -match '^\d+$') { $script:TestWowLeft = [int]$env:GOBLINLEDGER_TEST_WOW }
 function Test-WowRunning([string]$gameDir) {
@@ -109,11 +115,70 @@ function Test-WowRunning([string]$gameDir) {
     foreach ($p in @(Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue)) {
         $path = $null
         try { $path = $p.Path } catch { }
-        # Windows would not say where it runs from: count it, to be safe.
-        if (-not $path -or -not $root) { return $true }
-        if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if ($path -and $root) {
+            if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        } elseif ($p.ProcessName -match '^(?i)wow(classic)?[a-z]?(-64)?$') {
+            return $true
+        }
     }
     return $false
+}
+
+# The ## Version that both TOC files of a Goblin Ledger folder say, as a
+# [Version]; $null when a TOC is missing, has none, or the two differ.
+function Get-AddonVersion([string]$dir) {
+    $v = $null
+    foreach ($n in @('GoblinLedger.toc', 'GoblinLedger_Forever.toc')) {
+        $p = Join-Path $dir $n
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { return $null }
+        $m = [regex]::Match([IO.File]::ReadAllText($p), '(?m)^##\s*Version\s*:\s*(\d{1,5})\.(\d{1,5})\.(\d{1,5})\s*$')
+        if (-not $m.Success) { return $null }
+        $x = New-Object Version ([int]$m.Groups[1].Value), ([int]$m.Groups[2].Value), ([int]$m.Groups[3].Value)
+        if ($v -and $x -ne $v) { return $null }
+        $v = $x
+    }
+    return $v
+}
+
+# "1.2.3" as a [Version], else $null.
+function ConvertTo-Version([string]$text) {
+    $m = [regex]::Match([string]$text, '^\s*(\d{1,5})\.(\d{1,5})\.(\d{1,5})\s*$')
+    if (-not $m.Success) { return $null }
+    return New-Object Version ([int]$m.Groups[1].Value), ([int]$m.Groups[2].Value), ([int]$m.Groups[3].Value)
+}
+
+# The lock update_prices.ps1 takes before it installs a new version or puts
+# back one that stopped half way (the same name; tests: one per fake PC).
+# Waits up to $seconds for a run that holds it. @{ Owned; Mutex }.
+function Enter-UpdateLock([int]$seconds) {
+    $name = 'Local\GoblinLedgerAddonUpdate'
+    if ($script:TestMode) {
+        $sha = [Security.Cryptography.SHA256]::Create()
+        try { $h = $sha.ComputeHash([Text.Encoding]::UTF8.GetBytes(([string]$env:LOCALAPPDATA).ToLowerInvariant())) }
+        finally { $sha.Dispose() }
+        $name += '_' + ([BitConverter]::ToString($h)).Replace('-', '').ToLowerInvariant().Substring(0, 16)
+    }
+    $l = @{ Owned = $true; Mutex = $null }
+    try {
+        $l.Mutex = New-Object Threading.Mutex($false, $name)
+        try {
+            $l.Owned = $l.Mutex.WaitOne(0)
+            if (-not $l.Owned -and $seconds -gt 0) {
+                Say 'Waiting for a Goblin Ledger update that is running right now...'
+                $l.Owned = $l.Mutex.WaitOne($seconds * 1000)
+            }
+        } catch { $l.Owned = $true }   # abandoned by a run that stopped: ours now
+    } catch { }   # Windows gave no lock at all: carry on without one
+    if (-not $l.Owned -and $l.Mutex) { $l.Mutex.Dispose(); $l.Mutex = $null }
+    return $l
+}
+
+function Exit-UpdateLock($l) {
+    if ($l -and $l.Mutex) {
+        if ($l.Owned) { try { $l.Mutex.ReleaseMutex() } catch { } }
+        $l.Mutex.Dispose()
+        $l.Mutex = $null
+    }
 }
 
 # Saves a folder path for the updater and the uninstallers. Plain ASCII when

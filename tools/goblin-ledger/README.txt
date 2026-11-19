@@ -30,8 +30,8 @@ Windows (if you said Y). The game loads them when you log in or type
 NEW VERSIONS
 They install by themselves if you said Y (checked every few hours, only
 official releases, your prices and settings are kept). Update right now:
-double-click Update-Goblin-Ledger.bat (in this folder, or the copy in
-%LOCALAPPDATA%\GoblinLedger), then restart WoW or type /reload.
+double-click Update-Goblin-Ledger.bat in %LOCALAPPDATA%\GoblinLedger (press
+Windows+R, type that and press Enter), then restart WoW or type /reload.
 
 NOT WORKING?
 - "Windows did not allow copying into the game folder": right-click

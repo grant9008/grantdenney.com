@@ -36,6 +36,8 @@
                       Ledger versions by themselves?" was answered Y (saved in
                       %LOCALAPPDATA%\GoblinLedger\config.txt); answered N, it
                       only notes the new version for the game's chat line.
+                      While WoW is open it waits (asks again every 20
+                      minutes) and notes the version for the chat line too.
                       Then the prices are updated as always.
     -AddonCheck now   Update-Goblin-Ledger.bat: check and install right now,
                       say what happened, and stop (no prices).
@@ -244,24 +246,79 @@ $AddonAccessHelp = @(
     'Your Goblin Ledger was left as it was.'
 )
 
-# Tests only: GOBLINLEDGER_TEST_FAIL=stage:N or swap:N makes the Nth file step
-# of an install fail; crash:N stops the whole run dead at the Nth swap step
-# (like a power cut), with no clean-up at all.
+# Tests only, GOBLINLEDGER_TEST_FAIL:
+#   stage:N or swap:N  the Nth file step of an install fails
+#   crash:N            the whole run stops dead at the Nth swap step (like a
+#                      power cut), with no clean-up at all
+#   hold:N             at the Nth swap step the run waits while test_hold.txt is
+#                      in %LOCALAPPDATA%\GoblinLedger (so another run can start then)
+#   lock:NAME          the staged copy of NAME stays open until the run ends,
+#                      like a virus scanner holding it
 $script:FailKind = $null
 $script:FailAt = 0
 $script:FailStep = 0
-if ($TestMode -and ([string]$env:GOBLINLEDGER_TEST_FAIL) -match '^(stage|swap|crash):(\d+)$') {
+$script:FailName = $null
+$script:TestHandle = $null
+if ($TestMode -and ([string]$env:GOBLINLEDGER_TEST_FAIL) -match '^(stage|swap|crash|hold):(\d+)$') {
     $script:FailKind = $Matches[1]
     $script:FailAt = [int]$Matches[2]
+} elseif ($TestMode -and ([string]$env:GOBLINLEDGER_TEST_FAIL) -match '^lock:([A-Za-z0-9_.-]+)$') {
+    $script:FailKind = 'lock'
+    $script:FailName = $Matches[1]
 }
 function Step-TestFail([string]$phase) {
-    if (-not $script:FailKind) { return }
-    $p = if ($script:FailKind -eq 'crash') { 'swap' } else { $script:FailKind }
+    if (-not $script:FailKind -or $script:FailKind -eq 'lock') { return }
+    $p = if ($script:FailKind -eq 'crash' -or $script:FailKind -eq 'hold') { 'swap' } else { $script:FailKind }
     if ($phase -ne $p) { return }
     $script:FailStep++
     if ($script:FailStep -lt $script:FailAt) { return }
+    if ($script:FailKind -eq 'hold') {
+        if ($script:FailStep -ne $script:FailAt) { return }
+        $mark = Join-Path $AppDir 'test_hold.txt'
+        Set-Content -LiteralPath $mark -Value 'holding' -Encoding ASCII
+        $until = (Get-Date).AddSeconds(120)
+        while ((Test-Path -LiteralPath $mark) -and (Get-Date) -lt $until) { Start-Sleep -Milliseconds 50 }
+        return
+    }
     if ($script:FailKind -eq 'crash') { [Environment]::Exit(99) }
     throw "test: $phase step $($script:FailStep) failed"
+}
+function Lock-TestFile([string]$dir) {
+    if ($script:FailKind -ne 'lock') { return }
+    $p = Join-Path $dir $script:FailName
+    if (Test-Path -LiteralPath $p -PathType Leaf) {
+        $script:TestHandle = [IO.File]::Open($p, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+    }
+}
+
+# Only one version check or install at a time: the task, Update-Goblin-Ledger.bat,
+# the owner's collector and Install-Goblin-Ledger.bat (install.ps1 uses the
+# same name) all take this lock first, also before putting back an update
+# that stopped half way. Tests get a lock of their own (one per fake PC), so
+# they never wait for, or hold up, a real run.
+function Get-LockName {
+    $n = 'Local\GoblinLedgerAddonUpdate'
+    if ($TestMode) { $n += '_' + (Get-Sha256 ([Text.Encoding]::UTF8.GetBytes(([string]$env:LOCALAPPDATA).ToLowerInvariant()))).Substring(0, 16) }
+    return $n
+}
+
+# @{ Owned; Mutex }. Owned is $false when another run holds the lock.
+function Enter-UpdateLock {
+    $l = @{ Owned = $true; Mutex = $null }
+    try {
+        $l.Mutex = New-Object Threading.Mutex($false, (Get-LockName))
+        try { $l.Owned = $l.Mutex.WaitOne(0) } catch { $l.Owned = $true }   # abandoned by a run that stopped: ours now
+    } catch { }   # Windows gave no lock at all: carry on without one
+    if (-not $l.Owned -and $l.Mutex) { $l.Mutex.Dispose(); $l.Mutex = $null }
+    return $l
+}
+
+function Exit-UpdateLock($l) {
+    if ($l -and $l.Mutex) {
+        if ($l.Owned) { try { $l.Mutex.ReleaseMutex() } catch { } }
+        $l.Mutex.Dispose()
+        $l.Mutex = $null
+    }
 }
 
 function Get-UnixNow { return [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() }
@@ -338,16 +395,33 @@ function Get-InstalledToc([string]$dir) {
     return $best
 }
 
-# Is WoW Forever running? Only a Wow* program started from this game folder counts.
+# Is WoW Forever running? Only a Wow* program started from this game folder
+# counts. When Windows will not say where a program runs from (one started as
+# administrator), it counts only when its name is the game's own (Wow,
+# WowClassic, WowT ...), never an addon manager such as WowUp left in the tray.
+function Test-GameProcess([string]$name, [string]$path, [string]$root) {
+    if ($path -and $root) { return $path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase) }
+    return ($name -match '^(?i)wow(classic)?[a-z]?(-64)?$')
+}
+
 function Test-WowOpen([string]$dir) {
-    if ($TestMode) { return (([string]$env:GOBLINLEDGER_TEST_WOW) -match '^[1-9]\d*$') }
     $root = $null
     try { $root = [IO.Path]::GetFullPath((Join-Path $dir '..\..\..')).TrimEnd('\') + '\' } catch { }
+    if ($TestMode) {
+        # GOBLINLEDGER_TEST_PROCS: name|path;name|path (an empty path: Windows would not say)
+        if ($null -ne $env:GOBLINLEDGER_TEST_PROCS) {
+            foreach ($p in @(([string]$env:GOBLINLEDGER_TEST_PROCS) -split ';' | Where-Object { $_ })) {
+                $name, $path = $p -split '\|', 2
+                if (Test-GameProcess $name $path $root) { return $true }
+            }
+            return $false
+        }
+        return (([string]$env:GOBLINLEDGER_TEST_WOW) -match '^[1-9]\d*$')
+    }
     foreach ($p in @(Get-Process -Name 'Wow*' -ErrorAction SilentlyContinue)) {
         $path = $null
         try { $path = $p.Path } catch { }
-        if (-not $path -or -not $root) { return $true }   # Windows would not say where it runs from: count it
-        if ($path.StartsWith($root, [StringComparison]::OrdinalIgnoreCase)) { return $true }
+        if (Test-GameProcess $p.ProcessName $path $root) { return $true }
     }
     return $false
 }
@@ -456,43 +530,75 @@ function Read-ReleaseZip([byte[]]$bytes, [Version]$want) {
     return @{ Files = $files; Toc = $toc }
 }
 
-# Puts the old files back after a swap that stopped half way: the files that
-# came in from _update\new ($in) go, the ones in _update\old return. $true
-# when the addon is as it was (then _update is removed too).
-function Undo-Swap([string]$dir, [string[]]$in) {
-    $work = Join-Path $dir '_update'
-    $ok = $true
-    foreach ($n in $in) {
-        if ($n -notmatch $SafeName) { continue }
-        $p = Join-Path $dir $n
-        if (-not (Test-Path -LiteralPath (Join-Path $work "new\$n")) -and (Test-Path -LiteralPath $p)) {
-            try { [IO.File]::Delete($p) } catch { $ok = $false }
-        }
+# The notes of a swap in progress (_update\swap.txt): "out NAME" for each old
+# file that is moved to _update\old, "in SHA256 NAME" for each new file that is
+# moved in from _update\new. Lines that do not read like that are ignored.
+function Read-Journal([string]$path) {
+    $list = New-Object System.Collections.Generic.List[object]
+    foreach ($l in @(Get-Content -LiteralPath $path -Encoding ASCII)) {
+        $m = [regex]::Match([string]$l, '^(out) (\S+)$|^(in) ([0-9a-f]{64}) (\S+)$')
+        if (-not $m.Success) { continue }
+        if ($m.Groups[1].Success) { $e = @{ Kind = 'out'; Hash = $null; Name = $m.Groups[2].Value } }
+        else { $e = @{ Kind = 'in'; Hash = $m.Groups[4].Value; Name = $m.Groups[5].Value } }
+        if ($e.Name -match $SafeName) { $list.Add($e) }
     }
-    foreach ($f in @(Get-ChildItem -LiteralPath (Join-Path $work 'old') -File -ErrorAction SilentlyContinue)) {
-        $p = Join-Path $dir $f.Name
+    return ,$list.ToArray()
+}
+
+# Puts the old files back after a swap that stopped half way ($journal: see
+# Read-Journal). A file in the addon folder is deleted only when it is exactly
+# a new file (the same SHA-256) and its old copy is waiting in _update\old (or
+# the old version had no such file); then the old files return. So this can
+# run again, or stop in the middle, without ever losing a file. $true when the
+# addon is as it was: then the notes go first and _update after them, so a
+# folder that cannot be removed completely is only leftover copies.
+function Undo-Swap([string]$dir, $journal) {
+    $work = Join-Path $dir '_update'
+    $oldDir = Join-Path $work 'old'
+    $ok = $true
+    $hadOld = @{}
+    foreach ($e in $journal) { if ($e.Kind -eq 'out') { $hadOld[$e.Name.ToLowerInvariant()] = $true } }
+    foreach ($e in $journal) {
+        if ($e.Kind -ne 'in') { continue }
+        $p = Join-Path $dir $e.Name
+        if (-not (Test-Path -LiteralPath $p -PathType Leaf)) { continue }   # never came in
+        if ($hadOld.ContainsKey($e.Name.ToLowerInvariant()) -and
+                -not (Test-Path -LiteralPath (Join-Path $oldDir $e.Name) -PathType Leaf)) { continue }   # the old one is (back) there
+        try {
+            if ((Get-Sha256 ([IO.File]::ReadAllBytes($p))) -eq $e.Hash) { [IO.File]::Delete($p) }
+        } catch { $ok = $false }
+    }
+    foreach ($e in $journal) {
+        if ($e.Kind -ne 'out') { continue }
+        $src = Join-Path $oldDir $e.Name
+        if (-not (Test-Path -LiteralPath $src -PathType Leaf)) { continue }   # never went out, or back already
+        $p = Join-Path $dir $e.Name
         try {
             if (Test-Path -LiteralPath $p) { [IO.File]::Delete($p) }
-            [IO.File]::Move($f.FullName, $p)
+            [IO.File]::Move($src, $p)
         } catch { $ok = $false }
+    }
+    if ($ok) {
+        try { [IO.File]::Delete((Join-Path $work 'swap.txt')) } catch { $ok = $false }
     }
     if ($ok) { try { Remove-Item -LiteralPath $work -Recurse -Force } catch { } }
     return $ok
 }
 
 # An update that stopped half way (power cut, killed): its notes in
-# _update\swap.txt say which files to take back out.
+# _update\swap.txt say which files to take back out. Only called while this
+# run holds the update lock, so it never undoes another run's update.
 function Restore-Interrupted([string]$dir) {
     $work = Join-Path $dir '_update'
     if (-not (Test-Path -LiteralPath $work)) { return }
     $journal = Join-Path $work 'swap.txt'
     if (-not (Test-Path -LiteralPath $journal -PathType Leaf)) {
-        # Stopped before any file moved: only the staged copies are there.
+        # Stopped before any file moved, or after the swap was done or undone:
+        # only copies that are not needed any more are there.
         try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
         return
     }
-    $in = @(Get-Content -LiteralPath $journal -Encoding ASCII | Where-Object { $_ -match '^in ' } | ForEach-Object { $_.Substring(3) })
-    if (Undo-Swap $dir $in) { Write-Log 'FIXED' 'an update that stopped half way was undone: the old version is back' $AddonLog }
+    if (Undo-Swap $dir (Read-Journal $journal)) { Write-Log 'FIXED' 'an update that stopped half way was undone: the old version is back' $AddonLog }
     else { Write-Log 'ERROR' 'could not undo an update that stopped half way yet; the next run tries again' $AddonLog }
 }
 
@@ -508,36 +614,42 @@ function Install-AddonFiles([string]$dir, $files) {
     New-Item -ItemType Directory -Path $newDir -Force | Out-Null
     New-Item -ItemType Directory -Path $oldDir -Force | Out-Null
     $in = @($files.Keys)
+    $hash = @{}
     try {
         foreach ($n in $in) {
             Step-TestFail 'stage'
             $p = Join-Path $newDir $n
             [IO.File]::WriteAllBytes($p, $files[$n])
-            if ((Get-Sha256 ([IO.File]::ReadAllBytes($p))) -ne (Get-Sha256 $files[$n])) { throw "the copy of $n did not read back the same" }
+            $hash[$n] = Get-Sha256 $files[$n]
+            if ((Get-Sha256 ([IO.File]::ReadAllBytes($p))) -ne $hash[$n]) { throw "the copy of $n did not read back the same" }
         }
     } catch {
         $err = $_
         try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
         throw $err
     }
+    Lock-TestFile $newDir
     # The TOC files go out first and come in last: in between, the folder has
     # no TOC, so even a game started right then never loads half an addon.
     $out = @(Get-ChildItem -LiteralPath $dir -File | Where-Object {
             ($_.Extension -ieq '.lua' -or $_.Extension -ieq '.toc') -and $_.Name -ine 'Data.lua' -and $_.Name -ine 'Latest.lua'
         } | ForEach-Object { $_.Name } | Sort-Object { if ($_ -like '*.toc') { 0 } else { 1 } }, { $_ })
     $in = @($in | Sort-Object { if ($_ -like '*.toc') { 1 } else { 0 } }, { $_ })
-    $journal = @('# Goblin Ledger update in progress. While this file is here, the next run puts the old files back.')
-    $journal += @($out | ForEach-Object { "out $_" })
-    $journal += @($in | ForEach-Object { "in $_" })
-    Set-Content -LiteralPath (Join-Path $work 'swap.txt') -Value $journal -Encoding ASCII
+    $notes = @('# Goblin Ledger update in progress. While this file is here, the next run puts the old files back.')
+    $notes += @($out | ForEach-Object { "out $_" })
+    $notes += @($in | ForEach-Object { 'in {0} {1}' -f $hash[$_], $_ })
+    $journalPath = Join-Path $work 'swap.txt'
+    Set-Content -LiteralPath $journalPath -Value $notes -Encoding ASCII
     try {
         foreach ($n in $out) { Step-TestFail 'swap'; [IO.File]::Move((Join-Path $dir $n), (Join-Path $oldDir $n)) }
         foreach ($n in $in) { Step-TestFail 'swap'; [IO.File]::Move((Join-Path $newDir $n), (Join-Path $dir $n)) }
         # Every file is in: from here on the new version stays.
-        [IO.File]::Delete((Join-Path $work 'swap.txt'))
+        [IO.File]::Delete($journalPath)
     } catch {
         $err = $_
-        if (-not (Undo-Swap $dir $in)) { Write-Log 'ERROR' 'could not put every old file back yet; the next run tries again' $AddonLog }
+        $undone = $false
+        try { $undone = Undo-Swap $dir (Read-Journal $journalPath) } catch { }
+        if (-not $undone) { Write-Log 'ERROR' 'could not put every old file back yet; the next run tries again' $AddonLog }
         throw $err
     }
     try { Remove-Item -LiteralPath $work -Recurse -Force } catch { }
@@ -556,7 +668,7 @@ function Read-Latest([string]$dir) {
             }
             $m = [regex]::Match($t, '\binstalledAt\s*=\s*(\d+)')
             if ($m.Success) { $h['installedAt'] = $m.Groups[1].Value }
-            foreach ($k in @('auto', 'restart')) {
+            foreach ($k in @('auto', 'restart', 'waiting')) {
                 $m = [regex]::Match($t, "\b$k\s*=\s*(true|false)")
                 if ($m.Success) { $h[$k] = $m.Groups[1].Value }
             }
@@ -570,9 +682,10 @@ function Save-Latest([string]$dir, [hashtable]$h) {
     foreach ($k in @('version', 'installed', 'from')) { $q[$k] = if ($h[$k]) { '"' + $h[$k] + '"' } else { 'nil' } }
     $at = 0
     if ($h['installedAt']) { $at = [int64]$h['installedAt'] }
-    $line = 'GoblinLedger_Latest = {{ version = {0}, installed = {1}, from = {2}, installedAt = {3}, auto = {4}, restart = {5} }}' -f `
-        $q['version'], $q['installed'], $q['from'], $at, $(if ([string]$h['auto'] -eq 'true') { 'true' } else { 'false' }),
-        $(if ([string]$h['restart'] -eq 'true') { 'true' } else { 'false' })
+    $b = @{}
+    foreach ($k in @('auto', 'restart', 'waiting')) { $b[$k] = if ([string]$h[$k] -eq 'true') { 'true' } else { 'false' } }
+    $line = 'GoblinLedger_Latest = {{ version = {0}, installed = {1}, from = {2}, installedAt = {3}, auto = {4}, restart = {5}, waiting = {6} }}' -f `
+        $q['version'], $q['installed'], $q['from'], $at, $b['auto'], $b['restart'], $b['waiting']
     $p = Join-Path $dir 'Latest.lua'
     Set-Content -LiteralPath "$p.new" -Value @(
         '-- Goblin Ledger: the newest version the updater found, and the one it installed.',
@@ -649,15 +762,20 @@ function Update-Addon([bool]$install, [bool]$manual) {
         return New-Result 0 'SKIP' "newest release $tag, installed $curText" @("You have the newest version ($curText).")
     }
     $newText = $new.ToString()
-    if (-not $install) {
+    $wowOpen = $install -and -not $manual -and (Test-WowOpen $AddonDir)
+    if (-not $install -or $wowOpen) {
+        # Only noted for the game's chat line: "is out" (with "it installs after
+        # you close WoW" while it waits for that).
         $l = Read-Latest $AddonDir
-        if ($l['version'] -ne $newText) {
+        $waiting = $(if ($wowOpen) { 'true' } else { 'false' })
+        if ($l['version'] -ne $newText -or [string]$l['waiting'] -ne $waiting) {
             $l['version'] = $newText
+            $l['waiting'] = $waiting
             try { Save-Latest $AddonDir $l } catch { }
         }
-        return New-Result 0 'NEWER' "$tag is out (installed $curText); installing by itself is off" @()
-    }
-    if (-not $manual -and (Test-WowOpen $AddonDir)) {
+        if (-not $install) {
+            return New-Result 0 'NEWER' "$tag is out (installed $curText); installing by itself is off" @()
+        }
         $r = New-Result 0 'WAIT' "$tag is out (installed $curText); WoW is open, so it installs after WoW closes" @()
         $r.Next = 20 * 60
         return $r
@@ -678,7 +796,11 @@ function Update-Addon([bool]$install, [bool]$manual) {
     }
     $want = $m.Groups[1].Value.ToLowerInvariant()
     $url = [string]$assets[0].browser_download_url
-    if (-not $AssetPrefix -or -not $url.StartsWith($AssetPrefix, [StringComparison]::Ordinal)) {
+    # Also as Windows reads it: "../" in the address must not lead to another project.
+    $abs = ''
+    try { $abs = ([Uri]$url).AbsoluteUri } catch { }
+    if (-not $AssetPrefix -or -not $url.StartsWith($AssetPrefix, [StringComparison]::Ordinal) -or
+            -not $abs.StartsWith($AssetPrefix, [StringComparison]::Ordinal)) {
         return New-Result 4 'ERROR' "download address is not a release of this project: $url" @(
             "The $newText download is not where official releases are, so it was not installed.",
             'Nothing was changed.')
@@ -732,18 +854,16 @@ function Update-Addon([bool]$install, [bool]$manual) {
         "Updated $curText -> $newText. $tail")
 }
 
-# One check, with its log line and the time of the next one. Only one at a time.
+# One check, with its log line and the time of the next one. Only one at a
+# time: while another run holds the update lock, nothing is touched at all.
 function Invoke-AddonCheck([bool]$install, [bool]$manual) {
-    $mutex = $null
-    $owned = $false
-    try {
-        $mutex = New-Object Threading.Mutex($false, 'Local\GoblinLedgerAddonUpdate')
-        try { $owned = $mutex.WaitOne(0) } catch { $owned = $true }   # abandoned by a run that stopped: ours now
-    } catch { $owned = $true }
-    if (-not $owned) {
+    $lock = Enter-UpdateLock
+    if (-not $lock.Owned) {
         return New-Result 0 'SKIP' 'another update was running' @('Another Goblin Ledger update is running right now. Try again in a minute.')
     }
     try {
+        # An update that stopped half way is put back first.
+        try { Restore-Interrupted $AddonDir } catch { }
         $script:State = Read-KeyFile $StateFile
         try { $r = Update-Addon $install $manual }
         catch {
@@ -757,17 +877,9 @@ function Invoke-AddonCheck([bool]$install, [bool]$manual) {
         Save-State
         Write-Log $r.Status $(if ($manual) { 'Update-Goblin-Ledger.bat: ' + $r.Log } else { $r.Log }) $AddonLog
         return $r
-    } finally {
-        if ($mutex) {
-            if ($owned) { try { $mutex.ReleaseMutex() } catch { } }
-            $mutex.Dispose()
-        }
-    }
+    } finally { Exit-UpdateLock $lock }
 }
 
-if ($AddonCheck -ne 'skip') {
-    try { Restore-Interrupted $AddonDir } catch { }
-}
 if ($AddonCheck -eq 'now') {
     # Update-Goblin-Ledger.bat: the version only, every message shown.
     Say 'Checking for a new Goblin Ledger version...'
@@ -779,6 +891,7 @@ if ($AddonCheck -eq 'now') {
     foreach ($l in $r.Lines) { Say $l }
     exit $r.Code
 }
+$checked = $false
 if ($AddonCheck -eq 'auto' -and $ReleaseApi) {
     # The scheduled task: at most every 6 hours, and only for an install that
     # answered the installer's question (config.txt).
@@ -790,12 +903,22 @@ if ($AddonCheck -eq 'auto' -and $ReleaseApi) {
             [void][int64]::TryParse([string]$st['next'], [ref]$next)
             $now = Get-UnixNow
             if ($next -le $now -or $next -gt $now + $CheckEvery + 3600) {
+                $checked = $true
                 $r = Invoke-AddonCheck ($mode -eq 'yes') $false
                 if ($r.Status -eq 'OK') { foreach ($l in $r.Lines) { Say $l } }
             }
         }
     } catch {
         Write-Log 'ERROR' "version check failed: $($_.Exception.Message)" $AddonLog
+    }
+}
+if ($AddonCheck -eq 'auto' -and -not $checked -and (Test-Path -LiteralPath (Join-Path $AddonDir '_update'))) {
+    # No check due: an update that stopped half way is still put back, but
+    # only when no other run is busy with it.
+    $lock = Enter-UpdateLock
+    if ($lock.Owned) {
+        try { Restore-Interrupted $AddonDir } catch { }
+        finally { Exit-UpdateLock $lock }
     }
 }
 

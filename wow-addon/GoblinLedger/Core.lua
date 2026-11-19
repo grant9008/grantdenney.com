@@ -1613,6 +1613,7 @@ local function printHelp()
   P("/gl chart reset : put the chart back in its normal place after you dragged it")
   P("/gl tooltip : turn the prices in item tooltips on or off")
   P("/gl compact : switch tooltips between full and one-line")
+  P("/gl update : which Goblin Ledger version you have, and how to get a newer one")
   P("/gl help : show this list")
 end
 
@@ -1665,6 +1666,8 @@ function ns.HandleSlash(msg)
     P("tooltips are now " .. (S.compact and "one line" or "full") .. ".")
   elseif cmd == "help" or cmd == "?" then
     printHelp()
+  elseif cmd == "update" or cmd == "version" then
+    if type(ns.UpdateHelp) == "function" then ns.UpdateHelp() end
   else
     P("unknown command. Type /gl help for the list.")
   end
@@ -1686,12 +1689,14 @@ end
 -- Latest.lua (GoblinLedger_Latest) is written by the Windows updater: the
 -- newest official version it found ("version") and the one it installed
 -- ("installed", at "installedAt", "auto" = by itself, "restart" = the new
--- version has a new file list, which only a game restart loads). At most one
--- short chat line per login:
+-- version has a new file list, which only a game restart loads, "waiting" =
+-- it installs by itself once WoW is closed). At most one short chat line per
+-- login:
 --   - once after an update the updater installed by itself: "updated to"
 --     (also after Update-Goblin-Ledger.bat when the game still needs a restart)
---   - else, while a newer version waits (installing by itself is off): "is
---     out", once per login, never again after a /reload
+--   - else, while a newer version waits: "is out", once per login, never again
+--     after a /reload; with "it installs by itself after you close WoW" when it
+--     does, else pointing at /gl update (which says where Update-Goblin-Ledger.bat is)
 local function versionParts(s)
   if type(s) ~= "string" then return nil end
   local a, b, c = smatch(s, "^(%d+)%.(%d+)%.(%d+)$")
@@ -1718,6 +1723,19 @@ local function runningVersion()
 end
 ns.RunningVersion = runningVersion
 
+-- The newer official version the updater found (text), or nil: newer than the
+-- version the game started with and than the one installed since.
+local function newerVersion()
+  local L = _G.GoblinLedger_Latest
+  if type(L) ~= "table" then return nil end
+  local newest = versionParts(L.version)
+  local have = versionParts(runningVersion())
+  local inst = versionParts(L.installed)
+  if inst and (not have or newerThan(inst, have)) then have = inst end
+  if newest and have and newerThan(newest, have) then return L.version end
+  return nil
+end
+
 -- The line to show now (plain text), or nil. reloading: a /reload, not a login.
 function ns.UpdateNotice(reloading)
   local L = _G.GoblinLedger_Latest
@@ -1734,14 +1752,34 @@ function ns.UpdateNotice(reloading)
     end
   end
   if reloading then return nil end
-  local newest = versionParts(L.version)
-  local have = versionParts(running)
-  local inst = versionParts(installed)
-  if inst and (not have or newerThan(inst, have)) then have = inst end
-  if newest and have and newerThan(newest, have) then
-    return "Goblin Ledger " .. L.version .. " is out: double-click Update-Goblin-Ledger.bat."
+  local newer = newerVersion()
+  if newer and L.waiting == true then
+    return "Goblin Ledger " .. newer .. " is out: it installs by itself after you close WoW."
+  elseif newer then
+    return "Goblin Ledger " .. newer .. " is out. Type /gl update for how to get it."
   end
   return nil
+end
+
+-- /gl update: the version, and where Update-Goblin-Ledger.bat is (the
+-- unzipped folder is often deleted; the installer keeps a copy in
+-- %LOCALAPPDATA%\GoblinLedger, which Windows+R opens).
+function ns.UpdateHelp()
+  local L = _G.GoblinLedger_Latest
+  local have = runningVersion()
+  local newer = newerVersion()
+  if newer then
+    P("version " .. newer .. " is out" .. (have and (" (you have " .. have .. ")") or "") .. ".")
+    if type(L) == "table" and L.waiting == true then
+      P("it installs by itself after you close WoW. To get it now:")
+    else
+      P("to get it:")
+    end
+  else
+    P((have and ("you have version " .. have) or "you have this version") .. ". To look for a newer one now:")
+  end
+  P("press Windows+R, type %LOCALAPPDATA%\\GoblinLedger and press Enter, then double-click")
+  P("Update-Goblin-Ledger.bat. When it says Updated, type /reload (or restart WoW if it says so).")
 end
 
 local noticeDone = false
