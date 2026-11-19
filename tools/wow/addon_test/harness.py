@@ -6755,14 +6755,20 @@ def sc_versions(sc, ref, items):
         end
       end
     """)
-    # rows that do not carry the version's name: none is opened, the player picks
+    # rows that do not carry the version's name: none is opened, the player picks, and chat
+    # says once that the searched version is not listed (it sold or was taken down)
     split_rows([(1017, "Odd Name One"), (1034, "Odd Name Two")])
+    mark = len(w.chat())
     ns.SearchAH(v1)
     w.settle(0.2)
     M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_ADDED")
     w.settle(0.5)
     sc.eq(len(w.M.openedRows), 0, "versions: split rows with no matching name: none opened for the player")
     sc.eq(ns.ChartItem(), v1, "versions: and the chart stays on the version that was searched")
+    said = [strip_codes(c) for c in w.chat()[mark:]]
+    gone = "%s: none listed right now (it may have sold). These are its other versions." % v1name
+    sc.eq(sum(1 for c in said if c.endswith(gone)), 1, "versions: says once that the version is not listed (%s)" % said)
     # the player clicks a row of a version the data cannot name: the item, never the searched version
     rk = w.M.splitRows[1]
     ah.SelectBrowseResult(ah, rk)
@@ -6779,6 +6785,28 @@ def sc_versions(sc, ref, items):
     sc.eq(ns.ChartItem(), v1, "versions: chart of that version")
     ah.SelectBrowseResult(ah, w.M.splitRows[1])
     sc.eq(ns.ChartItem(), v2, "versions: clicking the other version's row shows that version")
+    w.settle(11)
+    # only ANOTHER version listed (one split row): never opened as if it were the searched one
+    split_rows([(1017, v2name)])
+    w.lua.execute("MOCK.openedRows = {}")
+    mark = len(w.chat())
+    ns.SearchAH(v1)
+    w.settle(0.2)
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.5)
+    sc.eq(len(w.M.openedRows), 0, "versions: one row of another version: not opened")
+    said = [strip_codes(c) for c in w.chat()[mark:]]
+    sc.check(any(c.endswith(gone) for c in said), "versions: and chat says the searched version is not listed (%s)" % said)
+    # the version itself is the only row: opened, nothing said
+    split_rows([(1034, v1name)])
+    w.lua.execute("MOCK.openedRows = {}")
+    mark = len(w.chat())
+    ns.SearchAH(v1)
+    w.settle(0.2)
+    M.fire("AUCTION_HOUSE_BROWSE_RESULTS_UPDATED")
+    w.settle(0.5)
+    sc.eq(list(w.M.openedRows.values()), [1034], "versions: the version's own single row is opened")
+    sc.check(not any("none listed right now" in strip_codes(c) for c in w.chat()[mark:]), "versions: and nothing is said")
     w.settle(11)
     w.lua.execute("MOCK.splitRows = nil; MOCK.splitNames = {}")
     # watchlist: a shift-clicked version link is watched as that version

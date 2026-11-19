@@ -936,11 +936,25 @@ local function OnBrowseResults()
   if #rows == 0 then return end
   pendingOpen = nil
   local pick = rows[1]
-  if p.vid and #rows > 1 then
+  if p.vid then
+    -- A version: open only the row with its name. When the auction house
+    -- lists versions as rows of their own and none is this one, say so: it
+    -- sold or was taken down since the price update, and the rows shown are
+    -- other versions. One row with the item's plain name lists every version
+    -- together, so that one is opened.
     pick = nil
-    local want = ItemName(p.vid)
+    local want, plain, split = ItemName(p.vid), ItemName(p.id), false
     for _, r in ipairs(rows) do
-      if RowName(r) == want then pick = r break end
+      local n = RowName(r)
+      if n == want then pick = r break end
+      if n and n ~= plain then split = true end
+    end
+    if not pick then
+      if split then
+        Print(want .. ": none listed right now (it may have sold). These are its other versions.")
+      elseif #rows == 1 then
+        pick = rows[1]
+      end
     end
   end
   if pick and type(F.SelectBrowseResult) == "function" then pcall(F.SelectBrowseResult, F, pick) end
