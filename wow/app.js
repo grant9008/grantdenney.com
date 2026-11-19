@@ -6101,8 +6101,10 @@ function computeViewTargets(node, id) {
     if (engine.sell - engine.buy - tax <= 0) {
       const day = clampToLive(computeSwingTargets(currentSeries));
       /* ...but never at a peak the market has left: after a drop that
-         lasts, ask at most the last 6 hours' high, as the addon does. */
-      const cap = settledSellCap(currentSeries);
+         lasts, ask at most the last 6 hours' high, as the addon does.
+         Not with nothing listed now (n 0): then no cheaper listing holds
+         the old price back. */
+      const cap = (node && node.n === 0) ? 0 : settledSellCap(currentSeries);
       if (day && cap > 0 && day.sell > cap) day.sell = Math.max(cap, liveSellRaw > 0 ? liveSellRaw : 0);
       if (day && day.sell - day.buy - calculateTax(day.sell, id) > 0) return day;
     }

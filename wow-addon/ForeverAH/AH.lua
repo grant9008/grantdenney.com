@@ -6,7 +6,7 @@ local ADDON_NAME, ns = ...
 -- buttons to the sell frame that fill in the price box:
 --   "Sell now: X"    1 copper under the cheapest listing
 --   "Suggested: X"   the price it usually sells for (from the price history;
---                    after a drop that lasts, the last 6 hours' high)
+--                    after a drop that lasts, the highest price since)
 --
 -- Rules this file sticks to:
 --   * hooksecurefunc, HookScript and events only. No Blizzard function is replaced.
@@ -439,8 +439,10 @@ local function BestText(info, postWord)
   lines[#lines + 1] = BasisText(info)
   lines[#lines + 1] = VersionText(info)
   local P = info and info.P
-  if type(P) == "table" and type(P.rec) == "table" and P.rec.settled then
-    lines[#lines + 1] = "The price fell and stayed down, so this is the highest price of the last 6 hours."
+  -- Only when the button shows that price (a live listing can lift it).
+  if type(P) == "table" and type(P.rec) == "table" and P.rec.settled and P.rec.settledHours
+    and P.best ~= nil and P.best == P.rec.sell then
+    lines[#lines + 1] = "The price fell and stayed down, so this is the highest price of the last " .. P.rec.settledHours .. " hours."
   end
   if type(P) == "table" and P.bestVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."

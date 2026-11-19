@@ -5,14 +5,14 @@ local ADDON_NAME, ns = ...
 -- For a timeframe window it works out:
 --   buy     a good price to buy at (20th percentile of the cheapest prices)
 --   sell    a good price to sell at (70th percentile of the market prices;
---           after a drop that lasts, the highest of the last 6 hourly market
---           prices, see settledHigh)
+--           after a drop that lasts, the highest market price since, see
+--           settledHigh)
 --   listAt  what to post at right now (undercut the cheapest by 1 copper when
 --           that still beats the 5% AH cut, otherwise the sell target, and
 --           never under a normal-priced cheapest listing)
 --   verdict where the cheapest price sits in the window's range of cheapest
 --           prices (a range under 10% of the typical price counts as flat;
---           at most a Hold after a drop that lasts, the range is the old one)
+--           no Buy after a drop that lasts, the range is the old one)
 -- When the chosen window has fewer than 4 prices, the next longer one is used.
 -- "Sold" numbers are estimates, so this is advice, not a promise.
 --
@@ -44,7 +44,7 @@ local FAR = 2          -- a cheapest listing over 2x the window's 90th percentil
 local MIN_AUCTIONS = 3 -- fewer separate listings than this is too thin to trust
 local VENDOR_FAR = 200 -- a market price over 200x the vendor price is not trusted
 local VENDOR_FAR_UNITS = 10 -- ... when fewer units than this are listed
-local SETTLED_HOURS = 6 -- the last 6 hourly market prices ...
+local SETTLED_HOURS = 6 -- the last quarter of an hourly window, at least 6 hours ...
 local SETTLED_PCT = 80  -- ... all at or under 80% of the sell target: the price dropped and stayed down
 local CHAIN = { "1D", "5D", "1W", "1M", "1Y" }
 
@@ -112,23 +112,29 @@ local function priceDoubt(item)
 end
 
 -- After a drop that lasts, the old high hours stay in the window and its
--- 70th percentile no longer sells. When the last 6 hourly market prices (at
--- least 4 of them) are all at or under 80% of target, returns the highest of
--- them (the new sell target), else nil. Always the hourly 1D prices, whatever
--- the window, so every timeframe agrees. Whole numbers only.
-local function settledHigh(itemID, target)
-  if not target or target <= 0 or type(ns.GetSeries) ~= "function" then return nil end
-  local s = ns.GetSeries(itemID, "1D")
-  if not s then return nil end
+-- 70th percentile no longer sells. The drop has to last a quarter of the
+-- window, at least 6 hours (1D: 6, a full 5D: 30, a full 1W: 42), so a dip
+-- of a few hours in a patient window stays a dip to buy. When the window's
+-- last that many hourly market prices (2 in 3 of them at least, the newest
+-- one too: with nothing listed no cheaper listing holds an old price back)
+-- are all at or under 80% of target, returns the highest of them (the new
+-- sell target) and the hours, else nil. Hourly windows only: the daily 1M
+-- and 1Y never cap. Whole numbers only.
+local function settledHigh(s, target)
+  if not s or not target or target <= 0 or (tonumber(s.step) or 0) >= 86400 then return nil end
+  local n = s.n or 0
+  local last = s.market[n]
+  if not last or last <= 0 then return nil end
+  local hours = max(SETTLED_HOURS, floor((n + 3) / 4))
   local high, cnt = 0, 0
-  for i = max(1, s.n - SETTLED_HOURS + 1), s.n do
+  for i = max(1, n - hours + 1), n do
     local m = s.market[i]
     if m and m > 0 then
       cnt = cnt + 1
       if m > high then high = m end
     end
   end
-  if cnt >= MIN_POINTS and high * 100 <= target * SETTLED_PCT then return high end
+  if cnt * 3 >= hours * 2 and high * 100 <= target * SETTLED_PCT then return high, hours end
   return nil
 end
 
@@ -215,8 +221,9 @@ function ns.Recommend(itemID, tf, liveCheapest)
   -- is not used as the floor.
   local sell = percentile(mkts, 0.70) or mktNow
   -- After a drop that lasts the old highs no longer sell: the target is the
-  -- highest of the last 6 hourly market prices.
-  local settled = history and settledHigh(itemID, sell) or nil
+  -- highest market price since (settledHours: how many hours that is).
+  local settled, settledHours
+  if history then settled, settledHours = settledHigh(s, sell) end
   if settled then sell = settled end
   local mktFar = history and p90 ~= nil and p90 > 0 and mktNow > FAR * p90
   if sell < mktNow and not mktFar then sell = mktNow end
@@ -273,9 +280,13 @@ function ns.Recommend(itemID, tf, liveCheapest)
   end
 
   local score = (0.5 - pos) * 200
-  -- After a drop that lasts, the window's range is the old one: no Buy or
-  -- Sell from where the cheapest sits in it.
-  if margin <= 0 or settled then score = max(-24, min(24, score)) end
+  -- After a drop that lasts, the window's range is the old one: a cheapest
+  -- low in it is no Buy. High in it, it is even higher now: Sell stands.
+  if margin <= 0 then
+    score = max(-24, min(24, score))
+  elseif settled then
+    score = min(24, score)
+  end
   local verdict = verdictFor(score)
 
   -- A vendor pays more than the auction house would after its 5% cut, at
@@ -296,8 +307,12 @@ function ns.Recommend(itemID, tf, liveCheapest)
   end
   if vendorFar then notes[#notes + 1] = "Listed far above what a vendor pays: price may not be reliable" end
   if far then notes[#notes + 1] = "Cheapest now is far above recent prices" end
-  if settled and advice then notes[#notes + 1] = "Price fell and stayed down: the sell target uses the last 6 hours" end
-  if history and cheapNow > 0 and cheapNow < buy and margin > 0 then
+  -- Only when List At is that target (a live listing can lift it).
+  if settled and advice and listAt == sell then
+    notes[#notes + 1] = "Price fell and stayed down: the sell target uses the last " .. settledHours .. " hours"
+  end
+  -- The buy target comes from the old range too: no "buy it" after a drop that lasts.
+  if history and cheapNow > 0 and cheapNow < buy and margin > 0 and not settled then
     notes[#notes + 1] = "Cheapest is below the buy target: buy it"
   end
   if margin <= 0 and buy > 0 and sell > 0 then notes[#notes + 1] = "Spread does not beat the 5% AH cut" end
@@ -332,7 +347,8 @@ function ns.Recommend(itemID, tf, liveCheapest)
     thinListings = thinListings,
     vendorFar = vendorFar,
     far = far,
-    settled = (settled and advice) and true or false, -- the sell target is the last 6 hours' high (a drop that lasted)
+    settled = (settled and advice) and true or false, -- the sell target is the high since a drop that lasted
+    settledHours = (settled and advice) and settledHours or nil, -- ... over this many hours
     live = live ~= nil,
     vendorBetter = vendorBetter,
   }

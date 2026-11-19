@@ -21,20 +21,25 @@ FAR = 2
 MIN_AUCTIONS = 3
 VENDOR_FAR = 200
 VENDOR_FAR_UNITS = 10     # the vendor rule only applies with fewer units listed than this
-SETTLED_HOURS = 6         # the last 6 hourly market prices ...
+SETTLED_HOURS = 6         # the last quarter of an hourly window, at least 6 hours ...
 SETTLED_PCT = 80          # ... all at or under 80% of the sell target: the price dropped and stayed down
+HOURLY = ("1D", "5D", "1W")
 
 
-def settled_high(windows, target):
-    """A drop that lasted: when the last 6 hourly (1D) market prices, at least
-    4 of them, are all at or under 80% of target, their highest is the new
-    sell target. None otherwise. Whole numbers only."""
-    if not target or target <= 0:
-        return None
-    recent = [v for v in windows("1D")[1][-SETTLED_HOURS:] if v]
-    if len(recent) >= MIN_POINTS and max(recent) * 100 <= target * SETTLED_PCT:
-        return max(recent)
-    return None
+def settled_high(market, target):
+    """A drop that lasted. market: an hourly window's market prices, oldest
+    first (None = nothing listed). The drop must last a quarter of the window,
+    at least 6 hours; when those last hours have a price in at least 2 of 3
+    of them, the newest one included, and all are at or under 80% of target,
+    returns (their highest, the hours), the new sell target. (None, None)
+    otherwise. Whole numbers only."""
+    if not target or target <= 0 or not market or not market[-1]:
+        return None, None
+    hours = max(SETTLED_HOURS, (len(market) + 3) // 4)
+    recent = [v for v in market[-hours:] if v]
+    if len(recent) * 3 >= hours * 2 and max(recent) * 100 <= target * SETTLED_PCT:
+        return max(recent), hours
+    return None, None
 
 
 def sales_hours_of(h):
@@ -150,7 +155,7 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
 
     p70 = pct(mkts, 0.70)
     sell = p70 if p70 is not None else mkt_now
-    settled = settled_high(windows, sell) if history else None
+    settled, settled_hours = settled_high(windows(used)[1], sell) if history and used in HOURLY else (None, None)
     if settled:
         sell = settled
     mkt_far = bool(history and p90 and p90 > 0 and mkt_now > FAR * p90)
@@ -191,8 +196,10 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
         if phi > plo:
             pos = min(1.0, max(0.0, (cheap_now - plo) / (phi - plo)))
     score = (0.5 - pos) * 200
-    if margin <= 0 or settled:          # after a drop that lasted the window's range is the old one
+    if margin <= 0:
         score = max(-24, min(24, score))
+    elif settled:                       # after a drop that lasted the window's range is the old one: no Buy
+        score = min(24, score)
 
     vendor_better = vendor > 0 and post_at > 0 and math.floor(post_at * AH_CUT) <= vendor
     notes = []
@@ -210,9 +217,9 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
         notes.append("Listed far above what a vendor pays: price may not be reliable")
     if far:
         notes.append("Cheapest now is far above recent prices")
-    if settled and advice:
-        notes.append("Price fell and stayed down: the sell target uses the last 6 hours")
-    if history and 0 < cheap_now < buy and margin > 0:
+    if settled and advice and list_at == sell:
+        notes.append("Price fell and stayed down: the sell target uses the last %d hours" % settled_hours)
+    if history and 0 < cheap_now < buy and margin > 0 and not settled:
         notes.append("Cheapest is below the buy target: buy it")
     if margin <= 0 and buy > 0 and sell > 0:
         notes.append("Spread does not beat the 5% AH cut")
@@ -225,7 +232,8 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
             "soldPerDay": per_day, "salesMeasuring": per_day is None, "soldEarly": bool(sold_early),
             "tf": used, "askedTF": asked, "history": history, "advice": advice,
             "auctions": auctions, "thinListings": thin_listings, "vendorFar": vendor_far,
-            "far": far, "settled": bool(settled and advice), "vendorBetter": vendor_better}
+            "far": far, "settled": bool(settled and advice),
+            "settledHours": settled_hours if settled and advice else None, "vendorBetter": vendor_better}
 
 
 def sell_prices(rec, live=None, own=False, vendor=0):

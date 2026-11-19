@@ -645,7 +645,7 @@ function expectedFlipIds() {
   try { haveCap = envS.run('typeof settledSellCap') === 'function'; } catch (e) {}
   check(haveCap, 'app.js has settledSellCap');
   envS.run(`globalThis.__capOf = (h) => settledSellCap(filterSeries(seriesFromTS({ data: h.map(wowPoint) }), getPeriod('1d')));
-    globalThis.__day = (h, d) => {
+    globalThis.__day = (h, d, n) => {
       const ts = (pts) => ({ data: pts.map(wowPoint) });
       const first = h.length ? h[0][0] : Infinity;
       currentItemSrc = { hist: emptySeries(), ts5m: seriesFromTS(ts(h.slice(-48))), ts1h: seriesFromTS(ts(h.slice(-365))),
@@ -654,7 +654,7 @@ function expectedFlipIds() {
       view = '1d'; currentItemLowVol = false;
       liveBuyRaw = h[h.length - 1][1]; liveSellRaw = h[h.length - 1][2];
       currentSeries = filterSeries(seriesForView('1d', currentItemSrc, false), getPeriod('1d'));
-      const t = computeViewTargets({ low: liveBuyRaw, high: liveSellRaw }, 18045);
+      const t = computeViewTargets(n === undefined ? { low: liveBuyRaw, high: liveSellRaw } : { low: liveBuyRaw, high: liveSellRaw, n }, 18045);
       return { buy: t.buy, sell: t.sell };
     };`);
   const capOf = (h) => { try { return envS.ctx.__capOf(h); } catch (e) { return 'error: ' + e.message; } };
@@ -684,6 +684,18 @@ function expectedFlipIds() {
   check(capOf(hourRows(Array(18).fill(1000).concat(Array(6).fill(500)))) === 500, '6 hours at 500: capped at 500');
   check(capOf(hourRows(Array(18).fill(1000).concat([400, null, null, null, 400, 400]))) === 0, '3 prices in 6 hours: no cap');
   check(capOf(hourRows(Array(18).fill(100).concat(Array(6).fill(300)))) === 0, 'a rise: no cap');
+  // nothing listed now (latest.json n 0; it keeps the last price): no cheaper listing holds the old
+  // price back, so the day pair is not capped, as in the addon. One auction at 3g 39s, then one at
+  // 1g 68s 74c for 6 hours: the day pair is 1g 68s 73c / 3g 39s; capped it fell back to the engine's
+  // 1g 68s 74c. With the auction still listed (n 1) the cap applies as before.
+  {
+    const gone = hourRows(Array(16).fill(33900).concat(Array(6).fill(16874)));
+    const T = gone[gone.length - 1][0];
+    const gd = [[T - 86400 * 2, 33899, 33900, 1, 0], [T - 86400, 33899, 33900, 1, 0]];
+    const at = (n) => { try { return envS.ctx.__day(gone, gd, n); } catch (e) { return { sell: 'error: ' + e.message }; } };
+    check(at(0).sell === 33900, 'nothing listed now: 1D Target Sell 3g 39s, no cap (' + JSON.stringify(at(0)) + ')');
+    check(at(1).sell === 16874, 'one auction listed: capped as before (' + JSON.stringify(at(1)) + ')');
+  }
   check(envS.errors.length === 0, 'settled cap: no errors ' + envS.errors.slice(0, 3).join(' | '));
 
   /* house rules: plain ASCII in what the new code writes and in the code itself, no long dashes */

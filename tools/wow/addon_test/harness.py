@@ -11554,8 +11554,20 @@ SETTLED_FIXTURES = [
     # a one-hour dip from 1000 to 500 does not drag the target down; 6 hours at 500 do
     ("dip1", settled_fields([1000] * 23 + [500]), 1000, 1000, 498),
     ("dip6", settled_fields([1000] * 18 + [500] * 6), 500, 500, 498),
+    # nothing listed now (one auction at 3g 39s, then one at 1g 68s 74c for 6 hours, then none for 2,
+    # vendor 1g 66s 40c): no cheaper listing holds the old price back, so no cap: Suggested 3g 39s
+    ("gone", settled_fields([33900] * 16 + [16874] * 6 + [None, None], vendor=16640), 33900, 33900, None),
+    # a steady week at 1000, then 700 for 24 hours: 1D is all 700; 5D and 1W wait 30 and 42 hours, so
+    # they keep 1000 (the dip to buy)
+    ("weekdip", settled_fields([1000] * 144 + [700] * 24), 700, 700, 698),
+    # 42 hours at 700: 5D and 1W settle at 700 too
+    ("weekdrop", settled_fields([1000] * 126 + [700] * 42), 700, 700, 698),
 ]
 SETTLED_TIP = "The price fell and stayed down, so this is the highest price of the last 6 hours."
+# the timeframes each fixture settles on (the chart note); the 1D ones are also checked against the model.
+# evening25 has 48 hourly prices, so 5D and 1W wait a quarter of them (12 hours): its evening is in those
+SETTLED_TFS = {"steak": ("1D", "5D", "1W"), "evening25": ("1D",), "fallen": ("1D", "5D", "1W"),
+               "patchy4": ("1D", "5D", "1W"), "dip6": ("1D", "5D", "1W"), "weekdrop": ("5D", "1W")}
 
 
 def sc_settled_drop(sc, ref, items):
@@ -11563,7 +11575,10 @@ def sc_settled_drop(sc, ref, items):
     Suggested button and the chart's List At all use the last 6 hours' high
     (the steak: 4s 47c, not 8s 29c), while Sell now and the verdict stay as
     they were; a real evening premium, a rise, thin data and a short dip keep
-    the usual target."""
+    the usual target. Nothing listed now never caps, 5D and 1W wait a quarter
+    of their hours (a day's dip in a steady week stays a dip to buy), and a
+    live listing that lifts the price drops the note and the button line and
+    keeps a Sell verdict."""
     ids, iid = {}, 975001
     for key, _, _, _, _ in SETTLED_FIXTURES:
         while iid in ref.items or str(iid) in items:
@@ -11583,7 +11598,7 @@ def sc_settled_drop(sc, ref, items):
     ns, M = w.ns, w.M
     tt = w.g.GameTooltip
     age = w.now - r2.updated
-    settled_keys = ("steak", "evening25", "fallen", "patchy4", "dip6")
+    settled_keys = [k for k, tfs in SETTLED_TFS.items() if "1D" in tfs]
     for key, _, best, list_at, now in SETTLED_FIXTURES:
         i = ids[key]
         rec = ref_recommend(r2, i, "1D")
@@ -11595,7 +11610,8 @@ def sc_settled_drop(sc, ref, items):
         got = w.lines(tt)
         sc.eq(got, expected_tooltip(r2, i, age), "settled %s: tooltip" % key)
         sc.eq([r for l, r in got if l == "Suggested price"], [money_icons(best)], "settled %s: tooltip Suggested price" % key)
-        sc.eq([r for l, r in got if l == "Sell now"], [money_icons(now)], "settled %s: tooltip Sell now" % key)
+        if now is not None:
+            sc.eq([r for l, r in got if l == "Sell now"], [money_icons(now)], "settled %s: tooltip Sell now" % key)
         # the chart: List At on every hourly timeframe, and the note
         for tf in ("1D", "5D", "1W"):
             ns.SetChartTF(tf)
@@ -11603,7 +11619,8 @@ def sc_settled_drop(sc, ref, items):
             chart_check(sc, w, r2, i, tf, "settled %s %s" % (key, tf))
             if tf == "1D":
                 sc.eq(ns.ChartPanel.listBox.value._text, money_icons(list_at), "settled %s: List At box" % key)
-            sc.eq("stayed down" in (ns.ChartPanel.notes._text or ""), key in settled_keys, "settled %s %s: the note" % (key, tf))
+            sc.eq("stayed down" in (ns.ChartPanel.notes._text or ""), tf in SETTLED_TFS.get(key, ()),
+                  "settled %s %s: the note" % (key, tf))
         ns.SetChartTF("1D")
     # the steak's verdict judges today's price (3s 99c x 95 against 3s x 100: +26%), as before
     steak = ids["steak"]
@@ -11611,6 +11628,17 @@ def sc_settled_drop(sc, ref, items):
     sc.check(("Auction it", "+26% vs vendor") in w.lines(tt), "settled steak: the verdict is unchanged (%s)" % w.lines(tt))
     r = ns.Recommend(steak, "1D")
     sc.eq((r.sell, r.margin, r.verdict), (447, 25, "Hold"), "settled steak: sell 4s 47c, margin 25c, a Hold (not Strong Buy)")
+    sc.check(not any("buy it" in r.notes[k] for k in range(1, len(r.notes) + 1)),
+             "settled steak: no \"buy it\" note next to the Hold (the buy target is from the old range)")
+    # nothing listed now: the verdict judges the Suggested 3g 39s (not 1g 68s 74c): a maybe, not "Vendor it"
+    tt.SetItemByID(tt, ids["gone"])
+    sc.check(("Maybe auction", "none listed now") in w.lines(tt), "settled gone: the verdict (%s)" % w.lines(tt))
+    # the steady week with a 24-hour dip: 1W keeps 1000, buy 700, margin 250: the dip to buy (Strong Buy)
+    r = ns.Recommend(ids["weekdip"], "1W")
+    sc.eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Strong Buy", False),
+          "settled weekdip: 1W keeps the week's target")
+    r = ns.Recommend(ids["weekdrop"], "1W")
+    sc.eq((r.sell, r.settledHours), (700, 42), "settled weekdrop: 1W settles after 42 hours")
     # the sell frame's Suggested button: the same price as the tooltip and List At, and it says why
     w.open_ah_modern()
     ah = w.g.AuctionHouseFrame
@@ -11636,7 +11664,19 @@ def sc_settled_drop(sc, ref, items):
     w.settle(0.3)
     want = ref_buttons(r2, i, "1D", 600)
     sc.eq(want, (599, 599), "settled steak live 6s: the model follows the listing")
-    buttons_ok(sc, find_sell_buttons(csf), want, "settled steak live 6s")
+    pair = find_sell_buttons(csf)
+    buttons_ok(sc, pair, want, "settled steak live 6s")
+    # 5s 99c is not the 6 hours' high: the button does not say it is, and the chart has no note
+    if pair[1] is not None:
+        sc.check(SETTLED_TIP not in (pair[1].tipBody or ""), "settled steak live 6s: no 6-hour line (%s)" % pair[1].tipBody)
+    ns.SetChartTF("1D")
+    ns.ShowChart(i, "slash")
+    sc.eq(w.live(i), 600, "settled steak live 6s: the chart uses the live listing")
+    chart_check(sc, w, r2, i, "1D", "settled steak live 6s")
+    sc.check("stayed down" not in (ns.ChartPanel.notes._text or ""), "settled steak live 6s: no settled note")
+    # a live 12s is over the old range's top: Strong Sell stands (only Buy is held back)
+    r = ns.Recommend(i, "1D", 1200)
+    sc.eq((r.verdict, r.listAt), ("Strong Sell", 1199), "settled steak live 12s: Strong Sell")
     w.close_ah_modern()
     sc.clean(w)
 

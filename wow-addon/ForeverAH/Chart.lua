@@ -373,7 +373,7 @@ end
 local BOX_HELP = {
   buy = { "Target Buy", "A good price to buy at: most of the cheapest prices in this timeframe were above it.",
           "gold Target Buy line" },
-  sell = { "List At", "What to post at right now: 1 copper under the cheapest listing when that still pays after the 5% cut, otherwise the price it usually sells for. If the price fell and stayed down, the highest price of the last 6 hours.",
+  sell = { "List At", "What to post at right now: 1 copper under the cheapest listing when that still pays after the 5% cut, otherwise the price it usually sells for. On 1D, 5D and 1W, if the price fell and stayed down for a quarter of the timeframe (6 hours at least), the highest price since.",
            "blue List At line" },
 }
 

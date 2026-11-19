@@ -423,14 +423,16 @@ STEAK_LINE = ("Tender Wolf Steak|398|399|3131|150|534|300|cs,9,109,-g8,-3,-2h,-2
 EVENING_DAY = lambda base, eve: [base] * 16 + [eve] * 8  # noqa: E731
 
 
-def settled_line(name, mkt, cheap=None, vendor=0, auctions=None):
+def settled_line(name, mkt, cheap=None, vendor=0, auctions=None, daily=None):
     """An item line from hourly market prices (None = nothing listed); the
-    cheapest is 1 copper under the market unless given."""
+    cheapest is 1 copper under the market unless given. daily: the daily
+    market prices (5 days at today's market unless given)."""
     cheap = cheap or [None if m is None else m - 1 for m in mkt]
     now_c, now_m = cheap[-1] or 0, mkt[-1] or 0
+    day = enc_series([d - 1 for d in daily], daily, [100] * len(daily)) if daily else \
+        enc_series([now_c] * 5, [now_m] * 5, [100] * 5)
     line = "%s|%d|%d|500|100|%d|%d|%s|%s" % (
-        name, now_c, now_m, now_m, vendor, enc_series(cheap, mkt, [5] * len(mkt)),
-        enc_series([now_c] * 5, [now_m] * 5, [100] * 5))
+        name, now_c, now_m, now_m, vendor, enc_series(cheap, mkt, [5] * len(mkt)), day)
     return line + ("|%d" % auctions if auctions else "")
 
 
@@ -457,6 +459,18 @@ SETTLED_ITEMS = {
     9309: settled_line("Dipped Leather", [1000] * 23 + [500]),
     9310: settled_line("Dipped Leather 5", [1000] * 19 + [500] * 5),
     9311: settled_line("Dipped Leather 6", [1000] * 18 + [500] * 6),
+    # one auction at 3g 39s, then one at 1g 68s 74c for 6 hours, then nothing listed for 2 hours (vendor
+    # 1g 66s 40c): the shape of the real Monk's Staff of Strength
+    9312: settled_line("Gone Staff", [33900] * 16 + [16874] * 6 + [None, None], vendor=16640),
+    # 9311's hours, with 5 daily prices at 1000
+    9313: settled_line("Daily Bar", [1000] * 18 + [500] * 6, daily=[1000] * 5),
+    # a month of daily prices: 22 days at 1000, then 8 days at 700 (a quarter of the 30); the hours are 700
+    9314: settled_line("Daily Slide", [700] * 24, daily=[1000] * 22 + [700] * 8),
+    # a full week at 1000, then 700 for the last 24, 29, 41 or 42 hours
+    9320: settled_line("Week Dip 24", [1000] * 144 + [700] * 24),
+    9321: settled_line("Week Dip 29", [1000] * 139 + [700] * 29),
+    9322: settled_line("Week Dip 41", [1000] * 127 + [700] * 41),
+    9323: settled_line("Week Drop 42", [1000] * 126 + [700] * 42),
 }
 for _p in range(24):
     SETTLED_ITEMS[SETTLED_PHASE + _p] = settled_line("Evening Fish %d" % _p, (EVENING_DAY(100, 120) * 3)[_p + 1:_p + 49])
@@ -472,23 +486,37 @@ def test_settled_drop():
         return r.sell, r.listAt, r.settled
     # TC1 the steak: the 1D 70th percentile is 8s 29c (Wednesday 1AM and the 6 hours bridged after it);
     # the last 6 hours are 4s 47c, 4s 45c, 4s 45c, 3s 95c, 4s 18c, 3s 99c: all under 80% of 8s 29c (6s 63c),
-    # so the target is 4s 47c, on every hourly window. List At is the target (the cheapest 3s 98c is
-    # under the window's 40th percentile), never under 1 copper below the cheapest.
-    for tf in ("1D", "5D", "1W"):
-        eq(rec(18045, tf), (447, 447, True), "TC1 steak %s: sell and List At 4s 47c (was 8s 29c)" % tf)
+    # so the target is 4s 47c. List At is the target (the cheapest 3s 98c is under the window's 40th
+    # percentile), never under 1 copper below the cheapest.
+    eq(rec(18045, "1D"), (447, 447, True), "TC1 steak 1D: sell and List At 4s 47c (was 8s 29c)")
+    # 5D and 1W hold all 27 hourly prices: a quarter is 7 hours, 4s 48c and the 6 above; the 70th
+    # percentile of the 27 is 8s 29c too, 80% of it 6s 63c: the target is 4s 48c
+    for tf in ("5D", "1W"):
+        eq(rec(18045, tf), (448, 448, True), "TC1 steak %s: sell and List At 4s 48c (was 8s 29c)" % tf)
+        eq(ns.Recommend(18045, tf).settledHours, 7, "TC1 steak %s: over the last 7 hours" % tf)
     r = ns.Recommend(18045, "1D")
     # the margin after the cut: 447 x 0.95 = 424 less the buy target 399 (capped at the market) = 25, not 388;
-    # the cheapest sits at the bottom of the old range (Strong Buy), but that range is the old one: Hold
-    eq((r.buy, r.margin, r.verdict, r.score), (399, 25, "Hold", 24), "TC1 steak: margin 25c and a Hold, not Strong Buy")
-    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 6 hours",
-                           "Cheapest is below the buy target: buy it"], "TC1 steak: notes")
+    # the cheapest sits at the bottom of the old range (Strong Buy), but that range is the old one: Hold.
+    # The buy target is from the old range too: no "buy it" note.
+    eq((r.buy, r.margin, r.verdict, r.score, r.settledHours), (399, 25, "Hold", 24, 6),
+       "TC1 steak: margin 25c and a Hold, not Strong Buy")
+    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 6 hours"], "TC1 steak: notes")
     P = ns.SellPrices(18045, "1D")
     eq((P.now, P.best), (397, 447), "TC1 steak: Sell now 3s 97c (unchanged), Suggested 4s 47c")
     V = ns.SellVerdict(ns.GetItem(18045), P)
     eq((V.left, V.right, V.unit), ("Auction it", "+26% vs vendor", 399), "TC1 steak: the verdict is unchanged")
-    # the AH shows the steak back at 6s: the target follows the live listing (1 copper under it)
+    # the AH shows the steak back at 6s: the target follows the live listing (1 copper under it). List At
+    # is not the 6 hours' high then, so no note. The 1D cheapest prices run 3s 79c to 11s 90c: 6s sits
+    # at (600 - 379) / 811 = 0.27 of that range, a Buy score of 45 held to a Hold (24)
     eq(rec(18045, "1D", 600), (447, 599, True), "TC1 steak live 6s: List At 5s 99c")
     eq(ns.SellPrices(18045, "1D", 600).best, 599, "TC1 steak live 6s: Suggested 5s 99c")
+    r = ns.Recommend(18045, "1D", 600)
+    eq((r.verdict, r.score, lua_list(r.notes)), ("Hold", 24, []), "TC1 steak live 6s: a Hold and no note")
+    # live 12s is over the old range's top (11s 90c): Strong Sell, as before the settled rule; selling
+    # into a listing that high is right however far the price fell
+    r = ns.Recommend(18045, "1D", 1200)
+    eq((r.listAt, r.verdict, r.score, lua_list(r.notes)), (1199, "Strong Sell", -100, []),
+       "TC1 steak live 12s: Strong Sell, not held to a Hold")
     # TC2 a real evening premium: 16 x 100 and 8 x 120 in the window, the 70th percentile is 120; the 6
     # morning hours at 100 are over 80% of it (96), so 120 is kept
     eq(rec(9301), (120, 120, False), "TC2 evening +20%: the 1s 20c evening price is kept in the morning")
@@ -518,13 +546,50 @@ def test_settled_drop():
     eq(rec(9309), (1000, 1000, False), "TC5 a one-hour dip does not drag the target down")
     eq(rec(9310), (1000, 1000, False), "TC5 a 5-hour dip does not either")
     eq(rec(9311), (500, 500, True), "TC5 6 hours at 500: the target is 500")
+    # TC6 a patient window waits a quarter of its hours: a full 5D 30, a full 1W 42. A week at 1000, then
+    # 700 (the cheapest 699): the 5D and 1W 70th percentiles stay 1000, 80% of it is 800.
+    # 24 hours at 700: the last 30 and 42 hours still hold a 1000, so the patient target is kept: 1W buy
+    # 700 (the 20th percentile 999, held to the market), margin 950 - 700 = 250 (36%), and 6s 99c is the
+    # bottom of the week's range: Strong Buy, the dip the sidebar's price-history ideas look for
+    r = ns.Recommend(9320, "1W")
+    eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Strong Buy", False),
+       "TC6 a 24-hour dip in a steady week: 1W sell 1000 and Strong Buy")
+    eq(rec(9320, "5D"), (1000, 1000, False), "TC6 a 24-hour dip: 5D sell 1000")
+    eq(rec(9321, "5D"), (1000, 1000, False), "TC6 a 29-hour dip: 5D sell 1000 (one 1000 in its last 30 hours)")
+    eq(rec(9322, "5D"), (700, 700, True), "TC6 41 hours at 700: 5D settles at 700 after 30 hours")
+    eq(ns.Recommend(9322, "5D").settledHours, 30, "TC6 41 hours: 5D over the last 30 hours")
+    eq(rec(9322, "1W"), (1000, 1000, False), "TC6 41 hours at 700: 1W still 1000 (one 1000 in its last 42)")
+    r = ns.Recommend(9323, "1W")
+    eq((r.sell, r.listAt, r.settled, r.settledHours), (700, 700, True, 42), "TC6 42 hours at 700: 1W settles at 700")
+    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 42 hours",
+                           "Spread does not beat the 5% AH cut"], "TC6 42 hours: 1W notes")
+    # TC7 the daily windows never cap: 1M and 1Y use the 5 daily prices at 1000, so sell 1000 (and List
+    # At 1000: the cheapest 4s 99c is under the window's 40th percentile) though the last 6 hours are 500
+    for tf in ("1M", "1Y"):
+        eq(rec(9313, tf), (1000, 1000, False), "TC7 daily %s: no cap" % tf)
+    eq(rec(9313, "1D"), (500, 500, True), "TC7 the same item on 1D: 500")
+    # 8 of 30 days at 700 after 22 at 1000: the 1M 70th percentile is 1000 and stays the target (no cap
+    # on a daily window, though a quarter of it is down)
+    for tf in ("1M", "1Y"):
+        eq(rec(9314, tf), (1000, 1000, False), "TC7 a month that slid for 8 days, %s: sell 1000" % tf)
+    # TC8 nothing listed now: no cheaper listing holds the old price back, so no cap. The 70th percentile
+    # of 16 x 3g 39s and 6 x 1g 68s 74c is 3g 39s; the verdict judges that Suggested price: maybe, as
+    # nothing is listed (with the cap it was 1g 68s 74c and "Vendor it +3% vs AH")
+    r = ns.Recommend(9312, "1D")
+    eq((r.sell, r.settled), (33900, False), "TC8 nothing listed now: sell 3g 39s, no cap")
+    eq(lua_list(r.notes), ["No listings right now"], "TC8 nothing listed now: notes")
+    P = ns.SellPrices(9312, "1D")
+    eq((P.now, P.best), (None, 33900), "TC8 nothing listed now: no Sell now, Suggested 3g 39s")
+    V = ns.SellVerdict(ns.GetItem(9312), P)
+    eq((V.left, V.right), ("Maybe auction", "none listed now"), "TC8 nothing listed now: the verdict")
     # every settled item against the Python model, on every window, with and without a live listing
     for iid in sorted(SETTLED_ITEMS):
         for tf in ("1D", "5D", "1W", "1M", "1Y"):
-            for live in (None, 600):
+            for live in (None, 600, 1200):
                 py = py_recommend(ns, iid, tf, live)
                 r = ns.Recommend(iid, tf, live)
-                for k in ("buy", "sell", "listAt", "postAt", "margin", "verdict", "score", "settled", "tf", "advice"):
+                for k in ("buy", "sell", "listAt", "postAt", "margin", "verdict", "score", "settled", "settledHours",
+                          "tf", "advice"):
                     eq(getattr(r, k), py.get(k), "settled item %d %s live=%s %s" % (iid, tf, live, k))
                 eq(lua_list(r.notes), py["notes"], "settled item %d %s live=%s notes" % (iid, tf, live))
                 sp = rec_model.sell_prices(py, live, False, ns.GetItem(iid).vendor)
