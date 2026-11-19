@@ -434,13 +434,21 @@ function persistFavoriteLists() {
   } catch (e) {}
 }
 function switchFavoriteList(listId) {
-  if (listId === activeFavListId || !favoriteLists.some(l => l.id === listId)) return;
+  if (!favoriteLists.some(l => l.id === listId)) return;
+  /* Picking one of the player's own lists leaves an auto list, even when it
+     is the one that was active all along (nothing of it needs saving then). */
+  if (autoFavListId) {
+    setAutoFavList(null);
+    if (listId === activeFavListId) { renderWatchlist(); return; }
+  }
+  if (listId === activeFavListId) return;
   activeFavListId = listId;
   favorites = activeFavList().items;
   persistFavoriteLists();
   renderWatchlist();
 }
 function createFavoriteListLocal(name) {
+  setAutoFavList(null);
   const l = { id: 'fl-' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), name, items: [] };
   favoriteLists.push(l);
   activeFavListId = l.id;
@@ -464,6 +472,99 @@ function deleteFavoriteListLocal(listId) {
   }
   persistFavoriteLists();
   renderWatchlist();
+}
+
+/* -- Auto lists ------------------------------------------------------------
+   Read-only lists at the bottom of the same FAVORITES dropdown, worked out
+   from the data the page already has and redone on every refresh:
+     Flip picks    the items of the latest flips (flips.json), best first
+     Greens/Blues/Epics   the items of that quality with the most gold traded
+                   a day (market price x sold per day)
+   At most AUTO_FAV_MAX each. As in every other list, an item whose listings
+   are versions ("of the Bear") is shown as its versions, never lumped.
+   Showing one never touches the player's own lists: `favorites` and
+   activeFavListId stay on the player's list (the star still saves there),
+   only which list is SHOWN changes, kept under its own key. The rows are the
+   favorites rows (same columns and badges) without remove, drag or swipe. */
+const AUTO_FAV_MAX = 25;
+const AUTO_FAV_KEY = 'ge_autoFavList';
+const AUTO_FAV_LISTS = [
+  { id: 'auto:flips', name: 'Flip picks (auto)', hint: 'The best flips in the latest prices.', none: 'No flips in the latest prices.' },
+  { id: 'auto:greens', name: 'Greens (auto)', quality: 'UNCOMMON', hint: 'Greens with the most gold traded a day.', none: 'No greens sold in the last day.' },
+  { id: 'auto:blues', name: 'Blues (auto)', quality: 'RARE', hint: 'Blues with the most gold traded a day.', none: 'No blues sold in the last day.' },
+  { id: 'auto:epics', name: 'Epics (auto)', quality: 'EPIC', hint: 'Epics with the most gold traded a day.', none: 'No epics sold in the last day.' }
+];
+let autoFavListId = (() => {
+  try {
+    const v = localStorage.getItem(AUTO_FAV_KEY);
+    return AUTO_FAV_LISTS.some(l => l.id === v) ? v : null;
+  } catch (e) { return null; }
+})();
+function activeAutoList() { return AUTO_FAV_LISTS.find(l => l.id === autoFavListId) || null; }
+function setAutoFavList(id) {
+  autoFavListId = AUTO_FAV_LISTS.some(l => l.id === id) ? id : null;
+  try {
+    if (autoFavListId) localStorage.setItem(AUTO_FAV_KEY, autoFavListId);
+    else localStorage.removeItem(AUTO_FAV_KEY);
+  } catch (e) {}
+}
+function showAutoFavList(id) {
+  setAutoFavList(id);
+  renderWatchlist();
+}
+/* The ids an auto list shows, best first. Everything comes in as arguments
+   (rows: the mapping entries on offer, latestData: latest.data, volOf(id):
+   sold per day, lumped(id): an item made of versions, flips: flips.json's
+   rows), so it is the same function the page and the tests run. */
+function autoFavIds(list, rows, latestData, volOf, lumped, flips) {
+  if (!list) return [];
+  const byId = new Map();
+  for (const m of rows || []) if (m && m.id != null) byId.set(String(m.id), m);
+  const out = [];
+  if (list.id === 'auto:flips') {
+    for (const f of Array.isArray(flips) ? flips : []) {
+      const id = f && f.id != null ? String(f.id) : '';
+      if (!id || !byId.has(id) || out.includes(id)) continue;
+      out.push(id);
+      if (out.length >= AUTO_FAV_MAX) break;
+    }
+    return out;
+  }
+  const scored = [];
+  for (const [id, m] of byId) {
+    if (String(m.quality || '').toUpperCase() !== list.quality || m.unknownName || lumped(id)) continue;
+    const node = latestData ? latestData[id] : null;
+    const price = node ? Number(node.high || node.avgHighPrice || node.low || 0) : 0;
+    const sold = Number(volOf(id)) || 0;
+    if (price > 0 && sold > 0) scored.push([id, price * sold, sold]);
+  }
+  scored.sort((a, b) => b[1] - a[1] || b[2] - a[2] || Number(a[0]) - Number(b[0]));
+  for (const r of scored.slice(0, AUTO_FAV_MAX)) out.push(r[0]);
+  return out;
+}
+/* flips.json for Flip picks: read when that list is shown, again once it is
+   AUTO_FLIPS_TTL_MS old (the 5-minute price refresh re-renders the list,
+   which is what asks), and the list re-renders when it lands. */
+const AUTO_FLIPS_TTL_MS = 240000;
+let autoFlips = null, autoFlipsAt = 0, autoFlipsBusy = false;
+function loadAutoFlips() {
+  if (autoFlipsBusy || (autoFlipsAt && Date.now() - autoFlipsAt < AUTO_FLIPS_TTL_MS)) return;
+  autoFlipsBusy = true;
+  jget(WOW_DATA + '/flips.json').then(j => {
+    const list = j && Array.isArray(j.flips) ? j.flips : (Array.isArray(j) ? j : null);
+    if (list) autoFlips = list;
+  }).catch(() => {}).then(() => {
+    autoFlipsBusy = false;
+    autoFlipsAt = Date.now();
+    if (autoFavListId === 'auto:flips') renderWatchlist();
+  });
+}
+/* What an empty auto list says. */
+function autoFavEmptyText(list) {
+  if (list.id === 'auto:flips') {
+    if (autoFlips == null) return (autoFlipsBusy || !autoFlipsAt) ? 'Loading the latest flips...' : 'Flips start with the next price update.';
+  }
+  return list.none;
 }
 
 /* Drag-to-reorder favorites (TradingView-style) — grab anywhere on the row,
@@ -1743,6 +1844,132 @@ function wowThinTag(id) {
   if (!n) return '';
   const word = n === 1 ? '1 listing' : '2 listings';
   return '<span class="wow-thin-tag" title="Only ' + word + ' behind this price right now, so one sale or one new listing can move it a lot.">' + word + '</span>';
+}
+
+/* -- Item details: the in-game tooltip lines under the item name -----------
+   The collector writes every item's tooltip lines (binding, slot and type,
+   armor, damage, stats, durability, requirements, Use / Equip / Chance on
+   hit, set, flavor text) into chunk files of 1000 ids each:
+     details/<floor(id / 1000)>.json = {"<item id>": [[text, colour], ...]}
+   A line with a right-hand part (slot and type, damage and speed) is
+   [text, colour, right]. Colours: w white, g green, y gold, q grey, r red,
+   b blue. Only the chunk of the item shown is read, then kept 10 minutes.
+   A version ("of the Bear") has no lines of its own: it shows its item's,
+   with its bonus named, since those stats are not in the item's lines. An
+   item made of versions gets the game's own "<Random enchantment>". The
+   sell price comes from the mapping, like everywhere else on the page.
+   No chunk, no entry or no lines: the block stays hidden. */
+const DETAILS_CHUNK = 1000;
+const DETAILS_TTL_MS = 600000;
+const DETAIL_COLOURS = { w: 1, g: 1, y: 1, q: 1, r: 1, b: 1 };
+const _detailsChunks = new Map();
+function wowDetailsChunkId(id) {
+  const n = Math.floor(Number(id) / DETAILS_CHUNK);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+function loadDetailsChunk(n) {
+  const hit = _detailsChunks.get(n);
+  if (hit && Date.now() - hit.t < DETAILS_TTL_MS) return hit.p;
+  /* A chunk that is not there yet (an item the collector has not reached)
+     is an empty one, kept as long as a real one so it is not asked again on
+     every item change. */
+  const p = jget(WOW_DATA + '/details/' + n + '.json')
+    .then(j => (j && typeof j === 'object' && !Array.isArray(j)) ? j : {})
+    .catch(() => ({}));
+  _detailsChunks.set(n, { t: Date.now(), p });
+  if (_detailsChunks.size > 40) _detailsChunks.delete(_detailsChunks.keys().next().value);
+  return p;
+}
+/* The lines to show for mapping entry m, from its chunk: [] for none. */
+function wowDetailLines(m, chunk) {
+  if (!m || !chunk || typeof chunk !== 'object') return [];
+  const isVersion = m.base != null && String(m.base) !== String(m.id);
+  const raw = chunk[String(isVersion ? m.base : m.id)];
+  if (!Array.isArray(raw)) return [];
+  const lines = [];
+  for (const l of raw) {
+    if (!Array.isArray(l) || typeof l[0] !== 'string' || !l[0].trim()) continue;
+    const c = DETAIL_COLOURS[l[1]] ? l[1] : 'w';
+    const right = typeof l[2] === 'string' && l[2].trim() ? l[2] : '';
+    lines.push(right ? [l[0], c, right] : [l[0], c]);
+    if (lines.length >= 60) break;
+  }
+  if (!lines.length) return [];
+  let bonus = '';
+  if (isVersion) {
+    const parts = wowSplitVersionName(m);
+    const sfx = parts ? String(parts[1]).replace(/^\((.*)\)$/, '$1') : '';
+    if (sfx) bonus = 'Random enchantment: ' + sfx;
+  } else if (wowIsLumped(m.id)) {
+    bonus = '<Random enchantment>';
+  }
+  if (bonus) {
+    /* With the stats, as in the game: after the last stat line (any colour),
+       or white armor, block or damage line, else after the slot line, else
+       at the end. A green Use / Equip line that names damage does not count. */
+    let at = -1;
+    lines.forEach((l, i) => {
+      if (/^[+-]\d/.test(l[0]) || (l[1] === 'w' && /\d Armor$|\d Block$|damage per second|\bDamage\b/.test(l[0]))) at = i;
+    });
+    if (at < 0) at = lines.findIndex(l => l.length > 2);
+    lines.splice(at < 0 ? lines.length : at + 1, 0, [bonus, 'g']);
+  }
+  const sell = Number(m.highalch || 0);
+  if (sell > 0) lines.push(['Sell Price: ' + moneyExact(sell), 'w']);
+  return lines;
+}
+function wowDetailsHtml(lines) {
+  return '<div class="idt-lines">' + lines.map(l => {
+    const cls = 'idt-line idt-' + (DETAIL_COLOURS[l[1]] ? l[1] : 'w');
+    return l.length > 2
+      ? '<div class="' + cls + ' idt-pair"><span>' + escapeHtml(l[0]) + '</span><span class="idt-right">' + escapeHtml(l[2]) + '</span></div>'
+      : '<div class="' + cls + '">' + escapeHtml(l[0]) + '</div>';
+  }).join('') + '</div>';
+}
+/* The block's height, plus the column's gap, on .main-column as --idt-h:
+   the desktop chart gives that much back (app.css), so the quick-facts row
+   and the 30-Day Range stay above the fold with the block shown. Redone
+   whenever the block changes size (a narrower window wraps it to more rows),
+   removed while it is hidden. */
+let _detailsSizeWatch = null;
+function syncDetailsHeight(host) {
+  const col = host ? host.parentElement : null;
+  if (!col || !col.classList || !col.classList.contains('main-column')) return;
+  const h = host.hidden ? 0 : host.getBoundingClientRect().height;
+  if (h > 0) {
+    const v = Math.ceil(h + (parseFloat(getComputedStyle(col).rowGap) || 0)) + 'px';
+    if (col.style.getPropertyValue('--idt-h') !== v) col.style.setProperty('--idt-h', v);
+  } else if (col.style.getPropertyValue('--idt-h')) {
+    col.style.removeProperty('--idt-h');
+  }
+  if (!_detailsSizeWatch && typeof ResizeObserver === 'function') {
+    _detailsSizeWatch = new ResizeObserver(() => syncDetailsHeight(host));
+    _detailsSizeWatch.observe(host);
+  }
+}
+/* Fills #itemDetails for the item just opened. Hidden at once, so the last
+   item's lines never sit under this one's name while its chunk loads. */
+let _detailsFor = null;
+function renderItemDetails(m) {
+  const host = document.getElementById('itemDetails');
+  if (!host) return;
+  const id = m ? String(m.id) : null;
+  _detailsFor = id;
+  host.hidden = true;
+  host.innerHTML = '';
+  syncDetailsHeight(host);
+  if (!m) return;
+  const n = wowDetailsChunkId(m.base != null && String(m.base) !== String(m.id) ? m.base : m.id);
+  if (n == null) return;
+  return loadDetailsChunk(n).then(chunk => {
+    if (_detailsFor !== id) return;            // another item was opened meanwhile
+    const lines = wowDetailLines(m, chunk);
+    if (!lines.length) return;
+    host.innerHTML = wowDetailsHtml(lines);
+    host.setAttribute('aria-label', m.name + ': item details');
+    host.hidden = false;
+    syncDetailsHeight(host);
+  });
 }
 
 /* Icons come with the mapping (Blizzard's render CDN); the id-only form looks
@@ -4268,6 +4495,7 @@ function buildColHeader(host) {
       clearBtn.classList.remove('is-armed'); clearBtn.textContent = 'Clear this list'; };
     clearBtn.onclick = (ev) => {
       ev.stopPropagation();
+      if (autoFavListId) { disarm(); return; }   // an auto list is showing: nothing of the player's to clear
       if (!armed) {
         if (!favorites.length) return;
         clearBtn.classList.add('is-armed');
@@ -4372,6 +4600,22 @@ function renderWatchlist() {
     ? Array.from(new Set([...favorites.map(String), ...rlMatchedIds.map(String)]))
     : favorites;
   const favs = mergedFavIds.map(id => favsById.get(String(id))).filter(Boolean);
+  /* An auto list on show (see AUTO_FAV_LISTS) takes the favorites rows'
+     place; the player's own list stays as it is underneath. */
+  const autoList = activeAutoList();
+  let autoItems = [];
+  if (autoList) {
+    if (autoList.id === 'auto:flips') loadAutoFlips();
+    autoItems = autoFavIds(autoList, activeItems, latest && latest.data, dailyVolume, wowIsLumped, autoFlips)
+      .map(id => favsById.get(id)).filter(Boolean);
+  }
+  const shownFavs = autoList ? autoItems : favs;
+  const clearFavsBtn = document.getElementById('btnClearFavs');
+  if (clearFavsBtn) {                                    // an auto list cannot be cleared
+    clearFavsBtn.hidden = !!autoList;
+    const sep = clearFavsBtn.previousElementSibling;
+    if (sep && sep.classList.contains('col-menu-sep')) sep.hidden = !!autoList;
+  }
 
   const dayLows = [], dayHighs = [], marginHigh1d = [], marginLow1d = [], movers = [];
   const mover1dPct = {}; // id -> the day's change, live mid vs the mid 24h ago: the favorites' figure
@@ -4503,7 +4747,7 @@ function renderWatchlist() {
          to the row edge (the old approach) drifted off the suffix because
          row padding varies by breakpoint. */
       const favBtn = overrides.favRemove
-        ? `<button type="button" class="wl-fav-remove" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${item.name} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`
+        ? `<button type="button" class="wl-fav-remove" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${escapeHtml(item.name)} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`
         : '';
       if (vol > 0) {
         const ab = String(abbrevCount(vol));
@@ -4526,7 +4770,7 @@ function renderWatchlist() {
      value the category specifically tracks (mover %, average margin, etc.)
      so we don't recompute it from latest data when we already have it. */
   const plainEntries = (items) => items.map(item => ({ item, price: priceOf(item), sub: buildMeta(item) }));
-  const favEntries = (items) => items.map(item => ({ item, price: priceOf(item), sub: buildMeta(item, { favRemove: true, day: true }) }));
+  const favEntries = (items) => items.map(item => ({ item, price: priceOf(item), sub: buildMeta(item, { favRemove: !autoList, day: true }) }));
   const marginEntries = (rows, tag) => rows.slice(0, 30).map(r => ({
     item: r.item, price: priceOf(r.item),
     sub: buildMeta(r.item, { margin: r.margin, marginLabel: tag === 'ea avg' ? '14-day average margin per item, after the 5% AH cut' : 'Live margin per item, after the 5% AH cut' })
@@ -4535,9 +4779,9 @@ function renderWatchlist() {
 
   /* Apply the favorites sort (display-only — never mutates the saved order,
      so switching back to Manual restores the user's drag arrangement). */
-  let favsSorted = favs;
+  let favsSorted = shownFavs;
   if (favSort !== 'manual') {
-    favsSorted = [...favs];
+    favsSorted = [...shownFavs];
     const liveMargin = (it) => {
       const n = latest && latest.data ? latest.data[String(it.id)] : null;
       if (!n || !(n.high > 0) || !(n.low > 0) || n.high <= n.low) return -Infinity;
@@ -4569,7 +4813,7 @@ function renderWatchlist() {
     /* Display name follows whichever list is active (e.g. "Long holds"),
        but the collapse-state key stays fixed so switching lists doesn't
        reset whether the section is expanded. */
-    { name: activeFavList().name, key: "Favorites", className: "fav-title", entries: favEntries(favsSorted), alwaysShow: true },
+    { name: autoList ? autoList.name : activeFavList().name, key: "Favorites", className: "fav-title", entries: favEntries(favsSorted), alwaysShow: true, auto: autoList },
     { name: "High Vol Margins", className: "margin-title", entries: marginEntries(marginHigh1d, "ea"), pageUrl: "/high-vol-margins.html" },
     { name: "Low Vol Margins", className: "marginlo-title", entries: marginEntries(marginLow1d, "ea"), pageUrl: "/low-vol-margins.html" },
     { name: "Reliable 14D Margins", className: "steady-title", entries: steadyEntries, scan: "steady", pageUrl: "/reliable-14d-margins.html" },
@@ -4603,7 +4847,7 @@ function renderWatchlist() {
        when the ACTIVE list's name actually matches one of the plugin's
        lists — with multiple lists, being connected doesn't mean every
        list merges. */
-    const rlIds = (isFavTitle && rlConnected) ? rlMatchedFavIds().map(String) : [];
+    const rlIds = (isFavTitle && rlConnected && !group.auto) ? rlMatchedFavIds().map(String) : [];
     const rlBadge = rlIds.length ? `<span class="rl-linked-badge" title="Live-linked to your RuneLite Favorites (list name match)"><span class="rl-dot on"></span>Linked</span>` : '';
     /* "Match in-game" appears ONLY when the two lists actually differ, as
        ordered sequences. That is the whole affordance: no button means the
@@ -4627,12 +4871,18 @@ function renderWatchlist() {
         <div class="fls-menu-row editing">
           <input type="text" class="fls-menu-input" data-list-id="${l.id}" value="${escapeHtml(l.name)}" maxlength="40">
         </div>` : `
-        <div class="fls-menu-row ${l.id === activeFavListId ? 'active' : ''}">
+        <div class="fls-menu-row ${l.id === activeFavListId && !group.auto ? 'active' : ''}">
           <span class="fls-menu-name" data-list-id="${l.id}" role="button" tabindex="0" title="Switch to &quot;${escapeHtml(l.name)}&quot;">${escapeHtml(l.name)}</span>
           <button type="button" class="fls-rename" data-list-id="${l.id}" title="Rename list" aria-label="Rename ${escapeHtml(l.name)}">${uiIcon('pencil')}</button>
           ${favoriteLists.length > 1 ? `<button type="button" class="fls-delete" data-list-id="${l.id}" title="Delete list" aria-label="Delete ${escapeHtml(l.name)}">×</button>` : ''}
         </div>`).join('')
-        + (flsCreatingNew ? `<div class="fls-menu-row editing"><input type="text" class="fls-menu-input" data-new="1" placeholder="List name" maxlength="40"></div>` : '');
+        + (flsCreatingNew ? `<div class="fls-menu-row editing"><input type="text" class="fls-menu-input" data-new="1" placeholder="List name" maxlength="40"></div>` : '')
+        /* The auto lists: switch-only rows, no rename or delete. */
+        + `<div class="fls-menu-sep" role="separator"></div><div class="fls-menu-head">Auto lists</div>`
+        + AUTO_FAV_LISTS.map(a => `
+        <div class="fls-menu-row fls-auto ${a.id === autoFavListId ? 'active' : ''}">
+          <span class="fls-menu-name" data-auto-id="${a.id}" role="button" tabindex="0" title="${escapeHtml(a.hint)} Updates by itself.">${escapeHtml(a.name)}</span>
+        </div>`).join('');
       const flsMenuOpen = flsCreatingNew || flsEditingListId != null;
       titleDiv.innerHTML = `
         <span class="cat-title-label">
@@ -4678,7 +4928,9 @@ function renderWatchlist() {
       if (scanState === 'loading') inner = `<div class="scan-row loading">${uiIcon('loader', 'ic-spin')} ${loadLabel}</div>`;
       else inner = `<div class="scan-row" data-scan="${group.scan}">${uiIcon('search')} ${idleLabel}</div>`;
     } else if (group.entries.length === 0) {
-      const emptyMsg = isFavTitle
+      const emptyMsg = group.auto
+        ? escapeHtml(autoFavEmptyText(group.auto))
+        : isFavTitle
         ? `No favorites in "${escapeHtml(group.name)}" yet — star an item to add it.`
         : group.scan === 'steady'
           ? 'No items met the consistency bar over the last 14 days'
@@ -4686,8 +4938,11 @@ function renderWatchlist() {
       inner = `<div class="wl-item" style="color:var(--text-muted); justify-content:center;">${emptyMsg}</div>`;
     } else {
       /* Keyed on className, not the display name — the name already got
-         reworded once (emoji purge) and silently broke this check. */
+         reworded once (emoji purge) and silently broke this check. An auto
+         list keeps the favorites' figures and badges but none of the
+         editing: no remove button, no swipe, no drag (no data-fav-row). */
       const isFavGroup = group.className === "fav-title";
+      const editable = isFavGroup && !group.auto;
       group.entries.forEach(e => {
         const item = e.item, id = String(item.id);
         const node = latest?.data?.[id];
@@ -4728,14 +4983,14 @@ function renderWatchlist() {
         /* Always render the row-gutter fallback for fav rows; CSS shows it
            only when the VOL column (which hosts the primary in-cell trash)
            is unavailable. */
-        const removeBtn = isFavGroup ? `<button type="button" class="wl-fav-remove wl-fav-remove-row" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${item.name} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>` : '';
-        const swipeBg = isFavGroup ? `<span class="wl-swipe-bg">REMOVE</span>` : '';
+        const removeBtn = editable ? `<button type="button" class="wl-fav-remove wl-fav-remove-row" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${escapeHtml(item.name)} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>` : '';
+        const swipeBg = editable ? `<span class="wl-swipe-bg">REMOVE</span>` : '';
         inner += `
-          <div class="wl-item ${activeClass} ${hlClass}" data-id="${item.id}" ${isFavGroup ? `data-fav-row="1" data-fav-id="${item.id}"` : ''}>
+          <div class="wl-item ${activeClass} ${hlClass}" data-id="${item.id}" ${editable ? `data-fav-row="1" data-fav-id="${item.id}"` : ''}>
             ${swipeBg}
             <div class="wl-item-left">
-              <img src="${itemIconUrl(item.id)}" alt="${item.name} icon" loading="lazy">
-              <span class="wl-item-name">${item.name}</span>
+              <img src="${itemIconUrl(item.id)}" alt="${escapeHtml(item.name)} icon" loading="lazy">
+              <span class="wl-item-name">${escapeHtml(item.name)}</span>
               ${hlBadge}
             </div>
             <div class="wl-item-right">
@@ -4745,6 +5000,10 @@ function renderWatchlist() {
             ${removeBtn}
           </div>`;
       });
+    }
+    /* An auto list says what it is and that it keeps itself up to date. */
+    if (group.auto) {
+      inner = `<div class="wl-auto-hint">${escapeHtml(group.auto.hint)} Updates by itself. Star an item to keep it in ${escapeHtml(activeFavList().name)}.</div>` + inner;
     }
     // A real, indexable page for this category — separate from (and linked
     // to, not replacing) this same live scanner. Crawlable content Google
@@ -4822,7 +5081,12 @@ function renderWatchlist() {
   };
   document.addEventListener('click', _flsOutsideClickHandler);
   document.querySelectorAll('.fls-menu-name').forEach(el => {
-    const apply = () => { closeFlsMenu(); switchFavoriteList(el.getAttribute('data-list-id')); };
+    const autoId = el.getAttribute('data-auto-id');
+    const apply = () => {
+      closeFlsMenu();
+      if (autoId) showAutoFavList(autoId);
+      else switchFavoriteList(el.getAttribute('data-list-id'));
+    };
     el.onclick = apply;
     el.onkeydown = (ev) => { if (ev.key === 'Enter' || ev.key === ' ') { ev.preventDefault(); apply(); } };
   });
@@ -4987,8 +5251,10 @@ function renderWatchlist() {
   });
 
   /* fetch true intraday extremes for the visible favorites (+ the selected item)
-     so their glow reflects the actual recent peak/trough, not the coarse average. */
-  const idsToScan = favs.map(i => String(i.id));
+     so their glow reflects the actual recent peak/trough, not the coarse average.
+     The player's own list too while an auto list is showing: its alerts read
+     the same extremes. */
+  const idsToScan = favs.map(i => String(i.id)).concat(autoItems.map(i => String(i.id)));
   if (selected) idsToScan.push(String(selected.id));
   scanDayExtremes(idsToScan);
 
@@ -7042,7 +7308,7 @@ function renderFlipCard(rec){
   const h = flipHost(); if (!h) return;
   const collapsed = flipCollapsed();
   paintFlip(`
-    <div class="flip-card${collapsed ? ' collapsed' : ''}" role="button" tabindex="0" data-id="${rec.id}" aria-label="Open ${rec.item.name} — recommended flip">
+    <div class="flip-card${collapsed ? ' collapsed' : ''}" role="button" tabindex="0" data-id="${rec.id}" aria-label="Open ${escapeHtml(rec.item.name)}, the recommended flip">
       <div class="fc-head">
         <span class="fc-kicker"><span class="fc-kicker-txt">Recommended flip</span></span>
         ${flipCount()}
@@ -7053,14 +7319,14 @@ function renderFlipCard(rec){
       </div>
       <div class="fc-mini">
         <img class="fc-mini-icon" src="${itemIconUrl(rec.id)}" alt="" loading="lazy">
-        <span class="fc-mini-name">${rec.item.name}</span>
+        <span class="fc-mini-name">${escapeHtml(rec.item.name)}</span>
         <span class="fc-mini-score" style="color:${rec.color}" title="${rec.verdict} — ${rec.flipScore}/100. Expand the card for the breakdown.">${rec.flipScore}<span class="fc-mini-score-k">${rec.verdictShort}</span></span>
       </div>
       <div class="fc-collapsible">
         <div class="fc-body">
-          <img class="fc-icon" src="${itemIconUrl(rec.id)}" alt="${rec.item.name} icon" loading="lazy">
+          <img class="fc-icon" src="${itemIconUrl(rec.id)}" alt="${escapeHtml(rec.item.name)} icon" loading="lazy">
           <div class="fc-main">
-            <div class="fc-name">${rec.item.name}</div>${wowThinTag(rec.id)}
+            <div class="fc-name">${escapeHtml(rec.item.name)}</div>${wowThinTag(rec.id)}
             ${rec.why ? `<div class="fc-why">${rec.why}</div>` : ''}
           </div>
           <div class="fc-gauge">
@@ -7436,9 +7702,9 @@ function renderPortfolio() {
       ? `<span class="bk-pl ${cls}">${s}${m.plPct.toFixed(1)}%</span>`
       : `<span class="bk-pl">—</span>`;
     return `<div class="bk-row" data-idx="${i}">
-      <img src="${itemIconUrl(h.itemId)}" alt="${h.name} icon" loading="lazy">
+      <img src="${itemIconUrl(h.itemId)}" alt="${escapeHtml(h.name)} icon" loading="lazy">
       <div style="overflow:hidden">
-        <div class="bk-name">${h.name}</div>
+        <div class="bk-name">${escapeHtml(h.name)}</div>
         <div class="bk-sub">${sub}</div>
       </div>
       <span class="bk-val">${abbreviateNumber(Math.round(m.value))}</span>
@@ -8597,9 +8863,9 @@ function renderNotifCenter() {
   const favHTML = favItems.length
     ? `<div class="nc-list">${favItems.map(m => `
         <div class="nc-row">
-          <img src="${itemIconUrl(m.id)}" alt="${m.name} icon">
+          <img src="${itemIconUrl(m.id)}" alt="${escapeHtml(m.name)} icon">
           <div class="nc-row-name-stack">
-            <span class="nc-row-name">${m.name}</span>
+            <span class="nc-row-name">${escapeHtml(m.name)}</span>
             <span class="nc-row-caption">24H break + 5D break (auto)</span>
           </div>
         </div>`).join('')}</div>`
@@ -8614,9 +8880,9 @@ function renderNotifCenter() {
           : 'No cost basis — alerts need a cost ea to compare against';
         return `
           <div class="nc-row" data-bk-id="${h.itemId}">
-            <img src="${itemIconUrl(h.itemId)}" alt="${h.name} icon">
+            <img src="${itemIconUrl(h.itemId)}" alt="${escapeHtml(h.name)} icon">
             <div class="nc-row-name-stack">
-              <span class="nc-row-name">${h.name}</span>
+              <span class="nc-row-name">${escapeHtml(h.name)}</span>
               <span class="nc-row-caption">${caption}</span>
             </div>
             <input type="number" class="nc-pct-input" data-bk-pct="${h.itemId}" value="${pct || ''}" placeholder="0" min="0" max="999" ${h.cost > 0 ? '' : 'disabled'}>
@@ -10410,6 +10676,7 @@ async function setItem(m, opts = {}) {
      PocketGE tabs open you can tell at a glance which item is which. */
   updateFavicon(iconURL);
   wowSetNameParts($("#tickerName"), m);
+  renderItemDetails(m);
   /* OSRS wiki uses the item name with the first letter capitalized and
      spaces replaced by underscores (e.g. "Gilded scimitar" -> Gilded_scimitar).
      encodeURIComponent handles apostrophes etc.; underscores are unreserved
@@ -10568,7 +10835,7 @@ setItem._userPicked = false;
         .slice(0, 10);
       if (!items.length) { sb.style.display = "none"; return; }
       sb.innerHTML = `<div class="suggest-header">Recent</div>`
-        + items.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${x.name} icon">${x.name}</div>`).join("");
+        + items.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${escapeHtml(x.name)} icon">${escapeHtml(x.name)}</div>`).join("");
       sb.style.display = "block";
     }
     qInput.addEventListener("input", () => {
@@ -10579,7 +10846,7 @@ setItem._userPicked = false;
          40 places. Typing a version's suffix ("of the bear") still finds it. */
       const hits = mapping.filter(x => x.name.toLowerCase().includes(q) && (membersOn || !x.members));
       const list = hits.filter(x => x.base == null).concat(hits.filter(x => x.base != null)).slice(0, 40);
-      sb.innerHTML = list.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${x.name} icon">${x.name}</div>`).join("");
+      sb.innerHTML = list.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${escapeHtml(x.name)} icon">${escapeHtml(x.name)}</div>`).join("");
       sb.style.display = list.length ? "block" : "none";
     });
     qInput.addEventListener("focus", () => { if (!qInput.value.trim()) showRecents(); });

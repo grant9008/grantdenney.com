@@ -2597,6 +2597,629 @@ def floor_cutover_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+# -- item details: the site's tooltip block (details/<n>.json) ---------------
+# Real Blizzard item API responses (static-forever-us and static-classic1x-us, 18 Nov 2026), cut
+# down to the fields a tooltip uses. A classic1x preview_item has no item level of its own.
+def _rgb(r, g, b):
+    return {"r": r, "g": g, "b": b, "a": 1.0}
+
+
+_W, _G = _rgb(255, 255, 255), _rgb(0, 255, 0)
+
+
+def _stat(name, v, colour=_W, bonus=False):
+    s = {"type": {"type": name.upper().replace(" ", "_"), "name": name}, "value": v,
+         "display": {"display_string": "%+d %s" % (v, name), "color": colour}}
+    if bonus:
+        s["is_equip_bonus"] = True
+    return s
+
+
+def _sell(v):
+    return {"value": v, "display_strings": {"header": "Sell Price:", "gold": "0", "silver": "0", "copper": str(v)}}
+
+
+TIP_ROBE = {"name": "Robe of the Magi", "level": 40, "required_level": 35, "is_equippable": True,
+            "inventory_type": {"type": "ROBE", "name": "Chest"},
+            "preview_item": {
+                "name": "Robe of the Magi", "quality": {"type": "RARE", "name": "Rare"},
+                "item_class": {"name": "Armor", "id": 4}, "item_subclass": {"name": "Cloth", "id": 1},
+                "inventory_type": {"type": "ROBE", "name": "Chest"},
+                "binding": {"type": "ON_EQUIP", "name": "Binds when equipped"},
+                "armor": {"value": 58, "display": {"display_string": "58 Armor", "color": _W}},
+                "stats": [_stat("Intellect", 6), _stat("Spirit", 5)],
+                "spells": [{"spell": {"name": "Increase Spell Dam 22", "id": 15714}, "description":
+                            "Equip: Increases damage and healing done by magical spells and effects by up to 22."}],
+                "sell_price": _sell(5067), "requirements": {"level": {"value": 35, "display_string": "Requires Level 35"}},
+                "durability": {"value": 80, "display_string": "Durability 80 / 80"}}}
+TIP_EDWARD = {"name": "Hand of Edward the Odd", "level": 62, "required_level": 57, "is_equippable": True,
+              "preview_item": {
+                  "name": "Hand of Edward the Odd", "quality": {"type": "EPIC", "name": "Epic"},
+                  "item_class": {"name": "Weapon", "id": 2}, "item_subclass": {"name": "Mace", "id": 4},
+                  "inventory_type": {"type": "WEAPON", "name": "One-Hand"},
+                  "binding": {"type": "ON_EQUIP", "name": "Binds when equipped"}, "unique_equipped": "Unique",
+                  "weapon": {"damage": {"min_value": 50, "max_value": 94, "display_string": "50 - 94 Damage",
+                                        "damage_class": {"type": "PHYSICAL", "name": "Physical"}},
+                             "attack_speed": {"value": 1600, "display_string": "Speed 1.60"},
+                             "dps": {"value": 45.0, "display_string": "(45.0 damage per second)"}},
+                  "stats": [_stat("Intellect", 13), _stat("Spirit", 10)],
+                  "spells": [{"spell": {"name": "Focus", "id": 18803},
+                              "description": "Chance on hit: Next spell cast within 4 sec will cast instantly."}],
+                  "sell_price": _sell(70554), "requirements": {"level": {"value": 57, "display_string": "Requires Level 57"}},
+                  "durability": {"value": 105, "display_string": "Durability 105 / 105"}}}
+TIP_POTION = {"name": "Healing Potion", "level": 22, "required_level": 12,
+              "preview_item": {
+                  "name": "Healing Potion", "quality": {"type": "COMMON", "name": "Common"},
+                  "item_class": {"name": "Consumable", "id": 0}, "item_subclass": {"name": "Potions", "id": 1},
+                  "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"},
+                  "spells": [{"spell": {"name": "Healing Potion", "id": 441},
+                              "description": "Use: Restores 280 to 360 health. (2 Min Cooldown)"}],
+                  "sell_price": _sell(75), "requirements": {"level": {"value": 12, "display_string": "Requires Level 12"}},
+                  "is_subclass_hidden": True}}
+TIP_CODEX = {"name": "Codex of Defense", "description": "The tome is magically sealed.",
+             "preview_item": {
+                 "name": "Codex of Defense", "quality": {"type": "RARE", "name": "Rare"},
+                 "item_class": {"name": "Quest", "id": 12}, "item_subclass": {"name": "Quest", "id": 0},
+                 "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "unique_equipped": "Unique",
+                 "requirements": {"level": {"value": 54, "display_string": "Requires Level 54"},
+                                  "playable_classes": {"display_string": "Classes: Warrior"}},
+                 "description": "The tome is magically sealed.",
+                 "item_starts_quest": {"quest": {"name": "Codex of Defense", "id": 7499},
+                                       "display_string": "This Item Begins a Quest"},
+                 "is_subclass_hidden": True}}
+TIP_BELT = {"name": "Belt of Valor", "level": 58, "required_level": 53, "is_equippable": True,
+            "preview_item": {
+                "name": "Belt of Valor", "quality": {"type": "RARE", "name": "Rare"},
+                "item_class": {"name": "Armor", "id": 4}, "item_subclass": {"name": "Plate", "id": 4},
+                "inventory_type": {"type": "WAIST", "name": "Waist"},
+                "binding": {"type": "ON_EQUIP", "name": "Binds when equipped"},
+                "armor": {"value": 341, "display": {"display_string": "341 Armor", "color": _W}},
+                "stats": [_stat("Strength", 14), _stat("Agility", 7), _stat("Stamina", 8), _stat("Spirit", 4)],
+                "sell_price": _sell(9295), "requirements": {"level": {"value": 53, "display_string": "Requires Level 53"}},
+                "set": {"item_set": {"name": "Battlegear of Valor", "id": 189},
+                        "items": [{"item": {"name": "Belt of Valor", "id": 16736}},
+                                  {"item": {"name": "Boots of Valor", "id": 16734}}],
+                        "effects": [{"display_string": "(2) Set: +200 Armor.", "required_count": 2},
+                                    {"display_string": "(4) Set: +40 Attack Power.", "required_count": 4},
+                                    {"display_string": "(6) Set: Chance on melee attack to heal you for 88 to 132.",
+                                     "required_count": 6},
+                                    {"display_string": "(8) Set: +8 All Resistances.", "required_count": 8}],
+                        "display_string": "Battlegear of Valor (0/8)"},
+                "description": "Worn by the champions of Valor.",     # not on the real belt: a set AND flavor text
+                "durability": {"value": 45, "display_string": "Durability 45 / 45"}}}
+TIP_PLANS = {"name": "Plans: Arcanite Reaper", "description": "Teaches you how to make an Arcanite Reaper.",
+             "preview_item": {
+                 "name": "Plans: Arcanite Reaper", "quality": {"type": "RARE", "name": "Rare"},
+                 "item_class": {"name": "Recipe", "id": 9}, "item_subclass": {"name": "Blacksmithing", "id": 4},
+                 "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "sell_price": _sell(20000),
+                 "requirements": {"skill": {"profession": {"name": "Blacksmithing", "id": 164}, "level": 300,
+                                            "display_string": "Requires Blacksmithing (300)"},
+                                  "ability": {"spell": {"name": "Master Axesmith", "id": 17041},
+                                              "display_string": "Requires Master Axesmith"}},
+                 "description": "Teaches you how to make an Arcanite Reaper.",
+                 "recipe": {"item": {"name": "Arcanite Reaper", "stats": [_stat("Attack Power", 62, _G, True)]},
+                            "reagents_display_string": "Arcanite Bar (20), Enchanted Leather (6), Dense Grinding Stone (2)"},
+                 "is_subclass_hidden": True}}
+TIP_FANG = {"name": "Blackfang", "level": 25,
+            "preview_item": {
+                "item_class": {"name": "Weapon", "id": 2}, "item_subclass": {"name": "Dagger", "id": 15},
+                "inventory_type": {"type": "WEAPON", "name": "One-Hand"},
+                "binding": {"type": "ON_EQUIP", "name": "Binds when equipped"}, "unique_equipped": "Unique",
+                "weapon": {"damage": {"display_string": "17 - 32 Damage"}, "attack_speed": {"display_string": "Speed 1.50"},
+                           "dps": {"display_string": "(16.3 damage per second)"}},
+                "stats": [_stat("Shadow Resistance", 5, _G), _stat("Spirit", 2, _G, True)],
+                "requirements": {"level": {"value": 20, "display_string": "Requires Level 20"}},
+                "level": {"value": 25, "display_string": "Item Level 25"},
+                "durability": {"value": 50, "display_string": "Durability 50 / 50"}}}
+TIP_SHIELD = {"name": "Lambent Scale Shield", "level": 27,
+              "preview_item": {
+                  "item_class": {"name": "Armor", "id": 4}, "item_subclass": {"name": "Shield", "id": 6},
+                  "inventory_type": {"type": "SHIELD", "name": "Off Hand"},
+                  "armor": {"value": 528, "display": {"display_string": "528 Armor", "color": _W}},
+                  "shield_block": {"value": 10, "display": {"display_string": "10 Block", "color": _W}}}}
+TIP_BAG = {"name": "Woolen Bag", "level": 15, "is_equippable": True, "inventory_type": {"type": "BAG", "name": "Bag"},
+           "preview_item": {"item_class": {"name": "Container", "id": 1}, "item_subclass": {"name": "Bag", "id": 0},
+                            "inventory_type": {"type": "BAG", "name": "Bag"},
+                            "container_slots": {"value": 8, "display_string": "8 Slot Bag"}}}
+TIP_ARROW = {"name": "Feathered Arrow", "level": 35,
+             "preview_item": {"item_class": {"name": "Projectile", "id": 6}, "item_subclass": {"name": "Arrow", "id": 2},
+                              "inventory_type": {"type": "AMMO", "name": "Ammo"},
+                              "weapon": {"damage": {"display_string": "Adds 9.5 damage per second"}},
+                              "level": {"value": 35, "display_string": "Item Level 35"}}}
+TIP_LINEN = {"name": "Linen Cloth", "level": 5,
+             "preview_item": {"item_class": {"name": "Trade Goods", "id": 7}, "item_subclass": {"name": "Cloth", "id": 5},
+                              "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"},
+                              "sell_price": _sell(13), "is_subclass_hidden": True,
+                              "crafting_reagent": "Crafting Reagent"}}
+
+
+def tooltip_tests():
+    T = fetch_ah.tooltip_lines
+    w = lambda t, *r: [t, "w"] + list(r)     # noqa: E731
+    got = T(TIP_ROBE)
+    check(got == [["Item Level 40", "y"], w("Binds when equipped"), w("Chest", "Cloth"), w("58 Armor"),
+                  w("+6 Intellect"), w("+5 Spirit"), w("Durability 80 / 80"), w("Requires Level 35"),
+                  ["Equip: Increases damage and healing done by magical spells and effects by up to 22.", "g"]],
+          f"armor with stats: {got!r}")
+    got = T(TIP_EDWARD)
+    check(got == [["Item Level 62", "y"], w("Binds when equipped"), w("Unique"), w("One-Hand", "Mace"),
+                  w("50 - 94 Damage", "Speed 1.60"), w("(45.0 damage per second)"), w("+13 Intellect"),
+                  w("+10 Spirit"), w("Durability 105 / 105"), w("Requires Level 57"),
+                  ["Chance on hit: Next spell cast within 4 sec will cast instantly.", "g"]], f"weapon: {got!r}")
+    got = T(TIP_POTION)
+    check(got == [w("Requires Level 12"), ["Use: Restores 280 to 360 health. (2 Min Cooldown)", "g"]],
+          f"consumable with Use: {got!r}")
+    got = T(TIP_CODEX)
+    check(got == [w("Unique"), w("This Item Begins a Quest"), w("Classes: Warrior"), w("Requires Level 54"),
+                  ['"The tome is magically sealed."', "y"]], f"quest item: {got!r}")
+    got = T(TIP_BELT)
+    check(got[-6:] == [["Battlegear of Valor (0/8)", "y"], ["(2) Set: +200 Armor.", "q"],
+                       ["(4) Set: +40 Attack Power.", "q"],
+                       ["(6) Set: Chance on melee attack to heal you for 88 to 132.", "q"],
+                       ["(8) Set: +8 All Resistances.", "q"], ['"Worn by the champions of Valor."', "y"]]
+          and got[:3] == [["Item Level 58", "y"], w("Binds when equipped"), w("Waist", "Plate")]
+          and w("+4 Spirit") in got and "Belt of Valor" not in json.dumps(got), f"set and flavor text: {got!r}")
+    got = T(TIP_PLANS)
+    check(got == [w("Requires Blacksmithing (300)"), w("Requires Master Axesmith"),
+                  ["Use: Teaches you how to make an Arcanite Reaper.", "g"],
+                  w("Requires Arcanite Bar (20), Enchanted Leather (6), Dense Grinding Stone (2)")],
+          f"recipe: its text is the Use line, then the reagents: {got!r}")
+    got = T(TIP_FANG)
+    check(got[0] == ["Item Level 25", "y"] and ["+5 Shadow Resistance", "g"] in got and ["+2 Spirit", "g"] in got,
+          f"green stats keep their colour, preview item level: {got!r}")
+    check(T(TIP_SHIELD) == [["Item Level 27", "y"], w("Off Hand", "Shield"), w("528 Armor"), w("10 Block")],
+          f"shield block {T(TIP_SHIELD)!r}")
+    check(T(TIP_BAG) == [w("8 Slot Bag")], f"a bag: its size, no item level {T(TIP_BAG)!r}")
+    check(T(TIP_ARROW) == [["Item Level 35", "y"], w("Ammo", "Arrow"), w("Adds 9.5 damage per second")],
+          f"ammo {T(TIP_ARROW)!r}")
+    check(T(TIP_LINEN) == [["Crafting Reagent", "b"]], f"trade goods {T(TIP_LINEN)!r}")
+    # no preview_item: the top-level fields
+    got = T({"name": "Old Sword", "level": 20, "required_level": 15, "description": '"Sharp."',
+             "inventory_type": {"type": "WEAPON", "name": "One-Hand"}, "item_subclass": {"name": "Sword"}})
+    check(got == [["Item Level 20", "y"], w("One-Hand", "Sword"), w("Requires Level 15"), ['"Sharp."', "y"]],
+          f"no preview_item {got!r}")
+    # odd data never raises and never costs the other lines
+    odd = {"preview_item": {"binding": "Binds", "stats": [None, 5, {"type": {"name": "Stamina"}, "value": 3},
+                                                         {"display": {"display_string": "+1 Spirit",
+                                                                      "color": {"r": "x"}}}],
+                            "armor": {"display": "58 Armor"}, "spells": "Use: x",
+                            "durability": {"display_string": "Durability 9 / 9"},
+                            "description": "|cffffd100Gold|r line\r\nwith  breaks " + "z" * 500,
+                            "requirements": ["Requires Level 3"], "weapon": {"damage": 7, "dps": {"display_string": 5.5}}}}
+    got = T(odd)
+    check(got[:4] == [w("5.5"), w("+3 Stamina"), w("+1 Spirit"), w("Durability 9 / 9")] and len(got) == 5
+          and got[4][1] == "y" and got[4][0].startswith('"Gold line with breaks zzz') and got[4][0].endswith('z"')
+          and len(got[4][0]) == fetch_ah.DETAILS_MAX_CHARS, f"odd data {got!r}")
+    for bad in (None, 5, "x", [], {"preview_item": "x"}, {"preview_item": {"inventory_type": "CHEST"}}):
+        check(fetch_ah.safe_tooltip_lines(bad) == [], f"nothing to show: [] ({bad!r})")
+    many = {"preview_item": {"stats": [_stat("Stamina", k) for k in range(1, 80)]}}
+    check(len(T(many)) == fetch_ah.DETAILS_MAX_LINES, "at most DETAILS_MAX_LINES lines")
+    check(fetch_ah._tip_colour(_rgb(250, 30, 30)) == "r" and fetch_ah._tip_colour(_rgb(160, 160, 160)) == "q"
+          and fetch_ah._tip_colour(_rgb(255, 210, 10)) == "y" and fetch_ah._tip_colour(None) == "w",
+          "API colours to the nearest tooltip colour")
+    raw = json.dumps([T(x) for x in (TIP_ROBE, TIP_EDWARD, TIP_POTION, TIP_CODEX, TIP_BELT, TIP_PLANS)])
+    check(all(ord(ch) < 128 for ch in raw), "ASCII lines")
+
+
+def details_unit_tests():
+    """chunk files, merging, the backfill budget and order, failures and the hand-off from fetch_item"""
+    # the lines ride along with the lookup that names an item, and are taken out before items.json is saved
+    saved_api = fetch_ah.api
+    tmp = tempfile.mkdtemp(prefix="fah_tipu_")
+    try:
+        def api(path, ns, tries=4):
+            if path.startswith("/data/wow/media/item/"):
+                return {"assets": []}, {}
+            iid = int(path.rsplit("/", 1)[1])
+            if iid == 1716 and ns == fetch_ah.STATIC_NS[1]:
+                return dict(TIP_ROBE, item_class={"name": "Armor", "id": 4}), {}
+            if iid == 929:
+                return dict(TIP_POTION), {}
+            if iid == 5:
+                raise OSError("simulated failure")
+            return None, {}
+        fetch_ah.api = api
+        iid, meta = fetch_ah.fetch_item(1716)
+        check(meta["name"] == "Robe of the Magi" and meta[fetch_ah.TIP_KEY] == fetch_ah.tooltip_lines(TIP_ROBE),
+              "fetch_item: the lines from the same response")
+        _, fields = fetch_ah.fetch_details(929)
+        check(fields[fetch_ah.TIP_KEY] == fetch_ah.tooltip_lines(TIP_POTION) and fields["ilvl"] == 22,
+              "fetch_details: the lines from the same response")
+        check(fetch_ah.fetch_details(4) == (4, {fetch_ah.TIP_KEY: []}) and fetch_ah.fetch_details(5) == (5, None),
+              "fetch_details: unknown everywhere = no lines, a failed request = try again")
+        check(fetch_ah.fetch_tip(929) == (929, fetch_ah.tooltip_lines(TIP_POTION)) and fetch_ah.fetch_tip(4) == (4, [])
+              and fetch_ah.fetch_tip(5) == (5, None), "fetch_tip: lines, [] or None")
+        items = {"1716": dict(meta), "929": {"name": "Healing Potion", "sell": 75}, "3": {"name": "C"}}
+        items["929"].update(fields)
+        tips = fetch_ah.take_tips(items)
+        check(set(tips) == {1716, 929} and all(fetch_ah.TIP_KEY not in m for m in items.values())
+              and items["1716"]["name"] == "Robe of the Magi", f"take_tips {sorted(tips)}")
+
+        # chunk files: one per 1000 ids, merged, only the changed ones written
+        out = os.path.join(tmp, "data")
+        written = []
+        real_save = fetch_ah.save
+
+        def spy(path, obj):
+            written.append(os.path.relpath(path, out).replace("\\", "/"))
+            real_save(path, obj)
+        fetch_ah.save = spy
+
+        def no_fetch(i):
+            raise AssertionError("looked up %s" % i)
+        try:
+            r = fetch_ah.update_details(out, {}, {5: [["A", "w"]], 999: [["B", "w"]], 1500: [["C", "g"]]}, {}, {},
+                                        fetch=no_fetch)
+            check(r == (3, 0, 0) and sorted(written) == ["details/0.json", "details/1.json"], f"two chunks {r} {written}")
+            check(load_json(os.path.join(out, "details", "0.json")) == {"5": [["A", "w"]], "999": [["B", "w"]]}
+                  and load_json(os.path.join(out, "details", "1.json")) == {"1500": [["C", "g"]]}, "chunk contents")
+            check(open(os.path.join(out, "details", "0.json"), encoding="utf-8").read().startswith('{"5":'),
+                  "ids in number order")
+            written.clear()
+            fetch_ah.update_details(out, {}, {7: [["D", "w"]], 1500: [["C", "g"]]}, {}, {}, fetch=no_fetch)
+            check(written == ["details/0.json"] and load_json(os.path.join(out, "details", "0.json")) ==
+                  {"5": [["A", "w"]], "7": [["D", "w"]], "999": [["B", "w"]]}, f"merged; unchanged chunk 1 left alone {written}")
+            written.clear()
+            fetch_ah.update_details(out, {}, {5: [["A2", "w"]]}, {}, {}, fetch=no_fetch)
+            check(load_json(os.path.join(out, "details", "0.json"))["5"] == [["A2", "w"]], "a newer lookup replaces lines")
+            written.clear()
+            fetch_ah.update_details(out, {}, {}, {}, {}, fetch=no_fetch)
+            check(written == [], "nothing new: nothing written")
+        finally:
+            fetch_ah.save = real_save
+
+        # the backfill: named items the site lists, missing from every chunk, most gold traded a day first
+        out = os.path.join(tmp, "bf")
+        named = {str(i): {"name": "I%d" % i, "sell": 1} for i in (10, 11, 12, 13, 14, 15, 2001, 5000)}
+        named["16"] = dict(fetch_ah.unknown_entry(1794936300))           # no name yet: the name retries come first
+        latest = {"10": {"high": 100, "low": 90, "n": 1}, "11": {"high": 5000, "n": 3}, "12": {"high": 5000, "n": 9},
+                  "13": {"high": 7, "n": 50}, "14": {"high": 0, "low": 300, "n": 2}, "15": {"high": 40, "n": 4},
+                  "16": {"high": 99999, "n": 9}, "2001": {"high": 1, "n": 1}, "12001": {"high": 9000, "n": 1}}
+        vols = {"10": 50, "11": 2, "12": 2, "13": 0, "14": 1, "15": 5, "16": 50, "2001": 0, "12001": 2}
+        vinfo = {12001: (12, "12722", 1)}
+        # gold a day: 10 -> 5000, 11 -> 10000, 12 -> 10000 (more listed than 11), 14 -> 300, 15 -> 200,
+        # 13 and 2001 -> 0 (13 more listed); 5000 is not listed; 16 has no name; 12001 is a version of 12
+        order = [12, 11, 10, 14, 15, 13, 2001]
+        calls = []
+        tries = Counter()
+        lock = threading.Lock()
+
+        def fake(i):
+            with lock:
+                calls.append(i)
+                tries[i] += 1
+            if i == 15 and tries[i] == 1:
+                return i, None                                      # failed once: tried again next run
+            if i == 13:
+                return i, []                                        # Blizzard has nothing: never asked again
+            return i, [["L%d" % i, "w"]]
+        todo, miss = fetch_ah.details_todo(named, {}, latest, vols, vinfo, limit=99)
+        check(todo == order and miss == 7, f"order {todo} ({miss} missing)")
+        r = fetch_ah.update_details(out, named, {}, latest, vols, vinfo, fetch=fake, limit=2, threads=2)
+        check(sorted(calls) == [11, 12] and r == (0, 2, 5), f"first run: the 2 most traded ({calls}, {r})")
+        calls.clear()
+        r = fetch_ah.update_details(out, named, {}, latest, vols, vinfo, fetch=fake, limit=3, threads=2)
+        check(sorted(calls) == [10, 14, 15] and r == (0, 2, 3), f"second run: the next 3, one failed ({calls}, {r})")
+        calls.clear()
+        # the other collector works on the published files: it starts where this one stopped
+        other = os.path.join(tmp, "bf_other")
+        shutil.copytree(out, other)
+        r = fetch_ah.update_details(other, named, {}, latest, vols, vinfo, fetch=fake, limit=400, threads=2)
+        check(sorted(calls) == [13, 15, 2001] and r == (0, 3, 0), f"the rest, the failed one again ({calls}, {r})")
+        ch = load_json(os.path.join(other, "details", "0.json"))
+        check(ch == {"10": [["L10", "w"]], "11": [["L11", "w"]], "12": [["L12", "w"]], "13": [], "14": [["L14", "w"]],
+                     "15": [["L15", "w"]]} and load_json(os.path.join(other, "details", "2.json")) == {"2001": [["L2001", "w"]]},
+              f"backfilled chunks {ch}")
+        calls.clear()
+        r = fetch_ah.update_details(other, named, {}, latest, vols, vinfo, fetch=fake, limit=400, threads=2)
+        check(calls == [] and r == (0, 0, 0), "all done: nothing looked up, [] is never asked again")
+        check(fetch_ah.DETAILS_BACKFILL_PER_RUN == 400 and fetch_ah.DETAILS_CHUNK == 1000, "backfill limit, chunk size")
+        # a broken chunk file is read as empty and rewritten
+        with open(os.path.join(other, "details", "2.json"), "w", encoding="utf-8") as fh:
+            fh.write("{not json")
+        calls.clear()
+        fetch_ah.update_details(other, named, {}, latest, vols, vinfo, fetch=fake, limit=400, threads=2)
+        check(calls == [2001] and load_json(os.path.join(other, "details", "2.json")) == {"2001": [["L2001", "w"]]},
+              f"broken chunk: looked up again ({calls})")
+    finally:
+        fetch_ah.api = saved_api
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def details_budget_tests():
+    """The backfill's time budget and failure breaker: a slow or failing Blizzard (429 / 5xx) can
+    never hold the run, and the publish step after it, past the job's time limit. What the lookups
+    did not reach is still missing from the chunks, so the next run goes on from there."""
+    import io
+    import contextlib
+    tmp = tempfile.mkdtemp(prefix="fah_tipb_")
+    saved_time, saved_api = fetch_ah.time, fetch_ah.api
+    log = io.StringIO()
+
+    class Clock:
+        """stands in for the time module: only the lookups move it"""
+        def __init__(self):
+            self.now = 5000.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, s):
+            self.now += s
+    try:
+        check(fetch_ah.DETAILS_MAX_SECS == 120 and fetch_ah.DETAILS_MAX_FAILS == 10,
+              "budget: 120 seconds, 10 failed lookups in a row")
+        named = {str(i): {"name": "I%d" % i, "sell": 1} for i in range(1, 61)}
+        latest = {str(i): {"high": 1000 - i, "n": 1} for i in range(1, 61)}
+        vols = {str(i): 1 for i in range(1, 61)}
+        order = fetch_ah.details_todo(named, {}, latest, vols, limit=400)[0]
+        check(order == list(range(1, 61)), f"budget: the order {order[:5]}")
+        calls = []
+        lock = threading.Lock()
+
+        # every lookup fails: none after the 10th failure in a row
+        def failing(i):
+            with lock:
+                calls.append(i)
+            return i, None
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "a"), named, {}, latest, vols, fetch=failing, threads=1)
+        check(calls == order[:10] and r == (0, 0, 60), f"breaker: 10 failed lookups, then none ({len(calls)} made, {r})")
+        check("10 failed lookups in a row" in log.getvalue(), "breaker: said in the log")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "a"), named, {}, latest, vols, fetch=failing, threads=4)
+        check(10 <= len(calls) <= 13 and r == (0, 0, 60), f"breaker on 4 threads: at most the 3 under way on top ({len(calls)})")
+
+        # a lookup that works resets the count
+        calls.clear()
+
+        def flaky(i):
+            with lock:
+                calls.append(i)
+            return (i, [["L%d" % i, "w"]]) if i % 10 == 0 else (i, None)
+        r = fetch_ah.update_details(os.path.join(tmp, "b"), named, {}, latest, vols, fetch=flaky, threads=1)
+        check(len(calls) == 60 and r == (0, 6, 54), f"9 failures then one that works: all looked up ({len(calls)}, {r})")
+
+        # a slow Blizzard: out of time after DETAILS_MAX_SECS
+        clock = Clock()
+        fetch_ah.time = clock
+        calls.clear()
+
+        def slow(i):
+            with lock:
+                calls.append(i)
+            clock.now += 30
+            return i, [["L%d" % i, "w"]]
+        out = os.path.join(tmp, "c")
+        log.seek(0)
+        log.truncate()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(out, named, {5000: [["New", "g"]]}, latest, vols, fetch=slow, threads=1)
+        check(calls == order[:4] and r == (1, 4, 56), f"out of time after 120 s: 4 lookups of 30 s ({calls}, {r})")
+        check("out of time" in log.getvalue(), "out of time: said in the log")
+        check(load_json(os.path.join(out, "details", "0.json")) == {str(i): [["L%d" % i, "w"]] for i in (1, 2, 3, 4)}
+              and load_json(os.path.join(out, "details", "5.json")) == {"5000": [["New", "g"]]},
+              "out of time: what was looked up and this run's own lines are written")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(out, named, {}, latest, vols, fetch=slow, threads=1)
+        check(calls == order[4:8] and r == (0, 4, 52), f"the next run goes on from there ({calls}, {r})")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "d"), named, {7000: [["T", "w"]]}, latest, vols,
+                                        fetch=slow, threads=1, max_secs=0)
+        check(calls == [] and r == (1, 0, 60) and load_json(os.path.join(tmp, "d", "details", "7.json")) == {"7000": [["T", "w"]]},
+              f"no time at all: no lookups, this run's own lines still written ({calls}, {r})")
+
+        # the real lookups: every namespace answers 429, the run stops after 10 items, not 60
+        asked = []
+
+        def api_429(path, ns, tries=4):
+            with lock:
+                asked.append(ns)
+            raise OSError("simulated 429")
+        fetch_ah.api = api_429
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "e"), named, {}, latest, vols, threads=1)
+        check(len(asked) == 10 * len(fetch_ah.STATIC_NS) and r == (0, 0, 60),
+              f"Blizzard answering 429: 10 items asked in every namespace, then none ({len(asked)} requests)")
+        # fetch_tip asks no further namespace once the run is over
+        asked.clear()
+        check(fetch_ah.fetch_tip(42, lambda: len(asked) >= 1) == (42, None) and asked == fetch_ah.STATIC_NS[:1],
+              f"fetch_tip: stops between namespaces {asked}")
+        asked.clear()
+        check(fetch_ah.fetch_tip(42, lambda: True) == (42, None) and asked == [], "fetch_tip: asks nothing once over")
+        asked.clear()
+        check(fetch_ah.fetch_tip(42) == (42, None) and asked == fetch_ah.STATIC_NS, "fetch_tip: no stop, every namespace")
+    finally:
+        fetch_ah.time, fetch_ah.api = saved_time, saved_api
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def check_details_dir(data_dir, label, mapping=None, items=None):
+    """Every details/<n>.json: a {"<id>": lines} object whose ids belong in that file, each line
+    [text, colour] or [text, colour, right] with a known colour; every named item the site lists
+    (and every version's item) has an entry when `items` is given. Returns how many items have one."""
+    d = os.path.join(data_dir, "details")
+    have = {}
+    for fn in sorted(os.listdir(d)):
+        check(re.match(r"^\d+\.json$", fn), f"{label}: details file name {fn}")
+        raw = load_json(os.path.join(d, fn))
+        check(isinstance(raw, dict), f"{label}: {fn} is an object")
+        n = int(fn[:-5])
+        for k, lines in raw.items():
+            check(re.match(r"^\d+$", k) and int(k) // 1000 == n, f"{label}: {k} is in {fn}")
+            check(isinstance(lines, list), f"{label}: {k} lines are a list")
+            for ln in lines:
+                check(isinstance(ln, list) and len(ln) in (2, 3) and all(isinstance(x, str) and x for x in ln)
+                      and ln[1] in ("w", "g", "y", "q", "r", "b"), f"{label}: {k} line {ln!r}")
+            have[int(k)] = lines
+    if mapping is not None and items is not None:
+        for m in mapping:
+            base = int(m.get("base") or m["id"])
+            if fetch_ah.is_unknown(items.get(str(base))):
+                continue
+            check(base in have, f"{label}: {m['id']} ({m['name']}) has details")
+    return len(have)
+
+
+def details_pipeline_tests():
+    """The real collector with item details and with them switched off, on the same snapshots:
+    every other file comes out byte for byte the same, state.json keeps its format and items.json
+    gets no lines. Then the backfill: a details/ folder lost (or written before this existed)
+    comes back DETAILS_BACKFILL_PER_RUN items a run, most traded first, from a second collector
+    working on the published files too, with no item looked up twice."""
+    import io
+    import contextlib
+    tmp = tempfile.mkdtemp(prefix="fah_tipp_")
+    names = ("api", "get_token", "time", "update_details", "safe_tooltip_lines", "DETAILS_BACKFILL_PER_RUN")
+    saved = {k: getattr(fetch_ah, k) for k in names}
+    old_env = os.environ.pop("GITHUB_OUTPUT", None)
+    T0 = 1794934800 + 25 * 60
+    M = 60
+    log = io.StringIO()
+
+    def make_fb():
+        fb = FakeBlizzard()
+        start_book(fb)
+        start_gear_book(fb)
+        fb.details[AXE] = {"preview_item": TIP_EDWARD["preview_item"], "level": 62}
+        fb.details[LINEN] = {"preview_item": TIP_LINEN["preview_item"]}
+        fb.details[CLEAVER]["preview_item"] = {"binding": {"name": "Binds when equipped"},
+                                               "inventory_type": {"type": "TWOHWEAPON", "name": "Two-Hand"},
+                                               "item_subclass": {"name": "Axe"},
+                                               "weapon": {"damage": {"display_string": "30 - 46 Damage"},
+                                                          "attack_speed": {"display_string": "Speed 3.10"}}}
+        return fb
+
+    def step(fb, k):
+        """the same market moves for both collectors"""
+        for aid in {1: (1, 2, 3, 41), 2: (11, 2000), 3: (4, 5)}.get(k, ()):
+            fb.auctions.pop(aid, None)
+
+    def run(out, fb, data_t):
+        fb.now = data_t + 5 * M
+        fb.modified = email.utils.formatdate(data_t, usegmt=True)
+        fetch_ah.main(out)
+
+    def files(out):
+        got = {}
+        for root, _, fns in os.walk(out):
+            for fn in fns:
+                rel = os.path.relpath(os.path.join(root, fn), out).replace("\\", "/")
+                if not rel.startswith("details/"):
+                    with open(os.path.join(root, fn), "rb") as fh:
+                        got[rel] = fh.read()
+        return got
+    try:
+        fetch_ah.get_token = lambda: "fake"
+        with contextlib.redirect_stdout(log):
+            a, b = os.path.join(tmp, "with"), os.path.join(tmp, "without")
+            fa, fb_ = make_fb(), make_fb()
+            for k in range(4):
+                fetch_ah.api, fetch_ah.time = fa.api, fa
+                fetch_ah.update_details, fetch_ah.safe_tooltip_lines = saved["update_details"], saved["safe_tooltip_lines"]
+                step(fa, k)
+                run(a, fa, T0 + k * 60 * M)
+                fetch_ah.api, fetch_ah.time = fb_.api, fb_
+                fetch_ah.update_details = lambda *x, **y: (0, 0, 0)
+                fetch_ah.safe_tooltip_lines = lambda item: None
+                step(fb_, k)
+                run(b, fb_, T0 + k * 60 * M)
+                fa_files, fb_files = files(a), files(b)
+                diff = sorted(set(fa_files) ^ set(fb_files)) + sorted(f for f in fa_files if f in fb_files
+                                                                      and fa_files[f] != fb_files[f])
+                check(not diff and len(fa_files) > 20, f"snapshot {k}: other files identical with and without details {diff[:5]}")
+                check(fa.lookups == fb_.lookups and sum(fa.lookups.values()) >= 9,
+                      f"snapshot {k}: no item API request more than without details ({dict(fa.lookups)} vs {dict(fb_.lookups)})")
+            fetch_ah.update_details, fetch_ah.safe_tooltip_lines = saved["update_details"], saved["safe_tooltip_lines"]
+            fetch_ah.api, fetch_ah.time = fa.api, fa
+            st = load_json(os.path.join(a, "state.json"))
+            check(st["format"] == fetch_ah.DATA_FORMAT == 3 and set(st) == set(load_json(os.path.join(b, "state.json"))),
+                  "state.json format unchanged")
+            items = load_json(os.path.join(a, "items.json"))
+            check(all(fetch_ah.TIP_KEY not in m for m in items.values()), "items.json carries no lines")
+            ch = load_json(os.path.join(a, "details", "0.json"))
+            check(ch[str(AXE)] == fetch_ah.tooltip_lines(dict(TIP_EDWARD, name="Double Axe"))
+                  and ch[str(LINEN)] == [["Crafting Reagent", "b"]]
+                  and ch[str(CLEAVER)][:2] == [["Item Level 30", "y"], ["Binds when equipped", "w"]]
+                  and ch[str(ARROW)] == [] and str(UNNAMED) not in ch and str(NEVER) not in ch,
+                  f"new items: lines from the lookup that named them {sorted(ch)}")
+            mp = load_json(os.path.join(a, "mapping.json"))
+            n = check_details_dir(a, "pipeline", mp, items)
+            check(n == len(ch) == 7, f"every listed named item has details ({n})")
+            vinfo = fetch_ah.registry_vids(fetch_ah.load_registry(st, os.path.join(a, "hist")))
+            check(len(vinfo) == 3 and not any(int(k) in vinfo for k in ch), "versions have no lines of their own")
+
+            def ref_order(out, have):
+                """the backfill order worked out on its own: gold a day, sold, listed, id"""
+                lat = load_json(os.path.join(out, "latest.json"))["data"]
+                vol = load_json(os.path.join(out, "volumes.json"))["data"]
+                rows = []
+                for s, node in lat.items():
+                    if int(s) in vinfo or int(s) in have or fetch_ah.is_unknown(items.get(s)):
+                        continue
+                    p, v = node.get("high") or node.get("low") or 0, vol.get(s, 0)
+                    rows.append((-p * v, -v, -node.get("n", 0), int(s)))
+                return [r[3] for r in sorted(rows)]
+
+            # the details folder is lost: the backfill brings it back, 2 a run, most traded first
+            shutil.rmtree(os.path.join(a, "details"))
+            fetch_ah.DETAILS_BACKFILL_PER_RUN = 2
+            fa.lookups.clear()
+            run(a, fa, T0 + 4 * 60 * M)
+            want = ref_order(a, ())
+            got1 = sorted(int(k) for k in load_json(os.path.join(a, "details", "0.json")))
+            looked = sorted(i for i, n in fa.lookups.items() if n)
+            check(len(want) == 7 and got1 == sorted(want[:2]) and looked == got1,
+                  f"run 1: the 2 most traded {got1} (looked up {looked}, wanted {want[:2]})")
+            other = os.path.join(tmp, "other")
+            shutil.copytree(a, other)                        # the PC collector, on the published files
+            fa.lookups.clear()
+            run(other, fa, T0 + 5 * 60 * M)
+            want = ref_order(other, set(got1))
+            got2 =sorted(int(k) for k in load_json(os.path.join(other, "details", "0.json")))
+            looked = sorted(i for i, n in fa.lookups.items() if n)
+            check(len(got2) == 4 and set(got1) < set(got2) and looked == sorted(set(got2) - set(got1))
+                  == sorted(want[:2]), f"run 2 (the other collector): the next 2, nothing twice ({got2}, looked up {looked})")
+            fetch_ah.DETAILS_BACKFILL_PER_RUN = 400
+            fa.lookups.clear()
+            run(other, fa, T0 + 6 * 60 * M)
+            items2 = load_json(os.path.join(other, "items.json"))
+            check_details_dir(other, "backfilled", load_json(os.path.join(other, "mapping.json")), items2)
+            check(load_json(os.path.join(other, "details", "0.json")) == ch, "backfilled = written on first sight")
+            fa.lookups.clear()
+            run(other, fa, T0 + 7 * 60 * M)
+            check(not any(fa.lookups.values()), "all there: nothing looked up")
+        print("  item details: tooltip lines (armor, weapon, consumable, quest item, set and flavor text, recipe, "
+              "bag, ammo, odd data), chunk files and merging, the backfill budget and order across two collectors, "
+              "its time limit and failure breaker, and every other file identical with and without details")
+    except Exception:
+        sys.stdout.write(log.getvalue()[-3000:])
+        raise
+    finally:
+        for k, v in saved.items():
+            setattr(fetch_ah, k, v)
+        if old_env is not None:
+            os.environ["GITHUB_OUTPUT"] = old_env
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
+def details_all_tests(data_dir):
+    tooltip_tests()
+    details_unit_tests()
+    details_budget_tests()
+    details_pipeline_tests()
+    d = os.path.join(data_dir, "details")
+    if os.path.isdir(d):
+        n = check_details_dir(data_dir, os.path.relpath(data_dir, REPO), load_json(os.path.join(data_dir, "mapping.json")),
+                              load_json(os.path.join(data_dir, "items.json")))
+        print(f"  {os.path.relpath(data_dir, REPO)}: details for {n} items, every listed named item has them")
+    else:
+        print(f"  {os.path.relpath(data_dir, REPO)}: no details folder (data from before item details)")
+
+
 def main():
     data_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(REPO, "wow", "_localdata")
     print("ForeverAH_Data.lua check")
@@ -2605,7 +3228,8 @@ def main():
                      ("simulated sales", lambda: sim_sales_report(data_dir)),
                      ("edge cases", edge_cases), ("unit tests", unit_tests), ("pipeline", pipeline_tests),
                      ("versions", variant_pipeline_tests), ("deals", deal_pipeline_tests),
-                     ("sold floor cutover", floor_cutover_tests)):
+                     ("sold floor cutover", floor_cutover_tests),
+                     ("item details", lambda: details_all_tests(data_dir))):
         try:
             fn()
             if name == "unit tests":

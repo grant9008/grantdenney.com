@@ -18,6 +18,10 @@ app on /wow/ can read them with almost no changes:
                   v: the variant key, only in a variant's file}
   flips.json     {updated, flips: [...]} flip ideas found in this snapshot,
                  best first (gap, vendor and deal flips; see write_flips)
+  details/<n>.json
+                 {"<item id>": [[text, colour], ...]} the item's in-game
+                 tooltip lines for the site, items id // 1000 == n (see
+                 tooltip_lines and update_details)
   suffix_names.json
                  a copy of tools/wow/suffix_names.json (see below)
   houses.json    every house the API lists, with auction counts (for checking IDs)
@@ -117,6 +121,7 @@ import math
 import os
 import re
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -164,6 +169,21 @@ SUFFIX_FILE = "suffix_names.json"
 # item details (slot, item level, class ids) added to items.json; older entries are filled in
 META_VERSION = 2
 META_BACKFILL_MAX = 1500   # at most this many older items are looked up again per run, most listed first
+# the tooltip lines the site shows under an item's name (details/<id // DETAILS_CHUNK>.json, see
+# tooltip_lines and update_details)
+DETAILS_DIR = "details"
+DETAILS_CHUNK = 1000             # item ids per file
+DETAILS_BACKFILL_PER_RUN = 400   # items without lines looked up per run, most traded first
+DETAILS_THREADS = 4
+DETAILS_PER_SEC = 40.0           # request pace of those lookups (Blizzard allows 100 a second)
+# Those lookups stop for the run after DETAILS_MAX_SECS, or after DETAILS_MAX_FAILS failed ones in
+# a row (Blizzard slow or answering 429 / 5xx), so they can never run the GitHub job past its time
+# limit before the publish step; what they did not reach is still missing and comes next run.
+DETAILS_MAX_SECS = 120
+DETAILS_MAX_FAILS = 10
+DETAILS_MAX_LINES = 40
+DETAILS_MAX_CHARS = 300          # per line
+TIP_KEY = "_tip"                 # the lines a lookup brought, taken out before items.json is saved
 
 # flip ideas from one snapshot (all prices in copper)
 FLIPS_FILE = "flips.json"
@@ -645,7 +665,9 @@ def fetch_details(iid):
     """The details older items.json entries lack (slot, item level, class ids),
     from the first static namespace that knows the item; no icon request.
     Returns (iid, fields): None when a request failed (tried again next run),
-    {} when no namespace knows the item."""
+    {} when no namespace knows the item. fields also carries the item's
+    tooltip lines under TIP_KEY ([] when no namespace knows it), which main
+    takes out again before items.json is saved (take_tips)."""
     failed = False
     for ns in STATIC_NS:
         try:
@@ -655,8 +677,10 @@ def fetch_details(iid):
             continue
         if item:
             m = _meta(iid, item, "")
-            return iid, {k: m[k] for k in DETAIL_KEYS}
-    return iid, (None if failed else {})
+            fields = {k: m[k] for k in DETAIL_KEYS}
+            fields[TIP_KEY] = safe_tooltip_lines(item)
+            return iid, fields
+    return iid, (None if failed else {TIP_KEY: []})
 
 
 def backfill_meta(items, counts, fetch=None, limit=META_BACKFILL_MAX, threads=LOOKUP_THREADS):
@@ -789,7 +813,9 @@ def fetch_item(iid):
     """Looks the item up in each static namespace in turn. The first one that
     has a name wins. If one knows the item but has no name for it, its other
     details are kept and the item stays unknown (it is retried later).
-    Returns (iid, meta or None)."""
+    Returns (iid, meta or None). meta also carries the item's tooltip lines
+    under TIP_KEY, from the same response (no extra request), which main
+    takes out again before items.json is saved (take_tips)."""
     partial = None
     for ns in STATIC_NS:
         try:
@@ -807,6 +833,7 @@ def fetch_item(iid):
         except Exception:
             pass
         meta = _meta(iid, item, icon)
+        meta[TIP_KEY] = safe_tooltip_lines(item)
         if meta["name"] and not UNKNOWN_NAME.match(meta["name"]):
             return iid, meta
         if partial is None:
@@ -853,6 +880,364 @@ def refresh_items(items, listed_ids, now, fetch=None, retry_max=UNKNOWN_RETRY_MA
             entry.update({"name": "", "unknown": True, "tried": int(now)})
             items[sid] = entry
     return len(new), len(due), found
+
+
+# -- item details for the site (the tooltip block under the item name) -------
+# details/<id // DETAILS_CHUNK>.json = {"<item id>": [[text, colour], ...]}:
+# the lines of the item's in-game tooltip under its name, built from Blizzard's
+# item API response (tooltip_lines). A line with a right-hand part (slot and
+# type, damage and speed) is [text, colour, right]. Colours: w white, g green,
+# y gold, q grey, r red, b blue. [] = Blizzard has nothing to show for it.
+# Versions use their item's lines (the site adds the version's name). A new
+# item gets its lines from the lookup that names it; older items are filled in
+# DETAILS_BACKFILL_PER_RUN a run, most traded first. What is missing is read
+# from the published chunk files themselves, so the GitHub job and the PC
+# collector, which publish to the same branch, share that work with no state
+# of their own, and state.json and every other file stay as they were.
+_TIP_COLOURS = (("w", (255, 255, 255)), ("g", (0, 255, 0)), ("y", (255, 209, 0)), ("q", (157, 157, 157)),
+                ("r", (255, 32, 32)), ("b", (102, 187, 255)))
+_TIP_CODES = re.compile(r"\|c[0-9a-fA-F]{8}|\|r|\|n")      # WoW colour codes and line breaks
+_TIP_REQS = ("playable_classes", "playable_races", "level", "skill", "ability", "reputation", "faction")
+_TIP_UNWORN = ("", "NON_EQUIP", "BAG", "QUIVER", "AMMO")    # slots that get no computed item level
+
+
+def _tip_dict(v):
+    return v if isinstance(v, dict) else {}
+
+
+def _tip_list(v):
+    return [x for x in v if isinstance(x, dict)] if isinstance(v, list) else []
+
+
+def _tip_text(v):
+    """One line's text: colour codes out, whitespace collapsed, at most DETAILS_MAX_CHARS."""
+    if isinstance(v, bool) or not isinstance(v, (str, int, float)):
+        return ""
+    return " ".join(_TIP_CODES.sub(" ", str(v)).split())[:DETAILS_MAX_CHARS]
+
+
+def _tip_colour(c, default="w"):
+    """An API colour {r, g, b, a} -> the nearest tooltip colour key."""
+    c = _tip_dict(c)
+    try:
+        rgb = (int(c["r"]), int(c["g"]), int(c["b"]))
+    except (KeyError, TypeError, ValueError):
+        return default
+    return min(_TIP_COLOURS, key=lambda kv: sum((a - b) ** 2 for a, b in zip(kv[1], rgb)))[0]
+
+
+def _tip_shown(part):
+    """(text, colour) of an API part shaped {display_string} or {display: {display_string, color}}."""
+    part = _tip_dict(part)
+    d = _tip_dict(part.get("display"))
+    if d.get("display_string"):
+        return d["display_string"], _tip_colour(d.get("color"))
+    return part.get("display_string"), "w"
+
+
+def tooltip_lines(item):
+    """The lines of an item's in-game tooltip under its name, from Blizzard's
+    item API response (its preview_item; the top-level fields when there is
+    none), in the game's order: item level, binding, unique, quest, slot and
+    type (or bag size), damage and speed, armor, block, stats, durability,
+    requirements, Use / Equip / Chance on hit (green), recipe reagents, set
+    and set bonuses, flavor text (gold, in quotes). The name, quality and sell
+    price are left out: the site shows those itself. A part that is missing
+    or odd is skipped; the other lines still come."""
+    item = _tip_dict(item)
+    pv = _tip_dict(item.get("preview_item")) or item
+    out = []
+
+    def add(text, colour="w", right=None):
+        t = _tip_text(text)
+        if t and len(out) < DETAILS_MAX_LINES:
+            r = _tip_text(right) if right is not None else ""
+            out.append([t, colour, r] if r else [t, colour])
+
+    inv = _tip_dict(pv.get("inventory_type")) or _tip_dict(item.get("inventory_type"))
+    slot = str(inv.get("type") or "")
+    spells = _tip_list(pv.get("spells"))
+    desc = pv.get("description")
+
+    def level():
+        lv = pv.get("level")
+        if isinstance(lv, dict):             # Blizzard shows it: so does the site
+            add(lv.get("display_string"), "y")
+        elif slot not in _TIP_UNWORN and int(item.get("level") or 0) > 0:
+            add("Item Level %d" % int(item["level"]), "y")
+
+    def head():
+        add(_tip_dict(pv.get("binding")).get("name"))
+        for k in ("unique_equipped", "limit_category"):
+            if isinstance(pv.get(k), str):
+                add(pv[k])
+        add(_tip_shown(pv.get("item_starts_quest"))[0])
+        if isinstance(pv.get("crafting_reagent"), str):
+            add(pv["crafting_reagent"], "b")
+
+    def kind():
+        bag = _tip_shown(pv.get("container_slots"))[0]
+        if bag:
+            add(bag)
+        elif slot not in ("", "NON_EQUIP"):
+            sub = "" if pv.get("is_subclass_hidden") else \
+                _tip_dict(pv.get("item_subclass") or item.get("item_subclass")).get("name")
+            if inv.get("name"):
+                add(inv["name"], "w", sub)
+            else:
+                add(sub)
+
+    def weapon():
+        w = _tip_dict(pv.get("weapon"))
+        dmg = _tip_dict(w.get("damage")).get("display_string")
+        speed = _tip_dict(w.get("attack_speed")).get("display_string")
+        if dmg:
+            add(dmg, "w", speed)
+        else:
+            add(speed)
+        extra = w.get("additional_damage")
+        for x in _tip_list(extra if isinstance(extra, list) else [extra]):
+            add(x.get("display_string"))
+        add(_tip_dict(w.get("dps")).get("display_string"))
+
+    def defence():
+        add(*_tip_shown(pv.get("armor")))
+        add(*_tip_shown(pv.get("shield_block")))
+
+    def stats():
+        for s in _tip_list(pv.get("stats")):
+            text, colour = _tip_shown(s)
+            name, v = _tip_dict(s.get("type")).get("name"), s.get("value")
+            if not text and name and isinstance(v, (int, float)) and not isinstance(v, bool):
+                text = "%+d %s" % (int(v), name)
+            add(text, colour)
+
+    def durability():
+        add(_tip_dict(pv.get("durability")).get("display_string"))
+
+    def requirements():
+        req = _tip_dict(pv.get("requirements"))
+        for k in [k for k in _TIP_REQS if k in req] + sorted(k for k in req if k not in _TIP_REQS):
+            add(_tip_dict(req[k]).get("display_string"))
+        if pv is item and int(item.get("required_level") or 0) > 1:     # no preview_item at all
+            add("Requires Level %d" % int(item["required_level"]))
+
+    def effects():
+        nonlocal desc
+        for s in spells:
+            add(s.get("description"), _tip_colour(s.get("display_color"), "g"))
+        # a recipe's "Teaches you how to make..." is its Use line in the game
+        if not spells and desc and _id_or_none(pv.get("item_class") or item.get("item_class")) == 9:
+            add("Use: " + _tip_text(desc), "g")
+            desc = None
+        reagents = _tip_dict(pv.get("recipe")).get("reagents_display_string")
+        if _tip_text(reagents):
+            add("Requires " + _tip_text(reagents))
+
+    def item_set():
+        st = _tip_dict(pv.get("set"))
+        add(st.get("display_string") or _tip_dict(st.get("item_set")).get("name"), "y")
+        for e in _tip_list(st.get("effects")):
+            add(e.get("display_string"), "q")
+
+    def flavor():
+        t = _tip_text(desc).strip('"').strip()[:DETAILS_MAX_CHARS - 2].strip()
+        if t:
+            add('"%s"' % t, "y")
+
+    for part in (level, head, kind, weapon, defence, stats, durability, requirements, effects, item_set, flavor):
+        try:
+            part()
+        except Exception:                    # an odd field never costs the other lines
+            continue
+    return out
+
+
+def safe_tooltip_lines(item):
+    """tooltip_lines that never raises ([] if it ever did), so a lookup is never lost to it."""
+    try:
+        return tooltip_lines(item)
+    except Exception:
+        return []
+
+
+def take_tips(items):
+    """Takes the tooltip lines that fetch_item / fetch_details left in item
+    entries (TIP_KEY) out again, so items.json stays exactly as it was.
+    Returns {item id: lines}."""
+    tips = {}
+    for sid, m in items.items():
+        if isinstance(m, dict) and TIP_KEY in m:
+            lines = m.pop(TIP_KEY)
+            try:
+                if isinstance(lines, list):
+                    tips[int(sid)] = lines
+            except (TypeError, ValueError):
+                continue
+    return tips
+
+
+_PACE = {"lock": threading.Lock(), "next": 0.0}
+
+
+def _pace(per_sec=None):
+    """Spaces the details lookups at most `per_sec` a second over all threads."""
+    gap = 1.0 / max(1.0, float(per_sec or DETAILS_PER_SEC))
+    with _PACE["lock"]:
+        now = time.time()
+        if _PACE["next"] - now > 5:      # the clock went back: start again
+            _PACE["next"] = now
+        t = max(now, _PACE["next"])
+        _PACE["next"] = t + gap
+    if t > now:
+        time.sleep(min(1.0, t - now))
+
+
+def fetch_tip(iid, stop=None):
+    """One older item's tooltip lines for the details backfill, from the first
+    static namespace that knows it (no icon request, paced to DETAILS_PER_SEC).
+    Returns (iid, lines): None when a request failed, or when stop() says the
+    run's lookups are over before a namespace answered (tried again next run),
+    [] when no namespace knows the item."""
+    failed = False
+    for ns in STATIC_NS:
+        if stop is not None and stop():
+            return iid, None
+        _pace()
+        try:
+            item, _ = api(f"/data/wow/item/{iid}", ns)
+        except Exception:
+            failed = True
+            continue
+        if item:
+            return iid, safe_tooltip_lines(item)
+    return iid, (None if failed else [])
+
+
+def details_chunk(iid):
+    """The chunk file number an item's lines go in."""
+    return int(iid) // DETAILS_CHUNK
+
+
+def load_details(out):
+    """{chunk number: {str(item id): lines}} from the published chunk files."""
+    d = os.path.join(out, DETAILS_DIR)
+    chunks = {}
+    if not os.path.isdir(d):
+        return chunks
+    for f in os.listdir(d):
+        if not f.endswith(".json"):
+            continue
+        try:
+            n = int(f[:-5])
+        except ValueError:
+            continue
+        raw = load(os.path.join(d, f), None)
+        if isinstance(raw, dict):
+            chunks[n] = {str(k): v for k, v in raw.items() if isinstance(v, list)}
+    return chunks
+
+
+def write_details(out, chunks, changed):
+    """Writes the chunk files in `changed`, ids in order (a file that did not change is not touched)."""
+    for n in sorted(changed):
+        c = chunks.get(n) or {}
+        save(os.path.join(out, DETAILS_DIR, f"{n}.json"),
+             {k: c[k] for k in sorted(c, key=lambda s: (len(s), s))})
+
+
+def details_todo(items, chunks, latest, vols, vinfo=None, limit=None):
+    """The items to look up for their lines this run (at most `limit`,
+    default DETAILS_BACKFILL_PER_RUN): named items the site lists (in latest;
+    a version counts as its item) that no published chunk has, the most gold
+    traded a day first (market value x sold24), then the most sold, the most
+    listed, the lowest id. Returns (ids, how many miss)."""
+    limit = DETAILS_BACKFILL_PER_RUN if limit is None else limit
+    have = set()
+    for c in chunks.values():
+        have.update(c)
+    vinfo = vinfo or {}
+    cand = {}
+    for sid in latest:
+        try:
+            eid = int(sid)
+        except (TypeError, ValueError):
+            continue
+        iid = vinfo[eid][0] if eid in vinfo else eid
+        if iid in cand or str(iid) in have or is_unknown(items.get(str(iid))):
+            continue
+        node = latest.get(str(iid)) or latest.get(sid) or {}
+        price = int(node.get("high") or node.get("low") or 0)
+        sold = int(vols.get(str(iid)) or 0)
+        cand[iid] = (-price * sold, -sold, -int(node.get("n") or 0), iid)
+    todo = sorted(cand, key=cand.get)
+    return todo[:max(0, int(limit))], len(todo)
+
+
+def update_details(out, items, tips, latest, vols, vinfo=None, fetch=None, limit=None, threads=None,
+                   max_secs=None, max_fails=None):
+    """details/<n>.json: the lines this run's item lookups brought (tips:
+    item id -> lines, see take_tips), plus up to `limit` (default
+    DETAILS_BACKFILL_PER_RUN) items no published chunk has yet
+    (details_todo), looked up now. A failed lookup is left for the next run.
+    The lookups stop for the run once `max_secs` (default DETAILS_MAX_SECS)
+    have passed or `max_fails` (default DETAILS_MAX_FAILS) of them failed in
+    a row; the items they did not reach are still missing from the chunks,
+    so the next run, of either collector, looks them up. The lines of this
+    run's own lookups are always written. Only chunk files that changed are
+    written.
+    Returns (lines from this run's lookups, filled in, still missing)."""
+    threads = DETAILS_THREADS if threads is None else threads
+    max_fails = max(1, int(DETAILS_MAX_FAILS if max_fails is None else max_fails))
+    deadline = time.time() + (DETAILS_MAX_SECS if max_secs is None else max_secs)
+    run = {"lock": threading.Lock(), "fails": 0, "why": ""}
+
+    def stop():
+        with run["lock"]:
+            if not run["why"] and time.time() >= deadline:
+                run["why"] = "out of time"
+            return bool(run["why"])
+
+    fetch = fetch or (lambda i: fetch_tip(i, stop))
+
+    def lookup(iid):
+        if stop():
+            return iid, None                 # not reached this run: still missing, so next run
+        iid, lines = fetch(iid)
+        with run["lock"]:
+            if lines is not None:
+                run["fails"] = 0
+            else:
+                run["fails"] += 1
+                if run["fails"] >= max_fails and not run["why"]:
+                    run["why"] = "%d failed lookups in a row" % run["fails"]
+        return iid, lines
+
+    chunks = load_details(out)
+    changed = set()
+
+    def put(iid, lines):
+        n, k = details_chunk(iid), str(int(iid))
+        c = chunks.setdefault(n, {})
+        if c.get(k) != lines:
+            c[k] = lines
+            changed.add(n)
+
+    for iid, lines in tips.items():
+        put(iid, lines)
+    todo, missing = details_todo(items, chunks, latest, vols, vinfo, limit)
+    done = 0
+    if todo:
+        with cf.ThreadPoolExecutor(max(1, threads)) as ex:
+            for iid, lines in ex.map(lookup, todo):
+                if lines is None:
+                    continue
+                put(iid, lines)
+                done += 1
+    write_details(out, chunks, changed)
+    if run["why"] and missing - done > 0:
+        print(f"item details: lookups stopped for this run ({run['why']}), the rest come next run")
+    return len(tips), done, missing - done
 
 
 # -- flip ideas from one snapshot ---------------------------------------------
@@ -1627,6 +2012,7 @@ def main(out=None):
     n_fill, n_fill_left = backfill_meta(items, {iid: len(u) for iid, u in per.items()})
     if n_fill:
         print(f"added slot and item level to {n_fill} older items ({n_fill_left} still to do)")
+    new_tips = take_tips(items)     # the tooltip lines those lookups brought: details/, not items.json
     save(os.path.join(out, "items.json"), items)
     suffixes = load_suffix_names(out)
 
@@ -1920,6 +2306,15 @@ def main(out=None):
                   f"{len(addon_flips)} flips, {size / 1024:.0f} KB ({size} bytes)")
     except Exception as e:
         print(f"{ADDON_FILE} NOT written: {e!r}")
+
+    # the site's item details (tooltip lines, details/): never stops anything else being published
+    try:
+        n_tip, n_tip_fill, n_tip_left = update_details(out, items, new_tips, latest, vols, vinfo)
+        if n_tip or n_tip_fill or n_tip_left:
+            print(f"item details: {n_tip} from this run's lookups, {n_tip_fill} older items filled in "
+                  f"({max(0, n_tip_left)} still to do)")
+    except Exception as e:
+        print(f"item details NOT written: {e!r}")
     tell_workflow(True)
 
 

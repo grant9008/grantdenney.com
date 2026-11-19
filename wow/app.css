@@ -1062,6 +1062,50 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
    down a little. */
 .price-strip { display: flex; gap: 8px; padding: 0; flex-shrink: 0; flex-wrap: wrap; }
 .price-strip .price-box { flex: 1 1 0; min-width: 0; }
+/* -- Item details: the in-game tooltip lines under the item name ---------
+   Filled by renderItemDetails (app.js) from details/<n>.json and hidden when
+   the item has none. The lines flow top to bottom into as many columns as
+   the width takes, so a dozen lines cost three rows on a desktop and about
+   six on a phone; a very long one (a set with its bonuses) scrolls inside
+   its own box instead of pushing the chart away. Colours are the game's
+   tooltip colours, as tokens: none of them is the buy or sell colour, so the
+   block reads the same under every palette.
+   Each max-height is its rows plus the padding plus the 1px top and bottom
+   border (box-sizing is border-box), so a block of exactly that many rows
+   fits with no scrollbar. No overscroll-behavior: the page around the block
+   scrolls, and once the block is at its end a wheel or a swipe over it has
+   to move the page on. On desktop the chart gives the block's height back
+   (--idt-h, see the min-width: 1024px rules), so the quick-facts row and the
+   30-Day Range stay above the fold. */
+:root {
+  --tip-w: #FFFFFF; --tip-g: #1EFF00; --tip-y: #FFD100; --tip-q: #9D9D9D; --tip-r: #FF2020; --tip-b: #66BBFF;
+  --tip-bg: var(--bg-panel); --tip-border: var(--border-light);
+}
+.item-details {
+  flex-shrink: 0; padding: 7px 12px 8px; border-radius: 6px; background: var(--tip-bg);
+  border: 1px solid var(--tip-border); color: var(--tip-w); font-size: 12.5px; line-height: 1.4;
+  max-height: calc(1.4em * 6 + 17px); overflow-y: auto;
+}
+.item-details[hidden] { display: none; }
+.idt-lines { column-width: 190px; column-gap: 28px; column-rule: 1px solid var(--border-hair); }
+.idt-line { break-inside: avoid; overflow-wrap: anywhere; }
+.idt-pair { display: flex; justify-content: space-between; gap: 12px; }
+.idt-pair .idt-right { flex: 0 0 auto; text-align: right; }
+.idt-w { color: var(--tip-w); }
+.idt-g { color: var(--tip-g); }
+.idt-y { color: var(--tip-y); }
+.idt-q { color: var(--tip-q); }
+.idt-r { color: var(--tip-r); }
+.idt-b { color: var(--tip-b); }
+@media screen and (max-width: 640px) {
+  .item-details { padding: 5px 9px 6px; font-size: 11.5px; max-height: calc(1.4em * 7 + 13px); }
+  .idt-lines { column-width: 140px; column-gap: 16px; }
+}
+@media screen and (max-height: 600px) and (orientation: landscape) and (pointer: coarse) {
+  /* the page is one screen tall here: three rows at most, the rest scrolls */
+  .item-details { padding: 3px 8px 4px; font-size: 11px; line-height: 1.35; max-height: calc(1.35em * 3 + 9px); }
+  .idt-lines { column-width: 135px; column-gap: 14px; }
+}
 /* ── Activity bar ────────────────────────────────────────────────────────
    Indeterminate, not a progress bar: we genuinely do not know how far along a
    fetch is, and a bar that fills 0->100% would be inventing that. This is the
@@ -1470,6 +1514,17 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
      Both numbers move together: min-height is a short-viewport safety floor
      and would win over max-height if it were left above it. */
   .chart-container { min-height: calc(100dvh - 408px); max-height: calc(100dvh - 336px); }
+  /* The item details block sits above the chart, and the two numbers above
+     do not know about it: shown, it pushed the quick-facts row and the
+     30-Day Range below the fold again, by its own height. The chart gives
+     that height back instead (--idt-h: the block plus the column gap, set on
+     .main-column by renderItemDetails), but never below 200px (or below what
+     it is without the block, on a screen too short for even that); past
+     that the page grows as before. A hand-sized chart keeps its own height. */
+  .main-column:has(> #itemDetails:not([hidden])) > .chart-container:not(.user-sized) {
+    min-height: max(min(200px, calc(100dvh - 408px)), calc(100dvh - 408px - var(--idt-h, 0px)));
+    max-height: max(min(200px, calc(100dvh - 336px)), calc(100dvh - 336px - var(--idt-h, 0px)));
+  }
 }
 /* Just above the desktop breakpoint the quick-facts strip runs out of width
    and wraps, which costs another ~40px that the 336 above does not know
@@ -1477,6 +1532,10 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
    fold while every wider size cleared it by 8. Narrower band, deeper cut. */
 @media (min-width: 1024px) and (max-width: 1200px) {
   .chart-container { min-height: calc(100dvh - 456px); max-height: calc(100dvh - 384px); }
+  .main-column:has(> #itemDetails:not([hidden])) > .chart-container:not(.user-sized) {
+    min-height: max(min(200px, calc(100dvh - 456px)), calc(100dvh - 456px - var(--idt-h, 0px)));
+    max-height: max(min(200px, calc(100dvh - 384px)), calc(100dvh - 384px - var(--idt-h, 0px)));
+  }
 }
 @media (min-width: 1024px) {
   /* Without this, a long favorites list had nothing to bound it against —
@@ -1930,7 +1989,7 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
 .fls-add:hover, .fls-add:focus-visible { color: var(--fav-gold, #FFB300); background: transparent; }
 .fls-menu {
   display: none; position: absolute; top: 100%; left: 13px; z-index: 20;
-  min-width: 190px; max-width: 260px; max-height: 260px; overflow-y: auto;
+  min-width: 190px; max-width: 260px; max-height: min(340px, 70vh); overflow-y: auto;
   background: #241f19; border: 1px solid var(--border-light); border-radius: 6px;
   box-shadow: 0 10px 30px -8px rgba(0,0,0,0.6);
   padding: 4px;
@@ -1953,6 +2012,15 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
   .fls-menu-row .fls-rename, .fls-menu-row .fls-delete { opacity: 0.55; }
 }
 .fls-menu-row.editing { padding: 3px; }
+/* The auto lists under the player's own: a hairline, a small heading, and
+   switch-only rows (no rename or delete). */
+.fls-menu-sep { height: 1px; margin: 4px 2px; background: var(--border-light); }
+.fls-menu-head { padding: 4px 6px 2px; font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+  text-transform: uppercase; color: var(--text-muted); }
+.fls-menu-row.fls-auto .fls-menu-name { padding: 2px 0; }
+/* What an auto list is, above its rows. */
+.wl-auto-hint { padding: 5px 14px 6px; font-size: 11px; line-height: 1.4; color: var(--text-muted); }
+.col-menu-danger[hidden], .col-menu-sep[hidden] { display: none; }
 .fls-menu-input {
   width: 100%; background: var(--bg-input); border: 1px solid var(--border-active);
   color: var(--text-main); border-radius: 4px; padding: 5px 7px; font-size: 12px;

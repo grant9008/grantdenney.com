@@ -28,6 +28,10 @@ What it simulates, for 240 hourly snapshots:
     how much was pulled; test_datafile.py checks the collector's sold
     against it. This market has its own random numbers, so every other
     item's data is the same as without it.
+  - tooltip details (the item API's preview_item) for the site's details
+    block in wow/_localdata/details/: trade goods, armor, weapons, a set, a
+    Chance on hit line and flavor text; Iron Bar has none (the block stays
+    hidden). The flavor text and the set are made up.
 The simulated collector always had the sold floor, so every simulated hour
 counts as measured (fetch_ah.SOLD_FLOOR_FROM is set to 0).
 """
@@ -93,6 +97,54 @@ SALMON = 13932
 SALMON_NAME, SALMON_ICON, SALMON_VENDOR = "Poached Sunscale Salmon", "inv_misc_fish_20", 100
 SALMON_BASE, SALMON_LISTED, SALMON_RATE = 700, 600, 30   # copper, units the others keep listed, sold per hour
 LONG_LEFT = ("LONG", "VERY_LONG")
+
+WHITE = {"r": 255, "g": 255, "b": 255, "a": 1.0}
+
+
+def armor(n):
+    return {"value": n, "display": {"display_string": "%d Armor" % n, "color": WHITE}}
+
+
+def weapon(lo, hi, speed):
+    return {"damage": {"min_value": lo, "max_value": hi, "display_string": "%d - %d Damage" % (lo, hi)},
+            "attack_speed": {"value": int(speed * 1000), "display_string": "Speed %.2f" % speed},
+            "dps": {"display_string": "(%.1f damage per second)" % ((lo + hi) / 2.0 / speed)}}
+
+
+def needs(level):
+    return {"level": {"value": level, "display_string": "Requires Level %d" % level}}
+
+
+BOE = {"type": "ON_EQUIP", "name": "Binds when equipped"}
+# the tooltip part of the item API answer (preview_item), as Blizzard sends it; Iron Bar has none
+PREVIEW = {
+ 9860: {"binding": BOE, "armor": armor(23), "requirements": needs(29), "is_subclass_hidden": True},
+ 8214: {"binding": BOE, "armor": armor(92), "durability": {"value": 50, "display_string": "Durability 50 / 50"},
+        "requirements": needs(40),
+        "set": {"display_string": "Wild Leather Gear (0/3)",
+                "effects": [{"display_string": "(2) Set: +10 Armor.", "required_count": 2},
+                            {"display_string": "(3) Set: +5 Stamina.", "required_count": 3}]}},
+ 4564: {"binding": BOE, "weapon": weapon(9, 18, 2.6),
+        "durability": {"value": 45, "display_string": "Durability 45 / 45"}, "requirements": needs(8)},
+ 17705: {"binding": BOE, "weapon": weapon(53, 100, 2.7),
+         "durability": {"value": 90, "display_string": "Durability 90 / 90"}, "requirements": needs(48),
+         "level": {"value": 53, "display_string": "Item Level 53"},
+         "spells": [{"description": "Chance on hit: Grants an extra attack on your next swing."}],
+         "description": "Simulated flavor text."},
+}
+
+
+def preview(iid, item):
+    """preview_item for a simulated item: the item's own class fields plus PREVIEW (trade goods: a
+    crafting reagent). Iron Bar (3575) has none."""
+    if iid == 3575:
+        return None
+    p = {k: item[k] for k in ("name", "quality", "item_class", "item_subclass", "inventory_type") if k in item}
+    p.update(PREVIEW.get(iid) or ({"crafting_reagent": "Crafting Reagent", "is_subclass_hidden": True}
+                                  if iid in ITEMS else {}))
+    return p
+
+
 T = [int(time.time()) - 240 * 3600]
 f.time.time = lambda: T[0]
 f.time.sleep = lambda s: None
@@ -207,15 +259,20 @@ def fake_api(path, ns, tries=4):
                     "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "is_stackable": True}, {}
         if iid in ITEMS:
             n = ITEMS[iid]
-            return {"name": n[0], "quality": {"type": n[5]}, "sell_price": n[6], "level": 0, "required_level": 0,
+            item = {"name": n[0], "quality": {"type": n[5]}, "sell_price": n[6], "level": 0, "required_level": 0,
                     "item_class": {"name": TG[0], "id": TG[1]}, "item_subclass": {"name": n[7][0], "id": n[7][1]},
-                    "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "is_stackable": True}, {}
-        g = GEAR.get(iid) or PLAIN_GEAR[iid]
-        return {"name": g[0], "quality": {"type": g[8] if iid in PLAIN_GEAR else "UNCOMMON"}, "sell_price": g[2],
-                "level": g[6],
-                "required_level": g[7], "item_class": {"name": g[3][0], "id": g[3][1]},
-                "item_subclass": {"name": g[4][0], "id": g[4][1]},
-                "inventory_type": {"type": g[5][0], "name": g[5][1]}, "is_stackable": False}, {}
+                    "inventory_type": {"type": "NON_EQUIP", "name": "Non-equippable"}, "is_stackable": True}
+        else:
+            g = GEAR.get(iid) or PLAIN_GEAR[iid]
+            item = {"name": g[0], "quality": {"type": g[8] if iid in PLAIN_GEAR else "UNCOMMON"}, "sell_price": g[2],
+                    "level": g[6],
+                    "required_level": g[7], "item_class": {"name": g[3][0], "id": g[3][1]},
+                    "item_subclass": {"name": g[4][0], "id": g[4][1]},
+                    "inventory_type": {"type": g[5][0], "name": g[5][1]}, "is_stackable": False}
+        p = preview(iid, item)
+        if p:
+            item["preview_item"] = p
+        return item, {}
     return None, {}
 
 

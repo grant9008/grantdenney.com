@@ -198,6 +198,14 @@ r.setProperty('--sell-color',t.sell);r.setProperty('--sell-rgb',t.sellRgb);
         </div>
       </div>
 
+      <!-- Item details: the item's in-game tooltip lines (binding, slot and
+           type, armor, damage, stats, durability, requirements, Use / Equip /
+           Chance on hit, set, flavor text, sell price), filled by
+           renderItemDetails from the collector's details/<n>.json. Between
+           the name row and the Target boxes, so the item's header simply gets
+           taller; hidden when the item has no details. -->
+      <section class="item-details" id="itemDetails" aria-label="Item details" hidden></section>
+
       <div class="price-strip">
         <div id="buyPrice" class="price-box low">
           <div class="price-label"><span class="pl-t">Target Buy</span> <span id="lblLiveBuy" class="live-val">Cheapest: —</span></div>
