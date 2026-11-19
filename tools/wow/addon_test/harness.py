@@ -570,6 +570,7 @@ local Base = class("Base")
 local Region = class("Region", "Base")
 local Frame = class("Frame", "Region")
 local Button = class("Button", "Frame")
+local CheckButton = class("CheckButton", "Button")
 local EditBox = class("EditBox", "Frame")
 local Tooltip = class("GameTooltip", "Frame")
 local Texture = class("Texture", "Region")
@@ -599,6 +600,7 @@ SCRIPTS.Frame = { OnEvent = 1, OnUpdate = 1, OnShow = 1, OnHide = 1, OnEnter = 1
   OnReceiveDrag = 1, OnAttributeChanged = 1 }
 local function extend(base, extra) local t = {}; for k in pairs(base) do t[k] = 1 end; for _, k in ipairs(extra) do t[k] = 1 end; return t end
 SCRIPTS.Button = extend(SCRIPTS.Frame, { "OnClick", "OnDoubleClick", "PreClick", "PostClick" })
+SCRIPTS.CheckButton = SCRIPTS.Button
 SCRIPTS.EditBox = extend(SCRIPTS.Frame, { "OnEnterPressed", "OnEscapePressed", "OnTextChanged", "OnEditFocusGained",
   "OnEditFocusLost", "OnTabPressed", "OnChar" })
 SCRIPTS.GameTooltip = extend(SCRIPTS.Frame, { "OnTooltipCleared", "OnTooltipSetDefaultAnchor", "OnTooltipAddMoney" })
@@ -618,7 +620,8 @@ end
 
 -- Base ---------------------------------------------------------------------
 function Base:GetObjectType() return self._otype end
-function Base:IsObjectType(t) return self._otype == t or (t == "Frame" and Methods[self._otype] and self._scripts ~= nil) or t == "Region" end
+function Base:IsObjectType(t) return self._otype == t or (t == "Frame" and Methods[self._otype] and self._scripts ~= nil) or t == "Region"
+  or (t == "Button" and self._otype == "CheckButton") end
 function Base:GetName() return self._name end
 function Base:GetParent() return self._parent end
 function Base:IsForbidden() return self._forbidden == true end
@@ -1063,7 +1066,14 @@ end
 function Frame:SetUserPlaced(v) end
 function Frame:SetDontSavePosition(v) end
 function Frame:SetClampedToScreen(v) self._clamped = v end
-function Frame:SetHitRectInsets() end
+-- The click area: the frame's rectangle moved in by these (left, right, top, bottom); less than 0 is out.
+function Frame:SetHitRectInsets(l, r, t, b)
+  for _, v in ipairs({ l or "nil", r or "nil", t or "nil", b or "nil" }) do
+    if not finite(v) then apiError("SetHitRectInsets: bad inset " .. tostring(v)) end
+  end
+  self._hitInsets = { l, r, t, b }
+end
+function Frame:GetHitRectInsets() local h = self._hitInsets or { 0, 0, 0, 0 }; return h[1], h[2], h[3], h[4] end
 function Frame:SetScale(s)
   if not finite(s) or s <= 0 then apiError("SetScale: scale must be > 0, got " .. tostring(s)) end
   self._scale = s
@@ -1095,8 +1105,10 @@ function Button:SetNormalFontObject(f) end
 function Button:SetHighlightFontObject(f) end
 function Button:SetDisabledFontObject(f) end
 -- A button's state textures: set from a file they are textures of the button
--- covering it, and Get<State>Texture gives them back, as in the game.
-local function stateTexture(self, key, t, layer)
+-- covering it, and Get<State>Texture gives them back, as in the game. The files
+-- set are also kept in _tex (normal, highlight, pushed, disabled) to see what a skin left.
+local function stateTexture(self, key, t, layer, name)
+  local x = rawget(self, "_tex") or {}; x[name] = t; self._tex = x
   if isRegion(t) then self[key] = t; return end
   if t ~= nil and type(t) ~= "string" and type(t) ~= "number" then apiError("Button: bad state texture") end
   local tex = rawget(self, key)
@@ -1109,11 +1121,11 @@ local function stateTexture(self, key, t, layer)
   tex:SetTexture(t)
   return tex
 end
-function Button:SetNormalTexture(t) stateTexture(self, "_normalTex", t, "ARTWORK") end
-function Button:SetPushedTexture(t) stateTexture(self, "_pushedTex", t, "ARTWORK") end
-function Button:SetDisabledTexture(t) stateTexture(self, "_disabledTex", t, "ARTWORK") end
+function Button:SetNormalTexture(t) stateTexture(self, "_normalTex", t, "ARTWORK", "normal") end
+function Button:SetPushedTexture(t) stateTexture(self, "_pushedTex", t, "ARTWORK", "pushed") end
+function Button:SetDisabledTexture(t) stateTexture(self, "_disabledTex", t, "ARTWORK", "disabled") end
 function Button:SetHighlightTexture(t, blend)
-  local tex = stateTexture(self, "_highlightTex", t, "HIGHLIGHT")
+  local tex = stateTexture(self, "_highlightTex", t, "HIGHLIGHT", "highlight")
   if tex and blend then tex:SetBlendMode(blend) end
 end
 function Button:GetNormalTexture() return self._normalTex end
@@ -1132,6 +1144,19 @@ function Button:Click(btn)
   M.fireScript(self, "PreClick", btn or "LeftButton", false)
   M.fireScript(self, "OnClick", btn or "LeftButton", false)
   M.fireScript(self, "PostClick", btn or "LeftButton", false)
+end
+
+-- Check buttons: a click ticks or clears the box before OnClick runs, as in the game
+-- (GetChecked in OnClick is the new state). SetChecked fires no script.
+function CheckButton:SetChecked(v) self._checked = v and true or false end
+function CheckButton:GetChecked() return self._checked == true end
+function CheckButton:SetCheckedTexture(t) self._checkedTexture = t end
+function CheckButton:GetCheckedTexture() return self._checkedTexture end
+function CheckButton:SetDisabledCheckedTexture(t) end
+function CheckButton:Click(btn)
+  if self._disabled then return end
+  self._checked = not self._checked
+  Button.Click(self, btn)
 end
 
 -- Edit boxes --------------------------------------------------------------------
@@ -1390,8 +1415,22 @@ TEMPLATES.GameTooltipTemplate = function(f)
 end
 TEMPLATES.SearchBoxTemplate = function(f) end
 TEMPLATES.InputBoxTemplate = function(f) end
+-- SharedXML CheckButtonTemplates.xml: 32x32, the check box art, and a GameFontNormalSmall
+-- label ($parentText, parentKey Text, alias text) LEFT on the box's RIGHT, x -2.
+TEMPLATES.UICheckButtonTemplate = function(f)
+  if f._otype ~= "CheckButton" then apiError("UICheckButtonTemplate needs a CheckButton") end
+  f:SetSize(32, 32)
+  f:SetNormalTexture("Interface\\Buttons\\UI-CheckBox-Up")
+  f:SetPushedTexture("Interface\\Buttons\\UI-CheckBox-Down")
+  f:SetHighlightTexture("Interface\\Buttons\\UI-CheckBox-Highlight")
+  f:SetCheckedTexture("Interface\\Buttons\\UI-CheckBox-Check")
+  f._checked = false
+  f.Text = f:CreateFontString(f._name and (f._name .. "Text") or nil, "ARTWORK", "GameFontNormalSmall")
+  f.Text:SetPoint("LEFT", f, "RIGHT", -2, 0)
+  f.text = f.Text
+end
 
-local FRAME_TYPES = { frame = "Frame", button = "Button", checkbutton = "Button", editbox = "EditBox",
+local FRAME_TYPES = { frame = "Frame", button = "Button", checkbutton = "CheckButton", editbox = "EditBox",
   gametooltip = "GameTooltip", statusbar = "Frame", scrollframe = "Frame", slider = "Frame" }
 
 function CreateFrame(ftype, name, parent, template, id)
@@ -1644,7 +1683,9 @@ function issecure() return false end
 function securecallfunction(f, ...) return f(...) end
 function geterrorhandler() return function(e) M.err("error handler", e) end end
 function seterrorhandler() end
-function PlaySound() end
+M.sounds = {}
+function PlaySound(id, channel) M.sounds[#M.sounds + 1] = id end
+SOUNDKIT = { IG_MAINMENU_OPTION_CHECKBOX_ON = 856, IG_MAINMENU_OPTION_CHECKBOX_OFF = 857 }
 -- The gold on the character (123g 45s 67c unless a scenario says otherwise).
 M.playerMoney = 1234567
 function GetMoney() return M.playerMoney end
@@ -2274,6 +2315,17 @@ end
 -- 3918-3922). B:OpenBags and B:CloseAllBags are also what ElvUI calls by
 -- itself (at a vendor, the auction house, a trade). Use with
 -- M.InstallBlizzardBags.
+-- Its Skins module (o.noSkins: none): S.db is there from the start (E:PrepDB calls E:SetupDB
+-- when ElvUI loads, General\Initialize.lua 715); S:HandleCheckBox (Skins.lua 1597) strips the
+-- frame's art first (StripTextures), then needs ElvUI set up (S:Initialize, at login; E.media's
+-- colours come with it): before that the mock stops with an error, the art gone. It is skipped on a frame already
+-- skinned; M.elvChecks lists the frames it skinned, M.elvEarly the calls
+-- made before login. E.private.skins.blizzard.character is the player's
+-- "Character" skin option (o.characterSkin = false: off). M.ElvStrip(f) is StripTextures.
+function M.ElvStrip(f)
+  f._tex = {}
+  if f._otype == "CheckButton" then f._checkedTexture = nil end
+end
 function M.InstallElvUIAddon(o)
   o = o or {}
   local B = {}
@@ -2284,6 +2336,23 @@ function M.InstallElvUIAddon(o)
     return m
   end
   ElvUI = { E, {}, {}, {}, {} }
+  E.private = { skins = { checkBoxSkin = true, blizzard = { enable = true, character = o.characterSkin ~= false } } }
+  M.elvChecks, M.elvEarly = {}, 0
+  if not o.noSkins then
+    local S = { db = E.private.skins }   -- E:SetupDB, when ElvUI loads
+    E.modules.Skins = S
+    function S:HandleCheckBox(frame)
+      if frame.IsSkinned then return end
+      M.ElvStrip(frame)
+      if not self.Initialized then M.elvEarly = M.elvEarly + 1; error("attempt to index field 'backdropcolor' (a nil value)") end
+      frame:SetCheckedTexture("Interface\\AddOns\\ElvUI\\Media\\Textures\\Melli")
+      M.elvChecks[#M.elvChecks + 1] = frame
+      frame.IsSkinned = true
+    end
+    local sk = CreateFrame("Frame")
+    sk:RegisterEvent("PLAYER_LOGIN")
+    sk:SetScript("OnEvent", function(self) self:UnregisterAllEvents(); S.Initialized = true end)
+  end
   function B:OpenBags()
     local f = B.BagFrame
     if not f or f:IsShown() then return end
@@ -14702,6 +14771,808 @@ def sc_enchants_missing(sc, ref, items):
     sc.clean(w, ok_chat=())
 
 
+# --- enchants: the Enchant tips box on the character panel ---
+# WoW Forever's character frame, shaped like Blizzard_UIPanels_Game's Camelot\CharacterFrame.xml
+# and PaperDollFrame.xml (1.60.1, github.com/Gethe/wow-ui-source branch forever).
+CHARFRAME_LUA = r'''
+local M = MOCK
+-- 631x484: a 398 wide left pane (the paper doll) and a 233 wide right pane (stats,
+-- titles, outfits), side tabs past the right edge. PaperDollFrame fills the frame at
+-- the frame's level. Its model scene (level 50) fills the left pane under a 36px top
+-- strip (the level line) and covers PaperDollFrame's own children; the zoom and turn
+-- buttons sit at the pane's top centre, 40 down. The slots are in PaperDollItemsFrame
+-- (level 100), which the pet's page hides. M.ShowFrame and M.HideFrame work as in the
+-- game: OnShow and OnHide also reach the shown children.
+local function fireTree(f, script)
+  local kids = {}
+  for _, c in ipairs(rawget(f, "_children") or {}) do
+    if c._shown and c._scripts then kids[#kids + 1] = c end
+  end
+  M.fireScript(f, script)
+  for _, c in ipairs(kids) do
+    if c._shown then fireTree(c, script) end
+  end
+end
+function M.ShowFrame(f)
+  if f._shown then return end
+  f._shown = true
+  if f:IsVisible() then fireTree(f, "OnShow") end
+end
+function M.HideFrame(f)
+  if not f._shown then return end
+  local vis = f:IsVisible()
+  f._shown = false
+  if vis then fireTree(f, "OnHide") end
+end
+
+M.CHAR_TABS = { "PaperDollFrame", "ReputationFrame", "SkillsFrame", "PVPRankFrame", "TokenFrame" }
+M.SLOTS_LEFT = { "Head", "Neck", "Shoulder", "Back", "Chest", "Shirt", "Tabard", "Wrist" }
+M.SLOTS_RIGHT = { "Hands", "Waist", "Legs", "Feet", "Finger0", "Finger1", "Trinket0", "Trinket1" }
+
+-- The scripts the game's frames have, to see that nothing replaced them.
+local function scripts()
+  local out = {}
+  for _, n in ipairs({ "CharacterFrame", "PaperDollFrame", "PaperDollItemsFrame", "CharacterModelScene", "CharacterHeadSlot" }) do
+    local f = _G[n]
+    if f then
+      local s = {}
+      for k, v in pairs(f._scripts) do s[k] = v end
+      out[n] = s
+    end
+  end
+  return out
+end
+function M.CharScriptsKept()
+  local now, was = scripts(), M.charScripts or {}
+  for n, s in pairs(was) do
+    for k, v in pairs(s) do if not now[n] or now[n][k] ~= v then return false, n .. "." .. k end end
+    for k in pairs(now[n] or {}) do if s[k] == nil then return false, n .. "." .. k .. " added" end end
+  end
+  return true, "none replaced"
+end
+
+function M.InstallCharacterFrame(o)
+  o = o or {}
+  local cf = CreateFrame("Frame", "CharacterFrame", UIParent)
+  cf:SetSize(631, 484)
+  cf:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 16, -116)
+  cf._shown = false
+  local left = CreateFrame("Frame", "CharacterFrameLeftPaneHost", cf)
+  left:SetWidth(398)
+  left:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, -20)
+  left:SetPoint("BOTTOMLEFT", cf, "BOTTOMLEFT", 0, 0)
+  cf.LeftPaneHost = left
+  local right = CreateFrame("Frame", "CharacterFrameRightPaneHost", cf)
+  right:SetWidth(233)
+  right:SetPoint("TOPLEFT", left, "TOPRIGHT", 0, 0)
+  right:SetPoint("BOTTOMLEFT", left, "BOTTOMRIGHT", 0, 0)
+  cf.RightPaneHost = right
+  -- PortraitFrameBaseTemplate (Blizzard_SharedXML SharedUIPanelTemplates.xml 566-586): a 1x1
+  -- container at the top left, level 400, with the 62x62 round portrait at (-5, 7).
+  local pc = CreateFrame("Frame", nil, cf)
+  pc:SetSize(1, 1)
+  pc:SetPoint("TOPLEFT", cf, "TOPLEFT", 0, 0)
+  pc:SetFrameLevel(400)
+  cf.PortraitContainer = pc
+  local portrait = pc:CreateTexture("CharacterFramePortrait", "OVERLAY")
+  portrait:SetSize(62, 62)
+  portrait:SetPoint("TOPLEFT", pc, "TOPLEFT", -5, 7)
+  pc.portrait = portrait
+  local close = CreateFrame("Button", "CharacterFrameCloseButton", cf)
+  close:SetSize(24, 24)
+  close:SetPoint("TOPRIGHT", cf, "TOPRIGHT", 1, 0)
+  local rt = CreateFrame("Button", "CharacterFrameRightPaneToggleButton", cf)
+  rt:SetSize(28, 28)
+  rt:SetPoint("TOPRIGHT", left, "TOPRIGHT", -6, -6)
+  rt:SetFrameLevel(510)
+  local tabs = CreateFrame("Frame", "CharacterFrameModeTabs", cf)
+  tabs:SetSize(64, 384)
+  tabs:SetPoint("TOPLEFT", cf, "TOPRIGHT", 0, -30)
+  local side = CreateFrame("Frame", "PaperDollSidebarTabs", cf)
+  side:SetSize(233, 85)
+  side:SetPoint("TOP", right, "TOP", 0, -4)
+  for i = 2, #M.CHAR_TABS do
+    local f = CreateFrame("Frame", M.CHAR_TABS[i], cf)
+    f:SetAllPoints(cf)
+    f._shown = false
+  end
+  if not o.noPaperDoll then M.InstallPaperDoll(o) end
+  M.charScripts = scripts()
+  return cf
+end
+
+function M.InstallPaperDoll(o)
+  o = o or {}
+  local cf, left = CharacterFrame, CharacterFrameLeftPaneHost
+  local pdf = CreateFrame("Frame", "PaperDollFrame", cf)
+  pdf:SetAllPoints(cf)
+  pdf._level = cf._level   -- useParentLevel
+  local strip = CreateFrame("Frame", nil, pdf)
+  strip:SetPoint("TOPLEFT", left, "TOPLEFT", 0, 0)
+  strip:SetPoint("TOPRIGHT", left, "TOPRIGHT", 0, 0)
+  strip:SetHeight(36)
+  strip:SetFrameLevel(50)
+  pdf.TopBackgroundStripHost = strip
+  local info = CreateFrame("Frame", "PaperDollLevelInfo", pdf)
+  info:SetSize(220, 20)
+  info:SetPoint("CENTER", strip, "CENTER", 0, -2)
+  info:SetFrameStrata("HIGH")
+  info:SetFrameLevel(520)
+  -- The level line, centred (PaperDollFrame_SetLevel: PLAYER_LEVEL with the spec, the longest one).
+  local lt = info:CreateFontString("CharacterLevelText", "ARTWORK", "GameFontNormal")
+  lt:SetPoint("CENTER", info, "CENTER", 0, 0)
+  lt:SetText("Level 60 Beast Mastery Hunter")
+  local scene = CreateFrame("Frame", "CharacterModelScene", pdf)
+  scene:SetPoint("TOPLEFT", strip, "BOTTOMLEFT", 0, 0)
+  scene:SetPoint("TOPRIGHT", strip, "BOTTOMRIGHT", 0, 0)
+  scene:SetPoint("BOTTOMRIGHT", left, "BOTTOMRIGHT", 0, 0)
+  scene:SetFrameLevel(50)
+  scene:EnableMouse(true)
+  pdf.CharacterModelScene = scene
+  local ctl = CreateFrame("Frame", nil, scene)   -- zoom in, zoom out, turn left, turn right, reset: 2 + 5 x (32 - 6)
+  ctl:SetSize(132, 32)
+  ctl:SetPoint("TOP", left, "TOP", 0, -40)
+  scene.ControlFrame = ctl
+  local happy = CreateFrame("Frame", "PetPaperDollPetHappinessInfo", scene)
+  happy:SetSize(24, 23)
+  happy:SetPoint("TOPLEFT", left, "TOPLEFT", 22, -60)
+  happy._shown = false
+  local bar = CreateFrame("Frame", "PetPaperDollFrameExpBar", scene)
+  bar:SetSize(257, 29)
+  bar:SetPoint("BOTTOM", left, "BOTTOM", 0, 20)
+  bar._shown = false
+  local items = CreateFrame("Frame", "PaperDollItemsFrame", pdf)
+  items:SetAllPoints(pdf)
+  items:SetFrameLevel(100)
+  pdf.ItemsFrame = items
+  local function slot(name, size)
+    local b = CreateFrame("Button", "Character" .. name .. "Slot", items)
+    b:SetSize(size or 37, size or 37)
+    b:SetFrameLevel(101)
+    return b
+  end
+  local prev
+  for i, n in ipairs(M.SLOTS_LEFT) do
+    local b = slot(n)
+    if i == 1 then b:SetPoint("TOPLEFT", left, "TOPLEFT", 24, -60) else b:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -6) end
+    prev = b
+  end
+  for i, n in ipairs(M.SLOTS_RIGHT) do
+    local b = slot(n)
+    if i == 1 then b:SetPoint("TOPRIGHT", left, "TOPRIGHT", -20, -60) else b:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", 0, -6) end
+    prev = b
+  end
+  local mh = slot("MainHand")
+  mh:SetPoint("BOTTOM", left, "BOTTOM", o.ammo and -60 or -40, 30)   -- PaperDollItemSlotButton_OnLoad
+  local oh = slot("SecondaryHand")
+  oh:SetPoint("TOPLEFT", mh, "TOPRIGHT", 6, 0)
+  local rg = slot("Ranged")
+  rg:SetPoint("TOPLEFT", oh, "TOPRIGHT", 6, 0)
+  local am = slot("Ammo", 27)
+  am:SetPoint("LEFT", rg, "RIGHT", 19, 0)
+  am._shown = o.ammo == true
+  -- PaperDollFrame's OnShow opens the stats page, with the slots (PaperDollFrame_SetSidebar).
+  pdf:SetScript("OnShow", function() M.CharacterPetPage(false) end)
+  M.charScripts = scripts()
+  return pdf
+end
+
+-- PaperDollFrame_ShowSidebar: the pet's page hides the slots and shows the pet's bar.
+function M.CharacterPetPage(on)
+  if on then
+    M.HideFrame(PaperDollItemsFrame)
+    M.ShowFrame(PetPaperDollFrameExpBar)
+  else
+    M.ShowFrame(PaperDollItemsFrame)
+    M.HideFrame(PetPaperDollFrameExpBar)
+  end
+end
+
+-- ToggleCharacter(tab): the frame on that tab, or closed when that tab is already up.
+function ToggleCharacter(tab)
+  local cf, target = CharacterFrame, _G[tab]
+  if cf:IsShown() and target and target:IsShown() then M.HideFrame(cf); return end
+  for _, n in ipairs(M.CHAR_TABS) do
+    local f = _G[n]
+    if f and n ~= tab then M.HideFrame(f) end
+  end
+  if target then M.ShowFrame(target) end
+  M.ShowFrame(cf)
+end
+
+-- Where Pawn (PawnUI.lua 76-107, its Forever offsets) and GearMatic (EquipSets\Toggle.lua 59,
+-- Loadouts\Toggle.lua 85, Paperdoll.lua 640-644) put their buttons on this panel, and the
+-- head and hands slots' flyout buttons (PaperDollItemSlotButton_OnLoad).
+function M.InstallCharacterNeighbours()
+  local pdf = PaperDollFrame
+  local function box(name, w, h, ...)
+    local f = CreateFrame("Button", name, pdf)
+    f:SetSize(w, h)
+    f:SetPoint(...)
+    return f
+  end
+  box("MockPawnRight", 48, 24, "TOPRIGHT", CharacterTrinket1Slot, "BOTTOMRIGHT", 4, -18)
+  box("MockPawnLeft", 48, 24, "TOPLEFT", CharacterWristSlot, "BOTTOMLEFT", -6, -18)
+  box("MockGearMaticSets", 32, 32, "TOPRIGHT", pdf, "TOPRIGHT", -44, -39)
+  box("MockGearMaticLoadouts", 32, 32, "TOPRIGHT", pdf, "TOPRIGHT", -66, -39)
+  box("MockGearMaticPrev", 26, 26, "RIGHT", CharacterMainHandSlot, "LEFT", -6, 0)
+  box("MockGearMaticNext", 26, 26, "LEFT", CharacterAmmoSlot:IsShown() and CharacterAmmoSlot or CharacterRangedSlot, "RIGHT", 6, 0)
+  box("MockGearMaticPrevTop", 26, 26, "TOPRIGHT", CharacterModelScene, "TOP", -2, -4)
+  box("MockGearMaticNextTop", 26, 26, "TOPLEFT", CharacterModelScene, "TOP", 2, -4)
+  box("MockHeadPopout", 16, 37, "LEFT", CharacterHeadSlot, "RIGHT", 5, 0)
+  box("MockHandsPopout", 16, 37, "RIGHT", CharacterHandsSlot, "LEFT", -5, 0)
+end
+
+-- ElvUI's Forever skin (Skins\Character.lua 894-897, 918-919, 1003, 1018-1024): the slot columns
+-- at the pane's edge, the model boxed in between them, the top strip see-through, no portrait.
+function M.ElvUICharacterLayout()
+  local left = CharacterFrameLeftPaneHost
+  CharacterFramePortrait:Hide()   -- Kill()
+  CharacterHeadSlot:SetPoint("TOPLEFT", left, "TOPLEFT", 6, -55)
+  CharacterHandsSlot:SetPoint("TOPRIGHT", left, "TOPRIGHT", -6, -55)
+  local p = CharacterMainHandSlot._points[1]
+  p[5] = p[5] - 24
+  local s = CharacterModelScene
+  s:ClearAllPoints()
+  s:SetPoint("TOPLEFT", left, "TOPLEFT", 46, -31)
+  s:SetPoint("BOTTOMRIGHT", left, "BOTTOMRIGHT", -46, 46)
+  PaperDollFrame.TopBackgroundStripHost:SetAlpha(0)
+  -- The pet's happiness icon moves to the model's corner (ElvUI shows it on the pet's page only).
+  PetPaperDollPetHappinessInfo:ClearAllPoints()
+  PetPaperDollPetHappinessInfo:SetPoint("TOPLEFT", s, "TOPLEFT", 6, -6)
+end
+'''
+
+CHAR_SLOTS = ["Head", "Neck", "Shoulder", "Back", "Chest", "Shirt", "Tabard", "Wrist", "Hands", "Waist", "Legs", "Feet",
+              "Finger0", "Finger1", "Trinket0", "Trinket1", "MainHand", "SecondaryHand", "Ranged", "Ammo"]
+# What the box must not cover: the game's (and ElvUI's) parts of the panel, and Pawn's and GearMatic's buttons.
+TG_AVOID = (["Character%sSlot" % s for s in CHAR_SLOTS] +
+            ["CharacterFrameCloseButton", "CharacterFrameRightPaneToggleButton", "CharacterFrameModeTabs",
+             "PaperDollSidebarTabs", "CharacterFrameRightPaneHost", "PaperDollLevelInfo", "CharacterLevelText",
+             "CharacterFramePortrait", "PetPaperDollPetHappinessInfo",
+             "PetPaperDollFrameExpBar", "MockPawnRight", "MockPawnLeft", "MockGearMaticSets", "MockGearMaticLoadouts",
+             "MockGearMaticPrev", "MockGearMaticNext", "MockGearMaticPrevTop", "MockGearMaticNextTop", "MockHeadPopout",
+             "MockHandsPopout"])
+TG_TIP_HEAD = ["Goblin Ledger: Enchant tips", "Best enchant for your role, its mats and cost, on gear tooltips."]
+TG_TIP_TOOLTIP_OFF = "Goblin Ledger tooltips are off: /gl tooltip turns them on."
+TG_HELP = "   the Enchant tips box on the character panel turns them off and on"
+TG_ART = {"normal": "Interface\\Buttons\\UI-CheckBox-Up", "pushed": "Interface\\Buttons\\UI-CheckBox-Down",
+          "highlight": "Interface\\Buttons\\UI-CheckBox-Highlight", "checked": "Interface\\Buttons\\UI-CheckBox-Check"}
+
+
+def char_world(ref, items, saved=None, cls="WARRIOR", points=(31, 5, 0), char=True, before=None, **kw):
+    """en_world with the game's character frame, made before the addon loads as in the game.
+    char: options for M.InstallCharacterFrame (a dict), True for the defaults, False for none
+    (the mock is still loaded, to install later)."""
+    def setup(w):
+        w.loader(CHARFRAME_LUA, "@Interface/AddOns/Blizzard_UIPanels_Game/Mock.lua")
+        if char is not False:
+            w.M.InstallCharacterFrame(w.to_lua(char if isinstance(char, dict) else {}))
+            if w.g.PaperDollFrame is not None:
+                w.M.InstallCharacterNeighbours()
+        if before:
+            before(w)
+    return en_world(ref, items, cls=cls, points=points, saved=saved, before_addon=setup, **kw)
+
+
+def tg(w):
+    return w.g.GoblinLedgerEnchantToggle
+
+
+def char_show(w, tab="PaperDollFrame"):
+    cf = w.g.CharacterFrame
+    t = w.g[tab]
+    if not (cf.IsShown(cf) and t.IsShown(t)):
+        w.g.ToggleCharacter(tab)
+
+
+def char_close(w):
+    w.M.HideFrame(w.g.CharacterFrame)
+
+
+def checkboxes(w):
+    return int(w.M.counts.CheckButton or 0)
+
+
+def lua_kids(f):
+    ch = f._children
+    return [ch[i] for i in range(1, len(ch) + 1)] if ch is not None else []
+
+
+def tg_tip(w):
+    """The lines of the box's own tooltip (empty when it is not up)."""
+    tt = w.g.GameTooltip
+    if not tt.IsShown(tt) or not w.same(tt.GetOwner(tt), tg(w)):
+        return []
+    return [l for l, _ in w.all_lines(tt)]
+
+
+def tg_role(text):
+    return text + " /gl enchants picks the role."
+
+
+def tg_state(w):
+    S = w.ns.settings
+    cb = tg(w)
+    return (cb.GetChecked(cb) if cb is not None else None, S.enchants, S.enchantsBeforeOff)
+
+
+def tg_hit(w, cb):
+    """The box's click area on screen: its rectangle moved by its SetHitRectInsets."""
+    r = w.rect(cb)
+    if r is None:
+        return None
+    l, rr, t, b = cb.GetHitRectInsets(cb)
+    es = cb.GetEffectiveScale(cb)
+    return (r[0] + l * es, r[1] + b * es, r[2] - rr * es, r[3] - t * es)
+
+
+def tg_layout_ok(sc, w, label, strip=True, skip=(), place="head", elv_model=False):
+    """The box, its label and its click area sit inside the paper doll pane and cover nothing
+    in TG_AVOID (but skip: parts not up, or not seen, while the box is), nor the model's zoom
+    and turn buttons (nor the top strip, where it is seen; nor ElvUI's framed model box when
+    elv_model), and a click on the label ticks the box. place "head": just above the head
+    slot; "corner": in the pane's top left corner, over the slot column and above the model."""
+    g = w.g
+    cb = tg(w)
+    pane = w.rect(g.CharacterFrameLeftPaneHost)
+    others = {n: w.rect(g[n]) for n in TG_AVOID if n not in skip}
+    others["model zoom and turn buttons"] = w.rect(g.CharacterModelScene.ControlFrame)
+    if strip:
+        others["top strip (level line)"] = w.rect(g.PaperDollFrame.TopBackgroundStripHost)
+    if elv_model:
+        others["ElvUI's framed model box"] = w.rect(g.CharacterModelScene)
+    sc.eq([n for n, r in others.items() if r is None], [], "%s: every part of the panel has a place" % label)
+    box, lab, hit = w.rect(cb), w.rect(cb.Text), tg_hit(w, cb)
+    for part, r in (("box", box), ("label", lab), ("click area", hit)):
+        if not sc.check(r is not None, "%s: the %s has a place" % (label, part)):
+            continue
+        sc.check(pane is not None and pane[0] <= r[0] and r[2] <= pane[2] and pane[1] <= r[1] and r[3] <= pane[3],
+                 "%s: the %s is inside the paper doll pane (%s in %s)" % (label, part, r, pane))
+        sc.eq([n for n, o in others.items() if o is not None and _overlap(r, o)], [], "%s: the %s covers nothing" % (label, part))
+    if box and lab and hit:
+        sc.check(hit[0] <= lab[0] and lab[2] <= hit[2] and hit[1] <= lab[1] and lab[3] <= hit[3],
+                 "%s: a click on the label ticks the box (click area %s, label %s)" % (label, hit, lab))
+    head = w.rect(g.CharacterHeadSlot)
+    if head and box and place == "head":
+        sc.check(box[1] >= head[3] and box[1] - head[3] <= 2 and abs(box[0] - head[0]) <= 4,
+                 "%s: the box sits just above the head slot (%s, head %s)" % (label, box, head))
+    elif head and box and pane:
+        scene = w.rect(g.CharacterModelScene)
+        sc.check(box[1] >= head[3] and scene is not None and box[1] >= scene[3] and abs(box[0] + 4 - head[0]) <= 1
+                 and pane[3] - box[3] <= 6,
+                 "%s: the box sits in the top left corner, over the slot column, above the model (%s, head %s, model %s)"
+                 % (label, box, head, scene))
+    lv, scene, items = cb.GetFrameLevel(cb), g.CharacterModelScene, g.PaperDollItemsFrame
+    sc.check(lv > scene.GetFrameLevel(scene) and lv > items.GetFrameLevel(items),
+             "%s: the box is over the model scene and level with the slots (level %d)" % (label, lv))
+
+
+def sc_enchants_toggle(sc, ref, items):
+    """The Enchant tips box on the character panel: made once, on the Character tab only, above
+    the head slot; a click turns the lines off and on, and the role picked by hand comes back."""
+    w, prices = char_world(ref, items)
+    M, g, ns = w.M, w.g, w.ns
+    S, E = ns.settings, ns.Enchants
+    cb = tg(w)
+    if not sc.check(cb is not None and w.same(E.Toggle(), cb), "toggle: the box is made when the addon loads"):
+        sc.clean(w)
+        return
+    sc.eq(checkboxes(w), 1, "toggle: one check box")
+    sc.eq(cb.GetObjectType(cb), "CheckButton", "toggle: a check button")
+    sc.check(w.same(cb.GetParent(cb), g.PaperDollFrame), "toggle: its parent is PaperDollFrame")
+    sc.check(not any(w.same(c, cb) for c in lua_kids(g.PaperDollItemsFrame)),
+             "toggle: not one of PaperDollItemsFrame's children (ElvUI skins those as slots)")
+    sc.eq(cb.Text.GetText(cb.Text), "Enchant tips", "toggle: the label")
+    sc.check(cb.GetChecked(cb) is True, "toggle: ticked at first")
+    sc.check(not cb.IsVisible(cb), "toggle: not on screen while the character panel is closed")
+    kept, which = M.CharScriptsKept()
+    sc.check(kept, "toggle: the game's frames keep their own scripts (hooks only, %s)" % which)
+    sc.eq([len(g.PaperDollItemsFrame._hooks[k] or {}) for k in ("OnShow", "OnHide")], [1, 1],
+          "toggle: one OnShow and one OnHide hook on PaperDollItemsFrame")
+    # The Character tab: on screen, in its place; the other tabs: not.
+    char_show(w)
+    sc.check(cb.IsVisible(cb), "toggle: on the Character tab")
+    tg_layout_ok(sc, w, "toggle: Forever's layout")
+    for tab in ("ReputationFrame", "SkillsFrame", "PVPRankFrame", "TokenFrame"):
+        char_show(w, tab)
+        sc.check(not cb.IsVisible(cb), "toggle: not on the %s tab" % tab)
+    char_show(w)
+    sc.check(cb.IsVisible(cb), "toggle: back on the Character tab")
+    M.CharacterPetPage(True)
+    sc.check(not cb.IsVisible(cb), "toggle: hidden with the slots on the pet's page")
+    M.CharacterPetPage(False)
+    sc.check(cb.IsVisible(cb), "toggle: back with the slots")
+    M.CharacterPetPage(True)
+    char_close(w)
+    char_show(w)
+    sc.check(cb.IsVisible(cb), "toggle: shown when the panel opens again after the pet's page")
+    g.CharacterFrame.SetWidth(g.CharacterFrame, 398)   # the stats pane folded away
+    tg_layout_ok(sc, w, "toggle: the right pane folded")
+    g.CharacterFrame.SetWidth(g.CharacterFrame, 631)
+    # The hover: three short lines.
+    M.enter(cb)
+    sc.eq(tg_tip(w), TG_TIP_HEAD + [tg_role("Role: melee (from your talents).")], "toggle: hover")
+    M.leave(cb)
+    sc.check(not g.GameTooltip.IsShown(g.GameTooltip), "toggle: the hover goes with the mouse")
+    # Off with a click: no lines on worn gear, bag gear or links; an open link's tooltip loses them at once.
+    ref_tt = en_hover(w, "link", 990108)
+    sc.eq(en_count(w, ref_tt), 1, "toggle: a chat link's tooltip with the line, open")
+    snd = len(M.sounds)
+    M.enter(cb)
+    M.click(cb)
+    sc.eq(tg_state(w), (False, "off", "auto"), "toggle: a click clears it: off, auto kept")
+    sc.eq([M.sounds[i] for i in range(snd + 1, len(M.sounds) + 1)], [857], "toggle: the check box sound (off)")
+    sc.eq(en_count(w, g.ItemRefTooltip), 0, "toggle: the open link's tooltip loses the line at once")
+    sc.eq(tg_tip(w), TG_TIP_HEAD + [tg_role("Role: melee (from your talents).")], "toggle: the hover while off")
+    M.leave(cb)
+    for how, iid in (("equipped", 990102), ("bag", 990102), ("equipped", 990108), ("bag", 990109), ("link", 990102)):
+        tt = en_hover(w, how, iid)
+        sc.eq(en_count(w, tt), 0, "toggle: off: no lines on %s %s" % (how, EN_GEAR[iid][0]))
+    sc.check(ns.EnchantLines(g.GameTooltip, 990102, w.M.ItemLink(990102), None) is False, "toggle: off: EnchantLines adds nothing")
+    # On again: auto, lines back everywhere.
+    ref_tt = en_hover(w, "link", 990108)
+    M.click(cb)
+    sc.eq(tg_state(w), (True, None, None), "toggle: a second click: on, auto")
+    sc.eq(M.sounds[len(M.sounds)], 856, "toggle: the check box sound (on)")
+    sc.eq(en_count(w, g.ItemRefTooltip), 1, "toggle: the open link's tooltip gets the line back at once")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "toggle: on: worn Greatsword, best and 2nd")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["s20034"]), "toggle: on: Greatsword in a bag")
+    # A role picked by hand comes back, not auto.
+    w.slash("/gl enchants tank")
+    sc.eq(tg_state(w), (True, "tank", None), "toggle: /gl enchants tank: ticked")
+    M.click(cb)
+    sc.eq(tg_state(w), (False, "off", "tank"), "toggle: off keeps tank")
+    M.enter(cb)
+    sc.eq(tg_tip(w), TG_TIP_HEAD + [tg_role("Role: tank (picked by hand).")], "toggle: the hover names the role it brings back")
+    M.leave(cb)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "toggle: tank, off: no lines")
+    M.click(cb)
+    sc.eq(tg_state(w), (True, "tank", None), "toggle: on again: tank, not auto")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s27837", "s1248510"]), "toggle: tank's picks on the worn 2H")
+    # /gl enchants off while the panel is up: the box clears at once.
+    out = [strip_codes(x) for x in w.slash("/gl enchants off")]
+    sc.eq(out, ["Goblin Ledger: enchant tips are off. /gl enchants auto turns them back on."], "toggle: /gl enchants off says so")
+    sc.eq(tg_state(w), (False, "off", "tank"), "toggle: /gl enchants off clears the box at once and keeps tank")
+    w.slash("/gl enchants off")
+    sc.eq(tg_state(w), (False, "off", "tank"), "toggle: /gl enchants off twice still keeps tank")
+    M.click(cb)
+    sc.eq(tg_state(w), (True, "tank", None), "toggle: ticked after /gl enchants off: tank again")
+    # /gl enchants off with the panel closed, then the panel opens: cleared.
+    char_close(w)
+    w.slash("/gl enchants auto")
+    w.slash("/gl enchants off")
+    char_show(w)
+    sc.eq(tg_state(w), (False, "off", "auto"), "toggle: /gl enchants off, then the panel opens: cleared")
+    # A role by name while it is cleared: ticked, that role.
+    w.slash("/gl enchants caster")
+    sc.eq(tg_state(w), (True, "caster", None), "toggle: /gl enchants caster while cleared: ticked, caster")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s1219580", "s20036"]), "toggle: caster's picks on the worn 2H")
+    w.slash("/gl enchants auto")
+    sc.eq(tg_state(w), (True, None, None), "toggle: /gl enchants auto: ticked, auto")
+    # /gl enchants rebuilds an open chat link's tooltip at once too, as a click does.
+    en_hover(w, "link", 990108)
+    sc.eq(en_count(w, g.ItemRefTooltip), 1, "toggle: a chat link's tooltip with the line, open (auto)")
+    w.slash("/gl enchants off")
+    sc.eq(en_count(w, g.ItemRefTooltip), 0, "toggle: /gl enchants off: the open link's tooltip loses the line at once")
+    w.slash("/gl enchants auto")
+    sc.eq(en_count(w, g.ItemRefTooltip), 1, "toggle: /gl enchants auto: the open link's tooltip gets it back at once")
+    # /gl tooltip turns every Goblin Ledger line off: the box stays as set, its label goes
+    # grey and the hover says how to get them back; /gl tooltip again: as before.
+    own = tuple(cb.Text.GetTextColor(cb.Text))[:3]
+    w.slash("/gl tooltip")
+    sc.eq((cb.GetChecked(cb), S.tooltip, tuple(cb.Text.GetTextColor(cb.Text))[:3]), (True, False, (0.5, 0.5, 0.5)),
+          "toggle: /gl tooltip off: still ticked, the label grey at once")
+    M.enter(cb)
+    sc.eq(tg_tip(w), TG_TIP_HEAD + [TG_TIP_TOOLTIP_OFF], "toggle: /gl tooltip off: the hover says how to turn them on")
+    M.leave(cb)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "toggle: /gl tooltip off: no enchant lines (the box cannot add them)")
+    char_close(w)
+    char_show(w)
+    sc.eq(tuple(cb.Text.GetTextColor(cb.Text))[:3], (0.5, 0.5, 0.5), "toggle: /gl tooltip off: still grey when the panel opens again")
+    M.enter(cb)
+    w.slash("/gl tooltip")
+    sc.eq((cb.GetChecked(cb), S.tooltip, tuple(cb.Text.GetTextColor(cb.Text))[:3]), (True, True, own),
+          "toggle: /gl tooltip on: the label's own colour back at once")
+    sc.eq(tg_tip(w), TG_TIP_HEAD + [tg_role("Role: melee (from your talents).")], "toggle: /gl tooltip on: the hover shown is redrawn")
+    M.leave(cb)
+    # Settings changed with the panel closed: the box shows them when it opens (OnShow).
+    char_close(w)
+    S.enchants = "off"
+    char_show(w)
+    sc.eq(cb.GetChecked(cb), False, "toggle: the box reads the setting when the panel opens")
+    S.enchants = None
+    char_close(w)
+    char_show(w)
+    sc.eq(cb.GetChecked(cb), True, "toggle: and again")
+    # Made once: the events that could make it again do not.
+    for ev, args in (("ADDON_LOADED", ("Blizzard_UIPanels_Game",)), ("PLAYER_LOGIN", ()), ("PLAYER_ENTERING_WORLD", (False, True))):
+        M.fire(ev, *args)
+    E.BuildToggle()
+    char_close(w)
+    char_show(w)
+    sc.eq(checkboxes(w), 1, "toggle: still one check box")
+    # /gl help names the box in one line.
+    out = [strip_codes(x) for x in w.slash("/gl help")]
+    sc.check(any(t.endswith(TG_HELP) for t in out), "toggle: /gl help names the box")
+    sc.eq(sum(1 for t in out if "/gl enchants" in t), 1, "toggle: /gl help lists /gl enchants once")
+    sc.eq(sum(1 for t in out if "Enchant tips box" in t), 1, "toggle: /gl help names the box once")
+    sc.clean(w)
+
+
+def sc_enchants_toggle_late(sc, ref, items):
+    """The box when the character frame comes after the addon: made then, once; no character frame: nothing, no error."""
+    # No character frame at all: no box, the lines and /gl enchants as before.
+    w, prices = char_world(ref, items, char=False)
+    sc.check(tg(w) is None and w.ns.Enchants.Toggle() is None, "late: no PaperDollFrame: no box")
+    w.slash("/gl enchants off")
+    w.slash("/gl enchants healer")
+    w.slash("/gl enchants auto")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s20034", "s1248511"]), "late: no PaperDollFrame: the lines as before")
+    sc.eq(checkboxes(w), 0, "late: no PaperDollFrame: no check box")
+    sc.clean(w, "late: no character frame")
+    # The game's UI addon loads after ours: the box is made on its ADDON_LOADED, once.
+    w, prices = char_world(ref, items, char=False, saved={"enchants": "off", "enchantsBeforeOff": "tank"})
+    M = w.M
+    M.InstallCharacterFrame()
+    sc.check(tg(w) is None, "late: nothing before the game's addon says it loaded")
+    M.fire("ADDON_LOADED", "Blizzard_UIPanels_Game")
+    cb = tg(w)
+    if sc.check(cb is not None, "late: made on ADDON_LOADED"):
+        sc.check(w.same(cb.GetParent(cb), w.g.PaperDollFrame), "late: its parent is PaperDollFrame")
+        M.InstallCharacterNeighbours()
+        char_show(w)
+        sc.eq(tg_state(w), (False, "off", "tank"), "late: the saved off shows")
+        tg_layout_ok(sc, w, "late: ADDON_LOADED")
+        M.click(cb)
+        sc.eq(tg_state(w), (True, "tank", None), "late: a click: tank again")
+        M.fire("ADDON_LOADED", "Blizzard_UIPanels_Game")
+        M.fire("PLAYER_LOGIN")
+        sc.eq(checkboxes(w), 1, "late: still one check box")
+    sc.clean(w, "late: ADDON_LOADED")
+    # CharacterFrame at load, PaperDollFrame later with no event: made when the frame opens.
+    w, prices = char_world(ref, items, char={"noPaperDoll": True})
+    M, g = w.M, w.g
+    sc.check(tg(w) is None, "late: no box while there is no PaperDollFrame")
+    M.InstallPaperDoll()
+    M.InstallCharacterNeighbours()
+    sc.check(tg(w) is None, "late: none before the character frame opens")
+    char_show(w)
+    cb = tg(w)
+    if sc.check(cb is not None, "late: made when the character frame opens"):
+        sc.check(w.same(cb.GetParent(cb), g.PaperDollFrame) and cb.IsVisible(cb), "late: on the Character tab")
+        sc.eq(tg_state(w), (True, None, None), "late: ticked")
+        tg_layout_ok(sc, w, "late: first open")
+        M.click(cb)
+        sc.eq(tg_state(w), (False, "off", "auto"), "late: a click: off")
+        char_close(w)
+        char_show(w)
+        sc.eq((checkboxes(w), cb.GetChecked(cb)), (1, False), "late: opened again: one box, still clear")
+    sc.clean(w, "late: first open")
+    # Made while the panel is up on the pet's page: hidden with the slots, back with them.
+    w, _ = char_world(ref, items, char={"noPaperDoll": True})
+    M, g = w.M, w.g
+    M.ShowFrame(g.CharacterFrame)
+    M.InstallPaperDoll()
+    M.CharacterPetPage(True)
+    M.fire("ADDON_LOADED", "Blizzard_UIPanels_Game")
+    cb = tg(w)
+    if sc.check(cb is not None, "late: made on the pet's page"):
+        sc.check(not cb.IsVisible(cb), "late: made on the pet's page: hidden with the slots")
+        M.CharacterPetPage(False)
+        sc.check(cb.IsVisible(cb), "late: made on the pet's page: shown with the slots")
+    sc.clean(w, "late: made on the pet's page")
+    # No CharacterHeadSlot when it is made: the same place, from PaperDollFrame.
+    w, _ = char_world(ref, items, char={"noPaperDoll": True})
+    M, g = w.M, w.g
+    M.InstallPaperDoll()
+    M.InstallCharacterNeighbours()
+    head = g.CharacterHeadSlot
+    hr = w.rect(head)
+    g.CharacterHeadSlot = None
+    char_show(w)
+    cb = tg(w)
+    if sc.check(cb is not None, "late: no head slot: made"):
+        r = w.rect(cb)
+        sc.eq(tuple(r) if r else None, (hr[0] - 3, hr[3] + 1, hr[0] + 19, hr[3] + 23), "late: no head slot: where it is above the slot")
+        g.CharacterHeadSlot = head
+        tg_layout_ok(sc, w, "late: no head slot")
+    sc.clean(w, "late: no head slot")
+    # A CharacterFrame that never gets a PaperDollFrame: opening it is no error.
+    w, _ = char_world(ref, items, char={"noPaperDoll": True})
+    w.M.ShowFrame(w.g.CharacterFrame)
+    w.M.HideFrame(w.g.CharacterFrame)
+    w.M.ShowFrame(w.g.CharacterFrame)
+    sc.eq(checkboxes(w), 0, "late: no PaperDollFrame ever: no box")
+    sc.clean(w, "late: no PaperDollFrame ever")
+    # No PlaySound or SOUNDKIT: the click still works.
+    w, prices = char_world(ref, items)
+    cb = tg(w)
+    char_show(w)
+    w.g.SOUNDKIT = None
+    w.M.click(cb)
+    w.g.PlaySound = None
+    w.M.click(cb)
+    w.M.click(cb)
+    sc.eq(tg_state(w), (False, "off", "auto"), "late: no sound functions: the clicks still work")
+    sc.eq(len(w.M.sounds), 0, "late: no sound functions: no sound")
+    sc.clean(w, "late: no sound functions")
+    # The older client (OnTooltipSetItem): the box works the same.
+    w, prices = char_world(ref, items, client="legacy", mode="tabs-name", points=(31, 0, 0))
+    cb = tg(w)
+    char_show(w)
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_count(w, tt), 1, "late: older client: a line in the bag")
+    w.M.click(cb)
+    tt = en_hover(w, "bag", 990102)
+    sc.eq((tg_state(w), en_count(w, tt)), ((False, "off", "auto"), 0), "late: older client: off")
+    w.M.click(cb)
+    tt = en_hover(w, "bag", 990102)
+    sc.eq((tg_state(w), en_count(w, tt)), ((True, None, None), 1), "late: older client: on")
+    sc.clean(w, "late: older client")
+
+
+def sc_enchants_toggle_saved(sc, ref, items):
+    """The box's setting after a /reload or a new login: off, and the role it brings back, are kept."""
+    w, prices = char_world(ref, items)
+    w.slash("/gl enchants tank")
+    char_show(w)
+    w.M.click(tg(w))
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.eq((saved.get("enchants"), saved.get("enchantsBeforeOff")), ("off", "tank"), "saved: off and tank in ForeverAH_Settings")
+    sc.clean(w, "saved: before the reload")
+    w2, prices = char_world(ref, items, saved=saved)
+    char_show(w2)
+    sc.eq(tg_state(w2), (False, "off", "tank"), "saved: after /reload: cleared, tank kept")
+    w2.M.enter(tg(w2))
+    sc.eq(tg_tip(w2), TG_TIP_HEAD + [tg_role("Role: tank (picked by hand).")], "saved: the hover after /reload")
+    w2.M.leave(tg(w2))
+    w2.M.click(tg(w2))
+    sc.eq(tg_state(w2), (True, "tank", None), "saved: a click after /reload: tank")
+    tt = en_hover(w2, "equipped", 990102)
+    sc.eq(w2.lines(tt), en_want(w2, prices, ["s27837", "s1248510"]), "saved: tank's picks after /reload")
+    sc.check(w2.same(w2.g.ForeverAH_Settings, w2.ns.settings), "saved: the settings are the saved table")
+    sc.clean(w2, "saved: after the reload")
+    # Saved values from before this version, or odd ones.
+    for saved, at_login, after_click, label in (
+            ({"enchants": "off"}, (False, "off", None), (True, None, None), "off from before the box: on is auto"),
+            ({"enchants": "off", "enchantsBeforeOff": "healer"}, (False, "off", "healer"), (True, "healer", None), "off, healer kept"),
+            ({"enchants": "off", "enchantsBeforeOff": "auto"}, (False, "off", "auto"), (True, None, None), "off, auto kept"),
+            ({"enchants": "off", "enchantsBeforeOff": "wizard"}, (False, "off", None), (True, None, None), "an unknown kept role"),
+            ({"enchants": "off", "enchantsBeforeOff": 5}, (False, "off", None), (True, None, None), "a number as the kept role"),
+            ({"enchants": "tank", "enchantsBeforeOff": "healer"}, (True, "tank", None), (False, "off", "tank"), "a kept role while on"),
+            ({}, (True, None, None), (False, "off", "auto"), "no enchant settings")):
+        w, _ = char_world(ref, items, saved=saved)
+        char_show(w)
+        sc.eq(tg_state(w), at_login, "saved: %s: after login" % label)
+        w.M.click(tg(w))
+        sc.eq(tg_state(w), after_click, "saved: %s: after a click" % label)
+        sc.clean(w, "saved: " + label)
+
+
+# The character panel opened at VARIABLES_LOADED: after the addons load, before login (and
+# so before ElvUI sets itself up). MOCK.earlyVisible: the box was on screen then.
+TG_EARLY_SHOW = r"""
+local f = CreateFrame("Frame")
+f:RegisterEvent("VARIABLES_LOADED")
+f:SetScript("OnEvent", function(self)
+  self:UnregisterAllEvents()
+  ToggleCharacter("PaperDollFrame")
+  MOCK.earlyVisible = GoblinLedgerEnchantToggle ~= nil and GoblinLedgerEnchantToggle:IsVisible()
+  MOCK.HideFrame(CharacterFrame)
+end)
+"""
+
+
+def elv_char_world(ref, items, early=False, **o):
+    def setup(w):
+        w.M.InstallBlizzardBags()
+        w.M.InstallElvUIAddon(w.to_lua(o))
+        if early:
+            w.lua.execute(TG_EARLY_SHOW)
+    return char_world(ref, items, before=setup)
+
+
+def tg_art(cb):
+    """The box's art: what the game's check box template gave it, less what a skin stripped."""
+    t = cb._tex
+    out = {k: (t[k] if t is not None else None) for k in ("normal", "pushed", "highlight")}
+    out["checked"] = cb._checkedTexture
+    return out
+
+
+def sc_enchants_toggle_elvui(sc, ref, items):
+    """With ElvUI: the box gets ElvUI's check box skin once, after ElvUI is set up, and keeps clear of
+    ElvUI's layout: in the top left corner, not over ElvUI's framed model box."""
+    w, prices = elv_char_world(ref, items)
+    M, g = w.M, w.g
+    cb = tg(w)
+    sc.eq((len(M.elvChecks), M.elvEarly), (0, 0), "elvui: not skinned before the panel opens")
+    sc.eq(tg_art(cb), TG_ART, "elvui: the game's check box art before")
+    M.ElvUICharacterLayout()
+    char_show(w)
+    sc.check(len(M.elvChecks) == 1 and w.same(M.elvChecks[1], cb), "elvui: skinned the first time it shows")
+    char_close(w)
+    char_show(w)
+    char_show(w, "ReputationFrame")
+    char_show(w)
+    sc.eq((len(M.elvChecks), M.elvEarly), (1, 0), "elvui: skinned once")
+    # The portrait is gone (ElvUI kills it); the level line's 220 wide holder has no mouse and
+    # is empty beside its centred text, so the text itself is what must stay clear.
+    tg_layout_ok(sc, w, "elvui: ElvUI's layout", strip=False, place="corner", elv_model=True,
+                 skip=("CharacterFramePortrait", "PaperDollLevelInfo"))
+    lab, lvl = w.rect(cb.Text), w.rect(g.CharacterLevelText)
+    sc.check(lab is not None and lvl is not None and lab[2] <= lvl[0] - 10,
+             "elvui: the label ends well before the level line (label %s, level line %s)" % (lab, lvl))
+    M.CharacterPetPage(True)
+    sc.check(not cb.IsVisible(cb), "elvui: hidden with the slots on the pet's page")
+    M.CharacterPetPage(False)
+    sc.check(cb.IsVisible(cb), "elvui: and back with the slots")
+    M.click(cb)
+    sc.eq(tg_state(w), (False, "off", "auto"), "elvui: a click: off")
+    sc.clean(w, "elvui")
+    # ElvUI's character skin turned off, or no Skins module: the game's look and place, no error.
+    for o, label in (({"characterSkin": False}, "character skin off"), ({"noSkins": True}, "no Skins module")):
+        w, _ = elv_char_world(ref, items, **o)
+        char_show(w)
+        sc.eq(len(w.M.elvChecks), 0, "elvui: %s: not skinned" % label)
+        sc.eq(tg_art(tg(w)), TG_ART, "elvui: %s: the game's check box art" % label)
+        tg_layout_ok(sc, w, "elvui: %s: the game's layout" % label)
+        w.M.click(tg(w))
+        sc.eq(tg_state(w), (False, "off", "auto"), "elvui: %s: a click: off" % label)
+        sc.clean(w, "elvui: " + label)
+    # A skin that fails half way (art stripped, then an error): no error, the game's art put
+    # back, the box still works, no second try.
+    w, _ = elv_char_world(ref, items)
+    w.lua.execute("local S = ElvUI[1].modules.Skins; S.HandleCheckBox = function(_, f) "
+                  "S.fails = (S.fails or 0) + 1; MOCK.ElvStrip(f); error('skin failed') end")
+    char_show(w)
+    char_close(w)
+    char_show(w)
+    sc.eq(w.lua.eval("ElvUI[1].modules.Skins.fails"), 1, "elvui: a failing skin is tried once")
+    sc.eq(tg_art(tg(w)), TG_ART, "elvui: a failing skin: the game's check box art put back")
+    w.M.click(tg(w))
+    sc.eq(tg_state(w), (False, "off", "auto"), "elvui: a failing skin: the box still works")
+    sc.clean(w, "elvui: failing skin")
+    # The panel up before login, before ElvUI is set up: ElvUI's skin is not asked then (it
+    # would stop half way); it is the next time the box shows.
+    w, _ = elv_char_world(ref, items, early=True)
+    M = w.M
+    sc.check(M.earlyVisible is True, "elvui early: the box was on screen before login")
+    sc.eq((len(M.elvChecks), M.elvEarly), (0, 0), "elvui early: ElvUI's skin not asked before ElvUI is set up")
+    sc.eq(tg_art(tg(w)), TG_ART, "elvui early: the game's check box art kept")
+    M.ElvUICharacterLayout()
+    char_show(w)
+    sc.eq((len(M.elvChecks), M.elvEarly), (1, 0), "elvui early: skinned the next time it shows")
+    sc.clean(w, "elvui early")
+    # ElvUI's settings not read yet (E.private): the game's place and look for now; ElvUI's place
+    # and skin the next time it shows once they are.
+    w, _ = elv_char_world(ref, items)
+    M, g = w.M, w.g
+    cb = tg(w)
+    E = g.ElvUI[1]
+    private = E.private
+    E.private = None
+    char_show(w)
+    sc.eq(len(M.elvChecks), 0, "elvui later: not skinned while ElvUI's settings are not read")
+    tg_layout_ok(sc, w, "elvui later: the game's layout")
+    char_close(w)
+    E.private = private
+    M.ElvUICharacterLayout()
+    char_show(w)
+    sc.eq(len(M.elvChecks), 1, "elvui later: skinned once they are")
+    tg_layout_ok(sc, w, "elvui later: ElvUI's layout", strip=False, place="corner", elv_model=True,
+                 skip=("CharacterFramePortrait", "PaperDollLevelInfo"))
+    sc.clean(w, "elvui later")
+
+
 # --- enchants: end ---
 
 
@@ -14807,6 +15678,10 @@ SCENARIOS = [
     ("enchants-quiet", sc_enchants_quiet),
     ("enchants-legacy", sc_enchants_legacy),
     ("enchants-missing", sc_enchants_missing),
+    ("enchants-toggle", sc_enchants_toggle),
+    ("enchants-toggle-late", sc_enchants_toggle_late),
+    ("enchants-toggle-saved", sc_enchants_toggle_saved),
+    ("enchants-toggle-elvui", sc_enchants_toggle_elvui),
 ]
 
 

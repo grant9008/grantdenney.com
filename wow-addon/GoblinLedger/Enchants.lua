@@ -6,7 +6,8 @@ local ADDON_NAME, ns = ...
 -- character panel): the same, plus the 2nd best (cheaper or easier to get).
 -- Nothing when the item already has the best enchant (or one at least as
 -- good); only the best when it has the 2nd best. The role comes from your
--- talents; /gl enchants picks one by hand or turns the lines off.
+-- talents; /gl enchants picks one by hand or turns the lines off, and the
+-- Enchant tips box on the character panel turns them off and on again.
 --
 -- Core.lua calls ns.EnchantLines after its price lines (and the quest line),
 -- so these lines are made under a normal-size line and keep the normal font.
@@ -990,6 +991,291 @@ function ns.EnchantLines(tt, itemID, link, info)
 end
 
 ---------------------------------------------------------------------------
+-- Off and back on
+---------------------------------------------------------------------------
+-- settings().enchants is "off" while the tips are off (as before), and
+-- settings().enchantsBeforeOff keeps what it was ("auto" or the role picked
+-- by hand), so turning them back on brings that back.
+local function tipsOn()
+  return settings().enchants ~= "off"
+end
+
+local function setTipsOn(on)
+  local S = settings()
+  if on then
+    if S.enchants == "off" then
+      local was = S.enchantsBeforeOff
+      S.enchants = ROLES[was] and was or nil
+    end
+    S.enchantsBeforeOff = nil
+  elseif S.enchants ~= "off" then
+    S.enchantsBeforeOff = ROLES[S.enchants] and S.enchants or "auto"
+    S.enchants = "off"
+  end
+  E.Invalidate()
+end
+E.SetOn = setTipsOn
+E.IsOn = tipsOn
+
+---------------------------------------------------------------------------
+-- The Enchant tips box on the character panel
+---------------------------------------------------------------------------
+-- A small check box on the Character tab only (a child of PaperDollFrame, so
+-- Reputation, Skills and the other tabs do not show it). Forever's panel
+-- (Blizzard_UIPanels_Game, Camelot PaperDollFrame.xml): a 36px strip with the
+-- level line on top (the portrait over its left end), the slots from 60px down,
+-- the model's zoom and turn buttons in the middle 40px down, and the model scene
+-- (level 50) over PaperDollFrame's own children, so the box is raised to the
+-- slots' level. There the box sits just above the head slot. ElvUI's skin hides
+-- the portrait and boxes the model in between the slot columns from 31px down,
+-- so there the box sits in the empty top left corner, over the left slot column.
+-- Pawn's button and GearMatic's arrows are at the bottom.
+local TOGGLE_NAME, TOGGLE_SIZE = "GoblinLedgerEnchantToggle", 22
+local TOGGLE_ART = {   -- the game's check box look, put back if a skin stops half way
+  SetNormalTexture = "Interface\\Buttons\\UI-CheckBox-Up",
+  SetPushedTexture = "Interface\\Buttons\\UI-CheckBox-Down",
+  SetHighlightTexture = "Interface\\Buttons\\UI-CheckBox-Highlight",
+  SetCheckedTexture = "Interface\\Buttons\\UI-CheckBox-Check",
+}
+local ROLE_HOW = { pick = "picked by hand", talents = "from your talents", class = "your class's usual role" }
+local GREY = { 0.5, 0.5, 0.5 }   -- the label while Goblin Ledger's tooltips are off (/gl tooltip)
+local toggle   -- the box, made once
+local labelColour = { 1, 0.82, 0 }   -- the label's own colour (GameFontNormalSmall's), read when it is made
+
+local function guarded(fn)
+  return function(...)
+    local ok, err = pcall(fn, ...)
+    if not ok then E.lastError = err end
+  end
+end
+
+local function owns(tt, f)
+  if f == nil or type(tt) ~= "table" or type(tt.GetOwner) ~= "function" then return false end
+  local ok, o = pcall(tt.GetOwner, tt)
+  return ok and o == f
+end
+
+local function isFrame(f)
+  return type(f) == "table" and type(f.GetObjectType) == "function"
+end
+
+-- /gl tooltip turned all Goblin Ledger tooltip lines off: the box then changes nothing.
+local function tooltipsOff()
+  return settings().tooltip == false
+end
+
+-- The role the lines are for (or the one ticking the box brings back) and how it was found.
+local function toggleRole()
+  local S = settings()
+  local v = S.enchants
+  if v == "off" then v = S.enchantsBeforeOff end
+  if ROLES[v] then return v, "pick" end
+  local d = detect()
+  return d.role, d.how
+end
+
+local function showToggleTip(self)
+  local tt = _G.GameTooltip
+  if type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
+  local tx, mu = colour("text"), colour("muted")
+  local role, how = toggleRole()
+  local r = role and sformat("Role: %s (%s).", role, ROLE_HOW[how] or "auto") or "Role: none for this class."
+  tt:SetOwner(self, "ANCHOR_RIGHT")
+  tt:SetText("Goblin Ledger: Enchant tips", 1, 1, 1)
+  tt:AddLine("Best enchant for your role, its mats and cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
+  if tooltipsOff() then
+    tt:AddLine("Goblin Ledger tooltips are off: /gl tooltip turns them on.", mu[1], mu[2], mu[3], true)
+  else
+    tt:AddLine(r .. " /gl enchants picks the role.", mu[1], mu[2], mu[3], true)
+  end
+  tt:Show()
+end
+
+local function refreshToggle()
+  if not toggle then return end
+  toggle:SetChecked(tipsOn())
+  -- The label goes grey while /gl tooltip has every tooltip line off.
+  local fs, c = toggle.Text, tooltipsOff() and GREY or labelColour
+  if type(fs) == "table" and type(fs.SetTextColor) == "function" and c then pcall(fs.SetTextColor, fs, c[1], c[2], c[3]) end
+  if owns(_G.GameTooltip, toggle) then showToggleTip(toggle) end
+end
+
+-- An item tooltip that is up (a chat link's, say) is built again, so the change shows at once.
+local function refreshItemTips()
+  for name in pairs(TIPS) do
+    local tt = _G[name]
+    if type(tt) == "table" and type(tt.RefreshData) == "function" and not owns(tt, toggle) then
+      local okS, shown = pcall(tt.IsShown, tt)
+      local okI, _, link = pcall(tt.GetItem, tt)
+      if okS and shown and okI and type(link) == "string" then pcall(tt.RefreshData, tt) end
+    end
+  end
+end
+
+local function levelOf(f)
+  if type(f) ~= "table" or type(f.GetFrameLevel) ~= "function" then return nil end
+  local ok, l = pcall(f.GetFrameLevel, f)
+  return ok and plainNumber(l) or nil
+end
+
+-- Level with the slots, over the model (a click on the box must not turn the model).
+local function raiseToggle()
+  local lvl = levelOf(toggle:GetParent()) or 0
+  for _, name in ipairs({ "PaperDollItemsFrame", "CharacterModelScene", "CharacterModelFrame" }) do
+    local l = levelOf(_G[name])
+    if l and l > lvl then lvl = l end
+  end
+  if lvl < 10000 then toggle:SetFrameLevel(lvl + 1) end
+end
+
+-- ElvUI's engine and Skins module when ElvUI skins the character panel (its
+-- Character skin, on by default; Skins\Skins.lua LoadSkin asks the same), nil
+-- when it does not, "later" while ElvUI has not read its settings yet.
+local function elvCharacterSkin()
+  local eng = _G.ElvUI
+  local EV = type(eng) == "table" and eng[1]
+  if type(EV) ~= "table" or type(EV.GetModule) ~= "function" then return nil end
+  local ok, S = pcall(EV.GetModule, EV, "Skins", true)
+  if not ok or type(S) ~= "table" or type(S.HandleCheckBox) ~= "function" then return nil end
+  local P = EV.private
+  local bz = type(P) == "table" and type(P.skins) == "table" and P.skins.blizzard
+  if type(bz) ~= "table" then return "later" end
+  if not (bz.enable and bz.character) then return nil end
+  return EV, S
+end
+
+-- With ElvUI's skin the box gets ElvUI's check box look too, once ElvUI is set
+-- up (at login). true = done (skinned, or nothing to do); false = ask again.
+local function elvSkin(cb)
+  local EV, S = elvCharacterSkin()
+  if EV == "later" then return false end
+  if not EV then return true end
+  if type(S.db) ~= "table" or not (S.Initialized or EV.Initialized) then return false end
+  if not pcall(S.HandleCheckBox, S, cb) then
+    for k, v in pairs(TOGGLE_ART) do
+      if type(cb[k]) == "function" then pcall(cb[k], cb, v) end
+    end
+  end
+  return true
+end
+
+-- Where the box goes, asked again each time it shows. Just above the head slot
+-- (it follows the slot when a skin moves it). ElvUI's skin moves the head slot
+-- to the pane's edge and the model's framed box to 46px in, where the label
+-- would run over the model's border: there the box goes in the top left
+-- corner, over the slot column (the portrait and the strip are hidden there).
+local function placeToggle()
+  local EV = elvCharacterSkin()
+  local pane, head = _G.CharacterFrameLeftPaneHost, _G.CharacterHeadSlot
+  local where = "frame"
+  if EV and EV ~= "later" and isFrame(pane) then where = "corner" elseif isFrame(head) then where = "head" end
+  if toggle.glPlace == where then return end
+  toggle.glPlace = where
+  toggle:ClearAllPoints()
+  if where == "corner" then
+    toggle:SetPoint("TOPLEFT", pane, "TOPLEFT", 2, -4)
+  elseif where == "head" then
+    toggle:SetPoint("BOTTOMLEFT", head, "TOPLEFT", -3, 1)
+  else
+    toggle:SetPoint("TOPLEFT", toggle:GetParent(), "TOPLEFT", 21, -57)
+  end
+end
+
+local function onToggleShow(self)
+  placeToggle()
+  raiseToggle()
+  refreshToggle()
+  if not self.glSkinDone then self.glSkinDone = elvSkin(self) end
+end
+
+local function onToggleClick(self)
+  local on = self:GetChecked() and true or false   -- the game ticks or clears it before OnClick
+  setTipsOn(on)
+  local play, kit = _G.PlaySound, _G.SOUNDKIT
+  if type(play) == "function" and type(kit) == "table" then
+    local id = on and kit.IG_MAINMENU_OPTION_CHECKBOX_ON or kit.IG_MAINMENU_OPTION_CHECKBOX_OFF
+    if id then pcall(play, id) end
+  end
+  refreshItemTips()
+  refreshToggle()
+end
+
+local function buildToggle()
+  if toggle then return true end
+  local parent, make = _G.PaperDollFrame, _G.CreateFrame
+  if not isFrame(parent) or type(make) ~= "function" then return false end
+  local cb = make("CheckButton", TOGGLE_NAME, parent, "UICheckButtonTemplate")
+  toggle = cb
+  cb:SetSize(TOGGLE_SIZE, TOGGLE_SIZE)
+  placeToggle()
+  local fs = cb.Text or cb.text
+  if type(fs) ~= "table" then
+    fs = cb:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+    fs:SetPoint("LEFT", cb, "RIGHT", -2, 0)
+    cb.Text = fs
+  end
+  fs:SetText("Enchant tips")
+  local okC, r, g, b = pcall(fs.GetTextColor, fs)
+  r, g, b = plainNumber(r), plainNumber(g), plainNumber(b)
+  if okC and r and g and b then labelColour = { r, g, b } end
+  -- A click on the words ticks the box too.
+  local okW, wide = pcall(fs.GetStringWidth, fs)
+  wide = okW and plainNumber(wide) or 0
+  if wide <= 0 or wide > 150 then wide = 60 end
+  if type(cb.SetHitRectInsets) == "function" then cb:SetHitRectInsets(0, -wide, 0, 0) end
+  cb:SetScript("OnClick", guarded(onToggleClick))
+  cb:SetScript("OnEnter", guarded(showToggleTip))
+  cb:SetScript("OnLeave", guarded(function(self)
+    local tt = _G.GameTooltip
+    if owns(tt, self) then tt:Hide() end
+  end))
+  cb:SetScript("OnShow", guarded(onToggleShow))
+  -- Forever hides the slots (PaperDollItemsFrame) on the pet's page: the box goes with them.
+  local items = _G.PaperDollItemsFrame
+  if type(items) == "table" and type(items.HookScript) == "function" then
+    items:HookScript("OnShow", guarded(function() if toggle then toggle:Show() end end))
+    items:HookScript("OnHide", guarded(function(self) if toggle and not self:IsShown() then toggle:Hide() end end))
+    cb:SetShown(items:IsShown())
+  end
+  raiseToggle()
+  refreshToggle()
+  return true
+end
+
+-- The game's UI addon makes PaperDollFrame before ours loads (Blizzard_UIPanels_Game on
+-- Forever); if it comes later, the box is made then, or when the character frame opens.
+local cfHooked = false
+local function tryBuild()
+  if toggle then return true end
+  local ok, r = pcall(buildToggle)
+  if not ok then
+    E.lastError = r
+    return true   -- do not try again
+  end
+  if not r and not cfHooked then
+    local cf = _G.CharacterFrame
+    if type(cf) == "table" and type(cf.HookScript) == "function" then
+      cfHooked = pcall(cf.HookScript, cf, "OnShow", function() if not toggle then tryBuild() end end)
+    end
+  end
+  return r
+end
+E.BuildToggle = tryBuild
+E.RefreshToggle = function() pcall(refreshToggle) end
+E.Toggle = function() return toggle end
+
+if not tryBuild() and type(_G.CreateFrame) == "function" then
+  local ok, f = pcall(_G.CreateFrame, "Frame")
+  if ok and type(f) == "table" then
+    pcall(f.RegisterEvent, f, "ADDON_LOADED")
+    pcall(f.RegisterEvent, f, "PLAYER_LOGIN")
+    pcall(f.SetScript, f, "OnEvent", function(self)
+      if tryBuild() then pcall(self.UnregisterAllEvents, self) end
+    end)
+  end
+end
+
+---------------------------------------------------------------------------
 -- /gl enchants
 ---------------------------------------------------------------------------
 local function autoText(d)
@@ -1023,13 +1309,18 @@ local function enchantsCommand(rest)
   end
   if rest == "auto" then
     S.enchants = nil
-  elseif rest == "off" or ROLES[rest] then
+  elseif rest == "off" then
+    setTipsOn(false)   -- keeps the role, for the box on the character panel
+  elseif ROLES[rest] then
     S.enchants = rest
   else
     say("unknown choice. Use /gl enchants " .. CHOICES .. ".")
     return
   end
+  if S.enchants ~= "off" then S.enchantsBeforeOff = nil end
   E.Invalidate()
+  refreshItemTips()
+  refreshToggle()
   if rest == "off" then
     say("enchant tips are off. /gl enchants auto turns them back on.")
   elseif rest == "auto" then
@@ -1055,9 +1346,11 @@ function ns.HandleSlash(msg)
     return
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
+  if cmd == "tooltip" or cmd == "tooltips" then pcall(refreshToggle) end   -- Core's /gl tooltip: the label greys or not
   if cmd == "help" or cmd == "?" then
     say("/gl enchants : the best enchant on gear tooltips for your role: " .. CHOICES .. " (auto follows your talents)")
     say("   the price is the mats at AH value; you still need an enchanter who knows the formula")
+    say("   the Enchant tips box on the character panel turns them off and on")
   end
 end
 
@@ -1077,6 +1370,9 @@ if type(_G.CreateFrame) == "function" then
         -- A saved choice this version does not know means auto.
         local S = settings()
         if S.enchants ~= nil and S.enchants ~= "off" and not ROLES[S.enchants] then S.enchants = nil end
+        -- What the tips were before off: "auto" or a role, kept only while they are off.
+        local was = S.enchantsBeforeOff
+        if S.enchants ~= "off" or (was ~= "auto" and not ROLES[was]) then S.enchantsBeforeOff = nil end
       end
     end)
   end
