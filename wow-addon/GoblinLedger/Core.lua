@@ -27,6 +27,11 @@ if type(db.items) ~= "table" then db.items = {} end
 db.updated = tonumber(db.updated) or 0
 ns.db = db
 
+-- Lines other files add under the auction house's "No items found" (AH.lua
+-- shows them): each entry is a function(searchText, itemID or nil) that
+-- returns a list of short strings, or nil. Each one is called in a pcall.
+ns.EmptySearchLines = ns.EmptySearchLines or {}
+
 local function isSecret(v)
   local f = _G.issecretvalue
   if type(f) ~= "function" then return false end
@@ -324,6 +329,7 @@ ns.COLORS = {
   neg    = { 0.90, 0.33, 0.33 },
   muted  = { 0.55, 0.51, 0.45 },
   text   = { 0.90, 0.88, 0.84 },
+  warn   = { 1.00, 0.86, 0.25 },   -- yellow: look twice (old prices, far from the average)
   bg     = { 0.043, 0.055, 0.078, 0.96 },
   panel  = { 0.07, 0.08, 0.10, 0.96 },
 }
@@ -684,6 +690,102 @@ function ns.FindItemIDs(name)
   return out
 end
 
+-- The item a search text most likely means (for a search the auction house
+-- found nothing for). An exact name, ignoring case, first (several items
+-- with it: the one sold most). Else, from 3 letters on, the best name that
+-- contains the text, or failing that every word of it ("plans mithril
+-- spurs" finds "Plans: Mithril Spurs"): a plain item before a version ("of the
+-- Bear"), then the most sold, the shortest name, the lowest id. The
+-- lower-case names it scans are listed once, the first time it needs them.
+-- Returns the id and "exact" or "contains", or nil.
+local searchList   -- { n = count, names = { lower-case }, ids = {}, sold = { sold24 } }
+
+local function soldField(raw)
+  local pos = 1
+  for _ = 1, 4 do   -- name|lo|hi|listed|sold24|...
+    local i = sfind(raw, "|", pos, true)
+    if not i then return 0 end
+    pos = i + 1
+  end
+  local j = sfind(raw, "|", pos, true)
+  return tonumber(j and ssub(raw, pos, j - 1) or ssub(raw, pos)) or 0
+end
+
+local function buildSearchList()
+  local L = { n = 0, names = {}, ids = {}, sold = {} }
+  for id, raw in pairs(db.items) do
+    local nid = tonumber(id)
+    if nid and type(raw) == "string" then
+      local bar = sfind(raw, "|", 1, true)
+      local nm = bar and ssub(raw, 1, bar - 1) or raw
+      if not unknownName(nm) then
+        local n = L.n + 1
+        L.n = n
+        L.names[n], L.ids[n], L.sold[n] = slower(trim(nm)), nid, soldField(raw)
+      end
+    end
+  end
+  searchList = L
+  ns.stats.searchList = (ns.stats.searchList or 0) + 1   -- how often the list was made (for tests)
+  return L
+end
+
+-- True when item a (with s1 sold and a name l1 long) ranks before item b.
+local function ranksBefore(a, s1, l1, b, s2, l2)
+  local baseOf = variants().baseOf
+  local va, vb = baseOf[a] ~= nil, baseOf[b] ~= nil
+  if va ~= vb then return vb end
+  if s1 ~= s2 then return s1 > s2 end
+  if l1 ~= l2 then return l1 < l2 end
+  return a < b
+end
+
+function ns.FindSearchItem(text)
+  if type(text) ~= "string" or isSecret(text) then return nil end
+  local key = slower(trim(text))
+  if key == "" then return nil end
+  local list = lookupName(key)
+  if list and #list > 0 then
+    local best, bs
+    for _, id in ipairs(list) do
+      local it = ns.GetItem(id)
+      local s = it and it.sold24 or 0
+      if not best or ranksBefore(id, s, 0, best, bs, 0) then best, bs = id, s end
+    end
+    return best, "exact"
+  end
+  if #key < 3 then return nil end
+  local words = {}
+  for w in string.gmatch(key, "%S+") do
+    w = (sgsub(w, "^%p+", ""))
+    w = (sgsub(w, "%p+$", ""))
+    if w ~= "" then words[#words + 1] = w end
+  end
+  local byWords = #words > 1 or (#words == 1 and words[1] ~= key)
+  local L = searchList or buildSearchList()
+  local names, ids, sold = L.names, L.ids, L.sold
+  local best, tierB, bs, bl
+  for i = 1, L.n do
+    local nm, tier = names[i], nil
+    if sfind(nm, key, 1, true) then
+      tier = 1
+    elseif byWords and tierB ~= 1 then
+      tier = 2
+      for k = 1, #words do
+        if not sfind(nm, words[k], 1, true) then tier = nil break end
+      end
+    end
+    if tier then
+      local id, s, l = ids[i], sold[i], #nm
+      if not best or tier < tierB or (tier == tierB and ranksBefore(id, s, l, best, bs, bl)) then
+        best, tierB, bs, bl = id, tier, s, l
+      end
+    end
+  end
+  if best then return best, "contains" end
+  return nil
+end
+
 -- How many items the data has prices for (versions of an item not counted).
 local itemCount
 function ns.ItemCount()
@@ -877,6 +979,15 @@ function ns.AgeText(sec)
   if sec < 3600 then return floor(sec / 60) .. "m ago" end
   if sec < 48 * 3600 then return floor(sec / 3600) .. "h ago" end
   return floor(sec / 86400) .. "d ago"
+end
+
+-- The game reads Data.lua only at login or /reload, and the updater on the
+-- same PC installs a newer file every 30 minutes (Blizzard's snapshot is
+-- hourly). Prices over 80 minutes old nearly always mean a newer file is
+-- already there: the age turns yellow and says "/reload".
+ns.RELOAD_SECONDS = 80 * 60
+function ns.ReloadHint(age)
+  return type(age) == "number" and age > ns.RELOAD_SECONDS
 end
 
 ---------------------------------------------------------------------------
@@ -1242,17 +1353,28 @@ local function liveFor(id)
   return nil
 end
 
--- How far today's AH value sits from the average price: "+3%" in green, "-5%"
--- in red (whole percent, rounded toward 0 so it never says more than it is),
--- a grey "0%" under 1%, or nil with no average to compare with.
+-- The live cheapest buyout the open auction house showed for an id, from its
+-- listings or its browse row (AH.lua), for the AH value line.
+local function livePriceFor(id)
+  if type(ns.LivePrice) ~= "function" then return nil end
+  local ok, p = pcall(ns.LivePrice, id)
+  if ok and type(p) == "number" and not isSecret(p) and p > 0 then return p end
+  return nil
+end
+
+-- How far a price sits from the average, said plainly: "+92% vs avg" or
+-- "-44% vs avg" (whole percent, rounded toward 0 so it never says more than
+-- it is). Neither good nor bad news by itself (dear to buy, good to sell), so
+-- no green or red: yellow from 25% either way, grey under that, a grey
+-- "0% vs avg" under 1%. nil with no average to compare with.
+ns.VS_LOUD = 25
 local function vsAverage(value, avg)
   value, avg = tonumber(value) or 0, tonumber(avg) or 0
   if value <= 0 or avg <= 0 then return nil end
   local C = ns.COLORS
   local p = floor(abs(value - avg) * 100 / avg)
-  if p < 1 then return "|c" .. ns.Hex(C.muted) .. "0%|r" end
-  if value > avg then return "|c" .. ns.Hex(C.pos) .. "+" .. p .. "%|r" end
-  return "|c" .. ns.Hex(C.neg) .. "-" .. p .. "%|r"
+  local t = (p < 1 and "0%") or (value > avg and ("+" .. p .. "%")) or ("-" .. p .. "%")
+  return "|c" .. ns.Hex(p >= ns.VS_LOUD and C.warn or C.muted) .. t .. " vs avg|r"
 end
 ns.VsAverage = vsAverage
 
@@ -1266,10 +1388,13 @@ end
 ns.AverageLabel = averageLabel
 
 -- Adds our lines. Returns true when anything was added. Kept short:
---   the "Goblin Ledger" header (how old the prices are), then the sell verdict
+--   the "Goblin Ledger" header (how old the prices are; yellow with "/reload"
+--   over 80 minutes), then the sell verdict
 --   (ns.SellVerdict: "Auction it", "Vendor it", "Close call" or "Maybe
---   auction", and by how much), AH value (today's market value) and how far
---   it is from the average, the 7-day average, Sell now and Suggested price
+--   auction", and by how much), AH value (today's market value; "AH value
+--   (live)", the cheapest listing, while the open auction house shows one)
+--   and how far it is from the average ("+92% vs avg"), the 7-day average,
+--   Sell now and Suggested price
 --   (the sell target from the price history; each in red when it nets no
 --   more than a vendor pays), then for a stack what it brings at the
 --   verdict's price after the AH cut (only when the AH pays more, or about
@@ -1277,7 +1402,7 @@ ns.AverageLabel = averageLabel
 --   are bigger, and "Vendor it" gets a "Vendor pays" line right under it
 --   (what a vendor pays each, or for the stack with Shift), both bigger
 --   (enlargeLine). Compact mode is one line: the verdict and the AH value,
---   or the AH value alone.
+--   or the AH value alone (and, over 80 minutes old, a grey "(2h old - /reload)").
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
 -- the "no recent listings" line; bound = true (soulbound, bind on pickup or a
 -- quest item: it can never be on the auction house) leaves out the verdict and
@@ -1313,8 +1438,15 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     return ns.MoneyIcons(v * mult)
   end
   local age = ns.DataAge() or 0
-  -- How far today's AH value is from the average, in green or red.
-  local vs = vsAverage(item.market, item.avg7)
+  -- Over 80 minutes old: a newer file is most likely waiting for a /reload.
+  local reload = ns.ReloadHint(age)
+  local other = type(ns.MarketMismatch) == "function" and ns.MarketMismatch()
+  -- The AH value: the live cheapest while the open auction house shows one
+  -- (for this market), else today's market value from the data. The badge
+  -- says how far that is from the average.
+  local livep = (not other) and livePriceFor(item.id) or nil
+  local shown = livep or item.market
+  local vs = vsAverage(shown, item.avg7)
   -- Sell now: 1 copper under the cheapest listing (the live one when the
   -- auction house showed it). Suggested price: the sell target from the
   -- price history. Both, and the verdict, only for one exact item or version.
@@ -1322,32 +1454,35 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local live, own = liveFor(item.id)
   local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
   local V
-  if P and opts.bound ~= true and type(ns.SellVerdict) == "function"
-     and not (type(ns.MarketMismatch) == "function" and ns.MarketMismatch()) then
+  if P and opts.bound ~= true and type(ns.SellVerdict) == "function" and not other then
     V = ns.SellVerdict(item, P)
   end
   local vline, xline   -- the lines to enlarge (the verdict, the price that wins), once all our lines are in
   if S.compact then
-    local m = money(item.market)
+    local m = money(shown)
+    -- Compact mode shows the age only when it is old: a short grey "(2h old - /reload)".
+    local old = reload and ("  |c" .. ns.Hex(mu) .. "(" .. (sgsub(ns.AgeText(age), " ago$", "")) .. " old - /reload)|r") or ""
     if V then
       local lc = C[V.lc]
       if m then
-        tt:AddDoubleLine(V.left .. ": " .. V.right, "AH" .. tag .. " " .. m .. (vs and ("  " .. vs) or ""),
-          lc[1], lc[2], lc[3], 1, 1, 1)
+        tt:AddDoubleLine(V.left .. ": " .. V.right, (livep and "AH (live)" or "AH") .. tag .. " " .. m
+          .. (vs and ("  " .. vs) or "") .. old, lc[1], lc[2], lc[3], 1, 1, 1)
       else
-        tt:AddDoubleLine(V.left .. ": " .. V.right, "AH: none listed", lc[1], lc[2], lc[3], mu[1], mu[2], mu[3])
+        tt:AddDoubleLine(V.left .. ": " .. V.right, "AH: none listed" .. old, lc[1], lc[2], lc[3], mu[1], mu[2], mu[3])
       end
     else
       local line
       if m then
-        line = "AH value" .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
+        line = (livep and "AH value (live)" or "AH value") .. tag .. ": " .. m .. (vs and ("  " .. vs) or "")
       else
         line = "AH value: none listed now"
       end
-      tt:AddLine(line, tx[1], tx[2], tx[3])
+      tt:AddLine(line .. old, tx[1], tx[2], tx[3])
     end
   else
-    tt:AddDoubleLine("Goblin Ledger", ns.AgeText(age), se[1], se[2], se[3], mu[1], mu[2], mu[3])
+    local ac = reload and C.warn or mu
+    tt:AddDoubleLine("Goblin Ledger", ns.AgeText(age) .. (reload and " - /reload" or ""),
+      se[1], se[2], se[3], ac[1], ac[2], ac[3])
     local clearCut = V and (V.kind == "auction" or V.kind == "vendor") and age <= ns.STALE_SECONDS
     if V then
       local lc, rc = C[V.lc], C[V.rc]
@@ -1360,9 +1495,10 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
       tt:AddDoubleLine("Vendor pays" .. tag, vp, tx[1], tx[2], tx[3], 1, 1, 1)
       xline = numLines(tt)
     end
-    local m = money(item.market)
+    local m = money(shown)
     if m then
-      tt:AddDoubleLine("AH value" .. tag, vs and (m .. "  " .. vs) or m, tx[1], tx[2], tx[3], 1, 1, 1)
+      tt:AddDoubleLine((livep and "AH value (live)" or "AH value") .. tag, vs and (m .. "  " .. vs) or m,
+        tx[1], tx[2], tx[3], 1, 1, 1)
       -- "Auction it": the AH value is bigger with the verdict.
       if clearCut and V.kind == "auction" then xline = numLines(tt) end
     else

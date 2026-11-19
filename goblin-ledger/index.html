@@ -505,7 +505,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <h3>Prices in your tooltips</h3>
         <p>Hover an item and the tooltip shows:</p>
         <ul class="ticks">
-          <li><b>AH value</b>: what it goes for on the auction house now, with a green or red % against its recent average</li>
+          <li><b>AH value</b>: what it goes for on the auction house now, and how far that is from its recent average, like "+2% vs avg". At the auction house it shows the cheapest listing live.</li>
           <li><b>Average</b>: its average price over the last 7 days</li>
           <li><b>Sell now</b>: 1 copper under the cheapest listing</li>
           <li><b>Suggested price</b>: what it usually sells for, going by its price history</li>
@@ -519,7 +519,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
           <p class="tip-item">Linen Cloth</p>
           <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">25m ago</span></p>
           <p class="tip-row big t-pos"><span>Auction it</span><span>3.4x vendor</span></p>
-          <p class="tip-row big"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-pos">+2%</span></span></p>
+          <p class="tip-row big"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-mut">+2% vs avg</span></span></p>
           <p class="tip-row"><span>7-day average</span><span class="m-c">43c</span></p>
           <p class="tip-row"><span>Sell now</span><span class="m-c">41c</span></p>
           <p class="tip-row"><span>Suggested price</span><span class="m-c">46c</span></p>
@@ -555,6 +555,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <h3>Help at the auction house</h3>
         <ul class="ticks">
           <li>A <b>price chart</b> docks under the auction house window and follows the item you search for or click.</li>
+          <li>Nothing listed? Under "No items found" it says when the item was last listed, for how much, and how many sold.</li>
           <li><b>Sell now</b> and <b>Suggested</b> buttons fill in the price box. You still click Post yourself.</li>
           <li>Little <b>up and down arrows</b> in the gold, silver and copper boxes change the price by 1. Hold one to keep going.</li>
           <li>A <b>sidebar of flip ideas</b> sized to the gold on your character, ranked by the profit you can expect within a day. Click one to search for it.</li>
