@@ -113,7 +113,8 @@ local MATS = {
 -- Upgrades you buy and use yourself (no enchanter needed): item = its item id (the cost is its AH
 -- value), how = the grey line (lw: Leatherworking kit, eng: Engineering scope, bs: Blacksmithing),
 -- prof, rank = the profession (skill line id) and rank its item asks for (m = its crafting mats, the
--- cost when the item has no AH value), subs = the only weapon subclasses it fits.
+-- cost when the item has no AH value), subs = the only weapon subclasses it fits, ilvl = the lowest
+-- item level it goes on (SpellItemEnchantment.ItemLevelMin: "Only usable on items level 35 and above").
 local ENCHANTS = {
   -- Lesser Arcanum of Rumination (item 11622, quest 4463, medium): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1483 https://www.wowhead.com/classic/quest=4463
   a11622 = { n = "Lesser Arcanum of Rumination", id = 1483, m = { 11732, 1, 11754, 1, 11752, 1, 8424, 1 }, lvl = 50, fee = 300000 },
@@ -148,27 +149,27 @@ local ENCHANTS = {
   -- Medium Armor Kit (Leatherworking, item 2313, needs level 5): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=2313 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8481
   k2313 = { n = "Medium Armor Kit", id = 8481, item = 2313, lvl = 5, how = "lw" },
   -- Heavy Armor Kit (Leatherworking, item 4265, needs level 20): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=4265 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8484
-  k4265 = { n = "Heavy Armor Kit", id = 8484, item = 4265, lvl = 20, how = "lw" },
+  k4265 = { n = "Heavy Armor Kit", id = 8484, item = 4265, lvl = 20, how = "lw", ilvl = 15 },
   -- Thick Armor Kit (Leatherworking, item 8173, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=8173 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8487
-  k8173 = { n = "Thick Armor Kit", id = 8487, item = 8173, lvl = 30, how = "lw" },
+  k8173 = { n = "Thick Armor Kit", id = 8487, item = 8173, lvl = 30, how = "lw", ilvl = 25 },
   -- Rugged Armor Kit (Leatherworking, item 15564, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=15564 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8490
-  k15564 = { n = "Rugged Armor Kit", id = 8490, item = 15564, lvl = 40, how = "lw" },
+  k15564 = { n = "Rugged Armor Kit", id = 8490, item = 15564, lvl = 40, how = "lw", ilvl = 35 },
   -- Mystic Medium Armor Kit (Leatherworking, item 252436, needs level 15): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252436 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8482
   k252436 = { n = "Mystic Medium Armor Kit", id = 8482, item = 252436, lvl = 15, how = "lw" },
   -- Forceful Medium Armor Kit (Leatherworking, item 252437, needs level 15): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252437 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8483
   k252437 = { n = "Forceful Medium Armor Kit", id = 8483, item = 252437, lvl = 15, how = "lw" },
   -- Mystic Heavy Armor Kit (Leatherworking, item 252452, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252452 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8485
-  k252452 = { n = "Mystic Heavy Armor Kit", id = 8485, item = 252452, lvl = 30, how = "lw" },
+  k252452 = { n = "Mystic Heavy Armor Kit", id = 8485, item = 252452, lvl = 30, how = "lw", ilvl = 15 },
   -- Forceful Heavy Armor Kit (Leatherworking, item 252453, needs level 30): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252453 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8486
-  k252453 = { n = "Forceful Heavy Armor Kit", id = 8486, item = 252453, lvl = 30, how = "lw" },
+  k252453 = { n = "Forceful Heavy Armor Kit", id = 8486, item = 252453, lvl = 30, how = "lw", ilvl = 15 },
   -- Mystic Thick Armor Kit (Leatherworking, item 252462, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252462 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8489
-  k252462 = { n = "Mystic Thick Armor Kit", id = 8489, item = 252462, lvl = 40, how = "lw" },
+  k252462 = { n = "Mystic Thick Armor Kit", id = 8489, item = 252462, lvl = 40, how = "lw", ilvl = 25 },
   -- Forceful Thick Armor Kit (Leatherworking, item 252463, needs level 40): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252463 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8488
-  k252463 = { n = "Forceful Thick Armor Kit", id = 8488, item = 252463, lvl = 40, how = "lw" },
+  k252463 = { n = "Forceful Thick Armor Kit", id = 8488, item = 252463, lvl = 40, how = "lw", ilvl = 25 },
   -- Mystic Rugged Armor Kit (Leatherworking, item 252487, needs level 50): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252487 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8492
-  k252487 = { n = "Mystic Rugged Armor Kit", id = 8492, item = 252487, lvl = 50, how = "lw" },
+  k252487 = { n = "Mystic Rugged Armor Kit", id = 8492, item = 252487, lvl = 50, how = "lw", ilvl = 35 },
   -- Forceful Rugged Armor Kit (Leatherworking, item 252488, needs level 50): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=252488 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=8491
-  k252488 = { n = "Forceful Rugged Armor Kit", id = 8491, item = 252488, lvl = 50, how = "lw" },
+  k252488 = { n = "Forceful Rugged Armor Kit", id = 8491, item = 252488, lvl = 50, how = "lw", ilvl = 35 },
   -- Iron Shield Spike (Blacksmithing 150 to use it; made by spell 7221): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=6042 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=43
   b6042 = { n = "Iron Shield Spike", id = 43, item = 6042, prof = 164, rank = 150, m = { 3575, 6, 3478, 4 }, how = "bs" },
   -- Iron Counterweight (Blacksmithing 165 to use it; made by spell 7222): https://wago.tools/db2/ItemSparse?build=1.60.1.70959&filter[ID]=6043 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=34
@@ -301,6 +302,8 @@ local ENCHANTS = {
   s20028 = { n = "Major Intellect +10", id = 1893, m = { 16203, 3, 14343, 1 } },
   -- Enchant 2H Weapon - Superior Impact (spell 20030, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20030 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1896
   s20030 = { n = "Superior Impact +9", id = 1896, m = { 14344, 4, 16204, 10 } },
+  -- Enchant Weapon - Superior Striking (spell 20031, high; formula 16250 drops in Blackrock Spire): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20031 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1897
+  s20031 = { n = "Superior Striking +5", id = 1897, m = { 14344, 2, 16203, 10 } },
   -- Enchant Weapon - Crusader (spell 20034, high): https://rankedboost.com/world-of-warcraft/forever/enchants/weapon/#e-recipe-20034 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1900
   s20034 = { n = "Crusader", id = 1900, m = { 14344, 4, 12811, 2 } },
   -- Enchant 2H Weapon - Major Spirit (spell 20035, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-20035 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1903
@@ -376,76 +379,77 @@ local ENCHANTS = {
   s1249059 = { n = "Agility +5", id = 904, m = { 11175, 2, 11178, 8, 11176, 6, 249410, 4, 249430, 4 } },
   -- Not shown: Enchant Necklace - Deflection (spell 1249060, enchant 925). Its label says Defense +5, but
   -- its aura (spell 13930) gives +2 (rankedboost leaves the value out). Until that is checked in game, tanks
-  -- get Agility +5, and a necklace with Deflection on is left alone (up = { 925 }).
+  -- get Strength +5 and Agility +5, and a necklace with Deflection on is left alone (up = { 925 }).
 }
 
--- Best first, in value order for the role: an item shows the entries above the enchant it has
--- (nothing when it has the first), as far as the player's level and professions allow. up = enchant
--- ids at least as good as the first (nothing is shown); at = { [id] = n }: an enchant not in the list
--- that ranks just above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list.
+-- Best first, in value order for the role (rankedboost's Forever stat weights, averaged over the
+-- role's specs): an item shows the entries above the enchant it has (nothing when it has the first),
+-- as far as the player's level, professions and the item's level allow. up = enchant ids at least as
+-- good as the first (nothing is shown); at = { [id] = n }: an enchant not in the list that ranks just
+-- above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list (it is worth less).
 -- Belts, shoulders, rings, trinkets: nothing (Forever has no belt buckle, and its Engineering belt
 -- tinkers need schematics and parts that are not in the game).
 local PICKS = {
   weapon = {
-    ["melee"] = { "s20034", "s23799", "s13943", "s13693", "s13503", "s7788", at = { [1897] = 2, [2564] = 3 } },
-    ["agility"] = { "s20034", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [1897] = 2, [2563] = 5 } },
-    ["tank"] = { "s20034", "s23800", "s1248760", "s13943", "s13693", "s13503", at = { [1897] = 3, [2563] = 3 } },
-    ["agility/DRUID"] = { "s23800", "s23799" },
-    ["tank/DRUID"] = { "s23800", "s23799" },
+    ["melee"] = { "s20034", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [2564] = 6, [2568] = 7 } },
+    ["agility"] = { "s20034", "s20031", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [2563] = 5 } },
+    ["tank"] = { "s20034", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503" },
+    ["agility/DRUID"] = { "s20034", "s23799", "s23800" },
+    ["tank/DRUID"] = { "s20034", "s23799", "s23800" },
     ["hunter"] = { "s23800" },
     ["caster"] = { "s23804", "s1248805", "s1248757", up = { 2504 } },
     ["caster/MAGE3"] = { "s23804", "s1248805", "s1248757", up = { 2504, 2443 } },
-    ["healer"] = { "s23803", "s23804", "s1248757", up = { 2505 } },
+    ["healer"] = { "s23804", "s23803", "s1248757", up = { 2505 } },
     ["healer/PALADIN"] = { "s23804", up = { 2505 } },
     ["healer/SHAMAN"] = { "s23804", "s1248757", up = { 2505 } },
   },
   weapon2h = {
-    ["melee"] = { "s20034", "b6043", "s27837", "s20030", "s1248511", "s13937", "s13695", up = { 8215 }, at = { [2564] = 7 } },
-    ["agility"] = { "s27837", "s1248510", "s1248511", at = { [2564] = 2 } },
-    ["hunter"] = { "s27837", "s1248510", at = { [2564] = 2 } },
-    ["tank"] = { "s27837", "s1248510", "s1248511", at = { [2564] = 2 } },
-    ["caster"] = { "s1219580", "s1248607", "s20036", "s7793", at = { [2567] = 3, [2568] = 3, [8212] = 3 } },
-    ["healer"] = { "s1248636", "s1219580", "s20036", "s20035", "s7793", "s13380", at = { [2567] = 3, [2568] = 3, [8211] = 3 } },
+    ["melee"] = { "s20034", "b6043", "s20030", "s1248511", "s13937", "s13695", up = { 8215 }, at = { [2564] = 7, [2646] = 6 } },
+    ["agility"] = { "s27837", "s20034", "s1248511", "s1248510", at = { [2564] = 4 } },
+    ["hunter"] = { "s27837", "s1248510", at = { [2564] = 2, [2568] = 2 } },
+    ["tank"] = { "s27837", "s20034", "s1248511", "s1248510", at = { [2564] = 4, [7662] = 4, [8211] = 4 } },
+    ["caster"] = { "s1219580", "s1248607", "s20036", "s7793", at = { [2568] = 3, [8212] = 3 } },
+    ["healer"] = { "s1248636", "s1219580", "s20036", "s7793", "s20035", "s13380", at = { [2567] = 5, [2568] = 3, [8211] = 3 } },
   },
   shield = {
     ["melee"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 } },
     ["tank"] = { "s20017", "b12645", "s13817", "b7967", "s13631", "b6042", "s13378", up = { 7663 } },
-    ["caster"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 }, at = { [1890] = 4 } },
-    ["healer"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 }, at = { [851] = 4, [907] = 3, [1890] = 3 } },
+    ["caster"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 } },
+    ["healer"] = { "s20017", "s13817", "s13631", "s13378", up = { 7663 } },
   },
   holdable = {
-    ["caster"] = { "s1219579", up = { 7659, 7660 } },
-    ["healer"] = { "s1219579", up = { 7659, 7660 } },
+    ["caster"] = { "s1219579", up = { 7659 } },
+    ["healer"] = { "s1219579", up = { 7659 } },
   },
   chest = {
-    ["melee"] = { "s20025", "s13941", "k252488", "s13700", "k252463", "k252453", "s13626", "k252437", at = { [908] = 7, [1892] = 7 } },
-    ["agility"] = { "s20025", "s13941", "k252488", "k252463", "s13700", "k252453", "k252437", "s13626", at = { [850] = 8, [908] = 7, [1892] = 7, [8490] = 8 } },
-    ["hunter"] = { "s20025", "k252488", "s13941", "k252463", "s13700", "k252453", "k252437", "s13626", at = { [850] = 8, [908] = 7, [913] = 8, [1892] = 5, [1893] = 7, [8487] = 8, [8490] = 8 } },
-    ["tank"] = { "s20025", "s20026", "s13858", "k15564", "s13640", "k8173", "k4265", "s7857", "k2313", up = { 8719 }, at = { [242] = 9, [866] = 7, [928] = 4, [8491] = 9 } },
-    ["caster"] = { "s20028", "k252487", "k252462", "s13917", "k252452", "s13663", "s13607", "k252436", "s7776", at = { [866] = 8, [908] = 8, [928] = 7, [1891] = 5, [1892] = 7 } },
-    ["healer"] = { "s20028", "k252487", "k252462", "s13917", "k252452", "s13663", "s13607", "k252436", "s7776", at = { [866] = 7, [928] = 5, [1891] = 3, [1892] = 8 } },
+    ["melee"] = { "s20025", "s13941", "k252488", "k252463", "s13700", "k252453", "k252437", "s13626" },
+    ["agility"] = { "s20025", "k252488", "s13941", "k252463", "k252453", "s13700", "k252437", "s13626" },
+    ["hunter"] = { "s20025", "s13941", "k252488", "k252463", "s13700", "k252453", "k252437", "s13626", at = { [843] = 7, [857] = 6, [913] = 4, [1893] = 3 } },
+    ["tank"] = { "s20026", "s13858", "k15564", "s20025", "s13640", "k8173", "k4265", "s7857", "k2313", up = { 8719 }, at = { [242] = 9, [866] = 9, [928] = 7, [8488] = 9, [8491] = 7 } },
+    ["caster"] = { "k252487", "k252462", "s20028", "k252452", "s13917", "s13663", "k252436", "s13607", "s7776", at = { [866] = 9, [928] = 8, [1891] = 7, [1892] = 9 } },
+    ["healer"] = { "s20028", "s13917", "k252487", "s13663", "k252462", "k252452", "s13607", "s7776", "k252436", at = { [866] = 9, [928] = 7, [1891] = 5 } },
   },
   cloak = {
     ["melee"] = { "s1219587", "s13419", at = { [849] = 2 } },
     ["agility"] = { "s1219587", "s13419", at = { [849] = 2 } },
     ["hunter"] = { "s1219587", "s13419", at = { [849] = 2 } },
-    ["tank"] = { "s20015", "s13746", "s13635", "s13421", up = { 2622 }, at = { [247] = 3, [849] = 3, [7667] = 3 } },
+    ["tank"] = { "s20015", "s13746", "s13635", "s13421", up = { 2622 }, at = { [7667] = 4 } },
     ["caster"] = { "s20014", "s13794", "s7454", up = { 2621 } },
     ["healer"] = { "s20014", "s13794", "s7454", up = { 2621 } },
   },
   wrist = {
-    ["melee"] = { "s20010", "s13939", "s13661", "s13536", "s7782", at = { [904] = 4, [1887] = 3, [7656] = 2, [8204] = 5 } },
-    ["agility"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779", at = { [927] = 5, [1885] = 4 } },
-    ["hunter"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779" },
-    ["tank"] = { "s1248665", "s20011", "s13931", "s13945", "s13648", "s13501", "s7457", at = { [856] = 7, [904] = 6, [924] = 7, [927] = 6, [1885] = 5, [1887] = 5, [7656] = 3, [8204] = 7 } },
-    ["caster"] = { "s1220624", "s1248661", "s20008", "s13822", "s1248458", at = { [1884] = 5, [1886] = 5, [2566] = 2, [8208] = 4, [8209] = 2, [8734] = 5 } },
-    ["healer"] = { "s23802", "s1248498", "s1248459", at = { [2565] = 2, [7665] = 2 } },
+    ["melee"] = { "s20010", "s13939", "s13661", "s13536", "s7782", at = { [1887] = 5, [7656] = 4 } },
+    ["agility"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779", at = { [927] = 4, [1885] = 3 } },
+    ["hunter"] = { "s1248599", "s1248500", "s1248497", "s1248460", "s7779", at = { [1901] = 4 } },
+    ["tank"] = { "s1248665", "s13931", "s20011", "s13945", "s13648", "s13501", "s7457", at = { [924] = 6, [927] = 7, [1885] = 6, [7656] = 7 } },
+    ["caster"] = { "s1220624", "s1248661", "s20008", "s13822", "s1248458", at = { [1886] = 5, [2566] = 2, [8208] = 4, [8209] = 2, [8734] = 5 } },
+    ["healer"] = { "s23802", "s1248498", "s1248661", "s1248459", "s20008", at = { [2565] = 2, [7665] = 2 } },
   },
   hands = {
-    ["melee"] = { "s1248640", "s20013", "s13887", "k252488", "k252463", "k252453", "k252437", at = { [931] = 3, [1887] = 4, [8206] = 3 } },
+    ["melee"] = { "s1248640", "s20013", "s13887", "k252488", "k252463", "k252453", "k252437", at = { [931] = 3, [1887] = 6, [8206] = 5 } },
     ["agility"] = { "s20012", "s13815", "k252488", "k252463", "k252453", "k252437", up = { 2564 }, at = { [927] = 5, [931] = 2, [2563] = 2, [8207] = 4 } },
     ["hunter"] = { "s20012", "s13815", "k252488", "k252463", "k252453", "k252437", up = { 2564 }, at = { [931] = 2 } },
-    ["tank"] = { "s20012", "s20013", "k15564", "s13815", "k8173", "k4265", "k2313", up = { 2613, 2564, 2563 }, at = { [927] = 6, [931] = 7, [8491] = 7 } },
+    ["tank"] = { "s1248640", "k15564", "k8173", "s20013", "k4265", "s20012", "k2313", "s13815", up = { 2613, 8719 }, at = { [927] = 6, [931] = 7, [2564] = 4, [8486] = 8, [8488] = 6, [8491] = 5, [8492] = 8 } },
     ["caster"] = { "s13948", "k252487", "k252462", "k252452", "k252436" },
     ["caster/MAGE1"] = { "s1213626", "s13948", "k252487", "k252462", "k252452", "k252436" },
     ["caster/MAGE2"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2616 } },
@@ -457,38 +461,38 @@ local PICKS = {
     ["healer"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2617 } },
   },
   feet = {
-    ["melee"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437", up = { 8737, 911, 464 } },
+    ["melee"] = { "k252488", "k252463", "s20023", "k252453", "s13935", "k252437", "s13637", "s7867", up = { 8737, 911, 464 } },
     ["agility"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437", up = { 8737, 911, 464 } },
-    ["hunter"] = { "s20023", "s13935", "k252488", "s13637", "k252463", "s7867", "k252453", "k252437", up = { 8737, 911, 464 }, at = { [929] = 8 } },
-    ["tank"] = { "s20020", "k15564", "k8173", "s13836", "s13644", "k4265", "k2313", up = { 8737, 911, 464, 8719 }, at = { [904] = 5, [1887] = 3, [8204] = 7, [8491] = 7 } },
-    ["caster"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", "s13644", up = { 8737, 911, 464 }, at = { [851] = 6, [8203] = 7, [8487] = 7, [8490] = 6 } },
-    ["healer"] = { "k252487", "k252462", "k252452", "s20024", "s13687", "k252436", up = { 8737, 911, 464 } },
-    ["healer/PALADIN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [851] = 6, [8490] = 6 } },
-    ["healer/SHAMAN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [851] = 6, [8490] = 6 } },
+    ["hunter"] = { "s20023", "s13935", "k252488", "s13637", "k252463", "s7867", "k252453", "k252437", up = { 8737, 911, 464 } },
+    ["tank"] = { "s20020", "k15564", "k8173", "s13836", "k4265", "s13644", "k2313", up = { 8737, 911, 464, 8719 }, at = { [8488] = 6, [8491] = 5 } },
+    ["caster"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", "s13644", up = { 8737, 911, 464 }, at = { [8487] = 7, [8490] = 6 } },
+    ["healer"] = { "k252487", "k252462", "k252452", "k252436", "s20024", "s13687", up = { 8737, 911, 464 } },
+    ["healer/PALADIN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [8490] = 6 } },
+    ["healer/SHAMAN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [8490] = 6 } },
   },
   neck = {
     ["melee"] = { "s1249019", "s1249059" },
     ["agility"] = { "s1249059", "s1249019" },
     ["hunter"] = { "s1249059" },
-    ["tank"] = { "s1249059", "s1249019", up = { 925 } },
+    ["tank"] = { "s1249019", "s1249059", up = { 925 } },
     ["caster"] = { "s1249057" },
     ["healer"] = { "s1249058", "s1249057" },
   },
   head = {
     ["melee"] = { "a18329", "a11645" },
     ["agility"] = { "a18329", "a11647" },
-    ["hunter"] = { "a11647", at = { [2543] = 1 } },
+    ["hunter"] = { "a18329", "a11647" },
     ["tank"] = { "a18331", "a11642" },
     ["caster"] = { "a18330", "a11648", at = { [1483] = 2 } },
     ["healer"] = { "a18330", "a11622" },
   },
   legs = {
-    ["melee"] = { "a18329", "a11645", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 6, [1504] = 9, [1507] = 6, [1508] = 3, [2545] = 10, [8492] = 11 } },
-    ["agility"] = { "a18329", "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 6, [1504] = 9, [1506] = 5, [1507] = 6, [2545] = 7, [8492] = 11 } },
-    ["hunter"] = { "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 4, [1504] = 8, [1507] = 5, [1509] = 7, [2543] = 1, [8492] = 10 } },
-    ["tank"] = { "a18331", "a11642", "k15564", "k8173", "k4265", "k2313", "k2304", up = { 8719 }, at = { [1504] = 5, [1506] = 4, [1507] = 3, [1508] = 4, [2543] = 6, [8486] = 7, [8488] = 7, [8491] = 6, [8492] = 7 } },
-    ["caster"] = { "a18330", "k252487", "k252462", "a11648", "k252452", "k252436", "k2313", "k2304", at = { [1483] = 2, [1507] = 6, [1510] = 6, [8484] = 7, [8487] = 7, [8490] = 7 } },
-    ["healer"] = { "a18330", "a11622", "k252487", "k252462", "k252452", "k252436", "k2313", "k2304", at = { [1507] = 7, [1509] = 5, [1510] = 5, [8484] = 7, [8487] = 7, [8490] = 7 } },
+    ["melee"] = { "a18329", "a11645", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 7, [1507] = 7, [1508] = 5, [1509] = 7, [2545] = 10 } },
+    ["agility"] = { "a18329", "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 7, [1506] = 5, [1507] = 7, [2545] = 7 } },
+    ["hunter"] = { "a18329", "a11647", "k252488", "k252463", "k252453", "k252437", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1483] = 5, [1503] = 7, [1507] = 7, [1509] = 4, [1510] = 11 } },
+    ["tank"] = { "a18331", "a11642", "k15564", "k8173", "k4265", "k2313", "k2304", up = { 8719 }, at = { [1504] = 3, [1506] = 6, [1507] = 3, [1508] = 7, [2543] = 6, [8483] = 7, [8485] = 7, [8486] = 6, [8488] = 6, [8489] = 7, [8491] = 5, [8492] = 7 } },
+    ["caster"] = { "a18330", "k252487", "k252462", "a11648", "k252452", "k252436", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1483] = 6, [1503] = 7, [1507] = 7, [1510] = 11 } },
+    ["healer"] = { "a18330", "a11622", "k252487", "k252462", "k252452", "k252436", "k15564", "k8173", "k4265", "k2313", "k2304", at = { [1503] = 7, [1507] = 7, [1509] = 3, [1510] = 7 } },
   },
   ranged = {
     ["hunter"] = { "i10548", "i10546", "i4407", "i4406", "i4405", up = { 2523, 8720 } },
@@ -623,6 +627,17 @@ local function groupFor(loc, cls, sub)
   return g
 end
 
+-- The item's level (GetItemInfo's 4th value), or nil while the game has not loaded the item.
+local function itemLevelOf(itemID)
+  local CI = _G.C_Item
+  local f = (type(CI) == "table" and CI.GetItemInfo) or _G.GetItemInfo
+  if type(f) ~= "function" then return nil end
+  local ok, name, _, _, lvl = pcall(f, itemID)
+  if not ok or name == nil then return nil end
+  lvl = plainNumber(lvl)
+  return lvl and lvl > 0 and lvl or nil
+end
+
 -- Slots never change: one lookup per item id a session.
 local factMemo = {}
 local function facts(itemID)
@@ -631,9 +646,15 @@ local function facts(itemID)
   local loc, cls, sub = itemFacts(itemID)
   if loc == nil then return nil end   -- not readable now: ask again next time
   local g = groupFor(loc, cls, sub)
-  f = g and { g = g, cls = cls, sub = sub, loc = loc } or false
+  f = g and { g = g, cls = cls, sub = sub, loc = loc, id = itemID } or false
   factMemo[itemID] = f
   return f or nil
+end
+
+-- The item's level, read once (an armor kit needs items of its level or higher); nil = not known yet.
+local function factLevel(f)
+  if f.ilvl == nil then f.ilvl = itemLevelOf(f.id) end
+  return f.ilvl
 end
 E.SlotGroup = function(v)
   local loc, cls, sub = itemFacts(v)
@@ -1005,10 +1026,15 @@ local function listHas(list, v)
 end
 
 -- Whether the player can use an entry on this item: the level it needs, the profession rank
--- its item asks for, and the item's kind (armor kits: cloth to plate; the counterweight: its weapons).
+-- its item asks for, the item's level (armor kits: Heavy 15, Thick 25, Rugged 35; an item whose level
+-- is not known yet gets them) and its kind (armor kits: cloth to plate; the counterweight: its weapons).
 local function usable(e, f, level)
   if e.lvl and level < e.lvl then return false end
   if e.prof and skillRank(e.prof) < (e.rank or 1) then return false end
+  if e.ilvl then
+    local il = factLevel(f)
+    if il and il < e.ilvl then return false end
+  end
   if e.how == "lw" then return not f.sub or KIT_SUBS[f.sub] == true end
   if e.subs and f.sub then return listHas(e.subs, f.sub) end
   return true
@@ -1664,10 +1690,11 @@ local function enchantsCommand(rest)
     S.enchantsTop = top   -- the role and the off state stay as they are
     refreshItemTips()
     refreshToggle()
+    local off = S.enchants == "off" and " (the tips are off now: /gl enchants auto turns them on)" or ""
     if top == 5 then
-      say("enchant tips show the top 5: the best, then cheaper budget options.")
+      say("enchant tips show the top 5: the best, then cheaper budget options." .. off)
     else
-      say("enchant tips show the top 2: the two best.")
+      say("enchant tips show the top 2: the two best." .. off)
     end
     return
   end
