@@ -384,6 +384,37 @@ function expectedFlipIds() {
   await open(blade);
   check(env.fetched.filter((u) => /\/details\//.test(u)).length === reads, 'a chunk read once is kept (no second read)');
 
+  /* ---- the block's height goes to the desktop chart: --idt-h on .main-column ----
+     (index.html: #itemDetails is a child of .main-column, whose gap is 8px) */
+  const col = env.doc.createElement('div');
+  col.className = 'main-column';
+  host.parentElement = col;
+  col.children.push(host);
+  let hostH = 87;
+  host.getBoundingClientRect = () => ({ top: 0, left: 0, right: 600, bottom: 0, width: 600, height: host.hidden ? 0 : hostH, x: 0, y: 0 });
+  const gcs = env.ctx.getComputedStyle;
+  env.ctx.getComputedStyle = (el) => (el === col ? { rowGap: '8px', getPropertyValue: () => '' } : gcs(el));
+  const watched = [];
+  env.ctx.ResizeObserver = class {
+    constructor(cb) { this.cb = cb; this.targets = []; watched.push(this); }
+    observe(t) { this.targets.push(t); } unobserve() {} disconnect() {} takeRecords() { return []; }
+  };
+  await open(ironBar);
+  check(!('--idt-h' in col.style), 'no details: no --idt-h on .main-column');
+  await open(blade);
+  check(!host.hidden && col.style['--idt-h'] === '95px', 'details shown: --idt-h is the block plus the column gap (' + col.style['--idt-h'] + ')');
+  const ro = watched.filter((o) => o.targets.includes(host));
+  check(ro.length === 1, 'the block\'s size is watched, by one observer (' + ro.length + ')');
+  hostH = 120.4;                                  // a narrower window wraps the block to more rows
+  if (ro[0]) ro[0].cb([]);
+  check(col.style['--idt-h'] === '129px', 'the block grows: --idt-h follows, rounded up (' + col.style['--idt-h'] + ')');
+  await open(ironBar);
+  check(host.hidden && !('--idt-h' in col.style), 'hidden again: --idt-h removed');
+  hostH = 87;
+  await open(blade);
+  check(col.style['--idt-h'] === '95px' && watched.filter((o) => o.targets.includes(host)).length === 1,
+    'shown again: --idt-h back, still one observer');
+
   /* ---- the auto lists ---- */
   const before = { lists: env.ls.ge_favoriteLists, active: env.ls.ge_activeFavoriteList };
   check(favRows(env).length === 3 && favRows(env).every((r) => /data-fav-row="1"/.test(r.attrs)),
@@ -532,6 +563,71 @@ function expectedFlipIds() {
   'app.css: hidden rule, columns, phone and landscape-phone sizes');
   check(/--tip-g: #1EFF00/.test(css) && /\.col-menu-danger\[hidden\], \.col-menu-sep\[hidden\]/.test(css) && /\.wl-auto-hint/.test(css),
     'app.css: tooltip colours, auto list styles');
+  /* The box's row cap counts its padding AND its 1px border (box-sizing is
+     border-box), so a block of exactly that many rows has no scrollbar; no
+     overscroll-behavior, so a wheel or swipe over a box at its end moves the
+     page on; the desktop chart gives the shown block's height back. */
+  const cssBare = css.replace(/\/\*[\s\S]*?\*\//g, '');
+  const tipRules = [...cssBare.matchAll(/\.item-details \{([^}]*)\}/g)].map((x) => x[1]);
+  const decl = (body, prop) => { const x = new RegExp('(?:^|;)\\s*' + prop + '\\s*:\\s*([^;]+)').exec(body); return x ? x[1].trim() : null; };
+  check(tipRules.length === 3, 'app.css: three .item-details rules (desktop, phone, landscape phone): ' + tipRules.length);
+  const tipBase = tipRules[0] || '';
+  const tipBorder = parseFloat((/(?:^|;)\s*border\s*:\s*([\d.]+)px/.exec(tipBase) || [])[1]);
+  check(tipBorder === 1, 'app.css: the box has a 1px border (' + tipBorder + ')');
+  for (const [i, label, rows] of [[0, 'desktop', 6], [1, 'phone', 7], [2, 'landscape phone', 3]]) {
+    const b = tipRules[i] || '';
+    const fs = parseFloat(decl(b, 'font-size'));
+    const lh = parseFloat(decl(b, 'line-height') || decl(tipBase, 'line-height'));
+    const pad = (decl(b, 'padding') || '').split(/\s+/).map(parseFloat);
+    const pt = pad[0], pb = pad.length >= 3 ? pad[2] : pad[0];
+    const mh = /^calc\(\s*([\d.]+)em\s*\*\s*(\d+)\s*\+\s*([\d.]+)px\s*\)$/.exec(decl(b, 'max-height') || '');
+    const room = mh ? Number(mh[1]) * fs * Number(mh[2]) + Number(mh[3]) - pt - pb - 2 * tipBorder : NaN;
+    check(!!mh && Number(mh[2]) === rows && Number(mh[1]) === lh && room >= rows * lh * fs - 1e-6 && room < (rows + 0.5) * lh * fs,
+      'app.css ' + label + ': ' + rows + ' rows of ' + (lh * fs).toFixed(2) + 'px fit inside the padding and border (room ' + room.toFixed(2) + 'px)');
+    check(!/overscroll-behavior/.test(b), 'app.css ' + label + ': no overscroll-behavior on the box');
+  }
+  const cssFlat = cssBare.replace(/\s+/g, ' ');
+  const chartRules = [...cssFlat.matchAll(/\.chart-container \{ min-height: calc\(100dvh - (\d+)px\); max-height: calc\(100dvh - (\d+)px\); \}/g)];
+  check(chartRules.length === 2, 'app.css: the two desktop chart heights (' + chartRules.length + ')');
+  for (const [whole, lo, hi] of chartRules) {
+    const want = '.main-column:has(> #itemDetails:not([hidden])) > .chart-container:not(.user-sized) {'
+      + ' min-height: max(min(200px, calc(100dvh - ' + lo + 'px)), calc(100dvh - ' + lo + 'px - var(--idt-h, 0px)));'
+      + ' max-height: max(min(200px, calc(100dvh - ' + hi + 'px)), calc(100dvh - ' + hi + 'px - var(--idt-h, 0px))); }';
+    const from = cssFlat.indexOf(whole), at = cssFlat.indexOf(want, from);
+    check(from > 0 && at > from && cssFlat.slice(from, at).indexOf('@media') < 0 && cssFlat.slice(from, at).indexOf('}', whole.length) < 0,
+      'app.css: right after the ' + lo + '/' + hi + ' desktop chart, the chart gives the shown details block its height back (--idt-h), not below 200px');
+  }
+
+  /* ---- item names are escaped wherever a list writes them (real names have
+     quotes: '"Mage-Eye" Blunderbuss', 'BKP "Sparrow" Smallbore') ---- */
+  const odd = 'Tom\'s "Odd" <b>Bold</b> & Co';
+  const oddEsc = 'Tom&#39;s &quot;Odd&quot; &lt;b&gt;Bold&lt;/b&gt; &amp; Co';
+  const greenIds = expectedQualityIds('UNCOMMON');
+  const oddItem = mapping.find((m) => greenIds.includes(String(m.id)) && m.base == null) || {};
+  check(oddItem.id != null, 'a green item (not a version) to rename');
+  const env4 = await boot({
+    files: { 'mapping.json': JSON.stringify(mapping.map((m) => (m.id === oddItem.id ? Object.assign({}, m, { name: odd }) : m))) },
+    storage: { ge_favoriteLists: JSON.stringify([{ id: 'default', name: 'Favorites', items: [String(oddItem.id)] }]),
+      ge_activeFavoriteList: 'default', ge_lastItem: String(blade.id) }
+  });
+  const own4 = favHtml(env4);
+  check(own4.includes('<span class="wl-item-name">' + oddEsc + '</span>') && own4.includes('alt="' + oddEsc + ' icon"')
+    && own4.includes('aria-label="Remove ' + oddEsc + ' from favorites"') && !own4.includes(odd),
+  'the player\'s list: the name escaped in the row, its icon and its remove button');
+  env4.ctx.showAutoFavList('auto:greens');
+  await tick(10);
+  const auto4 = favHtml(env4);
+  check(favRows(env4).some((r) => r.id === String(oddItem.id)) && auto4.includes('<span class="wl-item-name">' + oddEsc + '</span>')
+    && auto4.includes('alt="' + oddEsc + ' icon"') && !auto4.includes(odd), 'Greens (auto): the name escaped');
+  const query = env4.doc.getElementById('query');
+  query.value = 'bold';
+  (query.handlers.input || []).forEach((f) => f());
+  const sug = env4.doc.getElementById('suggestBox').innerHTML;
+  check((query.handlers.input || []).length > 0 && sug.includes('alt="' + oddEsc + ' icon">' + oddEsc + '</div>') && !sug.includes(odd),
+    'search suggestions: the name escaped');
+  check(env4.errors.length === 0, 'odd names: no errors ' + env4.errors.slice(0, 3).join(' | '));
+  const rawNames = APP_SRC.match(/(?:>\s*|="[^"]*)\$\{\s*[\w.]+\.name\s*\}/g) || [];
+  check(rawNames.length === 0, 'app.js: no item name put into HTML unescaped ' + JSON.stringify(rawNames.slice(0, 4)));
 
   /* house rules: plain ASCII in what the new code writes and in the code itself, no long dashes */
   env.ctx.showAutoFavList('auto:epics');

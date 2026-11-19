@@ -164,6 +164,11 @@ DETAILS_CHUNK = 1000             # item ids per file
 DETAILS_BACKFILL_PER_RUN = 400   # items without lines looked up per run, most traded first
 DETAILS_THREADS = 4
 DETAILS_PER_SEC = 40.0           # request pace of those lookups (Blizzard allows 100 a second)
+# Those lookups stop for the run after DETAILS_MAX_SECS, or after DETAILS_MAX_FAILS failed ones in
+# a row (Blizzard slow or answering 429 / 5xx), so they can never run the GitHub job past its time
+# limit before the publish step; what they did not reach is still missing and comes next run.
+DETAILS_MAX_SECS = 120
+DETAILS_MAX_FAILS = 10
 DETAILS_MAX_LINES = 40
 DETAILS_MAX_CHARS = 300          # per line
 TIP_KEY = "_tip"                 # the lines a lookup brought, taken out before items.json is saved
@@ -1043,13 +1048,16 @@ def _pace(per_sec=None):
         time.sleep(min(1.0, t - now))
 
 
-def fetch_tip(iid):
+def fetch_tip(iid, stop=None):
     """One older item's tooltip lines for the details backfill, from the first
     static namespace that knows it (no icon request, paced to DETAILS_PER_SEC).
-    Returns (iid, lines): None when a request failed (tried again next run),
+    Returns (iid, lines): None when a request failed, or when stop() says the
+    run's lookups are over before a namespace answered (tried again next run),
     [] when no namespace knows the item."""
     failed = False
     for ns in STATIC_NS:
+        if stop is not None and stop():
+            return iid, None
         _pace()
         try:
             item, _ = api(f"/data/wow/item/{iid}", ns)
@@ -1121,15 +1129,45 @@ def details_todo(items, chunks, latest, vols, vinfo=None, limit=None):
     return todo[:max(0, int(limit))], len(todo)
 
 
-def update_details(out, items, tips, latest, vols, vinfo=None, fetch=None, limit=None, threads=None):
+def update_details(out, items, tips, latest, vols, vinfo=None, fetch=None, limit=None, threads=None,
+                   max_secs=None, max_fails=None):
     """details/<n>.json: the lines this run's item lookups brought (tips:
     item id -> lines, see take_tips), plus up to `limit` (default
     DETAILS_BACKFILL_PER_RUN) items no published chunk has yet
     (details_todo), looked up now. A failed lookup is left for the next run.
-    Only chunk files that changed are written.
+    The lookups stop for the run once `max_secs` (default DETAILS_MAX_SECS)
+    have passed or `max_fails` (default DETAILS_MAX_FAILS) of them failed in
+    a row; the items they did not reach are still missing from the chunks,
+    so the next run, of either collector, looks them up. The lines of this
+    run's own lookups are always written. Only chunk files that changed are
+    written.
     Returns (lines from this run's lookups, filled in, still missing)."""
-    fetch = fetch or fetch_tip
     threads = DETAILS_THREADS if threads is None else threads
+    max_fails = max(1, int(DETAILS_MAX_FAILS if max_fails is None else max_fails))
+    deadline = time.time() + (DETAILS_MAX_SECS if max_secs is None else max_secs)
+    run = {"lock": threading.Lock(), "fails": 0, "why": ""}
+
+    def stop():
+        with run["lock"]:
+            if not run["why"] and time.time() >= deadline:
+                run["why"] = "out of time"
+            return bool(run["why"])
+
+    fetch = fetch or (lambda i: fetch_tip(i, stop))
+
+    def lookup(iid):
+        if stop():
+            return iid, None                 # not reached this run: still missing, so next run
+        iid, lines = fetch(iid)
+        with run["lock"]:
+            if lines is not None:
+                run["fails"] = 0
+            else:
+                run["fails"] += 1
+                if run["fails"] >= max_fails and not run["why"]:
+                    run["why"] = "%d failed lookups in a row" % run["fails"]
+        return iid, lines
+
     chunks = load_details(out)
     changed = set()
 
@@ -1146,12 +1184,14 @@ def update_details(out, items, tips, latest, vols, vinfo=None, fetch=None, limit
     done = 0
     if todo:
         with cf.ThreadPoolExecutor(max(1, threads)) as ex:
-            for iid, lines in ex.map(fetch, todo):
+            for iid, lines in ex.map(lookup, todo):
                 if lines is None:
                     continue
                 put(iid, lines)
                 done += 1
     write_details(out, chunks, changed)
+    if run["why"] and missing - done > 0:
+        print(f"item details: lookups stopped for this run ({run['why']}), the rest come next run")
     return len(tips), done, missing - done
 
 

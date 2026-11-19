@@ -1926,6 +1926,27 @@ function wowDetailsHtml(lines) {
       : '<div class="' + cls + '">' + escapeHtml(l[0]) + '</div>';
   }).join('') + '</div>';
 }
+/* The block's height, plus the column's gap, on .main-column as --idt-h:
+   the desktop chart gives that much back (app.css), so the quick-facts row
+   and the 30-Day Range stay above the fold with the block shown. Redone
+   whenever the block changes size (a narrower window wraps it to more rows),
+   removed while it is hidden. */
+let _detailsSizeWatch = null;
+function syncDetailsHeight(host) {
+  const col = host ? host.parentElement : null;
+  if (!col || !col.classList || !col.classList.contains('main-column')) return;
+  const h = host.hidden ? 0 : host.getBoundingClientRect().height;
+  if (h > 0) {
+    const v = Math.ceil(h + (parseFloat(getComputedStyle(col).rowGap) || 0)) + 'px';
+    if (col.style.getPropertyValue('--idt-h') !== v) col.style.setProperty('--idt-h', v);
+  } else if (col.style.getPropertyValue('--idt-h')) {
+    col.style.removeProperty('--idt-h');
+  }
+  if (!_detailsSizeWatch && typeof ResizeObserver === 'function') {
+    _detailsSizeWatch = new ResizeObserver(() => syncDetailsHeight(host));
+    _detailsSizeWatch.observe(host);
+  }
+}
 /* Fills #itemDetails for the item just opened. Hidden at once, so the last
    item's lines never sit under this one's name while its chunk loads. */
 let _detailsFor = null;
@@ -1936,6 +1957,7 @@ function renderItemDetails(m) {
   _detailsFor = id;
   host.hidden = true;
   host.innerHTML = '';
+  syncDetailsHeight(host);
   if (!m) return;
   const n = wowDetailsChunkId(m.base != null && String(m.base) !== String(m.id) ? m.base : m.id);
   if (n == null) return;
@@ -1946,6 +1968,7 @@ function renderItemDetails(m) {
     host.innerHTML = wowDetailsHtml(lines);
     host.setAttribute('aria-label', m.name + ': item details');
     host.hidden = false;
+    syncDetailsHeight(host);
   });
 }
 
@@ -4724,7 +4747,7 @@ function renderWatchlist() {
          to the row edge (the old approach) drifted off the suffix because
          row padding varies by breakpoint. */
       const favBtn = overrides.favRemove
-        ? `<button type="button" class="wl-fav-remove" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${item.name} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`
+        ? `<button type="button" class="wl-fav-remove" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${escapeHtml(item.name)} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>`
         : '';
       if (vol > 0) {
         const ab = String(abbrevCount(vol));
@@ -4960,14 +4983,14 @@ function renderWatchlist() {
         /* Always render the row-gutter fallback for fav rows; CSS shows it
            only when the VOL column (which hosts the primary in-cell trash)
            is unavailable. */
-        const removeBtn = editable ? `<button type="button" class="wl-fav-remove wl-fav-remove-row" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${item.name} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>` : '';
+        const removeBtn = editable ? `<button type="button" class="wl-fav-remove wl-fav-remove-row" data-fav-id="${item.id}" title="Remove from favorites" aria-label="Remove ${escapeHtml(item.name)} from favorites"><svg viewBox="0 0 24 24" aria-hidden="true"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"></path></svg></button>` : '';
         const swipeBg = editable ? `<span class="wl-swipe-bg">REMOVE</span>` : '';
         inner += `
           <div class="wl-item ${activeClass} ${hlClass}" data-id="${item.id}" ${editable ? `data-fav-row="1" data-fav-id="${item.id}"` : ''}>
             ${swipeBg}
             <div class="wl-item-left">
-              <img src="${itemIconUrl(item.id)}" alt="${item.name} icon" loading="lazy">
-              <span class="wl-item-name">${item.name}</span>
+              <img src="${itemIconUrl(item.id)}" alt="${escapeHtml(item.name)} icon" loading="lazy">
+              <span class="wl-item-name">${escapeHtml(item.name)}</span>
               ${hlBadge}
             </div>
             <div class="wl-item-right">
@@ -7285,7 +7308,7 @@ function renderFlipCard(rec){
   const h = flipHost(); if (!h) return;
   const collapsed = flipCollapsed();
   paintFlip(`
-    <div class="flip-card${collapsed ? ' collapsed' : ''}" role="button" tabindex="0" data-id="${rec.id}" aria-label="Open ${rec.item.name} — recommended flip">
+    <div class="flip-card${collapsed ? ' collapsed' : ''}" role="button" tabindex="0" data-id="${rec.id}" aria-label="Open ${escapeHtml(rec.item.name)}, the recommended flip">
       <div class="fc-head">
         <span class="fc-kicker"><span class="fc-kicker-txt">Recommended flip</span></span>
         ${flipCount()}
@@ -7296,14 +7319,14 @@ function renderFlipCard(rec){
       </div>
       <div class="fc-mini">
         <img class="fc-mini-icon" src="${itemIconUrl(rec.id)}" alt="" loading="lazy">
-        <span class="fc-mini-name">${rec.item.name}</span>
+        <span class="fc-mini-name">${escapeHtml(rec.item.name)}</span>
         <span class="fc-mini-score" style="color:${rec.color}" title="${rec.verdict} — ${rec.flipScore}/100. Expand the card for the breakdown.">${rec.flipScore}<span class="fc-mini-score-k">${rec.verdictShort}</span></span>
       </div>
       <div class="fc-collapsible">
         <div class="fc-body">
-          <img class="fc-icon" src="${itemIconUrl(rec.id)}" alt="${rec.item.name} icon" loading="lazy">
+          <img class="fc-icon" src="${itemIconUrl(rec.id)}" alt="${escapeHtml(rec.item.name)} icon" loading="lazy">
           <div class="fc-main">
-            <div class="fc-name">${rec.item.name}</div>${wowThinTag(rec.id)}
+            <div class="fc-name">${escapeHtml(rec.item.name)}</div>${wowThinTag(rec.id)}
             ${rec.why ? `<div class="fc-why">${rec.why}</div>` : ''}
           </div>
           <div class="fc-gauge">
@@ -7679,9 +7702,9 @@ function renderPortfolio() {
       ? `<span class="bk-pl ${cls}">${s}${m.plPct.toFixed(1)}%</span>`
       : `<span class="bk-pl">—</span>`;
     return `<div class="bk-row" data-idx="${i}">
-      <img src="${itemIconUrl(h.itemId)}" alt="${h.name} icon" loading="lazy">
+      <img src="${itemIconUrl(h.itemId)}" alt="${escapeHtml(h.name)} icon" loading="lazy">
       <div style="overflow:hidden">
-        <div class="bk-name">${h.name}</div>
+        <div class="bk-name">${escapeHtml(h.name)}</div>
         <div class="bk-sub">${sub}</div>
       </div>
       <span class="bk-val">${abbreviateNumber(Math.round(m.value))}</span>
@@ -8840,9 +8863,9 @@ function renderNotifCenter() {
   const favHTML = favItems.length
     ? `<div class="nc-list">${favItems.map(m => `
         <div class="nc-row">
-          <img src="${itemIconUrl(m.id)}" alt="${m.name} icon">
+          <img src="${itemIconUrl(m.id)}" alt="${escapeHtml(m.name)} icon">
           <div class="nc-row-name-stack">
-            <span class="nc-row-name">${m.name}</span>
+            <span class="nc-row-name">${escapeHtml(m.name)}</span>
             <span class="nc-row-caption">24H break + 5D break (auto)</span>
           </div>
         </div>`).join('')}</div>`
@@ -8857,9 +8880,9 @@ function renderNotifCenter() {
           : 'No cost basis — alerts need a cost ea to compare against';
         return `
           <div class="nc-row" data-bk-id="${h.itemId}">
-            <img src="${itemIconUrl(h.itemId)}" alt="${h.name} icon">
+            <img src="${itemIconUrl(h.itemId)}" alt="${escapeHtml(h.name)} icon">
             <div class="nc-row-name-stack">
-              <span class="nc-row-name">${h.name}</span>
+              <span class="nc-row-name">${escapeHtml(h.name)}</span>
               <span class="nc-row-caption">${caption}</span>
             </div>
             <input type="number" class="nc-pct-input" data-bk-pct="${h.itemId}" value="${pct || ''}" placeholder="0" min="0" max="999" ${h.cost > 0 ? '' : 'disabled'}>
@@ -10812,7 +10835,7 @@ setItem._userPicked = false;
         .slice(0, 10);
       if (!items.length) { sb.style.display = "none"; return; }
       sb.innerHTML = `<div class="suggest-header">Recent</div>`
-        + items.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${x.name} icon">${x.name}</div>`).join("");
+        + items.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${escapeHtml(x.name)} icon">${escapeHtml(x.name)}</div>`).join("");
       sb.style.display = "block";
     }
     qInput.addEventListener("input", () => {
@@ -10823,7 +10846,7 @@ setItem._userPicked = false;
          40 places. Typing a version's suffix ("of the bear") still finds it. */
       const hits = mapping.filter(x => x.name.toLowerCase().includes(q) && (membersOn || !x.members));
       const list = hits.filter(x => x.base == null).concat(hits.filter(x => x.base != null)).slice(0, 40);
-      sb.innerHTML = list.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${x.name} icon">${x.name}</div>`).join("");
+      sb.innerHTML = list.map(x => `<div data-id="${x.id}"><img src="${itemIconUrl(x.id)}" alt="${escapeHtml(x.name)} icon">${escapeHtml(x.name)}</div>`).join("");
       sb.style.display = list.length ? "block" : "none";
     });
     qInput.addEventListener("focus", () => { if (!qInput.value.trim()) showRecents(); });

@@ -2630,6 +2630,117 @@ def details_unit_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def details_budget_tests():
+    """The backfill's time budget and failure breaker: a slow or failing Blizzard (429 / 5xx) can
+    never hold the run, and the publish step after it, past the job's time limit. What the lookups
+    did not reach is still missing from the chunks, so the next run goes on from there."""
+    import io
+    import contextlib
+    tmp = tempfile.mkdtemp(prefix="fah_tipb_")
+    saved_time, saved_api = fetch_ah.time, fetch_ah.api
+    log = io.StringIO()
+
+    class Clock:
+        """stands in for the time module: only the lookups move it"""
+        def __init__(self):
+            self.now = 5000.0
+
+        def time(self):
+            return self.now
+
+        def sleep(self, s):
+            self.now += s
+    try:
+        check(fetch_ah.DETAILS_MAX_SECS == 120 and fetch_ah.DETAILS_MAX_FAILS == 10,
+              "budget: 120 seconds, 10 failed lookups in a row")
+        named = {str(i): {"name": "I%d" % i, "sell": 1} for i in range(1, 61)}
+        latest = {str(i): {"high": 1000 - i, "n": 1} for i in range(1, 61)}
+        vols = {str(i): 1 for i in range(1, 61)}
+        order = fetch_ah.details_todo(named, {}, latest, vols, limit=400)[0]
+        check(order == list(range(1, 61)), f"budget: the order {order[:5]}")
+        calls = []
+        lock = threading.Lock()
+
+        # every lookup fails: none after the 10th failure in a row
+        def failing(i):
+            with lock:
+                calls.append(i)
+            return i, None
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "a"), named, {}, latest, vols, fetch=failing, threads=1)
+        check(calls == order[:10] and r == (0, 0, 60), f"breaker: 10 failed lookups, then none ({len(calls)} made, {r})")
+        check("10 failed lookups in a row" in log.getvalue(), "breaker: said in the log")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "a"), named, {}, latest, vols, fetch=failing, threads=4)
+        check(10 <= len(calls) <= 13 and r == (0, 0, 60), f"breaker on 4 threads: at most the 3 under way on top ({len(calls)})")
+
+        # a lookup that works resets the count
+        calls.clear()
+
+        def flaky(i):
+            with lock:
+                calls.append(i)
+            return (i, [["L%d" % i, "w"]]) if i % 10 == 0 else (i, None)
+        r = fetch_ah.update_details(os.path.join(tmp, "b"), named, {}, latest, vols, fetch=flaky, threads=1)
+        check(len(calls) == 60 and r == (0, 6, 54), f"9 failures then one that works: all looked up ({len(calls)}, {r})")
+
+        # a slow Blizzard: out of time after DETAILS_MAX_SECS
+        clock = Clock()
+        fetch_ah.time = clock
+        calls.clear()
+
+        def slow(i):
+            with lock:
+                calls.append(i)
+            clock.now += 30
+            return i, [["L%d" % i, "w"]]
+        out = os.path.join(tmp, "c")
+        log.seek(0)
+        log.truncate()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(out, named, {5000: [["New", "g"]]}, latest, vols, fetch=slow, threads=1)
+        check(calls == order[:4] and r == (1, 4, 56), f"out of time after 120 s: 4 lookups of 30 s ({calls}, {r})")
+        check("out of time" in log.getvalue(), "out of time: said in the log")
+        check(load_json(os.path.join(out, "details", "0.json")) == {str(i): [["L%d" % i, "w"]] for i in (1, 2, 3, 4)}
+              and load_json(os.path.join(out, "details", "5.json")) == {"5000": [["New", "g"]]},
+              "out of time: what was looked up and this run's own lines are written")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(out, named, {}, latest, vols, fetch=slow, threads=1)
+        check(calls == order[4:8] and r == (0, 4, 52), f"the next run goes on from there ({calls}, {r})")
+        calls.clear()
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "d"), named, {7000: [["T", "w"]]}, latest, vols,
+                                        fetch=slow, threads=1, max_secs=0)
+        check(calls == [] and r == (1, 0, 60) and load_json(os.path.join(tmp, "d", "details", "7.json")) == {"7000": [["T", "w"]]},
+              f"no time at all: no lookups, this run's own lines still written ({calls}, {r})")
+
+        # the real lookups: every namespace answers 429, the run stops after 10 items, not 60
+        asked = []
+
+        def api_429(path, ns, tries=4):
+            with lock:
+                asked.append(ns)
+            raise OSError("simulated 429")
+        fetch_ah.api = api_429
+        with contextlib.redirect_stdout(log):
+            r = fetch_ah.update_details(os.path.join(tmp, "e"), named, {}, latest, vols, threads=1)
+        check(len(asked) == 10 * len(fetch_ah.STATIC_NS) and r == (0, 0, 60),
+              f"Blizzard answering 429: 10 items asked in every namespace, then none ({len(asked)} requests)")
+        # fetch_tip asks no further namespace once the run is over
+        asked.clear()
+        check(fetch_ah.fetch_tip(42, lambda: len(asked) >= 1) == (42, None) and asked == fetch_ah.STATIC_NS[:1],
+              f"fetch_tip: stops between namespaces {asked}")
+        asked.clear()
+        check(fetch_ah.fetch_tip(42, lambda: True) == (42, None) and asked == [], "fetch_tip: asks nothing once over")
+        asked.clear()
+        check(fetch_ah.fetch_tip(42) == (42, None) and asked == fetch_ah.STATIC_NS, "fetch_tip: no stop, every namespace")
+    finally:
+        fetch_ah.time, fetch_ah.api = saved_time, saved_api
+        shutil.rmtree(tmp, ignore_errors=True)
+
+
 def check_details_dir(data_dir, label, mapping=None, items=None):
     """Every details/<n>.json: a {"<id>": lines} object whose ids belong in that file, each line
     [text, colour] or [text, colour, right] with a known colour; every named item the site lists
@@ -2787,7 +2898,7 @@ def details_pipeline_tests():
             check(not any(fa.lookups.values()), "all there: nothing looked up")
         print("  item details: tooltip lines (armor, weapon, consumable, quest item, set and flavor text, recipe, "
               "bag, ammo, odd data), chunk files and merging, the backfill budget and order across two collectors, "
-              "and every other file identical with and without details")
+              "its time limit and failure breaker, and every other file identical with and without details")
     except Exception:
         sys.stdout.write(log.getvalue()[-3000:])
         raise
@@ -2802,6 +2913,7 @@ def details_pipeline_tests():
 def details_all_tests(data_dir):
     tooltip_tests()
     details_unit_tests()
+    details_budget_tests()
     details_pipeline_tests()
     d = os.path.join(data_dir, "details")
     if os.path.isdir(d):
