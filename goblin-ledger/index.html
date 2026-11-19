@@ -4,12 +4,15 @@
   One static file: inline CSS, no scripts, no analytics. Kept out of search
   on purpose (robots meta below) and NOT listed in sitemap.xml.
 
-  PICTURES. Only real photos are shown as images. Today that is one:
+  PICTURES. Only real photos are shown as images. Today that is two:
 
     img/auction-house.png  selling window + the chart docked under it        REAL PHOTO 710 x 726
+    img/bag-cleanup.png    the Bag cleanup panel                             REAL PHOTO 222 x 254
+                           (its Old quest items rows were cut out: that row showed a
+                           wrong "done" that a later version fixed; nothing was added)
     img/og.png             link preview for Discord and texts, 1200 x 630   (og:image, absolute URL; a graphic, not a screenshot)
 
-  Three spots show a small drawing made in HTML/CSS instead of a photo,
+  Two spots show a small drawing made in HTML/CSS instead of a photo,
   each labelled "Drawing, not a screenshot" (class "mock"). When a real
   photo exists, save it in goblin-ledger/img/ under the name below and
   swap the drawing's <div class="mock-box ..."> ... </div> for the <img>
@@ -18,8 +21,6 @@
 
     img/tooltip.png      item tooltip with the Goblin Ledger lines
       <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, AH value, average, Sell now and Suggested price.">
-    img/bags.png         bag window with the Bag cleanup panel open
-      <img src="img/bags.png" width="800" height="600" loading="lazy" decoding="async" alt="Screenshot of the bag window with the gold Bag cleanup button and its panel: stacks to merge, old quest items and the stacks worth the least, with the Drop cheapest button.">
     img/prices-site.png  the price website (goblin-ledger/prices/)
       <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
 
@@ -290,6 +291,8 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 }
 .shot.tall { max-width: 400px; }
 .shot.mid { max-width: 580px; }
+.shot.small { max-width: 340px; }
+.shot figcaption { max-width: 440px; margin: 12px auto 0; color: var(--muted); font-size: 14px; text-align: center; }
 .url { overflow-wrap: anywhere; }
 
 /* ---- install ---- */
@@ -540,22 +543,10 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         </ul>
         <p class="note">Nothing is sold or destroyed without your click, and Rare or better items always go through the game's own check. Your hearthstone, tools, reagents, ammo and keys never show up on the list.</p>
       </div>
-      <figure class="mock">
-        <div class="mock-box bagbox" role="img" aria-label="Drawing of the Bag cleanup panel: 12 of 80 slots free. Merge stacks: Linen Cloth, 2 stacks, frees 1 slot. Old quest items: Bloodstained Journal, done. Worth the least: Broken Fang times 3 for 9 copper, Chipped Claw times 2 for about 14 copper, Light Leather times 4 for 1 silver 20 copper. A Drop cheapest button.">
-          <p class="mock-tag">Drawing, not a screenshot</p>
-          <p class="bag-title"><span class="b1">Bag</span><span class="b2"> cleanup</span></p>
-          <p class="bag-sub">12 of 80 slots free</p>
-          <p class="bag-sec">MERGE STACKS</p>
-          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Linen Cloth (2 stacks)</span><span class="rt t-pos">frees 1</span></p>
-          <p class="bag-sec">OLD QUEST ITEMS</p>
-          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Bloodstained Journal</span><span class="rt t-pos">done</span></p>
-          <p class="bag-sec">WORTH THE LEAST</p>
-          <p class="bag-row"><span class="ic"></span><span class="nm q-grey">Broken Fang x3</span><span class="rt t-mut">9c</span></p>
-          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Chipped Claw x2</span><span class="rt">~14c</span></p>
-          <p class="bag-row"><span class="ic"></span><span class="nm q-white">Light Leather x4</span><span class="rt">1s 20c</span></p>
-          <p class="bag-btn">Drop cheapest</p>
-        </div>
-        <figcaption>The panel beside your bags, drawn here with example items. Hover a row to see why it is listed.</figcaption>
+      <figure class="shot small">
+        <img src="img/bag-cleanup.png" width="222" height="254" loading="lazy" decoding="async"
+             alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button.">
+        <figcaption>The panel beside your bags, from a real game. Hover a row to see why it is listed.</figcaption>
       </figure>
     </div>
 
