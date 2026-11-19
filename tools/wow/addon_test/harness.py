@@ -1865,8 +1865,10 @@ function GetQuestLogLeaderBoard(j, index)
   return t, (q and q.kinds and q.kinds[j]) or "item", false
 end
 -- The quest log's selection (an older client reads a quest's own text from
--- the selected line) and each quest's text (q.text, q.objText). selectFires:
--- a selection change fires QUEST_LOG_UPDATE, as a client might.
+-- the selected line) and each quest's text (q.text, q.objText; a quest
+-- without them has some, as real quests do; q.text = "" is one whose text
+-- the client does not have yet). selectFires: a selection change fires
+-- QUEST_LOG_UPDATE, as a client might.
 M.questSel, M.questSelects = 0, 0
 function GetQuestLogSelection() return M.questSel end
 function SelectQuestLogEntry(i)
@@ -1877,6 +1879,7 @@ end
 function GetQuestLogQuestText()
   local q = M.quests[M.questSel]
   if not q or q.isHeader then return "", "" end
+  if q.text == nil and q.objText == nil then return "The quest's story.", "What the quest asks." end
   return q.text or "", q.objText or ""
 end
 -- The player's headers are theirs to open and close.
@@ -9392,11 +9395,12 @@ def sc_bag_cleanup(sc, ref, items):
         sc.check(M.bags[e.bag][e.slot] is None, "bags vendor: sold out of the bag")
     M.CloseMerchant()
     w.settle(0.5)
-    # Collapsed quest log header: only sure verdicts are listed.
+    # Collapsed quest log header: a quest under it may still need any of them
+    # (even the journal whose own quest is done), so none is listed.
     M.quests[1].isCollapsed = True
     s5 = ns.BagScan()
-    sc.check(s5.questPartial and [s5.quest[i].id for i in range(1, len(s5.quest) + 1)] == [900106],
-             "bags: with a header closed only the finished quest's journal is listed")
+    sc.check(s5.questPartial and [s5.quest[i].id for i in range(1, len(s5.quest) + 1)] == [],
+             "bags: with a header closed nothing is listed, not even the finished quest's journal")
     M.fire("QUEST_LOG_UPDATE")
     w.settle(0.5)
     sc.check(BP.note.IsShown(BP.note) and "quest log headers are closed" in BP.note._text, "bags: panel says the quest log is partly closed")
@@ -10344,10 +10348,10 @@ BAGCHECK_LINES = ("7. last error: none", "9. Lua errors on screen: ")
 def bagcheck(sc, w, label, cmd="/fah bagcheck"):
     """Runs /fah bagcheck; checks its form; returns {number: text} and all lines."""
     out = [plain(x) for x in w.slash(cmd)]
-    body = [t.split("Forever AH: ", 1)[-1] for t in out]
+    body = [re.sub(r"^(Forever AH|Goblin Ledger): ", "", t) for t in out]
     sc.check(1 <= len(out) <= 12, "%s: at most 12 lines (%d)" % (label, len(out)))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
-    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18h", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
+    sc.check(body and body[0] == "bag check, Bags.lua 2026-11-18i", "%s: names the Bags.lua build (%s)" % (label, body[:1]))
     num = {}
     for t in body:
         m = re.match(r"^(\d+)\. (.*)$", t)
@@ -10526,7 +10530,9 @@ def qobj(*ids):
 # Wish (94892) -> Delivering Closure (94893), both of those giving Marshal
 # Ryan's Crest (266428); all for the Alliance races (mask 77 + 2^32). Made
 # up: a lantern (a tool) The Old Lantern gives, along a chain with no object
-# between its quests.
+# between its quests; a Torn Page The Torn Page gives, whose next quest
+# (950099) QuestieDB has no row for (it may not know every quest on Forever);
+# Woven Cloth (a trade good) a quest asks for.
 QDB_UNDEAD, QDB_PALADIN = 16, 2
 QDB_QUESTS = {
     2198: {"name": "The Shattered Necklace", "requiredRaces": QDB_ALLY, "sourceItemId": 7666, "nextQuestInChain": 2199,
@@ -10565,6 +10571,8 @@ QDB_QUESTS = {
     950070: {"name": "The Old Lantern", "sourceItemId": 900607, "nextQuestInChain": 950071},
     950071: {"name": "Into the Dark", "nextQuestInChain": 950072, "preQuestSingle": [950070]},
     950072: {"name": "Deeper Still", "preQuestSingle": [950071]},
+    950080: {"name": "The Torn Page", "sourceItemId": 900608, "nextQuestInChain": 950099},
+    950095: {"name": "Cloth for the Guard", "objectives": qobj(900610)},
     94885: {"name": "Field Marshal's Log", "requiredRaces": QDB_ALLY, "requiredLevel": 36, "questLevel": 40,
             "zoneOrSort": 16591, "nextQuestInChain": 94887, "objectives": qobj(266427), "startedBy": {3: [266427]},
             "finishedBy": {1: [257558]},
@@ -10597,6 +10605,8 @@ QDB_ITEMS = {
              "npcDrops": [254560, 256798, 256952, 260969, 260996]},
     266428: {"name": "Marshal Ryan's Crest", "class": 12, "relatedQuests": [94892, 94893]},
     267256: {"name": "Field Marshal's Log", "class": 15},
+    900608: {"name": "Torn Page", "class": 15},
+    900610: {"name": "Woven Cloth", "class": 7},
 }
 # The bags: (bag, slot, item, count, name, fields for the mock game).
 QUEST_BAG = [
@@ -10766,7 +10776,7 @@ def ref_quest_index(quests):
 
 
 def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, start_q=None, usable=True,
-                      hidden=None, named_by=None):
+                      hidden=None, named_by=None, titles=None):
     """(kind, quest name, repeatable) or None, as Bags.lua QuestieVerdict decides it.
     kind: keep, starts, done, open, or maybe-next / maybe-hidden (not sure).
     in_log: the quests known to be in the log; log_known: whether every other
@@ -10778,8 +10788,10 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
     a note you only read (usable False) is maybe needed while the quest
     right after its giver is not done.
     hidden: closed headers hide quests (default: not log_known), so nothing
-    is done. named_by: the title of a quest in the log that names the item:
-    it keeps it, whatever QuestieDB says."""
+    is done or not started (both are not sure). named_by: the title of a
+    quest in the log that names the item: it keeps it, whatever QuestieDB
+    says (also when no quest QuestieDB knows uses it for you). A next quest
+    QuestieDB has no row for counts by its id (titles: its title in the log)."""
     if hidden is None:
         hidden = not log_known
     idx = ref_quest_index(quests)
@@ -10819,7 +10831,7 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
                 if add(n, "nextq"):
                     given_for.setdefault(n, q)
     if not order:
-        return None
+        return ("keep", named_by, False) if named_by else None
 
     def pick(pred):
         best = None
@@ -10834,12 +10846,13 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
 
     def logged(q):
         return True if q in in_log else (False if log_known else None)
-    name = lambda q: quests[q]["name"]  # noqa: E731
+    def name(q):
+        return quests[q]["name"] if q in quests else (titles or {}).get(q)
 
     def final(v):
         if named_by:
             return ("keep", named_by, False)
-        if v[0] == "done" and hidden:
+        if v[0] in ("done", "open") and hidden:
             return ("maybe-hidden", v[1], False)
         return v
 
@@ -10853,7 +10866,16 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
                 return None, None
             seen.add(n)
             row = quests.get(n)
-            if not row or not mine(row):
+            if not row:
+                s = logged(n)
+                if s is True:
+                    return "keep", n
+                if n in done:
+                    return None, None
+                if s is None:
+                    return "hidden", n
+                return ("maybe", n) if step == 1 else (None, None)
+            if not mine(row):
                 return None, None
             if tool and step > 1 and (set(quests[q].get("finishedBy", {}).get(2, []))
                                       & set(row.get("startedBy", {}).get(2, []))):
@@ -10911,8 +10933,6 @@ def ref_quest_verdict(quests, iid, in_log, done, race=1, cls=1, log_known=True, 
     q2 = pick(lambda x: not closed(x) and (got or after_log(x)))
     if q2:
         return ("keep", name(q2), False)
-    if not log_known:
-        return None
     return final(("open", name(q), False))
 
 
@@ -10926,7 +10946,9 @@ def quest_line_text(v):
     if kind == "maybe-hidden":
         return "Not sure: some quest log headers are closed", "muted"
     if kind == "maybe-next":
-        return "May be needed for %s" % n, "muted"
+        return "May be needed for %s" % (n or "the next quest"), "muted"
+    if kind == "maybe-reading":
+        return "Not sure yet: still reading your quest log", "muted"
     if kind == "starts":
         return "Starts %s" % n, "buy"
     if rep:
@@ -10979,14 +11001,16 @@ def plain_tip(fields):
 
 
 def quest_checks(sc, w, quests, in_log, done, label, race=1, cls=1, log_known=True, ids=None, bag_list=None,
-                 hidden=None, named=None):
+                 hidden=None, named=None, titles=None):
     """Every bag item's verdict, tooltip line and colour against the model.
-    named: item -> the title of the quest in the log that names it."""
+    named: item -> the title of the quest in the log that names it. titles:
+    quest -> its title in the log, for a quest QuestieDB has no row for."""
     for bag, slot, iid, count, name, fields in (bag_list or QUEST_BAG):
         if ids and iid not in ids:
             continue
         want = ref_quest_verdict(quests, iid, in_log, done, race, cls, log_known, fields.get("startsQuest"),
-                                 usable="useSpell" in fields, hidden=hidden, named_by=(named or {}).get(iid))
+                                 usable="useSpell" in fields, hidden=hidden, named_by=(named or {}).get(iid),
+                                 titles=titles)
         sc.eq(lua_verdict(w, iid), want, "%s: %s verdict" % (label, name))
         tip = quest_tip(w, bag, slot)
         if want is None:
@@ -11105,10 +11129,11 @@ def sc_bag_questie(sc, ref, items):
           "questie: a quest only available until one you did counts as done")
     quest_checks(sc, w, quests, in_log, done, "later")
 
-    # Closed quest log headers and no IsOnQuest: "not started" cannot be told,
-    # and done is not sure either: a quest under the closed header may name
-    # the item (your quest log beats QuestieDB). Nor for the phial: whether
-    # Restoring the Necklace was taken at the scrying bowl cannot be told.
+    # Closed quest log headers and no IsOnQuest: neither done nor "not
+    # started" is sure: a quest under the closed header may be the one, or
+    # name the item (your quest log beats QuestieDB). Nor for the phial:
+    # whether Restoring the Necklace was taken at the scrying bowl cannot be
+    # told. They say so (not sure) and are listed as check log, none as done.
     M.questDone[2500] = None
     M.questDone[950010] = None
     done = done - {2500, 950010}
@@ -11119,11 +11144,13 @@ def sc_bag_questie(sc, ref, items):
     sc.eq(quest_tip(w, 0, 1), [("Not sure: some quest log headers are closed", mu)], "questie: and its tooltip says so")
     s = ns.BagScan()
     sc.eq([(s.quest[i].id, s.quest[i].why, s.quest[i].maybe) for i in range(1, len(s.quest) + 1)],
-          [(900505, "maybe", "hidden"), (900501, "maybe", "hidden"), (7667, "maybe", "hidden")],
-          "questie: with a header closed the ones that would be done are listed as not sure (by name), none as done")
+          [(900504, "maybe", "hidden"), (7846, "maybe", "hidden"), (900505, "maybe", "hidden"),
+           (900503, "maybe", "hidden"), (900501, "maybe", "hidden"), (7667, "maybe", "hidden")],
+          "questie: with a header closed the ones that would be done or not started are listed as not sure (by name), "
+          "none as done or not started")
     M.fire("QUEST_LOG_UPDATE")
     w.settle(0.5)
-    sc.check(all(r[1] == "check log" for r in quest_rows(BP)) and len(quest_rows(BP)) == 3,
+    sc.check(all(r[1] == "check log" for r in quest_rows(BP)) and len(quest_rows(BP)) == 6,
              "questie panel: with a header closed they say check log (%s)" % quest_rows(BP))
     # C_QuestLog.IsOnQuest knows every quest, closed headers or not; still,
     # the quests under a closed header cannot be read, so done stays not sure.
@@ -11999,10 +12026,219 @@ def sc_bag_quest_hidden(sc, ref, items):
     sc.clean(w, "hidden")
 
 
+def sc_bag_quest_unsure(sc, ref, items):
+    """Where it is not sure, the cleanup never offers a quest item to drop or sell: the Field
+    Marshal's Log worth 1c (and a grey one) on Saving Marshal Ryan under a closed header with
+    no IsOnQuest; the log while QuestieDB's quests are still being read, and an item QuestieDB
+    does not know that a quest's title names; the log while a quest's own text is not in yet
+    (not sure yet, read again a moment later; given up after a few tries); a note whose next
+    quest QuestieDB has no row for; without QuestieDB, a finished quest's starter under a closed
+    header. A trade good a done quest asked for stays on the cheapest list with a header closed
+    (it can be had again), and is no old quest item."""
+    buy, pos, mu = QDB_COLORS["buy"], QDB_COLORS["pos"], QDB_COLORS["muted"]
+
+    def ids(lst):
+        return [lst[i].id for i in range(1, len(lst) + 1)]
+
+    # (1) On Saving Marshal Ryan, its header closed, no IsOnQuest; the log worth 1c.
+    w, quests = marshal_world(ref, items, vendor=1)
+    M, ns = w.M, w.ns
+    BP = ns.BagPanel
+    bag_quests(w, farholde(collapsed=True))
+    M.questDone = w.to_lua({94885: True})
+    M.fire("QUEST_LOG_UPDATE")
+    w.settle(0.5)
+    sc.eq(lua_verdict(w, 267256), ("maybe-hidden", "Saving Marshal Ryan", False),
+          "unsure: Saving Marshal Ryan may be under the closed header: not sure (it was no verdict)")
+    sc.eq(quest_tip(w, 0, 1), [("Not sure: some quest log headers are closed", mu)], "unsure: the tooltip says so")
+    drop_names(sc, w, "unsure 1c, header closed")
+    sc.eq(quest_rows(BP), [(267256, "check log", buy)], "unsure panel: listed as check log")
+    # A grey copy: never sold as junk.
+    M["items"][267256].quality = 0
+    M.bags[0][1].quality = 0
+    s = ns.BagScan()
+    sc.eq(ids(s.junk), [TOOTH], "unsure grey: the log is not junk (%s)" % ids(s.junk))
+    M.OpenMerchant()
+    w.settle(0.5)
+    sb = BP.sellButton
+    sc.eq(sb.text._text if sb.IsVisible(sb) else None, "Sell junk (1, 3c)", "unsure grey: Sell junk counts only the tooth")
+    if sb.IsVisible(sb):
+        M.click(sb)
+        w.settle(0.5)
+    sc.eq(sorted(M.sold[i] for i in range(1, len(M.sold) + 1)), [TOOTH], "unsure grey: Sell junk sells the tooth, not the log")
+    sc.check(M.bags[0][1] is not None, "unsure grey: the log is still in the bag")
+    M.CloseMerchant()
+    M.CloseBags()
+    w.settle(0.2)
+    sc.clean(w, "unsure")
+
+    # (2) QuestieDB's quests still being read (a new QuestieDB, nothing saved): the soulbound log
+    # waits; unbound cloth does not; an item QuestieDB does not know stays when a quest's title
+    # names it.
+    wb = World(ref, items)
+    install_questie(wb)
+    bag_add_item(wb, 267256, "Field Marshal's Log", 1, 1, **MARSHAL_LOG[5])
+    bag_put(wb, 0, 1, 267256, 1, bound=True)
+    bag_add_item(wb, TOOTH, "Broken Tooth", 0, 3, classID=15, maxStack=20)
+    bag_put(wb, 0, 2, TOOTH, 1)
+    bag_add_item(wb, 900610, "Woven Cloth", 1, 25, classID=7, maxStack=20)
+    bag_put(wb, 0, 3, 900610, 5)
+    bag_quests(wb, LOG_ELSEWHERE)
+    s = wb.ns.BagScan()
+    sc.eq(wb.ns.QuestIndex.state, "building", "unsure building: the bag scan starts the index")
+    s = wb.ns.BagScan()
+    sc.check(267256 not in ids(s.drop), "unsure building: the soulbound log is not on the cheapest list (%s)" % ids(s.drop))
+    sc.check(900610 in ids(s.drop), "unsure building: unbound cloth still is (%s)" % ids(s.drop))
+    sc.check(s.questBuilding is True, "unsure building: the scan says QuestieDB is still being read")
+    c = wb.ns.BagPanel.Cheapest(wb.ns.BagPanel, s)
+    sc.eq(c.id if c is not None else None, TOOTH, "unsure building: Drop cheapest picks the Broken Tooth")
+    out = [plain(x) for x in wb.slash("/fah bags")]
+    sc.check(any("still reading Questie's quests" in t for t in out), "unsure building /fah bags: says so (%s)" % out)
+    wb.settle(1.0)
+    sc.eq(wb.ns.QuestIndex.state, "ready", "unsure building: then the index is ready")
+    bag_add_item(wb, 900611, "Sealed Orders", 1, 2, classID=15, maxStack=1)
+    bag_put(wb, 0, 4, 900611, 1)
+    bag_quests(wb, [{"title": "Farholde", "isHeader": True},
+                    {"title": "The Sealed Orders", "questID": 950058, "objectives": []}])
+    s = wb.ns.BagScan()
+    sc.check(900611 not in ids(s.drop), "unsure: an item QuestieDB does not know, a quest titled with it: kept (%s)" % ids(s.drop))
+    bag_quests(wb, LOG_ELSEWHERE)
+    s = wb.ns.BagScan()
+    sc.check(900611 in ids(s.drop), "unsure: with no quest naming it, it is on the cheapest list (%s)" % ids(s.drop))
+    sc.clean(wb, "unsure building")
+
+    # (3) A quest's own text not in yet (right after login): not sure yet, never Can drop; read
+    # again a moment later, by itself, and then the quest that names it keeps it.
+    w3, quests = marshal_world(ref, items)
+    BP3 = w3.ns.BagPanel
+    late = [{"title": "Farholde", "isHeader": True},
+            {"title": "A Seal for Farholde", "questID": 950050, "objectives": [], "text": "", "objText": ""}]
+    bag_quests(w3, late)
+    w3.M.questDone = w3.to_lua({q: True for q in (94885, 94887, 94892)})
+    w3.M.questSel = 2
+    w3.M.fire("QUEST_LOG_UPDATE")
+    w3.settle(0.5)
+    sc.eq(lua_verdict(w3, 267256), ("maybe-reading", "Saving Marshal Ryan", False),
+          "late text: QuestieDB says done, a quest's text is not in yet: not sure yet")
+    sc.eq(quest_tip(w3, 0, 1), [("Not sure yet: still reading your quest log", mu)], "late text: the tooltip says so")
+    sc.eq(quest_rows(BP3), [(267256, "wait", buy)], "late text panel: the row says wait")
+    lines = row_lines(sc, w3, 267256) or []
+    sc.check("Not sure yet: still reading your quest log. Check again in a moment." in lines,
+             "late text panel: the row tooltip says why (%s)" % lines)
+    sc.check(not any("Can drop" in l or "destroy" in l for l in lines), "late text panel: never offered as droppable (%s)" % lines)
+    out = [plain(x) for x in w3.slash("/fah bags")]
+    sc.check(any("[Field Marshal's Log] (still reading your quest log)" in t for t in out), "late text /fah bags (%s)" % out)
+    body = questcheck(sc, w3, "267256", "late text questcheck")
+    sc.eq(body[-2:], ["quest log: no quest names it; 1 quest read, some quest text not in yet",
+                      "verdict: Not sure yet: still reading your quest log"], "late text: /fah questcheck says so")
+    sc.eq(w3.M.questSel, 2, "late text: the player's selection is put back")
+    w3.M.quests[2].text = "Abigail Lawson wants the Field Marshal's Log back."
+    w3.settle(3.0)
+    sc.eq(quest_rows(BP3), [], "late text panel: it looked again by itself; the quest's text keeps the log")
+    sc.eq(lua_verdict(w3, 267256), ("keep", "A Seal for Farholde", False), "late text: once the text is in, kept")
+    sc.eq(w3.M.questSel, 2, "late text: the selection is still the player's")
+    # A quest whose text never comes: read a few times, a few seconds apart, then given up.
+    bag_quests(w3, [{"title": "Farholde", "isHeader": True},
+                    {"title": "Silent Orders", "questID": 950057, "objectives": [], "text": "", "objText": ""}])
+    n0 = w3.M.questSelects
+    for _ in range(6):
+        lua_verdict(w3, 267256)
+        w3.settle(2.1)
+    sc.eq(lua_verdict(w3, 267256), ("done", "Saving Marshal Ryan", False),
+          "late text: a quest whose text never comes in is given up after a few tries: can drop")
+    sc.check(w3.M.questSelects - n0 <= 10, "late text: at most 5 tries (%d selects)" % (w3.M.questSelects - n0))
+    w3.M.CloseBags()
+    w3.settle(0.2)
+    sc.clean(w3, "late text")
+
+    # (4) A note whose next quest QuestieDB has no row for: counted by its id.
+    w4 = World(ref, items)
+    quests = install_questie(w4)
+    torn = [(0, 1, 900608, 1, "Torn Page", {"classID": 15, "bind": 1, "maxStack": 1})]
+    bag_add_item(w4, 900608, "Torn Page", 1, 0, **torn[0][5])
+    bag_put(w4, 0, 1, 900608, 1, bound=True)
+    bag_quests(w4, LOG_ELSEWHERE)
+    w4.settle(6.0)
+    errand = [{"title": "Zone", "isHeader": True}, {"title": "Mystery Errand", "questID": 950099, "objectives": []}]
+    chain_state(sc, w4, quests, torn, errand, (950080,), "torn page, next quest in the log", titles={950099: "Mystery Errand"})
+    sc.eq(lua_verdict(w4, 900608), ("keep", "Mystery Errand", False), "torn page: the next quest (no QuestieDB row) in the log: keep")
+    sc.eq(quest_tip(w4, 0, 1), [("Keep: needed for Mystery Errand", buy)], "torn page: named from the quest log")
+    chain_state(sc, w4, quests, torn, LOG_ELSEWHERE, (950080,), "torn page, next quest not taken")
+    sc.eq(lua_verdict(w4, 900608), ("maybe-next", None, False), "torn page: the next quest not taken: may be needed")
+    sc.eq(quest_tip(w4, 0, 1), [("May be needed for the next quest", mu)], "torn page: grey maybe line")
+    chain_state(sc, w4, quests, torn, LOG_ELSEWHERE, (950080, 950099), "torn page, next quest done")
+    sc.eq(lua_verdict(w4, 900608), ("done", "The Torn Page", False), "torn page: the next quest done: can drop")
+    sc.clean(w4, "torn page")
+
+    # (5) Without QuestieDB: the letter whose quest is done is listed, but not under a closed header.
+    w5 = World(ref, items)
+    bag_add_item(w5, 900501, "Sealed Letter", 1, 0, classID=12, bind=4, maxStack=1, startsQuest=950001)
+    bag_put(w5, 0, 1, 900501, 1)
+    w5.M.questDone[950001] = True
+    bag_quests(w5, [{"title": "Uldaman", "isHeader": True}])
+    s = w5.ns.BagScan()
+    sc.eq([(s.quest[i].id, s.quest[i].why) for i in range(1, len(s.quest) + 1)], [(900501, "done")],
+          "no questie: the letter whose quest is done is listed")
+    bag_quests(w5, [{"title": "Uldaman", "isHeader": True, "isCollapsed": True}])
+    s = w5.ns.BagScan()
+    sc.check(s.questPartial is True and len(s.quest) == 0,
+             "no questie: under a closed header it is not listed as done (%s)" % [s.quest[i].id for i in range(1, len(s.quest) + 1)])
+    # A quest whose text is not in yet: not listed as done until it is (it may name the letter).
+    bag_quests(w5, [{"title": "Uldaman", "isHeader": True},
+                    {"title": "The Courier", "questID": 950059, "objectives": [], "text": "", "objText": ""}])
+    s = w5.ns.BagScan()
+    sc.eq(len(s.quest), 0, "no questie: a quest's text not in yet: the letter is not listed as done")
+    sc.check(s.questReading is True, "no questie: the scan says quest text is still being read")
+    w5.M.quests[2].text = "Speak with the courier in Ironforge."
+    w5.settle(2.5)
+    s = w5.ns.BagScan()
+    sc.eq([(s.quest[i].id, s.quest[i].why) for i in range(1, len(s.quest) + 1)], [(900501, "done")],
+          "no questie: once the text is in (it does not name the letter), the letter is listed as done")
+    sc.clean(w5, "unsure no questie")
+
+    # (5b) A Horde character: no quest QuestieDB knows uses the log for them, but a quest in
+    # their log titled with it still keeps it.
+    wh = World(ref, items, faction="Horde")
+    wh.M.race = wh.to_lua(["Orc", "Orc", 2])
+    install_questie(wh)
+    bag_add_item(wh, 267256, "Field Marshal's Log", 1, 0, **MARSHAL_LOG[5])
+    bag_put(wh, 0, 1, 267256, 1, bound=True)
+    bag_quests(wh, LOG_ELSEWHERE)
+    wh.settle(6.0)
+    sc.eq(lua_verdict(wh, 267256), None, "unsure horde: not their chain, no verdict")
+    bag_quests(wh, farholde((960001, "Field Marshal's Log")))
+    sc.eq(lua_verdict(wh, 267256), ("keep", "Field Marshal's Log", False),
+          "unsure horde: a quest in their log titled with it keeps it")
+    sc.clean(wh, "unsure horde")
+
+    # (6) Cloth a done quest asked for, a header closed: not sure, but it can be had again, so it
+    # stays on the cheapest list and is no old quest item; the log (a quest gave it) is held.
+    w6, quests = marshal_world(ref, items)
+    bag_add_item(w6, 900610, "Woven Cloth", 1, 25, classID=7, maxStack=20)
+    bag_put(w6, 0, 3, 900610, 5)
+    bag_quests(w6, farholde(collapsed=True))
+    w6.M.questDone = w6.to_lua({q: True for q in (950095, 94885, 94887, 94892)})
+    w6.M.fire("QUEST_LOG_UPDATE")
+    w6.settle(0.5)
+    sc.eq(lua_verdict(w6, 900610), ("maybe-hidden", "Cloth for the Guard", False), "cloth: a header closed: not sure")
+    s = w6.ns.BagScan()
+    sc.check(900610 in ids(s.drop), "cloth: still on the cheapest list (%s)" % ids(s.drop))
+    sc.eq([(s.quest[i].id, s.quest[i].why, s.quest[i].maybe) for i in range(1, len(s.quest) + 1)], [(267256, "maybe", "hidden")],
+          "cloth: no old quest item; the log is listed as not sure")
+    bag_quests(w6, farholde((950051, "Wanted: Gath'Ilzogg")))
+    s = w6.ns.BagScan()
+    sc.check(900610 in ids(s.drop), "cloth: headers open, done: on the cheapest list")
+    sc.eq([(s.quest[i].id, s.quest[i].why) for i in range(1, len(s.quest) + 1)], [(267256, "done")],
+          "cloth: headers open: only the log is listed, as done")
+    w6.M.CloseBags()
+    w6.settle(0.2)
+    sc.clean(w6, "cloth")
+
+
 def questcheck(sc, w, arg, label):
     """/fah questcheck: its lines without the addon's prefix; a few short ASCII lines."""
     out = [plain(x) for x in w.slash(("/fah questcheck " + arg).rstrip())]
-    body = [t.split("Forever AH: ", 1)[-1] for t in out]
+    body = [re.sub(r"^(Forever AH|Goblin Ledger): ", "", t) for t in out]
     sc.check(1 <= len(body) <= 6, "%s: at most 6 lines (%d: %s)" % (label, len(body), body))
     sc.check(all(all(ord(c) < 128 for c in t) for t in out), "%s: plain ASCII" % label)
     return body
@@ -12012,7 +12248,7 @@ def sc_bag_questcheck(sc, ref, items):
     """/fah questcheck (no name: the last quest item hovered): the item, QuestieDB's quests for it
     and their roles and states, the quests after the one that gave it, the quests in the log
     that name it, and the verdict, in a few short lines."""
-    head = "quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-18h"
+    head = "quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-18i"
     w, quests = marshal_world(ref, items)
     M = w.M
     sc.eq(questcheck(sc, w, "", "questcheck nothing hovered"),
@@ -12028,6 +12264,12 @@ def sc_bag_questcheck(sc, ref, items):
     link = "|cffffffff|Hitem:267256::::::::60:::::|h[Field Marshal's Log]|h|r"
     for arg in ("267256", "Field Marshal's Log", "[field marshal's log]", link):
         sc.eq(questcheck(sc, w, arg, "questcheck " + arg[:12]), want, "questcheck by %r" % arg[:24])
+    # Dying Wish in the log though the game says it is done: the chain line says so, as the verdict does.
+    marshal_state(sc, w, quests, farholde((94892, "Dying Wish")), (94885, 94887, 94892), "questcheck, Dying Wish flagged done")
+    sc.eq(questcheck(sc, w, "267256", "questcheck flagged done")[2:],
+          ["after 94887: 94892 Dying Wish: in your log (game says done)",
+           "quest log: no quest names it; 1 quest read",
+           "verdict: Keep: needed for Dying Wish"], "questcheck: a quest in the log the game says is done stops the chain there")
     marshal_state(sc, w, quests, LOG_ELSEWHERE, (94885, 94887), "questcheck, Dying Wish not taken")
     sc.eq(questcheck(sc, w, "267256", "questcheck maybe")[2:],
           ["after 94887: 94892 Dying Wish: not started",
@@ -12062,7 +12304,7 @@ def sc_bag_questcheck(sc, ref, items):
     w2, _ = marshal_world(ref, items, questie=False)
     bag_quests(w2, farholde((94892, "Dying Wish")))
     body = questcheck(sc, w2, "Field Marshal's Log", "questcheck no questie")
-    sc.eq(body, ["quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-18h",
+    sc.eq(body, ["quest check: [Field Marshal's Log] (item 267256, Use effect no), Bags.lua 2026-11-18i",
                  "QuestieDB: not loaded",
                  "quest log: no quest names it; 1 quest read",
                  "verdict (quest log only): not sure, no quest in your log names it"], "questcheck: without QuestieDB")
@@ -12158,6 +12400,7 @@ SCENARIOS = [
     ("bag-quest-log-names", sc_bag_quest_log_names),
     ("bag-quest-hidden", sc_bag_quest_hidden),
     ("bag-questcheck", sc_bag_questcheck),
+    ("bag-quest-unsure", sc_bag_quest_unsure),
 ]
 
 
