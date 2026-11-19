@@ -1950,6 +1950,7 @@ local function RowTooltip(row)
   local e, kind = row.entry, row.kind
   local tt = _G.GameTooltip
   if not e or not tt then return end
+  row.glNoEnchants = true   -- Enchants.lua: no enchant lines on a tooltip this row owns
   tt:SetOwner(row, "ANCHOR_LEFT")
   local slot = kind == "merge" and e.from or e
   local shown = false

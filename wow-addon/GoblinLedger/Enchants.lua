@@ -110,12 +110,14 @@ local ENCHANTS = {
   a11647 = { n = "Lesser Arcanum (Agi +8)", id = 1508, m = { 11737, 1, 11754, 1, 11951, 4, 11563, 4 }, lvl = 50, fee = 300000 },
   -- Lesser Arcanum of Voracity (item 11648, quest 4484, medium): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1509 https://www.wowhead.com/classic/quest=4484
   a11648 = { n = "Lesser Arcanum (Int +8)", id = 1509, m = { 11737, 1, 11754, 1, 11951, 4, 11563, 4 }, lvl = 50, fee = 300000 },
+  -- Lydros's Arcanums bind when picked up, so their quests are the only way: quests 7483-7485 need
+  -- level 58 in Forever's QuestieDB (field requiredLevel; Classic DBs say 57): https://classicdb.ch/?quest=7483
   -- Arcanum of Rapidity (item 18329, quest 7483, high): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2543 https://www.wowhead.com/classic/quest=7483
-  a18329 = { n = "Arcanum of Rapidity", id = 2543, m = { 18332, 1, 18335, 1, 14344, 2, 12938, 2 }, lvl = 50 },
+  a18329 = { n = "Arcanum of Rapidity", id = 2543, m = { 18332, 1, 18335, 1, 14344, 2, 12938, 2 }, lvl = 58 },
   -- Arcanum of Focus (item 18330, quest 7484, high): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2544 https://www.wowhead.com/classic/quest=7484
-  a18330 = { n = "Arcanum of Focus", id = 2544, m = { 18333, 1, 18335, 1, 14344, 4, 12753, 2 }, lvl = 50 },
+  a18330 = { n = "Arcanum of Focus", id = 2544, m = { 18333, 1, 18335, 1, 14344, 4, 12753, 2 }, lvl = 58 },
   -- Arcanum of Protection (item 18331, quest 7485, high): https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2545 https://www.wowhead.com/classic/quest=7485
-  a18331 = { n = "Arcanum of Protection", id = 2545, m = { 18334, 1, 18335, 1, 14344, 2, 12735, 1 }, lvl = 50 },
+  a18331 = { n = "Arcanum of Protection", id = 2545, m = { 18334, 1, 18335, 1, 14344, 2, 12735, 1 }, lvl = 58 },
   -- Crude Scope (Engineering, item 4405): https://www.wowhead.com/classic/item=4405
   i4405 = { n = "Crude Scope +1", id = 30, m = { 4405, 1 }, lvl = 5 },
   -- Standard Scope (Engineering, item 4406): https://www.wowhead.com/classic/item=4406
@@ -207,7 +209,8 @@ local ENCHANTS = {
   -- Enchant Bracer - Greater Agility (spell 1248500, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248500 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=1887
   s1248500 = { n = "Greater Agility +7", id = 1887, m = { 11176, 3, 11174, 1 } },
   -- Enchant 2H Weapon - Lesser Agility (spell 1248510, low): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-1248510 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2618
-  s1248510 = { n = "Lesser Agility +15", id = 2618, m = { 11137, 2, 11139, 1, 11174, 1 } },
+  -- No number: the label says Agility +15, its aura (spell 19989) gives +9. Either way it ranks below Agility +15 (2564).
+  s1248510 = { n = "Lesser Agility", id = 2618, m = { 11137, 2, 11139, 1, 11174, 1 } },
   -- Enchant 2H Weapon - Lesser Strength (spell 1248511, high): https://rankedboost.com/world-of-warcraft/forever/enchants/two-handed-weapon/#e-recipe-1248511 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=2563
   s1248511 = { n = "Lesser Strength +15", id = 2563, m = { 11137, 1, 11139, 1, 11174, 2 } },
   -- Enchant Bracer - Superior Agility (spell 1248599, high): https://rankedboost.com/world-of-warcraft/forever/enchants/bracer/#e-recipe-1248599 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=7656
@@ -232,8 +235,9 @@ local ENCHANTS = {
   s1249058 = { n = "Healing Power +11", id = 8219, m = { 11175, 3, 11178, 5, 11176, 4, 249391, 4, 249424, 4 } },
   -- Enchant Necklace - Agility (spell 1249059, high): https://rankedboost.com/world-of-warcraft/forever/enchants/necklace/#e-recipe-1249059 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=904
   s1249059 = { n = "Agility +5", id = 904, m = { 11175, 2, 11178, 8, 11176, 6, 249410, 4, 249430, 4 } },
-  -- Enchant Necklace - Deflection (spell 1249060, low): https://rankedboost.com/world-of-warcraft/forever/enchants/necklace/#e-recipe-1249060 https://wago.tools/db2/SpellItemEnchantment?build=1.60.1.70959&filter[ID]=925
-  s1249060 = { n = "Deflection +5", id = 925, m = { 11175, 8, 11178, 2, 11176, 2, 249409, 4, 249430, 4 } },
+  -- Not shown: Enchant Necklace - Deflection (spell 1249060, enchant 925). Its label says Defense +5, but
+  -- its aura (spell 13930) gives +2 (rankedboost leaves the value out). Until that is checked in game, tanks
+  -- get Agility +5, and a necklace with Deflection on is left alone (up = { 925 }).
 }
 
 -- Best first: the first entry the player can use is the best, the next one the 2nd.
@@ -249,7 +253,7 @@ local PICKS = {
     ["hunter"] = { "s23800" },
     ["caster"] = { "s23804", "s1248805", up = { 2504 } },
     ["caster/MAGE3"] = { "s23804", "s1248805", up = { 2504, 2443 } },
-    ["healer"] = { "s23803", "s1248757", up = { 2505 } },
+    ["healer"] = { "s23803", "s1248757", up = { 2505 }, mid = { 2568 } },
     ["healer/PALADIN"] = { "s23804", up = { 2505 } },
     ["healer/SHAMAN"] = { "s23804", up = { 2505 } },
   },
@@ -259,7 +263,9 @@ local PICKS = {
     ["hunter"] = { "s27837", "s1248510", mid = { 2564 } },
     ["tank"] = { "s27837", "s1248510", mid = { 2564 } },
     ["caster"] = { "s1219580", "s20036", mid = { 8211, 2568 } },
-    ["healer"] = { "s1248636", "s20036", mid = { 7662 } },
+    -- Mighty Spell Power (8211) and the "Enchant Weapon" Mighty Intellect / Spirit (2568 / 2567) fit
+    -- two-handers too and beat Major Intellect: with one of them on, the best only.
+    ["healer"] = { "s1248636", "s20036", mid = { 7662, 8211, 2568, 2567 } },
   },
   shield = {
     ["melee"] = { "s20017", "s13817", up = { 7663 } },
@@ -324,7 +330,7 @@ local PICKS = {
     ["melee"] = { "s1249019" },
     ["agility"] = { "s1249059" },
     ["hunter"] = { "s1249059" },
-    ["tank"] = { "s1249060" },
+    ["tank"] = { "s1249059", up = { 925 } },
     ["caster"] = { "s1249057" },
     ["healer"] = { "s1249058" },
   },
@@ -388,7 +394,7 @@ local function shiftDown()
   local f = _G.IsShiftKeyDown
   if type(f) ~= "function" then return false end
   local ok, r = pcall(f)
-  return ok and r == true
+  return ok and r and true or false   -- older clients answer 1
 end
 
 ---------------------------------------------------------------------------
@@ -415,6 +421,22 @@ local ARMOR_MAX = { WARRIOR = 4, PALADIN = 4, HUNTER = 3, SHAMAN = 3, ROGUE = 2,
   PRIEST = 1, MAGE = 1, WARLOCK = 1 }
 local SHIELD_CLASS = { WARRIOR = true, PALADIN = true, SHAMAN = true }
 local SUB_SHIELD = 6
+-- Weapon skills a class can learn (weapon subclass ids): Classic Era's, plus one-hand axes for
+-- rogues (Forever's SkillRaceClassInfo gives Axes to warriors and rogues). Misc (14) and spears (17)
+-- need no skill. Off-hand-only weapons need dual wield (no shaman on Forever).
+local function set(...)
+  local t = {}
+  for _, v in ipairs({ ... }) do t[v] = true end
+  return t
+end
+local WEAPON_OK = {
+  WARRIOR = set(0, 1, 2, 3, 4, 5, 6, 7, 8, 10, 13, 15, 16, 18), PALADIN = set(0, 1, 4, 5, 6, 7, 8),
+  HUNTER = set(0, 1, 2, 3, 6, 7, 8, 10, 13, 15, 16, 18), ROGUE = set(0, 2, 3, 4, 7, 13, 15, 16, 18),
+  PRIEST = set(4, 10, 15, 19), SHAMAN = set(0, 1, 4, 5, 10, 13, 15), MAGE = set(7, 10, 15, 19),
+  WARLOCK = set(7, 10, 15, 19), DRUID = set(4, 5, 10, 13, 15),
+}
+local NO_SKILL = set(14, 17)
+local DUAL_WIELD = set("WARRIOR", "ROGUE", "HUNTER")
 
 -- equipLoc, classID, subclassID of an item id or link (instant: no server query).
 local function itemFacts(v)
@@ -458,7 +480,7 @@ local function facts(itemID)
   local loc, cls, sub = itemFacts(itemID)
   if loc == nil then return nil end   -- not readable now: ask again next time
   local g = groupFor(loc, cls, sub)
-  f = g and { g = g, cls = cls, sub = sub } or false
+  f = g and { g = g, cls = cls, sub = sub, loc = loc } or false
   factMemo[itemID] = f
   return f or nil
 end
@@ -467,9 +489,16 @@ E.SlotGroup = function(v)
   return loc and groupFor(loc, cls, sub) or nil
 end
 
--- Armor this class cannot wear (a mage hovering plate) gets nothing.
+-- Gear this class cannot use (a mage hovering plate or a two-hand sword) gets nothing.
 local function canWear(class, f)
-  if not class or f.cls ~= CLASS_ARMOR or not f.sub then return true end
+  if not class or not f.sub then return true end
+  if f.cls == CLASS_WEAPON then
+    local ok = WEAPON_OK[class]
+    if not ok then return true end   -- a class this file does not know
+    if not NO_SKILL[f.sub] and not ok[f.sub] then return false end
+    return f.loc ~= "INVTYPE_WEAPONOFFHAND" or DUAL_WIELD[class] == true
+  end
+  if f.cls ~= CLASS_ARMOR then return true end
   if f.sub == SUB_SHIELD then return SHIELD_CLASS[class] == true end
   local most = ARMOR_MAX[class]
   if most and f.sub >= 1 and f.sub <= 4 then return f.sub <= most end
@@ -810,24 +839,33 @@ local function costOf(key)
   return c
 end
 
--- Whole gold from 1g, whole silver under it: it is an estimate.
+-- Whole gold from 10g, whole silver under it: it is an estimate (1g 47s stays 1g 47s).
 local function roundCopper(c)
-  if c >= 10000 then return floor(c / 10000 + 0.5) * 10000 end
+  if c >= 100000 then return floor(c / 10000 + 0.5) * 10000 end
   if c >= 100 then return floor(c / 100 + 0.5) * 100 end
   return floor(c + 0.5)
 end
 E.RoundCopper = roundCopper
 
+-- Prices older than Core's limit (6 hours): the costs are grey. Core's own age line is
+-- not on gear with no price lines (most worn gear), so the grey is the hint there.
+local function stalePrices()
+  local f, most = ns.DataAge, ns.STALE_SECONDS
+  if type(f) ~= "function" or type(most) ~= "number" then return false end
+  local ok, age = pcall(f)
+  return ok and type(age) == "number" and age > most or false
+end
+
 -- "~38g", "~38g + 2 Skin of Shadow", "~38g + more" (mats with no AH price),
 -- "no AH price"; nil without price data. Second value: true = grey.
-local function costText(key)
+local function costText(key, stale)
   if dataStamp() <= 0 then return nil end
   local c = costOf(key)
   if c.copper <= 0 then return "no AH price", true end
   local money = "~" .. ns.MoneyIcons(roundCopper(c.copper))
-  if #c.missing == 1 then return money .. " + " .. c.missing[1] end
-  if #c.missing > 1 then return money .. " + more" end
-  return money
+  if #c.missing == 1 then return money .. " + " .. c.missing[1], stale end
+  if #c.missing > 1 then return money .. " + more", stale end
+  return money, stale
 end
 
 -- "4 Large Brilliant Shard, 2 Righteous Orb" (and a quest fee).
@@ -845,11 +883,11 @@ end
 E.MatsText = matsText
 
 -- The lines for a best (and 2nd) pick: { left, right, grey } rows; mats rows have mats = true.
-local function buildLines(best, second, full)
+local function buildLines(best, second, full, stale)
   E.builds = E.builds + 1
   local out = {}
   local function option(label, key)
-    local cost, grey = costText(key)
+    local cost, grey = costText(key, stale)
     out[#out + 1] = { label .. ENCHANTS[key].n, cost, grey }
     if full then out[#out + 1] = { "  " .. matsText(key), mats = true } end
   end
@@ -863,10 +901,12 @@ local function linesFor(best, second, full)
   if lineStamp ~= stamp then
     lineMemo, costMemo, lineStamp = {}, {}, stamp
   end
-  local k = best .. "|" .. (second or "") .. "|" .. (full and "f" or "c")
+  -- The age grows while the data stays the same: whether it is old is part of the key.
+  local stale = stalePrices()
+  local k = best .. "|" .. (second or "") .. "|" .. (full and "f" or "c") .. (stale and "|s" or "")
   local l = lineMemo[k]
   if not l then
-    l = buildLines(best, second, full)
+    l = buildLines(best, second, full, stale)
     lineMemo[k] = l
   end
   return l
@@ -890,6 +930,15 @@ end
 -- Tooltip lines (called by Core.lua's handlers)
 ---------------------------------------------------------------------------
 local TIPS = { GameTooltip = true, ItemRefTooltip = true }   -- not the comparison tooltips
+
+-- Our bag cleanup and sidebar rows mark themselves (glNoEnchants): a tooltip they own gets no
+-- enchant lines, also when the game builds it again later (TOOLTIP_DATA_UPDATE), after the
+-- ns.tipQuiet moment around their own Set call is over.
+local function quietOwner(tt)
+  if type(tt.GetOwner) ~= "function" then return false end
+  local ok, owner = pcall(tt.GetOwner, tt)
+  return ok and type(owner) == "table" and owner.glNoEnchants == true
+end
 
 -- The options for an item at a place, or nil: best key, 2nd key (or nil).
 local function optionsFor(itemID, link, where)
@@ -917,6 +966,7 @@ local function addLines(tt, itemID, link, info)
   if type(tt) ~= "table" or type(tt.GetName) ~= "function" then return false end
   local okN, name = pcall(tt.GetName, tt)
   if not okN or isSecret(name) or not TIPS[name] then return false end
+  if quietOwner(tt) then return false end
   local where = whereOf(info)
   if not where then return false end
   itemID = plainNumber(itemID)

@@ -1134,6 +1134,7 @@ local function RowTooltip(row)
   local id = row.itemID
   local tt = _G.GameTooltip
   if not id or not tt then return end
+  row.glNoEnchants = true   -- Enchants.lua: no enchant lines on a tooltip this row owns
   tt:SetOwner(row, "ANCHOR_RIGHT")
   local shown = SetItemTooltip(tt, id)
   if not shown then tt:AddLine(ItemName(id), QualityRGB(id)) end
