@@ -8111,6 +8111,11 @@ def sc_flip_day_drops(sc, ref, items):
     # flip): every place still fills, with the next price-history ideas
     best = [x["id"] for x in ref_history_flips_why(ref, None, (), None)[0]]
     d = 2 if len(best) >= 4 else 1
+    if len(best) <= d and DATA_FILE != SIM_DATA_FILE:
+        # A live file with too few price-history ideas (right after the sold-floor
+        # cutover no item has 2 measured sale hours yet): nothing to drop, said so.
+        print("  note: day drops: the live file has %d price-history ideas, the drop part is left out" % len(best))
+        return
     if not sc.check(len(best) > d, "day drops: price-history ideas to drop some of (%d)" % len(best)):
         return
     lines = []
@@ -8873,6 +8878,10 @@ def verdict_data(ref, items):
     a, _ = block_span(ref.text, "items")
     nl = ref.text.index("\n", a) + 1 if ref.text[a] != "\n" else a + 1
     text = ref.text[:nl] + lines + ref.text[nl:]
+    # The fixtures are the spec's cases for a fully measured day (series24): with
+    # fewer hours measured ("sells slowly" needs SLOW_HOURS) a fresh live file,
+    # just after the sold-floor cutover, would judge them by a part day.
+    text = set_header(text, "salesHours", 24)
     items2 = dict(items)
     for key, f, _, _ in VERDICT_FIXTURES:
         items2[str(ids[key])] = {"name": "Verdict " + key.capitalize(), "sell": int(f.split("|")[5]), "quality": "COMMON"}
