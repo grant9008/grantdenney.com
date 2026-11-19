@@ -97,80 +97,128 @@ end
 -- "m<type>=<value>" modifier parts). A vid (itemID * 1000 + n) has its own
 -- item line, like an item. The plain item id keeps meaning "all versions".
 -- Older data files have no variants: every item is then one plain item.
-local variantData
+-- An item's entry is read the first time something asks about that item or
+-- one of its versions, and kept: reading the whole table at once (tens of
+-- thousands of versions) took about as much memory as all the prices.
+local versionCache = {}   -- item id -> { list = { entries }, byVid = { [vid] = entry } }, or false
+local NOMODS = {}         -- shared by every entry without modifier parts (never written to)
 
-local function variants()
-  if variantData then return variantData end
-  local vd = { byItem = {}, baseOf = {} }
-  variantData = vd
+-- One "key=vid" entry of item `base`: key, vid, bonus ("12722:12740",
+-- lowest first), mods ({ [type] = value }) and how many mods; nil when it
+-- is not a usable version.
+local function versionEntry(base, entry)
+  local key, v = smatch(entry, "^%s*(.-)=(%d+)%s*$")
+  local vid = tonumber(v)
+  -- A vid is itemID * 1000 + 1..999; anything else is not a version.
+  if not (key and key ~= "" and vid and vid > base * 1000 and vid < base * 1000 + 1000) then return nil end
+  local bonus, mods, nmods = {}, nil, 0
+  for tok in string.gmatch(key, "[^:]+") do
+    local mt, mv = smatch(tok, "^m(%-?%d+)=(%-?%d+)$")
+    if mt then
+      mods = mods or {}
+      mods[tonumber(mt)] = tonumber(mv)
+      nmods = nmods + 1
+    elseif smatch(tok, "^%d+$") then
+      bonus[#bonus + 1] = tonumber(tok)
+    else
+      return nil
+    end
+  end
+  table.sort(bonus)
+  return key, vid, tconcat(bonus, ":"), mods or NOMODS, nmods
+end
+
+-- Data.lua's text for an item's versions, or nil.
+local function versionText(base)
   local raw = db.variants
-  if type(raw) ~= "table" then return vd end
+  if type(raw) ~= "table" then return nil end
+  local s = raw[base]
+  if s == nil then s = raw[tostring(base)] end
+  return type(s) == "string" and s or nil
+end
+
+-- The versions of item `base` (read on first use), or nil.
+local function itemVersions(base)
+  if type(base) ~= "number" or base ~= base then return nil end   -- (NaN is no table key)
+  local c = versionCache[base]
+  if c ~= nil then return c or nil end
+  c = false
+  local s = versionText(base)
+  if s then
+    local list, byVid = {}, {}
+    for entry in string.gmatch(s, "[^,]+") do
+      local key, vid, bonus, mods, nmods = versionEntry(base, entry)
+      if key then
+        local e = { key = key, vid = vid, bonus = bonus, mods = mods, nmods = nmods }
+        list[#list + 1] = e
+        byVid[vid] = e
+      end
+    end
+    if #list > 0 then c = { list = list, byVid = byVid } end
+  end
+  versionCache[base] = c
+  return c or nil
+end
+
+-- The item id behind a vid (a version in the variants table), or nil.
+local function baseOf(n)
+  if type(n) ~= "number" then return nil end
+  local b = floor(n / 1000)
+  local v = itemVersions(b)
+  return (v and v.byVid[n]) and b or nil
+end
+
+-- Every vid in the variants table, as a set (a new table each time, not kept).
+local function allVersionIDs()
+  local set, raw = {}, db.variants
+  if type(raw) ~= "table" then return set end
   for k, s in pairs(raw) do
     local base = tonumber(k)
     if base and type(s) == "string" then
-      local list = {}
       for entry in string.gmatch(s, "[^,]+") do
-        local key, v = smatch(entry, "^%s*(.-)=(%d+)%s*$")
-        local vid = tonumber(v)
-        -- A vid is itemID * 1000 + 1..999; anything else is not a version.
-        if key and key ~= "" and vid and vid > base * 1000 and vid < base * 1000 + 1000 then
-          local bonus, mods, nmods, ok = {}, {}, 0, true
-          for tok in string.gmatch(key, "[^:]+") do
-            local mt, mv = smatch(tok, "^m(%-?%d+)=(%-?%d+)$")
-            if mt then
-              mods[tonumber(mt)] = tonumber(mv)
-              nmods = nmods + 1
-            elseif smatch(tok, "^%d+$") then
-              bonus[#bonus + 1] = tonumber(tok)
-            else
-              ok = false
-            end
-          end
-          if ok then
-            table.sort(bonus)
-            list[#list + 1] = { key = key, vid = vid, bonus = tconcat(bonus, ":"), mods = mods, nmods = nmods }
-            vd.baseOf[vid] = base
-          end
-        end
+        local key, vid = versionEntry(base, entry)
+        if key then set[vid] = true end
       end
-      if #list > 0 then vd.byItem[base] = list end
     end
   end
-  return vd
+  return set
 end
 
 -- The item id behind a version id (itself for a plain item id).
 function ns.BaseItemID(id)
   local n = tonumber(id)
   if not n then return nil end
-  return variants().baseOf[n] or n
+  return baseOf(n) or n
 end
 
 -- True for a version id (a vid from the variants table).
 function ns.IsVariant(id)
   local n = tonumber(id)
-  return n ~= nil and variants().baseOf[n] ~= nil
+  return n ~= nil and baseOf(n) ~= nil
 end
 
 -- True when the data has separate prices for versions of this item.
 function ns.HasVariants(id)
   local n = tonumber(id)
-  return n ~= nil and variants().byItem[n] ~= nil
+  return n ~= nil and itemVersions(n) ~= nil
 end
 
 -- The version number of a vid (the "N" in "(version N)"), or nil.
 function ns.VariantNumber(id)
   local n = tonumber(id)
-  local base = n and variants().baseOf[n]
+  local base = n and baseOf(n)
   if not base then return nil end
   return n - base * 1000
 end
 
 -- How many versions have their own prices.
+local variantCount
 function ns.VariantCount()
-  local c = 0
-  for _ in pairs(variants().baseOf) do c = c + 1 end
-  return c
+  if not variantCount then
+    variantCount = 0
+    for _ in pairs(allVersionIDs()) do variantCount = variantCount + 1 end
+  end
+  return variantCount
 end
 
 -- The fields of an item link after "item:" (strings, empty ones kept), or nil.
@@ -226,7 +274,8 @@ end
 -- for that version. The most exact match wins (modifier parts count).
 function ns.FindVariant(itemID, link)
   local id = tonumber(itemID)
-  local list = id and variants().byItem[id]
+  local v = id and itemVersions(id)
+  local list = v and v.list
   if not list then return nil end
   local bonus, mods = ns.LinkBonus(link)
   if not bonus then return nil end
@@ -249,7 +298,8 @@ end
 -- of the Bear") is `name`, or nil. Versions named "(version N)" never match.
 function ns.VersionByName(itemID, name)
   local id = tonumber(itemID)
-  local list = id and variants().byItem[id]
+  local v = id and itemVersions(id)
+  local list = v and v.list
   if not list or type(name) ~= "string" or isSecret(name) or name == "" then return nil end
   for _, e in ipairs(list) do
     if type(db.items[e.vid]) == "string" and ns.ItemName(e.vid) == name then return e.vid end
@@ -261,9 +311,9 @@ end
 -- modifiers (so the game's tooltip shows that version), or nil.
 function ns.VariantLink(vid)
   local n = tonumber(vid)
-  local base = n and variants().baseOf[n]
+  local base = n and baseOf(n)
   if not base then return nil end
-  for _, e in ipairs(variants().byItem[base] or {}) do
+  for _, e in ipairs(itemVersions(base).list) do
     if e.vid == n then
       local bonus = {}
       for tok in string.gmatch(e.bonus, "[^:]+") do bonus[#bonus + 1] = tok end
@@ -287,7 +337,7 @@ local function gameName(id)
   local function good(ok, n)
     return ok and type(n) == "string" and not isSecret(n) and not unknownName(n)
   end
-  local base = variants().baseOf[id]
+  local base = baseOf(id)
   if base then
     local n = gameName(base)
     if n then return n .. " (version " .. (id - base * 1000) .. ")" end
@@ -399,7 +449,7 @@ function ns.GetItem(itemID)
     auctions = tonumber(f[10]),
   }
   -- A version of an item (random suffix gear): base is the item's own id.
-  local base = variants().baseOf[id]
+  local base = baseOf(id)
   if base then
     item.base = base
     item.variant = true
@@ -425,7 +475,7 @@ function ns.ItemName(itemID)
   if not unknownName(nm) then return nm end
   local n = gameName(id)
   if n then return n end
-  local base = variants().baseOf[id]
+  local base = baseOf(id)
   if base then return "Item " .. base .. " (version " .. (id - base * 1000) .. ")" end
   return "Item " .. id
 end
@@ -585,6 +635,20 @@ function ns.GetSeries(itemID, tf)
   return w
 end
 
+-- True when the item's hourly prices (the last week) have any price at all.
+-- A version nobody listed or bought for 3 days has none in newer data files
+-- (only its daily prices): the chart then shows those.
+function ns.HasHourlyPrices(itemID)
+  local id = tonumber(itemID)
+  if not id or not ns.GetItem(id) then return false end
+  local full = decodeFull(id, "H")
+  if not full then return false end
+  for i = 1, full.n do
+    if full.cheap[i] or full.market[i] then return true end
+  end
+  return false
+end
+
 -- How many days the item's daily prices cover (read without unpacking them).
 local dayCount = {}
 function ns.DailyPoints(itemID)
@@ -616,8 +680,13 @@ local function addName(nm, id)
   if key == "" then return end
   local list = nameIndex[key]
   if not list then
-    nameIndex[key] = { id }
+    nameIndex[key] = id   -- most names belong to one item: just its id, no list
     return
+  end
+  if type(list) == "number" then
+    if list == id then return end
+    list = { list }
+    nameIndex[key] = list
   end
   for i = 1, #list do
     if list[i] == id then return end
@@ -665,6 +734,7 @@ local function lookupName(name)
     indexGameNames()
     list = nameIndex[key]
   end
+  if type(list) == "number" then return { list } end
   return list
 end
 
@@ -689,9 +759,9 @@ local itemCount
 function ns.ItemCount()
   if not itemCount then
     itemCount = 0
-    local baseOf = variants().baseOf
+    local vids = allVersionIDs()
     for id in pairs(db.items) do
-      if not baseOf[tonumber(id) or -1] then itemCount = itemCount + 1 end
+      if not vids[tonumber(id) or -1] then itemCount = itemCount + 1 end
     end
   end
   return itemCount
@@ -1816,7 +1886,17 @@ if type(_G.CreateFrame) == "function" then
     frame:RegisterEvent("PLAYER_ENTERING_WORLD")
     frame:SetScript("OnEvent", function(self, event, arg1, arg2)
       if event == "ADDON_LOADED" then
-        if arg1 == ADDON_NAME then loadSettings() end
+        if arg1 == ADDON_NAME then
+          loadSettings()
+          -- Reading Data.lua leaves its compiled code behind as garbage (about
+          -- half as much again as the prices). One full collection now, while
+          -- the loading screen is up, frees it at once instead of over the
+          -- first minutes of play (and the memory list shows the real size).
+          if not ns.loadCollected and type(_G.collectgarbage) == "function" then
+            ns.loadCollected = true
+            pcall(_G.collectgarbage, "collect")
+          end
+        end
       elseif event == "PLAYER_LOGIN" then
         if not ns.settingsLoaded then loadSettings() end
         pcall(installTooltipHooks)   -- picks up tooltips created after us
