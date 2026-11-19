@@ -629,6 +629,63 @@ function expectedFlipIds() {
   const rawNames = APP_SRC.match(/(?:>\s*|="[^"]*)\$\{\s*[\w.]+\.name\s*\}/g) || [];
   check(rawNames.length === 0, 'app.js: no item name put into HTML unescaped ' + JSON.stringify(rawNames.slice(0, 4)));
 
+  /* ===== 1D targets after a drop that lasts (settledSellCap, the addon's settled rule) ===== */
+  // Tender Wolf Steak (18045): the real hourly rows [time, cheapest, market, listed, sold] of the
+  // 2026-11-18 data. 17s 74c on Tuesday evening, then 3s 95c to 4s 98c since Wednesday 8AM CST.
+  const STEAK_H = [[1794952800, 460, 460, 432, 0], [1794956400, 469, 469, 223, 107], [1794960000, 1774, 1774, 459, 150],
+    [1794963600, 1190, 1200, 1915, 3], [1794967200, 1187, 1188, 1755, 175], [1794970800, 1098, 1186, 1728, 61],
+    [1794974400, 999, 1059, 2069, 265], [1794985200, 809, 829, 3035, 0], [1795006800, 697, 699, 3043, 0],
+    [1795010400, 455, 645, 2652, 142], [1795014000, 455, 498, 2488, 98], [1795017600, 454, 455, 2437, 160],
+    [1795021200, 448, 453, 2747, 359], [1795024800, 447, 448, 2877, 155], [1795028400, 446, 447, 3290, 257],
+    [1795032000, 444, 445, 3371, 64], [1795035600, 443, 445, 2828, 136], [1795039200, 379, 395, 2896, 292],
+    [1795042800, 399, 418, 2839, 200], [1795046400, 398, 399, 3131, 150]];
+  const STEAK_D = [[1794873600, 464, 464, 327, 107], [1794960000, 713, 740, 2495, 2517], [1795046400, 398, 399, 3131, 150]];
+  const envS = await boot({});
+  let haveCap = false;
+  try { haveCap = envS.run('typeof settledSellCap') === 'function'; } catch (e) {}
+  check(haveCap, 'app.js has settledSellCap');
+  envS.run(`globalThis.__capOf = (h) => settledSellCap(filterSeries(seriesFromTS({ data: h.map(wowPoint) }), getPeriod('1d')));
+    globalThis.__day = (h, d) => {
+      const ts = (pts) => ({ data: pts.map(wowPoint) });
+      const first = h.length ? h[0][0] : Infinity;
+      currentItemSrc = { hist: emptySeries(), ts5m: seriesFromTS(ts(h.slice(-48))), ts1h: seriesFromTS(ts(h.slice(-365))),
+        ts6h: seriesFromTS(ts(wowBucket(d.filter((p) => p[0] < first), 21600).concat(wowBucket(h, 21600)).slice(-365))),
+        ts24h: seriesFromTS(ts(d.slice(-365))) };
+      view = '1d'; currentItemLowVol = false;
+      liveBuyRaw = h[h.length - 1][1]; liveSellRaw = h[h.length - 1][2];
+      currentSeries = filterSeries(seriesForView('1d', currentItemSrc, false), getPeriod('1d'));
+      const t = computeViewTargets({ low: liveBuyRaw, high: liveSellRaw }, 18045);
+      return { buy: t.buy, sell: t.sell };
+    };`);
+  const capOf = (h) => { try { return envS.ctx.__capOf(h); } catch (e) { return 'error: ' + e.message; } };
+  const dayAt = (T) => {
+    try { return envS.ctx.__day(STEAK_H.filter((p) => p[0] <= T), STEAK_D.filter((p) => p[0] <= T)); } catch (e) { return { sell: 'error: ' + e.message }; }
+  };
+  // 6PM CST: the last 6 hours (4s 47c, 4s 45c, 4s 45c, 3s 95c, 4s 18c, 3s 99c) are under 80% of the day's
+  // 70th percentile, so the most to ask is 4s 47c; the live spread is real again, the engine's 4s 18c stands
+  check(capOf(STEAK_H) === 447, 'steak 6PM: the settled cap is 4s 47c (' + capOf(STEAK_H) + ')');
+  check(dayAt(1795046400).sell === 418, 'steak 6PM: 1D Target Sell is the engine\'s 4s 18c (' + JSON.stringify(dayAt(1795046400)) + ')');
+  // 1PM: the day's high hours (17s 74c to 8s 29c) gave a Target Sell of 10s 59c; the last 6 hours top out at 6s 45c
+  check(dayAt(1795028400).sell === 645, 'steak 1PM: 1D Target Sell 6s 45c, not 10s 59c (' + JSON.stringify(dayAt(1795028400)) + ')');
+  // 3PM: capped at 4s 55c the day pair no longer beats the 5% cut: the engine's honest 4s 45c (was 8s 29c)
+  check(dayAt(1795035600).sell === 445, 'steak 3PM: 1D Target Sell 4s 45c, not 8s 29c (' + JSON.stringify(dayAt(1795035600)) + ')');
+  // 11AM: the drop is only 3 hours old (7AM 6s 99c is in the last 6 hours): the cap waits
+  check(dayAt(1795021200).sell === 699, 'steak 11AM: a 3-hour-old drop waits at 6s 99c (' + JSON.stringify(dayAt(1795021200)) + ')');
+  // hand-made hourly markets: a real evening premium (+20% for 8 hours a day, now 6 morning hours) keeps its upside,
+  // +25% is exactly at 80%: capped; a one-hour dip and 3 prices in 6 hours never cap
+  const T0 = 1795046400;
+  const hourRows = (mkts) => mkts.map((m, i) => [T0 - (mkts.length - 1 - i) * 3600, m == null ? 0 : m - 1, m == null ? 0 : m, 500, 5]);
+  const eve = (b, e) => [].concat(Array(16).fill(b), Array(8).fill(e));
+  check(capOf(hourRows(eve(100, 120).concat(eve(100, 120)).slice(6).concat(Array(6).fill(100)))) === 0,
+    'evening +20%: no cap in the morning');
+  check(capOf(hourRows(eve(100, 125).concat(eve(100, 125)).slice(6).concat(Array(6).fill(100)))) === 100,
+    'evening +25%: at exactly 80% the cap applies');
+  check(capOf(hourRows(Array(23).fill(1000).concat([500]))) === 0, 'a one-hour dip: no cap');
+  check(capOf(hourRows(Array(18).fill(1000).concat(Array(6).fill(500)))) === 500, '6 hours at 500: capped at 500');
+  check(capOf(hourRows(Array(18).fill(1000).concat([400, null, null, null, 400, 400]))) === 0, '3 prices in 6 hours: no cap');
+  check(capOf(hourRows(Array(18).fill(100).concat(Array(6).fill(300)))) === 0, 'a rise: no cap');
+  check(envS.errors.length === 0, 'settled cap: no errors ' + envS.errors.slice(0, 3).join(' | '));
+
   /* house rules: plain ASCII in what the new code writes and in the code itself, no long dashes */
   env.ctx.showAutoFavList('auto:epics');
   await tick(10);

@@ -11515,6 +11515,132 @@ def sc_bag_quest_log_fallback(sc, ref, items):
     sc.clean(w, "log fallback")
 
 
+def settled_fields(mkt, vendor=0):
+    """The fields after the name of a hand-made item from hourly market prices
+    (None = nothing listed); the cheapest is 1 copper under the market."""
+    cheap = [None if m is None else m - 1 for m in mkt]
+    c, m = cheap[-1] or 0, mkt[-1] or 0
+    return "%d|%d|500|100|%d|%d|%s|%s" % (c, m, m, vendor, enc_series(cheap, mkt, [5] * len(mkt)),
+                                          enc_series([c] * 5, [m] * 5, [100] * 5))
+
+
+def evening_day(base, eve):
+    """A day of hourly market prices: 16 hours at base, then 8 evening hours at eve."""
+    return [base] * 16 + [eve] * 8
+
+
+# A drop that lasts (Recommend.lua settledHigh): (key, fields after the name, the
+# Suggested price, List At and Sell now, each worked out by hand).
+SETTLED_FIXTURES = [
+    # Tender Wolf Steak (18045), the real 2026-11-18 6PM CST line: 17s 74c on Tuesday evening, then
+    # 3s 95c to 4s 98c since Wednesday 8AM. The 1D 70th percentile is 8s 29c; the last 6 hours
+    # (4s 47c, 4s 45c, 4s 45c, 3s 95c, 4s 18c, 3s 99c) are all under 80% of it, so the target is 4s 47c.
+    ("steak", "398|399|3131|150|534|300|cs,9,109,-g8,-3,-2h,-2r,,,-5a,,,,,,-34,-6q,,-1,-6,-1,-1,-2,-1,-1s,k,-1;"
+              "cs,9,109,-fy,-c,-2,-3j,,,-6e,,,,,,-3m,-1i,-43,-17,-2,-5,-1,-2,,-1e,n,-j;,2z,46,3,4v,1p,7d,,,,,,,,,,3y,"
+              "2q,4g,9z,4b,75,1s,3s,84,5k,46|cw,6x,-8r;cw,7o,-9h;2z,1xx,46|98", 447, 447, 397),
+    # a real evening premium: 8 hours a day at 120, 100 the rest; now the 6 morning hours at 100
+    # (over 80% of the 70th percentile 120): the evening price is kept
+    ("evening", settled_fields((evening_day(100, 120) * 3)[6:54]), 120, 120, 98),
+    # the same at 125: 100 is exactly 80% of it, so the target is 100
+    ("evening25", settled_fields((evening_day(100, 125) * 3)[6:54]), 100, 100, 98),
+    # a rise that lasts: 18 hours at 100, 6 at 300 to 340 (now 300): the market floor follows it, no cap
+    # and no chasing the 340 peak
+    ("rise", settled_fields([100] * 18 + [300, 340, 330, 320, 310, 300]), 300, 298, 298),
+    # up at 300 for 10 hours, back at 100 for 6: the target settles at 100
+    ("fallen", settled_fields([100] * 8 + [300] * 10 + [100] * 6), 100, 100, 98),
+    # 18 hours at 1000, then 400 with only 3 prices in the last 6 hours: too few, no cap
+    ("patchy3", settled_fields([1000] * 18 + [400, None, None, None, 400, 400]), 1000, 1000, 398),
+    ("patchy4", settled_fields([1000] * 18 + [400, None, None, 400, 400, 400]), 400, 400, 398),
+    # a one-hour dip from 1000 to 500 does not drag the target down; 6 hours at 500 do
+    ("dip1", settled_fields([1000] * 23 + [500]), 1000, 1000, 498),
+    ("dip6", settled_fields([1000] * 18 + [500] * 6), 500, 500, 498),
+]
+SETTLED_TIP = "The price fell and stayed down, so this is the highest price of the last 6 hours."
+
+
+def sc_settled_drop(sc, ref, items):
+    """A drop that lasts: the tooltip's Suggested price, the sell frame's
+    Suggested button and the chart's List At all use the last 6 hours' high
+    (the steak: 4s 47c, not 8s 29c), while Sell now and the verdict stay as
+    they were; a real evening premium, a rise, thin data and a short dip keep
+    the usual target."""
+    ids, iid = {}, 975001
+    for key, _, _, _, _ in SETTLED_FIXTURES:
+        while iid in ref.items or str(iid) in items:
+            iid += 1
+        ids[key] = iid
+        iid += 1
+    lines = "".join('    [%d] = "Settled %s|%s",\n' % (ids[k], k.capitalize(), f) for k, f, _, _, _ in SETTLED_FIXTURES)
+    a, _ = block_span(ref.text, "items")
+    nl = ref.text.index("\n", a) + 1 if ref.text[a] != "\n" else a + 1
+    text = ref.text[:nl] + lines + ref.text[nl:]
+    items2 = dict(items)
+    for key, f, _, _, _ in SETTLED_FIXTURES:
+        items2[str(ids[key])] = {"name": "Settled " + key.capitalize(), "sell": int(f.split("|")[5]), "quality": "COMMON"}
+    r2 = RefData(text=text)
+    sc.check(all(ids[k] in r2.items for k in ids), "settled: the hand-made items are in the data")
+    w = World(r2, items2, data_src=text)
+    ns, M = w.ns, w.M
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    settled_keys = ("steak", "evening25", "fallen", "patchy4", "dip6")
+    for key, _, best, list_at, now in SETTLED_FIXTURES:
+        i = ids[key]
+        rec = ref_recommend(r2, i, "1D")
+        sc.eq((rec.get("settled"), rec["listAt"]), (key in settled_keys, list_at), "settled %s: the model's List At" % key)
+        sp = ref_sell_prices(r2, i, "1D")
+        sc.eq((sp["now"], sp["best"]), (now, best), "settled %s: the model's Sell now and Suggested price" % key)
+        # the tooltip
+        tt.SetItemByID(tt, i)
+        got = w.lines(tt)
+        sc.eq(got, expected_tooltip(r2, i, age), "settled %s: tooltip" % key)
+        sc.eq([r for l, r in got if l == "Suggested price"], [money_icons(best)], "settled %s: tooltip Suggested price" % key)
+        sc.eq([r for l, r in got if l == "Sell now"], [money_icons(now)], "settled %s: tooltip Sell now" % key)
+        # the chart: List At on every hourly timeframe, and the note
+        for tf in ("1D", "5D", "1W"):
+            ns.SetChartTF(tf)
+            ns.ShowChart(i, "slash")
+            chart_check(sc, w, r2, i, tf, "settled %s %s" % (key, tf))
+            if tf == "1D":
+                sc.eq(ns.ChartPanel.listBox.value._text, money_icons(list_at), "settled %s: List At box" % key)
+            sc.eq("stayed down" in (ns.ChartPanel.notes._text or ""), key in settled_keys, "settled %s %s: the note" % (key, tf))
+        ns.SetChartTF("1D")
+    # the steak's verdict judges today's price (3s 99c x 95 against 3s x 100: +26%), as before
+    steak = ids["steak"]
+    tt.SetItemByID(tt, steak)
+    sc.check(("Auction it", "+26% vs vendor") in w.lines(tt), "settled steak: the verdict is unchanged (%s)" % w.lines(tt))
+    r = ns.Recommend(steak, "1D")
+    sc.eq((r.sell, r.margin, r.verdict), (447, 25, "Hold"), "settled steak: sell 4s 47c, margin 25c, a Hold (not Strong Buy)")
+    # the sell frame's Suggested button: the same price as the tooltip and List At, and it says why
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    csf = ah.CommoditiesSellFrame
+    for slot, (key, _, best, _, now) in enumerate(SETTLED_FIXTURES, start=1):
+        i = ids[key]
+        w.put_bag(0, slot, i, 20)
+        M.commodityResults[i] = None
+        ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, slot))
+        w.settle(0.2)
+        pair = find_sell_buttons(csf)
+        want = ref_buttons(r2, i, "1D")
+        sc.eq(want, (now, best), "settled %s: the model's buttons" % key)
+        buttons_ok(sc, pair, want, "settled %s" % key)
+        if pair[1] is not None:
+            sc.eq(SETTLED_TIP in (pair[1].tipBody or ""), key in settled_keys,
+                  "settled %s: the Suggested button says when it uses the last 6 hours (%s)" % (key, pair[1].tipBody))
+    # the AH shows the steak back at 6s: Suggested follows the listing (1 copper under it)
+    i = ids["steak"]
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
+    w.set_commodity_results(i, [(600, 50, False)])
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", i)
+    w.settle(0.3)
+    want = ref_buttons(r2, i, "1D", 600)
+    sc.eq(want, (599, 599), "settled steak live 6s: the model follows the listing")
+    buttons_ok(sc, find_sell_buttons(csf), want, "settled steak live 6s")
+    w.close_ah_modern()
+    sc.clean(w)
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -11581,6 +11707,7 @@ SCENARIOS = [
     ("tooltip-verdicts", sc_tooltip_verdicts),
     ("tooltip-fonts", sc_tooltip_fonts),
     ("verdict-parity", sc_verdict_parity),
+    ("settled-drop", sc_settled_drop),
     ("bag-cleanup", sc_bag_cleanup),
     ("bag-cleanup-no-data", sc_bag_cleanup_nodata),
     ("bag-cleanup-elvui", sc_bag_cleanup_elvui),

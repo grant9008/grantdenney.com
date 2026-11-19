@@ -5,7 +5,8 @@ local ADDON_NAME, ns = ...
 -- item you search for, click on, or put in the sell slot. Adds two small
 -- buttons to the sell frame that fill in the price box:
 --   "Sell now: X"    1 copper under the cheapest listing
---   "Suggested: X"   the price it usually sells for (from the price history)
+--   "Suggested: X"   the price it usually sells for (from the price history;
+--                    after a drop that lasts, the last 6 hours' high)
 --
 -- Rules this file sticks to:
 --   * hooksecurefunc, HookScript and events only. No Blizzard function is replaced.
@@ -438,6 +439,9 @@ local function BestText(info, postWord)
   lines[#lines + 1] = BasisText(info)
   lines[#lines + 1] = VersionText(info)
   local P = info and info.P
+  if type(P) == "table" and type(P.rec) == "table" and P.rec.settled then
+    lines[#lines + 1] = "The price fell and stayed down, so this is the highest price of the last 6 hours."
+  end
   if type(P) == "table" and P.bestVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")

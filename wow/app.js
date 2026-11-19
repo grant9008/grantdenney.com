@@ -6052,6 +6052,28 @@ function swingSellCeiling(engineSell) {
   const pctCeil = (ref > 0 && isFinite(cap)) ? Math.round(ref * (1 + cap)) : Infinity;
   return Math.max(local, pctCeil, engineSell > 0 ? engineSell : 0, liveSellRaw > 0 ? liveSellRaw : 0);
 }
+/* A drop that lasts (the addon's settled rule, Recommend.lua settledHigh):
+   when the last 6 hours' market prices (at least 4 of them) are all at or
+   under 80% of the day's 70th percentile market price, the day's old highs
+   no longer sell, so the most to ask is the highest of those recent prices.
+   series: the 1D view's hourly series. 0 when the rule does not apply. */
+function settledSellCap(series) {
+  if (!series || !series.labels || !series.labels.length) return 0;
+  const tLast = Math.max(...series.labels);
+  const day = [], recent = [];
+  for (let i = 0; i < series.labels.length; i++) {
+    const t = series.labels[i], H = series.high[i];
+    if (!(H > 0) || t <= tLast - 86400) continue;
+    day.push(H);
+    if (t > tLast - 6 * 3600) recent.push(H);
+  }
+  if (day.length < 4 || recent.length < 4) return 0;
+  day.sort((a, b) => a - b);
+  const idx = 0.7 * (day.length - 1), lo = Math.floor(idx), w = idx - lo;
+  const p70 = Math.floor((lo + 1 < day.length ? day[lo] * (1 - w) + day[lo + 1] * w : day[lo]) + 0.5);
+  const high = Math.max(...recent);
+  return high * 100 <= p70 * 80 ? high : 0;
+}
 /* Two sanity clamps every recommended pair obeys: never ASK below what
    buyers pay right now (live insta-buy), never BID above what sellers
    accept right now (live insta-sell). */
@@ -6078,6 +6100,10 @@ function computeViewTargets(node, id) {
     const tax = calculateTax(engine.sell, id);
     if (engine.sell - engine.buy - tax <= 0) {
       const day = clampToLive(computeSwingTargets(currentSeries));
+      /* ...but never at a peak the market has left: after a drop that
+         lasts, ask at most the last 6 hours' high, as the addon does. */
+      const cap = settledSellCap(currentSeries);
+      if (day && cap > 0 && day.sell > cap) day.sell = Math.max(cap, liveSellRaw > 0 ? liveSellRaw : 0);
       if (day && day.sell - day.buy - calculateTax(day.sell, id) > 0) return day;
     }
     return engine;

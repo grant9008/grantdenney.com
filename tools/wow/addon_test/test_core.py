@@ -407,8 +407,135 @@ def test_recommend_rules():
                 py = py_recommend(ns, iid, tf, live)
                 r = ns.Recommend(iid, tf, live)
                 for k in ("buy", "sell", "listAt", "margin", "verdict", "lo", "hi", "tf"):
-                    eq(getattr(r, k), py[k], "rule item %d %s live=%s %s" % (iid, tf, live, k))
+                    eq(getattr(r, k), py.get(k), "rule item %d %s live=%s %s" % (iid, tf, live, k))
                 eq(lua_list(r.notes), py["notes"], "rule item %d %s live=%s notes" % (iid, tf, live))
+
+
+# A drop that lasts (the settled rule): when the last 6 hourly market prices,
+# at least 4 of them, are all at or under 80% of the window's 70th percentile,
+# the sell target is the highest of them. Each market is worked out by hand.
+# Tender Wolf Steak (18045) is the real line from the 2026-11-18 6PM CST
+# snapshot: 17s 74c on Tuesday evening, then 3s 95c to 4s 98c since Wednesday 8AM.
+STEAK_LINE = ("Tender Wolf Steak|398|399|3131|150|534|300|cs,9,109,-g8,-3,-2h,-2r,,,-5a,,,,,,-34,-6q,,-1,-6,-1,-1,-2,"
+              "-1,-1s,k,-1;cs,9,109,-fy,-c,-2,-3j,,,-6e,,,,,,-3m,-1i,-43,-17,-2,-5,-1,-2,,-1e,n,-j;,2z,46,3,4v,1p,7d,,,,,,,"
+              ",,,3y,2q,4g,9z,4b,75,1s,3s,84,5k,46|cw,6x,-8r;cw,7o,-9h;2z,1xx,46|98")
+# a day: 16 hours at the base price, then 8 evening hours at the evening price
+EVENING_DAY = lambda base, eve: [base] * 16 + [eve] * 8  # noqa: E731
+
+
+def settled_line(name, mkt, cheap=None, vendor=0, auctions=None):
+    """An item line from hourly market prices (None = nothing listed); the
+    cheapest is 1 copper under the market unless given."""
+    cheap = cheap or [None if m is None else m - 1 for m in mkt]
+    now_c, now_m = cheap[-1] or 0, mkt[-1] or 0
+    line = "%s|%d|%d|500|100|%d|%d|%s|%s" % (
+        name, now_c, now_m, now_m, vendor, enc_series(cheap, mkt, [5] * len(mkt)),
+        enc_series([now_c] * 5, [now_m] * 5, [100] * 5))
+    return line + ("|%d" % auctions if auctions else "")
+
+
+SETTLED_PHASE = 9400       # 9400 + p: the evening item of TC5 ending at hour p of its day
+SETTLED_ITEMS = {
+    18045: STEAK_LINE,
+    # an evening premium of 20%: 120 for 8 hours a day, 100 the rest; now the 6 morning hours at 100
+    9301: settled_line("Evening Fish", (EVENING_DAY(100, 120) * 3)[6:54]),
+    # the same with 25%: 100 is exactly 80% of 125, so the cap applies (at or under)
+    9302: settled_line("Evening Fish 25", (EVENING_DAY(100, 125) * 3)[6:54]),
+    # a rise that lasts: 18 hours at 100, then 6 hours at 3s to 3s 40c, now 3s
+    9303: settled_line("Rising Ore", [100] * 18 + [300, 340, 330, 320, 310, 300]),
+    # up for 10 hours, then back at 100 for 6
+    9304: settled_line("Fallen Ore", [100] * 8 + [300] * 10 + [100] * 6),
+    # 18 hours at 1000, then 400 with gaps: only 3 prices in the last 6 hours
+    9305: settled_line("Patchy Herb", [1000] * 18 + [400, None, None, None, 400, 400]),
+    # the same with 4 prices in the last 6 hours
+    9306: settled_line("Patchy Herb 4", [1000] * 18 + [400, None, None, 400, 400, 400]),
+    # only 6 hours of history: 2 at 1000, 4 at 400
+    9307: settled_line("Young Herb", [1000] * 2 + [400] * 4),
+    # 9306's prices behind only 2 listings: no advice at all
+    9308: settled_line("Thin Herb", [1000] * 18 + [400, None, None, 400, 400, 400], auctions=2),
+    # a one-hour dip, a 5-hour dip and a 6-hour one from 1000 to 500
+    9309: settled_line("Dipped Leather", [1000] * 23 + [500]),
+    9310: settled_line("Dipped Leather 5", [1000] * 19 + [500] * 5),
+    9311: settled_line("Dipped Leather 6", [1000] * 18 + [500] * 6),
+}
+for _p in range(24):
+    SETTLED_ITEMS[SETTLED_PHASE + _p] = settled_line("Evening Fish %d" % _p, (EVENING_DAY(100, 120) * 3)[_p + 1:_p + 49])
+
+
+def test_settled_drop():
+    print("Recommend: a drop that lasts (the settled sell target)")
+    L, G, ns = new_env(fixture_lua(SETTLED_ITEMS))
+    G.MOCK.now = UPDATED + 100
+
+    def rec(iid, tf="1D", live=None):
+        r = ns.Recommend(iid, tf, live)
+        return r.sell, r.listAt, r.settled
+    # TC1 the steak: the 1D 70th percentile is 8s 29c (Wednesday 1AM and the 6 hours bridged after it);
+    # the last 6 hours are 4s 47c, 4s 45c, 4s 45c, 3s 95c, 4s 18c, 3s 99c: all under 80% of 8s 29c (6s 63c),
+    # so the target is 4s 47c, on every hourly window. List At is the target (the cheapest 3s 98c is
+    # under the window's 40th percentile), never under 1 copper below the cheapest.
+    for tf in ("1D", "5D", "1W"):
+        eq(rec(18045, tf), (447, 447, True), "TC1 steak %s: sell and List At 4s 47c (was 8s 29c)" % tf)
+    r = ns.Recommend(18045, "1D")
+    # the margin after the cut: 447 x 0.95 = 424 less the buy target 399 (capped at the market) = 25, not 388;
+    # the cheapest sits at the bottom of the old range (Strong Buy), but that range is the old one: Hold
+    eq((r.buy, r.margin, r.verdict, r.score), (399, 25, "Hold", 24), "TC1 steak: margin 25c and a Hold, not Strong Buy")
+    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 6 hours",
+                           "Cheapest is below the buy target: buy it"], "TC1 steak: notes")
+    P = ns.SellPrices(18045, "1D")
+    eq((P.now, P.best), (397, 447), "TC1 steak: Sell now 3s 97c (unchanged), Suggested 4s 47c")
+    V = ns.SellVerdict(ns.GetItem(18045), P)
+    eq((V.left, V.right, V.unit), ("Auction it", "+26% vs vendor", 399), "TC1 steak: the verdict is unchanged")
+    # the AH shows the steak back at 6s: the target follows the live listing (1 copper under it)
+    eq(rec(18045, "1D", 600), (447, 599, True), "TC1 steak live 6s: List At 5s 99c")
+    eq(ns.SellPrices(18045, "1D", 600).best, 599, "TC1 steak live 6s: Suggested 5s 99c")
+    # TC2 a real evening premium: 16 x 100 and 8 x 120 in the window, the 70th percentile is 120; the 6
+    # morning hours at 100 are over 80% of it (96), so 120 is kept
+    eq(rec(9301), (120, 120, False), "TC2 evening +20%: the 1s 20c evening price is kept in the morning")
+    for p in range(24):
+        r = ns.Recommend(SETTLED_PHASE + p, "1D")
+        eq((r.sell, r.settled), (120, False), "TC2 evening +20%% at hour %d of the day: sell 120, no cap" % p)
+    # 25%: the 70th percentile is 125 and 100 is exactly 80% of it: the cap applies
+    eq(rec(9302), (100, 100, True), "TC2 evening +25%: at exactly 80% the cap applies")
+    # TC3 a rise that lasts: the 70th percentile is 100, the market floor lifts it to today's 300 and the
+    # last 6 hours (up to 340) are far over 80%: no cap, and no chasing the 340 peak either
+    for tf in ("1D", "5D", "1W"):
+        eq(rec(9303, tf)[0::2], (300, False), "TC3 rise %s: sell follows the market up to 300" % tf)
+    eq(ns.SellPrices(9303, "1D").best, 300, "TC3 rise: Suggested 300")
+    # up for 10 hours (the 70th percentile 300), back at 100 for 6: the target settles at 100
+    eq(rec(9304), (100, 100, True), "TC3 fallen back: sell 100, not the 300 of the rise")
+    eq(rec(9304, "1D", 250), (100, 249, True), "TC3 fallen back, live 2s 50c: List At follows the listing")
+    # TC4 thin data: 3 prices in the last 6 hours are not enough (4 needed): sell stays at the 70th
+    # percentile of 18 x 1000 and 3 x 400 (1000); with 4 prices the target is 400
+    eq(rec(9305), (1000, 1000, False), "TC4 3 prices in 6 hours: no cap")
+    eq(rec(9306), (400, 400, True), "TC4 4 prices in 6 hours: sell 400")
+    # 6 hours of history: the last 6 still hold the 1000s (70th percentile 700): no cap
+    eq(rec(9307), (700, 700, False), "TC4 6 hours of history: no cap")
+    r = ns.Recommend(9308, "1D")
+    eq((r.advice, r.sell, r.settled, r.postAt), (False, 0, False, 398), "TC4 2 listings: no advice, no cap")
+    check(not any("stayed down" in n for n in lua_list(r.notes)), "TC4 2 listings: no settled note", lua_list(r.notes))
+    # TC5 dips: one hour or 5 hours at 500 leave a 1000 in the last 6 hours: no cap; 6 hours: 500
+    eq(rec(9309), (1000, 1000, False), "TC5 a one-hour dip does not drag the target down")
+    eq(rec(9310), (1000, 1000, False), "TC5 a 5-hour dip does not either")
+    eq(rec(9311), (500, 500, True), "TC5 6 hours at 500: the target is 500")
+    # every settled item against the Python model, on every window, with and without a live listing
+    for iid in sorted(SETTLED_ITEMS):
+        for tf in ("1D", "5D", "1W", "1M", "1Y"):
+            for live in (None, 600):
+                py = py_recommend(ns, iid, tf, live)
+                r = ns.Recommend(iid, tf, live)
+                for k in ("buy", "sell", "listAt", "postAt", "margin", "verdict", "score", "settled", "tf", "advice"):
+                    eq(getattr(r, k), py.get(k), "settled item %d %s live=%s %s" % (iid, tf, live, k))
+                eq(lua_list(r.notes), py["notes"], "settled item %d %s live=%s notes" % (iid, tf, live))
+                sp = rec_model.sell_prices(py, live, False, ns.GetItem(iid).vendor)
+                P = ns.SellPrices(iid, tf, live)
+                eq((P.now, P.best), (sp["now"], sp["best"]), "settled item %d %s live=%s SellPrices" % (iid, tf, live))
+    # the steak's tooltip: Sell now 3s 97c and the verdict as before, Suggested price 4s 47c (was 8s 29c);
+    # the 3-day average 5s 34c, the AH value 3s 99c is 25% under it
+    L, G, ns = font_env(items=SETTLED_ITEMS)
+    tc(G, G.GameTooltip, 18045, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("3s 99c", "-25%", NEG),
+                                 ROW("3-day average", "5s 34c"), ROW("Sell now", "3s 97c"), ROW("Suggested price", "4s 47c")],
+       True, "TC1 steak tooltip")
 
 
 # ---------------------------------------------------------------------------
@@ -584,7 +711,7 @@ def test_recommend(G, ns):
                 r = ns.Recommend(iid, tf, live)
                 tag = "Recommend %d %s live=%s" % (iid, tf, live)
                 for k in ("buy", "sell", "listAt", "margin", "verdict", "lo", "hi", "cheapestNow", "tf"):
-                    eq(getattr(r, k), py[k], "%s %s" % (tag, k))
+                    eq(getattr(r, k), py.get(k), "%s %s" % (tag, k))
                 check(abs(r.score - py["score"]) < 1e-9, tag + " score", (r.score, py["score"]))
                 check(abs(r.pos - py["pos"]) < 1e-9, tag + " pos", (r.pos, py["pos"]))
                 eq(lua_list(r.notes), py["notes"], tag + " notes")
@@ -1047,7 +1174,7 @@ def test_new_fields():
                 py = py_recommend(ns, iid, tf, live)
                 r = ns.Recommend(iid, tf, live)
                 for k in ("buy", "sell", "listAt", "margin", "verdict", "advice", "history", "soldPerDay"):
-                    eq(getattr(r, k), py[k], "new item %d %s live=%s %s" % (iid, tf, live, k))
+                    eq(getattr(r, k), py.get(k), "new item %d %s live=%s %s" % (iid, tf, live, k))
                 eq(lua_list(r.notes), py["notes"], "new item %d %s live=%s notes" % (iid, tf, live))
 
     # Names. No game API yet: unknown names are "" and show as "Item 123".
@@ -2169,6 +2296,7 @@ def main():
     test_money(G, ns)
     test_recommend(G, ns)
     test_recommend_rules()
+    test_settled_drop()
     test_settings_and_slash(G, ns)
     test_tooltip(G, ns)
     test_placeholder()
