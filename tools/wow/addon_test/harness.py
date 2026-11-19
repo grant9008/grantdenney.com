@@ -2922,23 +2922,40 @@ M.loadOnDemand["Blizzard_AuctionUI"] = function()
   CreateFrame("EditBox", "AuctionsNumStacksEntry", auctions):SetText("1")
   local sp = CreateFrame("Frame", "StartPrice", auctions); sp:SetSize(160, 20); sp:SetPoint("TOPLEFT", auctions, "TOPLEFT", 20, -200)
   local bp = CreateFrame("Frame", "BuyoutPrice", auctions); bp:SetSize(160, 20); bp:SetPoint("TOPLEFT", sp, "BOTTOMLEFT", 0, -20)
-  -- MoneyInputFrameTemplate (Blizzard_MoneyFrame/Classic/MoneyInputFrame.xml): <name>Gold 58x20
-  -- (6 letters), <name>Silver 30x20 26 right of it, <name>Copper 30x20 16 right of
-  -- that, each with its 13x13 coin 2 right of the box.
+  -- MoneyInputFrameTemplate. Classic (Blizzard_MoneyFrame/Classic/MoneyInputFrame.xml):
+  -- <name>Gold 58x20 (6 letters) with its 13x13 coin LEFT at its RIGHT +2 (outside
+  -- the box); <name>Silver 30x20 26 right of it and <name>Copper 30x20 16 right of
+  -- that, each with its coin LEFT at its RIGHT -8 (over the box's right end; their
+  -- border ends at RIGHT -10). M.legacyMoney == "forever": the one WoW Forever ships
+  -- (Blizzard_MoneyFrame/Mainline/MoneyInputFrame.xml): Gold 70x20 (7 letters),
+  -- Silver and Copper 48x20, each 10 right of the one before, every coin 13x13 at
+  -- RIGHT -4, inside the box.
+  local forever = M.legacyMoney == "forever"
   for _, mf in ipairs({ sp, bp }) do
-    local function box(key, word, w)
+    local function box(key, word, w, coinX)
       local b = CreateFrame("EditBox", mf:GetName() .. word, mf)
       b:SetSize(w, 20)
-      b.texture = b:CreateTexture(nil, "BACKGROUND")
+      b.texture = b:CreateTexture(nil, "OVERLAY")
       b.texture:SetSize(13, 13)
-      b.texture:SetPoint("LEFT", b, "RIGHT", 2, 0)
+      if forever then
+        b.texture:SetPoint("RIGHT", b, "RIGHT", -4, 0)
+      else
+        b.texture:SetPoint("LEFT", b, "RIGHT", coinX, 0)
+      end
       mf[key] = b
       return b
     end
-    box("gold", "Gold", 58):SetPoint("TOPLEFT", mf, "TOPLEFT", 0, 0)
-    mf.gold:SetMaxLetters(6)
-    box("silver", "Silver", 30):SetPoint("LEFT", mf.gold, "RIGHT", 26, 0)
-    box("copper", "Copper", 30):SetPoint("LEFT", mf.silver, "RIGHT", 16, 0)
+    if forever then
+      box("gold", "Gold", 70):SetPoint("TOPLEFT", mf, "TOPLEFT", 0, 0)
+      mf.gold:SetMaxLetters(7)
+      box("silver", "Silver", 48):SetPoint("LEFT", mf.gold, "RIGHT", 10, 0)
+      box("copper", "Copper", 48):SetPoint("LEFT", mf.silver, "RIGHT", 10, 0)
+    else
+      box("gold", "Gold", 58, 2):SetPoint("TOPLEFT", mf, "TOPLEFT", 0, 0)
+      mf.gold:SetMaxLetters(6)
+      box("silver", "Silver", 30, -8):SetPoint("LEFT", mf.gold, "RIGHT", 26, 0)
+      box("copper", "Copper", 30, -8):SetPoint("LEFT", mf.silver, "RIGHT", 16, 0)
+    end
   end
   local create = CreateFrame("Button", "AuctionsCreateAuctionButton", auctions, "UIPanelButtonTemplate")
   create:SetSize(191, 20)
@@ -5652,8 +5669,37 @@ def sc_price_arrows(sc, ref, items):
     w3.close_ah_modern()
     sc.clean(w3, "price arrows, Auctionator")
 
-    # The old auction house: starting bid and buyout boxes (MoneyInputFrame)
-    w4 = World(ref, items, client="legacy")
+    # The old auction house with the classic money boxes: the silver and copper
+    # coins hang over the right end of their boxes, so there is no room for
+    # arrows that do not cover them. None are added (not even gold: never half).
+    keys = ("gold", "silver", "copper")
+    wc = World(ref, items, client="legacy")
+    for _ in range(2):
+        wc.M.fire("AUCTION_HOUSE_SHOW")
+        wc.settle(0.3)
+        wc.M.fire("AUCTION_HOUSE_CLOSED")
+        wc.settle(0.3)
+    wc.M.fire("AUCTION_HOUSE_SHOW")
+    wc.settle(0.3)
+    gc = wc.g
+    sc.check(wc.ns.AHState.legacyPair is not None, "legacy (classic boxes): the fill buttons are still there")
+    for label, mfl in (("legacy start", gc.StartPrice), ("legacy buyout", gc.BuyoutPrice)):
+        for coin in keys:
+            up, down = arrows_of(mfl[coin])
+            sc.eq((len(up), len(down)), (0, 0),
+                  "%s %s (classic boxes): no arrows, the coin sits where they would go" % (label, coin))
+            ri = wc.rect(mfl[coin].texture)
+            sc.check(not any(overlaps(wc.rect(b), ri) for b in up + down),
+                     "%s %s (classic boxes): the coin is not covered" % (label, coin))
+    sc.eq(wc.ns.AHState.ArrowSpot(gc.BuyoutPrice.gold), -1, "classic gold box: its coin is outside, the strip is free")
+    sc.eq(wc.ns.AHState.ArrowSpot(gc.BuyoutPrice.silver), None, "classic silver box: no room beside its coin")
+    wc.M.fire("AUCTION_HOUSE_CLOSED")
+    wc.settle(0.3)
+    sc.clean(wc, "price arrows, legacy classic boxes")
+
+    # The old auction house with the money boxes WoW Forever ships (coin inside
+    # each box at RIGHT -4): the arrows go just left of the coin.
+    w4 = World(ref, items, client="legacy", before_addon=lambda wo: wo.M.__setitem__("legacyMoney", "forever"))
     M4 = w4.M
     for _ in range(2):
         M4.fire("AUCTION_HOUSE_SHOW")
@@ -5663,7 +5709,6 @@ def sc_price_arrows(sc, ref, items):
     M4.fire("AUCTION_HOUSE_SHOW")
     w4.settle(0.3)
     g = w4.g
-    keys = ("gold", "silver", "copper")
     for label, mfl in (("legacy start", g.StartPrice), ("legacy buyout", g.BuyoutPrice)):
         for coin in keys:
             up, down = arrows_of(mfl[coin])
@@ -5673,6 +5718,14 @@ def sc_price_arrows(sc, ref, items):
                 sc.check(inside(ru, rb) and inside(rd, rb), "%s %s: arrows inside the box" % (label, coin))
                 ri = w4.rect(mfl[coin].texture)
                 sc.check(not overlaps(ru, ri) and not overlaps(rd, ri), "%s %s: arrows clear of the coin" % (label, coin))
+                sc.check(ru[2] <= ri[0] + 1e-6 and ri[0] - ru[2] <= 1 + 1e-6,
+                         "%s %s: arrows just left of the coin (%s, coin %s)" % (label, coin, ru, ri))
+                # typed digits start at the box's left edge: room for 2 (silver,
+                # copper) or 5 (gold) digits of ~8 before the arrows
+                room = (ru[0] - rb[0]) / w4.M.eff(mfl[coin])
+                sc.check(room >= (40 if coin == "gold" else 16) - 1e-6,
+                         "%s %s: room for the typed digits left of the arrows (%s)" % (label, coin, room))
+                sc.check(ru[1] >= rd[3] - 1e-6, "%s %s: up sits above down" % (label, coin))
     bp = g.BuyoutPrice
     la = {coin: arrow_pair(bp[coin]) for coin in keys}
     g.MoneyInputFrame_SetCopper(bp, 199)
@@ -5688,9 +5741,9 @@ def sc_price_arrows(sc, ref, items):
     sp = g.StartPrice
     arrow_click(w4, arrow_pair(sp.silver)[0])
     sc.eq(g.MoneyInputFrame_GetCopper(sp), 100, "legacy start: silver up")
-    g.MoneyInputFrame_SetCopper(bp, 999999 * 10000 + 9999)
+    g.MoneyInputFrame_SetCopper(bp, 9999999 * 10000 + 9999)
     arrow_click(w4, la["copper"][0])
-    sc.eq(g.MoneyInputFrame_GetCopper(bp), 999999 * 10000 + 9999, "legacy buyout: never past the 6-digit gold box")
+    sc.eq(g.MoneyInputFrame_GetCopper(bp), 9999999 * 10000 + 9999, "legacy buyout: never past the 7-digit gold box")
     sc.eq(len(M4.cah.posted), 0, "legacy: arrows never post")
     M4.fire("AUCTION_HOUSE_CLOSED")
     w4.settle(0.3)

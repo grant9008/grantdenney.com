@@ -989,13 +989,60 @@ end
 local ARROW_UP, ARROW_PUSHED = "Interface\\Buttons\\Arrow-Up-Up", "Interface\\Buttons\\Arrow-Up-Down"
 local ARROW_COORD = { [1] = { 0, 0.8125, 0.1875, 0.875 }, [-1] = { 0, 0.8125, 0.875, 0.1875 } }
 
--- An arrow lives in its box (it hides with it), in the strip at the box's
--- right end: right of the coin icon in the auction house boxes, past where
--- typed digits can reach. Up sits just above the middle, down just below.
-local function NewArrow(box, set, coin, dir, h)
+-- How far across a frame an anchor point is: 0 its left edge, 1 its right.
+local function AcrossOf(p)
+  if type(p) ~= "string" then return nil end
+  if p:find("LEFT") then return 0 elseif p:find("RIGHT") then return 1 end
+  return 0.5
+end
+
+-- Where a box's coin icon sits, as its left and right x measured from the
+-- box's right edge, read from how the icon is anchored. nil if unknown.
+local function CoinSpan(box)
+  local icon = box.Icon or box.texture
+  if type(icon) ~= "table" or type(icon.GetPoint) ~= "function" then return nil end
+  local point, rel, relPoint, x = icon:GetPoint(1)
+  if rel ~= nil and not rawequal(rel, box) then return nil end
+  local own, at = AcrossOf(point), AcrossOf(relPoint or point)
+  x = Num(x)
+  if not own or not at or not x then return nil end
+  local cw = Num(icon:GetWidth())
+  if not cw or cw <= 0 then cw = 13 end
+  local base = 0
+  if at < 1 then
+    local w = Num(box:GetWidth())
+    if not w or w <= 0 then return nil end
+    base = (at - 1) * w
+  end
+  local left = base + x - own * cw
+  return left, left + cw
+end
+
+-- Where a box's arrows go: the x of their right edge from the box's right
+-- edge. Normally -1, the strip right of the coin (the auction house boxes).
+-- When the coin itself sits in that strip (the game's older money boxes)
+-- they go just left of the coin. When the coin hangs over the box's edge
+-- there is no room that does not cover it: nil.
+local function ArrowSpot(box)
+  local ok, left, right = pcall(CoinSpan, box)
+  if not ok or not left or not right then return -1 end
+  if right <= -(ARROW_W + 1) or left >= -1 then return -1 end
+  if right > 0 then return nil end
+  local spot = left - 1
+  local okW, w = pcall(box.GetWidth, box)
+  w = okW and Num(w) or nil
+  if w and w > 0 and spot - ARROW_W < -w then return nil end
+  return spot
+end
+AH.ArrowSpot = ArrowSpot
+
+-- An arrow lives in its box (it hides with it), at the x ArrowSpot picked:
+-- clear of the coin icon and past where typed digits reach. Up sits just
+-- above the middle, down just below.
+local function NewArrow(box, set, coin, dir, h, x)
   local b = CreateFrame("Button", nil, box)
   b:SetSize(ARROW_W, h)
-  b:SetPoint(dir > 0 and "BOTTOMRIGHT" or "TOPRIGHT", box, "RIGHT", -1, 0)
+  b:SetPoint(dir > 0 and "BOTTOMRIGHT" or "TOPRIGHT", box, "RIGHT", x or -1, 0)
   b:SetNormalTexture(ARROW_UP)
   b:SetPushedTexture(ARROW_PUSHED)
   pcall(b.SetHighlightTexture, b, ARROW_UP, "ADD")
@@ -1017,20 +1064,32 @@ local function NewArrow(box, set, coin, dir, h)
 end
 
 -- Adds the arrows to a money box once. get() returns its price in copper and
--- put(copper) writes one. A coin box that is missing simply gets none.
+-- put(copper) writes one. A coin box that is missing simply gets none. If any
+-- box has no room beside its coin, the whole money box gets none (never half).
 local function AddPriceArrows(mf, get, put)
   if type(mf) ~= "table" or type(get) ~= "function" or type(put) ~= "function" then return nil end
-  if arrowSets[mf] then return arrowSets[mf] end
+  if arrowSets[mf] ~= nil then return arrowSets[mf] or nil end
   local set = { get = get, put = put, max = MaxCopper(CoinBox(mf, "gold")) }
-  local any = false
+  local spots = {}
   for _, coin in ipairs({ "gold", "silver", "copper" }) do
     local box = CoinBox(mf, coin)
     if box then
+      spots[coin] = ArrowSpot(box)
+      if not spots[coin] then
+        arrowSets[mf] = false
+        return nil
+      end
+    end
+  end
+  local any = false
+  for _, coin in ipairs({ "gold", "silver", "copper" }) do
+    local box, x = CoinBox(mf, coin), spots[coin]
+    if box and x then
       local ok, up, down = pcall(function()
         local okH, bh = pcall(box.GetHeight, box)
         bh = okH and Num(bh) or 0
         local h = bh > 0 and max(5, min(ARROW_H, floor((bh - 2) / 2))) or ARROW_H
-        return NewArrow(box, set, coin, 1, h), NewArrow(box, set, coin, -1, h)
+        return NewArrow(box, set, coin, 1, h, x), NewArrow(box, set, coin, -1, h, x)
       end)
       if ok then
         set[coin] = { up = up, down = down }
