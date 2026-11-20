@@ -1,4 +1,4 @@
-import{_ as e,l as t,s as n,v as r}from"./roll-DPSZnLiW.js";import{_ as i,h as a,i as ee,l as te,v as ne}from"./index-DVQswHhO.js";import{n as re,t as ie}from"./rideHold-DAJcqpsU.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-BpIJ3lX9.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
+import{_ as e,l as t,s as n,v as r}from"./roll-CLY7_85w.js";import{_ as i,h as a,i as ee,l as te,v as ne}from"./index-Dckqk5h_.js";import{n as re,t as ie}from"./rideHold-BpN1dUK2.js";import{a as ae,i as oe,n as se,preflight as ce,r as le,reelLines as ue,reelSpec as de,t as fe}from"./reel-D-fGWwJa.js";var pe=`send-it-clip.mp4`,me=`send-it-reel.mp4`,o=`this-crash`,he=`
 .ebs-clips{position:fixed;inset:0;z-index:46;display:flex;gap:14px;background:#0d0f14;color:#e8ebf2;box-sizing:border-box;
   padding:max(8px,env(safe-area-inset-top)) max(12px,env(safe-area-inset-right)) max(8px,env(safe-area-inset-bottom)) max(12px,env(safe-area-inset-left));
   font:600 14px/1.3 system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
@@ -43,7 +43,9 @@ import{_ as e,l as t,s as n,v as r}from"./roll-DPSZnLiW.js";import{_ as i,h as a
   .ebs-clips{flex-direction:column;align-items:center}
   /* (the frame starts below DONE: it sat over the clip's top-right corner; QA pass 4, 2026-11-06) */
   .ebs-clips .pv{--hd:calc(max(44px,clamp(16px,4.4vh,26px) * 2 + 4px) + 6px);margin-top:var(--hd);height:calc(62% - var(--hd))}
-  .ebs-clips .col{width:100%;justify-content:flex-start}
+  /* (the words scroll when they are taller than their room under the frame: a stopped film with MAKE THE REEL ran
+     the note off the bottom and, in the app, the chips into the home bar; QA pass 19) */
+  .ebs-clips .col{width:100%;justify-content:flex-start;overflow-y:auto}
 }
 /* (a short phone held upright, an SE: the chips get the note's room; it sat over them, QA pass 10) */
 @media (orientation:portrait) and (max-height:700px){

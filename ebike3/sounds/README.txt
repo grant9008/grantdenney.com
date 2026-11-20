@@ -7,10 +7,10 @@ recordings. No code, just files in this folder.
 THE EASIEST WAY: THE SCREAM BOOTH (IN THE GAME)
 -----------------------------------------------
 Open the gear menu (or the crash card) and tap SCREAM BOOTH. Say anything for 2-4 seconds ("HEYYY", your name,
-"BANANAAA") or upload a clip. The game turns it into 3 screams (whimper, scream, blood-curdling) plus OOFs from
+"BANANAAA") or pick a sound file. The game turns it into 3 screams (whimper, scream, blood-curdling) plus OOFs from
 your own voice. Turn on USE MINE. Your voice stays on that phone only. It is never uploaded.
   - Over Wi-Fi from the PC, the iPhone blocks the microphone (an iPhone rule for plain "http" links), so use
-    UPLOAD there: record in Voice Memos, then Share > Save to Files, then pick it in the booth.
+    PICK A SOUND FILE there: record in Voice Memos, then Share > Save to Files, then pick it in the booth.
   - RECORD works in the App Store version of the game, and on the PC.
 
 THE FOLDER WAY (THIS FOLDER)
