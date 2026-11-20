@@ -7,10 +7,12 @@ local ADDON_NAME, ns = ...
 -- While you fly, a big timer in the upper middle of the screen (the big boat
 -- timer's place and look, clear of the game's messages there and of your
 -- character) counts down: "Ironforge 1:23", the time large, then "+0:12" when
--- the flight runs longer; a thin strip under it is the time left. While you fly
--- the big boat timer stays hidden. /gl flights small puts a slim bar at the top
--- instead, where the game shows its own timer bars (breath, fatigue): "Ironforge
--- 1:23"; /gl flights big goes back (saved). The small X just after the time
+-- the flight runs longer; a thin strip under it is the time left. Flying over a
+-- dock, the boat timer is its small line under the minimap (Boats.lua: on a
+-- flight the middle is this timer's), big again the moment this one goes.
+-- /gl flights small puts a slim bar at the top instead, where the game shows its
+-- own timer bars (breath, fatigue): "Ironforge 1:23"; /gl flights big goes back
+-- (saved as flightStyle, as the boat timers' boatStyle). The small X just after the time
 -- hides it until you land; /gl flights brings it back. When you land, the real
 -- time is kept for that route (the last 5, the middle one counts), when it was a
 -- plain flight: landed where it was going, seen landing, no loading screen on
@@ -696,15 +698,13 @@ local BAR_W, BAR_H, X_SIZE = 180, 16, 14
 -- The big timer (the default) looks and sits like the big boat timer (Boats.lua): no panel, one
 -- line, the place you fly to (16, white) before the time left (32, gold: about three times the
 -- slim bar's small font, 10) on its baseline, 8 apart, in the game's face with an outline; the X
--- (14) 6 after the line; under the line a thin strip (3, 3 below it) is what is left. Its place:
--- centred, its top 290 below the top of the screen or 30% of the screen height down when that is
--- lower, ending above 46% of the screen height (the camera looks at your character's head at the
--- screen centre), clear of the game's messages at the top centre (Forever 1.60.1: the timer bars
--- from 100, three 206 x 32 at most; the red error lines 122 to 182; raid warnings 182 to 282; the
--- zone's name from 128, its lines 32, 22, 26 and 22 high). Where that does not fit, 18 below the
--- top of the screen (under widgets there); else the slim bar.
-local BIG = { head = 16, time = 32, hgap = 8, lift = 3, x = 14, xgap = 6, sgap = 3, strip = 3, top = 290, frac = 0.30,
-              char = 0.46, band = 18, timerW = 206, timerH = 96, gold = { 1, 0.82, 0 } }
+-- (14) 6 after the line; under the line a thin strip (3, 3 below it) is what is left. Its place,
+-- fonts, X and the time's width are the boat timer's (Core.lua's ns.Big): centred, its top 290
+-- below the top of the screen or 30% of the screen height down, above your character, clear of
+-- the game's messages at the top centre, the minimap, the quest trackers and the buffs; where that
+-- does not fit, 18 below the top of the screen (under widgets there); else the slim bar.
+local Big = ns.Big
+local BIG = { head = 16, time = 32, hgap = 8, lift = 3, x = Big.x, xgap = Big.xgap, sgap = 3, strip = 3, gold = { 1, 0.82, 0 } }
 FL.BIG = BIG
 FL.NODES, FL.EDGES, FL.JUNC, FL.TRACKS = NODES, EDGES, JUNC, TRACKS
 
@@ -714,8 +714,9 @@ FL.NODES, FL.EDGES, FL.JUNC, FL.TRACKS = NODES, EDGES, JUNC, TRACKS
 local function settings() return ns.settings or {} end
 local function isOn() return settings().flights ~= false end
 FL.IsOn = isOn
--- The big timer is the default; /gl flights small saves flightBar = "small".
-local function wantBig() return settings().flightBar ~= "small" end
+-- The big timer is the default; /gl flights small saves flightStyle = "small" (as /gl boats small
+-- saves boatStyle).
+local function wantBig() return settings().flightStyle ~= "small" end
 FL.WantBig = wantBig
 
 local function say(msg)
@@ -1042,139 +1043,16 @@ local function place(b)
 end
 
 ---------------------------------------------------------------------------
--- Where the big timer goes
+-- Where the big timer goes: the big boat timer's rule (Core.lua's ns.Big)
 ---------------------------------------------------------------------------
--- A region's rectangle on the screen (left, bottom, right, top, in pixels), or nil.
-local function rectOf(o)
-  if not isFrame(o) or type(o.GetRect) ~= "function" then return nil end
-  local ok, l, b, w, h = pcall(o.GetRect, o)
-  local es = plain(call(o.GetEffectiveScale, o))
-  if not ok then return nil end
-  l, b, w, h = plain(l), plain(b), plain(w), plain(h)
-  if not (l and b and w and h and es) then return nil end
-  return l * es, b * es, (l + w) * es, (b + h) * es
-end
-FL.RectOf = rectOf
-
-local function shownNow(o) return isFrame(o) and call(o.IsVisible, o) == true end
-
--- A widget container that shows something (empty, they are 10 x 10).
-local function widgetsIn(o)
-  if not shownNow(o) then return false end
-  local w, h = plain(call(o.GetWidth, o)), plain(call(o.GetHeight, o))
-  return (w and h and w > 12 and h > 12) and true or false
-end
-
-local function fontSize(fs, def)
-  if not isFrame(fs) or type(fs.GetFont) ~= "function" then return def end
-  local ok, _, s = pcall(fs.GetFont, fs)
-  s = ok and plain(s) or nil
-  return (s and s > 0 and s < 200) and s or def
-end
-
--- What the big timer must never cover, shown or not (they come and go: an error, a raid warning,
--- the zone's name as you fly into it): the game's messages at the top centre; the zone's names
--- as low as all their lines reach (which lines show changes on the way); the timer bars' spot
--- (three at most); widgets at the top centre or over the subzone name while they show.
--- SubZoneTextFrame's own box (at the bottom of the screen) holds nothing: its words hang under
--- the zone's name. At the top of the screen (where it goes when the middle has no room) also what
--- the big boat timer keeps clear of there: the unit frames (shown or not: a target comes and
--- goes) and, while they show, the minimap, the quest tracker and the buffs (the game's, ElvUI's).
--- Rectangles on the screen, in pixels.
-local TOP_MSGS = { "UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame",
-                   "ZoneTextString", "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString" }
-local ZONE_LINES = { { "ZoneTextString", 32 }, { "PVPInfoTextString", 22 }, { "SubZoneTextString", 26 }, { "PVPArenaTextString", 22 } }
-local TOP_UNITS = { "PlayerFrame", "TargetFrame", "FocusFrame" }
-local TOP_SHOWN = { "Minimap", "MinimapBackdrop", "ElvUI_MinimapHolder", "MinimapPanel", "ObjectiveTrackerFrame",
-                    "QuestWatchFrame", "WatchFrame", "Questie_BaseFrame", "BuffFrame", "DebuffFrame",
-                    "ElvUIPlayerBuffs", "ElvUIPlayerDebuffs" }
-local function bigObstacles(top)
-  local out = {}
-  local function add(l, b, r, t)
-    if l and r - l > 0.5 and t - b > 0.5 then out[#out + 1] = { l, b, r, t } end
-  end
-  for _, n in ipairs(TOP_MSGS) do add(rectOf(_G[n])) end
-  if top then
-    for _, n in ipairs(TOP_UNITS) do add(rectOf(_G[n])) end
-    for _, n in ipairs(TOP_SHOWN) do
-      if shownNow(_G[n]) then add(rectOf(_G[n])) end
-    end
-  end
-  local zs = _G.ZoneTextString
-  local zl, zb, zr, zt = rectOf(zs)
-  if zl then
-    local es = plain(call(zs.GetEffectiveScale, zs)) or 1
-    local cx, half = (zl + zr) / 2, max(zr - zl, 512 * es) / 2
-    local top, h = (zb + zt) / 2 + fontSize(zs, 32) * es / 2, 0
-    for _, z in ipairs(ZONE_LINES) do h = h + fontSize(_G[z[1]], z[2]) * es end
-    add(cx - half, top - h, cx + half, top)
-  end
-  local mt = _G.MirrorTimerContainer
-  local ml, _, mr, mtop = rectOf(mt)
-  local s = isFrame(mt) and plain(call(mt.GetEffectiveScale, mt))
-  if not (ml and s) then   -- (no container: the timer bars' own spot)
-    local P = _G.UIParent
-    local pl, _, pr, pt = rectOf(P)
-    s = isFrame(P) and plain(call(P.GetEffectiveScale, P)) or 1
-    ml, mr, mtop = pl, pr, pt and pt - 100 * s
-  end
-  if ml then
-    local cx = (ml + mr) / 2
-    add(cx - BIG.timerW / 2 * s, mtop - BIG.timerH * s, cx + BIG.timerW / 2 * s, mtop)
-  end
-  for _, n in ipairs({ "UIWidgetTopCenterContainerFrame", "UIWidgetSubZoneTextContainerFrame" }) do
-    if widgetsIn(_G[n]) then add(rectOf(_G[n])) end
-  end
-  return out
-end
-FL.BigObstacles = bigObstacles
-
--- Puts b (hw x hh) centred at "middle" or "top"; returns the screen rectangle it takes (nil: no
--- screen to measure).
-local function bigPlace(b, where, hw, hh)
-  local P = _G.UIParent
-  local sl, sb, sr, st = rectOf(P)
-  local es = plain(call(b.GetEffectiveScale, b))
-  if not sl or not es or es <= 0 then   -- (no screen to measure: the middle spot as at UI scale 1)
-    b:ClearAllPoints()
-    b:SetPoint("TOP", P, "TOP", 0, -BIG.top)
-    return nil
-  end
-  local down
-  if where == "middle" then
-    down = max(BIG.top * es, BIG.frac * (st - sb))
-  else
-    down = BIG.band * es
-    local tc = _G.UIWidgetTopCenterContainerFrame
-    if widgetsIn(tc) then
-      local _, tb = rectOf(tc)
-      if tb then down = max(down, st - tb + 4 * es) end   -- (under its widgets, a capture bar)
-    end
-  end
-  b:ClearAllPoints()
-  b:SetPoint("TOP", P, "TOP", 0, -down / es)
-  local cx, W = (sl + sr) / 2, hw * es
-  return { cx - W / 2, st - down - hh * es, cx + W / 2, st - down }
-end
-
--- On screen, above your character and clear of everything bigObstacles lists.
-local function bigFits(rect, top)
-  local sl, sb, sr, st = rectOf(_G.UIParent)
-  if not sl then return true end
-  if rect[1] < sl - 0.5 or rect[3] > sr + 0.5 or rect[4] > st + 0.5 or rect[2] < st - BIG.char * (st - sb) then
-    return false
-  end
-  for _, q in ipairs(bigObstacles(top)) do
-    if rect[1] < q[3] - 0.5 and rect[3] > q[1] + 0.5 and rect[2] < q[4] - 0.5 and rect[4] > q[2] + 0.5 then return false end
-  end
-  return true
-end
+FL.RectOf = Big.Rect
+FL.BigObstacles = function(top) return Big.Obstacles(top, "flight") end
 
 -- The big timer's place: true when it has one (FL.spot "middle" or "top").
 local function placeBig(b, hw, hh)
   for _, where in ipairs({ "middle", "top" }) do
-    local rect = bigPlace(b, where, hw, hh)
-    if not rect or bigFits(rect, where == "top") then
+    local rect = Big.Place(b, hw, hh, where)
+    if not rect or Big.Fits(rect, where == "top", "flight") then
       FL.spot, FL.anchor = where, "UIParent"
       return true
     end
@@ -1185,62 +1063,6 @@ end
 ---------------------------------------------------------------------------
 -- The bars
 ---------------------------------------------------------------------------
--- The big timer's fonts: the game's own face (ElvUI's, when it puts its font on the game's), its
--- shadow, an outline; one Font per size, made once.
-local fonts = {}
-local function bigFont(fs, size)
-  local o = fonts[size]
-  if o == nil then
-    o = false
-    local src = _G.GameFontHighlight
-    local file
-    if type(src) == "table" and type(src.GetFont) == "function" then
-      local ok, f = pcall(src.GetFont, src)
-      file = ok and text(f) or nil
-    end
-    file = file or "Fonts\\FRIZQT__.TTF"
-    if type(_G.CreateFont) == "function" then
-      local ok, f = pcall(_G.CreateFont, "GoblinLedgerFlightFont" .. size)
-      if ok and type(f) == "table" and type(f.SetFont) == "function" then
-        if type(src) == "table" and type(f.CopyFontObject) == "function" then pcall(f.CopyFontObject, f, src) end
-        local ok2, set = pcall(f.SetFont, f, file, size, "OUTLINE")
-        if ok2 and set ~= false then o = f end
-      end
-    end
-    fonts[size] = o
-  end
-  if o and pcall(fs.SetFontObject, fs, o) then return end
-  pcall(fs.SetFont, fs, "Fonts\\FRIZQT__.TTF", size, "OUTLINE")
-end
-
--- How wide s is on fs (the game's measure; a guess from the size while it has none).
-local function textW(fs, s, size)
-  local w = plain(call(fs.GetStringWidth, fs))
-  if not w or w <= 0 then w = #s * size * 0.55 end
-  return w
-end
-
--- The time's width: as wide as its text with every digit the font's widest (a font's digits need
--- not be one width), so the line does not shift as the seconds tick. Leaves fs showing s.
-local digits = {}
-local function numberW(fs, s, size)
-  local d = digits[size]
-  if not d then
-    local bw = 0
-    for i = 0, 9 do
-      fs:SetText(tostring(i))
-      local w = plain(call(fs.GetStringWidth, fs))
-      if w and w > bw then d, bw = tostring(i), w end
-    end
-    digits[size] = d   -- (none measured yet, a font still loading: tried again next time)
-  end
-  local tpl = (s:gsub("%d", d or "0"))
-  fs:SetText(tpl)
-  local w = textW(fs, tpl, size)
-  fs:SetText(s)
-  return max(w, textW(fs, s, size))
-end
-
 local hideForFlight
 
 -- The slim bar: a panel w x h, its fill (what is left, running down from the right), the X.
@@ -1292,13 +1114,13 @@ local function build(which)
     line:EnableMouse(false)
     -- The place you fly to on the time's baseline, then the time left.
     local d = line:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    bigFont(d, BIG.head)
+    Big.SetFont(d, BIG.head)
     d:SetPoint("BOTTOMLEFT", line, "BOTTOMLEFT", 0, BIG.lift)
     d:SetJustifyH("LEFT")
     d:SetWordWrap(false)
     d:SetTextColor(1, 1, 1, 1)
     local t = line:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
-    bigFont(t, BIG.time)
+    Big.SetFont(t, BIG.time)
     t:SetJustifyH("LEFT")
     t:SetWordWrap(false)
     t:SetTextColor(BIG.gold[1], BIG.gold[2], BIG.gold[3], 1)
@@ -1313,8 +1135,7 @@ local function build(which)
     fill:SetWidth(10)
     fill:SetColorTexture(BIG.gold[1], BIG.gold[2], BIG.gold[3], 0.9)
     b.line, b.dest, b.text, b.track, b.fill = line, d, t, track, fill
-    b.x = type(ns.CloseX) == "function" and ns.CloseX(b, function() hideForFlight() end, BIG.x) or nil
-    if b.x then b.x:SetPoint("TOPLEFT", line, "TOPRIGHT", BIG.xgap, 0) end
+    b.x = Big.X(b, function() hideForFlight() end, line)
   else
     b = panel("GoblinLedgerFlightBar", BAR_W, BAR_H)
     if b.x then b.x:SetPoint("RIGHT", b, "RIGHT", -1, 0) end
@@ -1338,8 +1159,8 @@ FL.Bars = function() return bars end
 -- its gap (so the line sits in the middle and the X just after it). Gives b's width and height.
 local function bigLayout(b, dest, left)
   b.dest:SetText(dest)
-  local dw = textW(b.dest, dest, BIG.head)
-  local tw = numberW(b.text, left, BIG.time)
+  local dw = Big.TextW(b.dest, dest, BIG.head)
+  local tw = Big.NumberW(b.text, left, BIG.time)
   b.text:ClearAllPoints()
   b.text:SetPoint("BOTTOMLEFT", b.line, "BOTTOMLEFT", dw + BIG.hgap, 0)
   local lw = dw + BIG.hgap + tw
@@ -1432,18 +1253,17 @@ local function hideBar()
   for _, b in pairs(bars) do b:Hide() end
 end
 
--- The big boat timer (Boats.lua's GoblinLedgerBoatsBig) has nothing for you on a flight and would
--- sit on this timer's spot as you fly over a dock: while a flight is under way it is kept hidden
--- (at a dock after you land it shows again).
-local function quietBoats()
-  local o = _G.GoblinLedgerBoatsBig
-  if not isFrame(o) then return end
-  if not o.glFlightQuiet and type(o.HookScript) == "function" then
-    if pcall(o.HookScript, o, "OnShow", function(self) if cur then self:Hide() end end) then o.glFlightQuiet = true end
+-- A flight under way (timed here): the boat timer (Boats.lua) shows its small line meanwhile, the
+-- middle of the screen being this timer's; it is told as a flight starts (before this timer takes
+-- its place) and ends (it shows big again at once).
+FL.InAir = function() return cur ~= nil end
+local function boatsAgain(landed)
+  local B = ns.Boats
+  if type(B) == "table" and type(B.FlightChanged) == "function" then
+    local ok, err = pcall(B.FlightChanged, landed)
+    if not ok then FL.lastError = err end
   end
-  if cur and call(o.IsShown, o) == true then o:Hide() end
 end
-FL.QuietBoats = quietBoats
 
 -- The big timer where it fits (else the slim bar), or the slim bar (/gl flights small).
 local function showBar()
@@ -1452,7 +1272,6 @@ local function showBar()
     return
   end
   if not arrange(now()) then return end
-  quietBoats()
   draw()
 end
 FL.ShowBar = showBar
@@ -1480,6 +1299,7 @@ local function takeoff(p, t)
   lastUp = t
   settings().flightNow = cur
   FL.takeoffs = FL.takeoffs + 1
+  boatsAgain(false)
   showBar()
 end
 
@@ -1506,6 +1326,7 @@ local function land(t)
   cur = nil
   settings().flightNow = nil
   hideBar()
+  if f then boatsAgain(true) end
   if not f or not t then return end
   local dur = t - f.gt
   FL.lastFlight = { key = f.key, seconds = dur, learned = false }
@@ -1650,6 +1471,7 @@ local function resumeNow(rs)
   settings().flightNow = f
   FL.resumed = how
   lastUp = t
+  boatsAgain(false)
   showBar()
 end
 
@@ -1687,7 +1509,6 @@ local function step()
   if cur then
     if up then
       offSince, lastUp = nil, t
-      quietBoats()
       draw()
     elseif not t then
       land(nil)
@@ -1845,7 +1666,7 @@ FL.SetOn = setOn
 
 -- /gl flights big | small: saved; in the air the other one shows at once (and a hidden one again).
 local function setBig(big)
-  settings().flightBar = (not big) and "small" or nil
+  settings().flightStyle = (not big) and "small" or nil
   if cur then cur.hidden = false end
   showBar()
   local note = big and spotNote()

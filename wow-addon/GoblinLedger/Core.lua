@@ -1230,7 +1230,7 @@ local P = ns.Print
 -- ns.CloseX(parent, onClick[, size]): a small X button on parent (14px unless size says),
 -- like the game's own close buttons (its red panel X, made small), or ElvUI's X when
 -- ElvUI is in. onClick(button, mouseButton) runs on a click. Not placed: the caller
--- sets its point. Used by the flight timer bar; the boat timer line can use it too.
+-- sets its point. Used by the flight and boat timers (ns.Big.X below for the big ones).
 local CLOSE_ART = { "Interface\\Buttons\\UI-Panel-MinimizeButton-Up", "Interface\\Buttons\\UI-Panel-MinimizeButton-Down",
                     "Interface\\Buttons\\UI-Panel-MinimizeButton-Highlight" }
 
@@ -1288,6 +1288,262 @@ function ns.CloseX(parent, onClick, size)
     end)
   end
   return b
+end
+
+---------------------------------------------------------------------------
+-- The big timers: the boat timer at a dock (Boats.lua), the flight timer in the air (Flights.lua)
+---------------------------------------------------------------------------
+-- One look and one place rule for both (here once, so the two cannot drift apart):
+--   ns.Big.SetFont(fs, size): the game's own face (ElvUI's, when it puts its font on the game's),
+--     its shadow, an outline; one Font per size, made once, shared by both timers.
+--   ns.Big.TextW(fs, plain, size): how wide fs's text is (a guess from the size while it has none).
+--   ns.Big.NumberW(fs, text, size): a countdown's width, as wide as its text with every digit the
+--     font's widest (a font's digits need not be one width), so the line does not shift as the
+--     seconds tick. Leaves fs showing text.
+--   ns.Big.X(parent, onClick, after): the X (ns.CloseX, 14), 6 after the right end of after, at its top.
+--   ns.Big.Place(h, hw, hh, where) and ns.Big.Fits(rect, top, owner[, looks]): the place.
+--   ns.Big.Overlaps(rect): the first of the minimap's parts, the quest trackers and the buffs that
+--     rect covers (what the boat timer's small line avoids; the big timers too).
+-- The place: centred, its top 290 below the top of the screen, or 30% of the screen height down
+-- when that is lower ("middle"), ending above 46% of the screen height (the camera looks at the
+-- character's head at the screen centre); where that does not fit, 18 below the top ("top", under
+-- the widgets there). At both: on screen, clear of the game's messages at the top centre, shown or
+-- not (they come and go: Forever 1.60.1: the timer bars from 100, three 206 x 32 at most; the red
+-- error lines 122 to 182; raid warnings 182 to 282; the zone's name from 128, its lines 32, 22, 26
+-- and 22 high, as low as they all reach; SubZoneTextFrame's own box holds nothing, its words hang
+-- under the zone's name), and while they show: a toast (a level up), widgets at the top centre or
+-- over the subzone name, the other timer, the minimap's parts, the quest trackers and the buffs (on
+-- a narrower screen, 16:10 or 5:4, or with the tracker moved in Edit Mode they reach the middle
+-- too). At the top also the unit frames (shown or not: a target comes and goes) and ElvUI's buffs
+-- while they show. Where neither fits, each timer has its own smaller way (the boat timer's line
+-- under the minimap, the flight timer's slim bar).
+local BIG = { top = 290, frac = 0.30, char = 0.46, band = 18, timerW = 206, timerH = 96, x = 14, xgap = 6,
+              fonts = {}, digit = {} }
+ns.Big = BIG
+do
+  -- A real number (not secret, not NaN), else nil. Secret first: a secret value cannot be compared.
+  local function num(v)
+    if isSecret(v) or type(v) ~= "number" or v ~= v or v == math.huge or v == -math.huge then return nil end
+    return v
+  end
+  local function call(o, m, ...)
+    if type(o) ~= "table" then return nil end
+    local f = o[m]
+    if type(f) ~= "function" then return nil end
+    local ok, a, b, c, d = pcall(f, o, ...)
+    if ok then return a, b, c, d end
+    return nil
+  end
+  local function shown(o) return call(o, "IsVisible") == true end
+  -- left, bottom, right, top in screen pixels, or nil
+  local function rect(o)
+    local l, b, w, h = call(o, "GetRect")
+    local es = call(o, "GetEffectiveScale")
+    l, b, w, h, es = num(l), num(b), num(w), num(h), num(es)
+    if not (l and b and w and h and es) then return nil end
+    return l * es, b * es, (l + w) * es, (b + h) * es
+  end
+  BIG.Rect, BIG.Shown = rect, shown
+
+  -- The look ------------------------------------------------------------
+  local function font(size)
+    local o = BIG.fonts[size]
+    if o ~= nil then return o or nil end
+    BIG.fonts[size] = false
+    local src = _G.GameFontHighlight
+    local file = call(src, "GetFont")
+    if type(file) ~= "string" or file == "" or isSecret(file) then file = "Fonts\\FRIZQT__.TTF" end
+    if type(_G.CreateFont) ~= "function" then return nil end
+    local ok, f = pcall(_G.CreateFont, "GoblinLedgerBigFont" .. size)
+    if not ok or type(f) ~= "table" then return nil end
+    call(f, "CopyFontObject", src)
+    local ok2, set = pcall(f.SetFont, f, file, size, "OUTLINE")
+    if not ok2 or set == false then return nil end
+    BIG.fonts[size] = f
+    return f
+  end
+  function BIG.SetFont(fs, size)
+    if fs.glSize == size then return end
+    local o = font(size)
+    if not (o and pcall(fs.SetFontObject, fs, o)) then pcall(fs.SetFont, fs, "Fonts\\FRIZQT__.TTF", size, "OUTLINE") end
+    fs.glSize = size
+  end
+  local function textW(fs, plain, size)
+    local w = num(call(fs, "GetStringWidth"))
+    if not w or w <= 0 then w = #plain * size * 0.55 end
+    return w
+  end
+  BIG.TextW = textW
+  function BIG.NumberW(fs, text, size)
+    local d = BIG.digit[size]
+    if not d then
+      local bw = 0
+      for i = 0, 9 do
+        fs:SetText(tostring(i))
+        local w = num(call(fs, "GetStringWidth"))
+        if w and w > bw then d, bw = tostring(i), w end
+      end
+      BIG.digit[size] = d   -- (none measured yet, a font still loading: tried again next time)
+    end
+    local tpl = (text:gsub("%d", d or "0"))
+    fs:SetText(tpl)
+    local w = textW(fs, tpl, size)
+    fs:SetText(text)
+    return max(w, textW(fs, text, size))
+  end
+  function BIG.X(parent, onClick, after)
+    local x = type(ns.CloseX) == "function" and ns.CloseX(parent, onClick, BIG.x) or nil
+    if x then x:SetPoint("TOPLEFT", after, "TOPRIGHT", BIG.xgap, 0) end
+    return x
+  end
+
+  -- What it must not cover -----------------------------------------------
+  -- The map's coordinates under the minimap: the frame is always there (the game only blanks its
+  -- text when they are switched off), so it counts only while it shows coordinates.
+  function BIG.Coords()
+    local cl = _G.MinimapCluster
+    local pc = type(cl) == "table" and type(cl.MinimapContainer) == "table" and cl.MinimapContainer.PlayerCoords
+    if not shown(pc) then return nil end
+    local f = _G.GetCVarBool
+    if type(f) == "function" then
+      local ok, v = pcall(f, "minimapShowPlayerCoords")
+      if ok and type(v) == "boolean" then return v and pc or nil end
+    end
+    local t = call(pc.CoordText, "GetText")
+    if type(t) == "string" and not isSecret(t) and t ~= "" then return pc end
+    return nil
+  end
+  -- The minimap's parts, the quest trackers (Questie_BaseFrame: Questie's, which takes the place of
+  -- the game's) and the buffs, while they show.
+  local SIDE = { "Minimap", "MinimapBackdrop", "ElvUI_MinimapHolder", "MinimapPanel", "ObjectiveTrackerFrame",
+                 "QuestWatchFrame", "WatchFrame", "Questie_BaseFrame", "DurabilityFrame", "VehicleSeatIndicator",
+                 "UIWidgetBelowMinimapContainerFrame", "BuffFrame", "DebuffFrame" }
+  function BIG.Side()
+    local out = {}
+    local function add(o) if shown(o) then out[#out + 1] = o end end
+    for _, n in ipairs(SIDE) do add(_G[n]) end
+    local cl = _G.MinimapCluster
+    if type(cl) == "table" then add(cl.ZoneTextButton) end
+    local pc = BIG.Coords()
+    if pc then out[#out + 1] = pc end
+    return out
+  end
+  function BIG.Overlaps(r)
+    for _, o in ipairs(BIG.Side()) do
+      local l, b, rr, t = rect(o)
+      if l and rr - l > 2 and t - b > 2 and r[1] < rr - 0.5 and r[3] > l + 0.5 and r[2] < t - 0.5 and r[4] > b + 0.5 then
+        return o
+      end
+    end
+    return nil
+  end
+  local TOP_MSGS = { "UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame", "ZoneTextString",
+                     "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString" }
+  local ZONE_LINES = { { "ZoneTextString", 32 }, { "PVPInfoTextString", 22 }, { "SubZoneTextString", 26 }, { "PVPArenaTextString", 22 } }
+  -- (While they show: a toast is as tall as its words, the widgets as what they hold.)
+  local TOP_WHILE = { "EventToastManagerFrame", "UIWidgetTopCenterContainerFrame", "UIWidgetSubZoneTextContainerFrame" }
+  -- The timers themselves, while they show (not the one being placed: owner): hidden, the flight
+  -- timer's frame still sits on the middle spot.
+  local TIMERS = { { "GoblinLedgerFlightTimer", "flight" }, { "GoblinLedgerFlightBar", "flight" },
+                   { "GoblinLedgerBoatsBig", "boat" }, { "GoblinLedgerBoats", "boat" } }
+  local TOP_UNITS = { "PlayerFrame", "TargetFrame", "FocusFrame" }
+  local TOP_SHOWN = { "ElvUIPlayerBuffs", "ElvUIPlayerDebuffs" }
+  -- A widget container or the toasts' frame that shows something (empty, they are 10 x 10).
+  local function widgetsIn(o)
+    if not shown(o) then return false end
+    local w, h = num(call(o, "GetWidth")), num(call(o, "GetHeight"))
+    return (w and h and w > 12 and h > 12) and true or false
+  end
+  local function fontSize(fs, def)
+    local _, s = call(fs, "GetFont")
+    s = num(s)
+    return (s and s > 0 and s < 200) and s or def
+  end
+  -- The rectangles (screen pixels) the timer of owner ("boat", "flight") must not cover at its
+  -- place (top: at the top), beside what BIG.Overlaps finds.
+  function BIG.Obstacles(top, owner)
+    local out = {}
+    local function add(l, b, r, t)
+      if l and r - l > 0.5 and t - b > 0.5 then out[#out + 1] = { l, b, r, t } end
+    end
+    for _, n in ipairs(TOP_MSGS) do add(rect(_G[n])) end
+    local zs = _G.ZoneTextString
+    local zl, zb, zr, zt = rect(zs)
+    if zl then   -- all four lines of the zone's name, as low as they reach (which show changes on the way)
+      local es = num(call(zs, "GetEffectiveScale")) or 1
+      local cx, half = (zl + zr) / 2, max(zr - zl, 512 * es) / 2
+      local t, h = (zb + zt) / 2 + fontSize(zs, 32) * es / 2, 0
+      for _, z in ipairs(ZONE_LINES) do h = h + fontSize(_G[z[1]], z[2]) * es end
+      add(cx - half, t - h, cx + half, t)
+    end
+    local mt = _G.MirrorTimerContainer
+    local l, _, r, t = rect(mt)
+    local s = num(call(mt, "GetEffectiveScale"))
+    if not (l and s) then   -- (no container: the timer bars' own spot)
+      local ul, _, ur, ut = rect(_G.UIParent)
+      s = num(call(_G.UIParent, "GetEffectiveScale")) or 1
+      if ul then l, r, t = ul, ur, ut - 100 * s end
+    end
+    if l then
+      local cx = (l + r) / 2
+      add(cx - BIG.timerW / 2 * s, t - BIG.timerH * s, cx + BIG.timerW / 2 * s, t)
+    end
+    for _, n in ipairs(TOP_WHILE) do
+      local o = _G[n]
+      if widgetsIn(o) then add(rect(o)) end
+    end
+    for _, e in ipairs(TIMERS) do
+      if e[2] ~= owner and shown(_G[e[1]]) then add(rect(_G[e[1]])) end
+    end
+    if top then
+      for _, n in ipairs(TOP_UNITS) do add(rect(_G[n])) end
+      for _, n in ipairs(TOP_SHOWN) do
+        if shown(_G[n]) then add(rect(_G[n])) end
+      end
+    end
+    return out
+  end
+
+  -- The place -------------------------------------------------------------
+  -- Puts h (hw x hh) centred at "middle" or "top"; gives the screen rectangle it takes (nil: no
+  -- screen to measure; then it sits at the middle spot as at UI scale 1).
+  function BIG.Place(h, hw, hh, where)
+    local P = _G.UIParent
+    local sl, sb, sr, st = rect(P)
+    local es = num(call(h, "GetEffectiveScale"))
+    if not sl or not es or es <= 0 then
+      h:ClearAllPoints()
+      h:SetPoint("TOP", P, "TOP", 0, -BIG.top)
+      return nil
+    end
+    local down
+    if where == "middle" then
+      down = max(BIG.top * es, BIG.frac * (st - sb))
+    else
+      down = BIG.band * es
+      local tc = _G.UIWidgetTopCenterContainerFrame
+      if widgetsIn(tc) then
+        local _, b = rect(tc)
+        if b then down = max(down, st - b + 4 * es) end   -- (under its widgets, a capture bar)
+      end
+    end
+    h:ClearAllPoints()
+    h:SetPoint("TOP", P, "TOP", 0, -down / es)
+    local cx, W = (sl + sr) / 2, hw * es
+    return { cx - W / 2, st - down - hh * es, cx + W / 2, st - down }
+  end
+  -- rect fits: on screen, above the character, clear of BIG.Overlaps' and BIG.Obstacles' (looks:
+  -- the caller's way to get those, for its count).
+  function BIG.Fits(rc, top, owner, looks)
+    local sl, sb, sr, st = rect(_G.UIParent)
+    if not sl then return true end
+    if rc[1] < sl - 0.5 or rc[3] > sr + 0.5 or rc[4] > st + 0.5 or rc[2] < st - BIG.char * (st - sb) then return false end
+    if BIG.Overlaps(rc) then return false end
+    for _, q in ipairs((looks or BIG.Obstacles)(top, owner)) do
+      if rc[1] < q[3] - 0.5 and rc[3] > q[1] + 0.5 and rc[2] < q[4] - 0.5 and rc[4] > q[2] + 0.5 then return false end
+    end
+    return true
+  end
 end
 
 ---------------------------------------------------------------------------

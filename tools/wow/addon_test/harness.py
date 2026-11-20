@@ -3001,6 +3001,80 @@ function M.ShowMirrorTimers(n)
   end
   if n > 0 then c:Show() else c:Hide() end
 end
+-- The minimap as Forever's default UI builds it (Blizzard_Minimap Mainline/Minimap.xml and
+-- Camelot/MinimapZoneTextButton.xml: MinimapCluster 256x256 at the top right, the zone text button
+-- 152x23 at its top, the map 198x198 in a 215x226 container 30 below, the coordinates under the map,
+-- the widgets below the cluster) with the quest tracker at its Edit Mode default (TOPRIGHT -110,
+-- -275), and as ElvUI v16.01 moves it (Modules/Maps/Minimap.lua: ElvUI_MinimapHolder at TOPRIGHT
+-- -3, -3, a 175 map, the datatext panel MinimapPanel under it, the zone text button hidden; the
+-- tracker at its ObjectiveFrameMover, TOPRIGHT -163, -325). The boat and flight timers' worlds.
+function M.InstallMinimap(o)
+  o = o or {}
+  local cl = CreateFrame("Frame", "MinimapCluster", UIParent)
+  cl:SetSize(256, 256)
+  cl:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", 0, 0)
+  local zb = CreateFrame("Button", nil, cl)
+  zb:SetSize(152, 23)
+  zb:SetPoint("TOP", cl, "TOP", 10, 0)
+  cl.ZoneTextButton = zb
+  local zt = zb:CreateFontString("MinimapZoneText", "OVERLAY", "GameFontHighlightSmall")
+  zt:SetSize(110, 12)
+  zt:SetPoint("LEFT", zb, "LEFT", 8, -1)
+  local ct = CreateFrame("Frame", nil, cl)
+  ct:SetSize(215, 226)
+  ct:SetPoint("TOP", cl, "TOP", 10, -30)
+  cl.MinimapContainer = ct
+  local mm = CreateFrame("Frame", "Minimap", ct)
+  mm:SetSize(198, 198)
+  mm:SetPoint("CENTER", ct, "CENTER", 0, 0)
+  local bd = CreateFrame("Frame", "MinimapBackdrop", mm)
+  bd:SetSize(215, 226)
+  bd:SetPoint("CENTER", mm, "CENTER", 0, 0)
+  local pc = CreateFrame("Frame", nil, ct)
+  pc:SetSize(90, 10)
+  pc:SetPoint("BOTTOM", mm, "BOTTOM", 0, -18)
+  ct.PlayerCoords = pc
+  pc.CoordText = pc:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  pc.CoordText:SetAllPoints(pc)
+  -- Always shown, as in the game: MinimapPlayerCoordsMixin only blanks the text when the
+  -- minimapShowPlayerCoords setting is off.
+  M.cvars.minimapShowPlayerCoords = o.coords and "1" or "0"
+  pc.CoordText:SetText(o.coords and "12, 34" or "")
+  local wd = CreateFrame("Frame", "UIWidgetBelowMinimapContainerFrame", UIParent)
+  wd:SetSize(1, 1)
+  wd:SetPoint("TOPRIGHT", cl, "BOTTOMRIGHT", 0, 0)
+  if o.tracker ~= false then
+    local ot = CreateFrame("Frame", "ObjectiveTrackerFrame", UIParent)
+    ot:SetSize(248, 400)
+    ot:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
+  end
+  if o.questie then
+    -- Questie (Modules/Tracker/TrackerBaseFrame.lua, QuestieCompat.lua): its own tracker frame
+    -- at the game tracker's point, and the game's tracker hidden.
+    local q = CreateFrame("Frame", "Questie_BaseFrame", UIParent)
+    q:SetSize(280, 180)
+    q:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
+    if ObjectiveTrackerFrame then ObjectiveTrackerFrame:Hide() end
+  end
+end
+function M.InstallElvUIMinimap()
+  local holder = CreateFrame("Frame", "ElvUI_MinimapHolder", UIParent)
+  holder:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -3, -3)
+  holder:SetSize(177, 199)
+  Minimap:ClearAllPoints()
+  Minimap:SetPoint("TOPRIGHT", holder, "TOPRIGHT", -1, -1)
+  Minimap:SetSize(175, 175)
+  MinimapBackdrop:ClearAllPoints()
+  MinimapBackdrop:SetAllPoints(Minimap)
+  local panel = CreateFrame("Frame", "MinimapPanel", Minimap)
+  panel:SetPoint("TOPLEFT", Minimap, "BOTTOMLEFT", -1, 0)
+  panel:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", 1, -22)
+  MinimapCluster.ZoneTextButton:Hide()
+  if ObjectiveTrackerFrame then
+    ObjectiveTrackerFrame:ClearAllPoints()
+    ObjectiveTrackerFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -163, -325)
+  end
+end
 
 M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
@@ -4696,6 +4770,20 @@ def mock_defs():
     return out
 
 
+# The mock helpers' deliberate second definitions: the crafts mock's tooltip data over the main one's.
+MOCK_HELPER_OVERRIDES = {"M.TooltipData": ["CRAFTS_MOCK_LUA", "MOCK_LUA"]}
+
+
+def mock_helpers():
+    """Every MOCK helper the Lua mocks define (function M.X, at any indent), as {name: [chunk, ...]}."""
+    out = {}
+    for cname, body in sorted(globals().items()):
+        if cname.endswith("_LUA") and isinstance(body, str):
+            for m in re.finditer(r"^[ \t]*function (M\.[\w.:]+)\s*\(|^[ \t]*(M\.[\w.]+)\s*=\s*function\b", body, re.M):
+                out.setdefault(m.group(1) or m.group(2), []).append(cname)
+    return out
+
+
 def mock_api_pattern(api):
     """A definition of api anywhere in this file: function api(, api = function / {, from Python
     w.g.api = ..., _G["api"] = ..., rawset(_G, "api", ...) (not a test's w.g.api = None)."""
@@ -4712,6 +4800,8 @@ def sc_static(sc, ref, items):
     # all of this file, Lua or Python
     twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1 and MOCK_OVERRIDES.get(k) != v)
     sc.eq(twice, {}, "mocks: each game API defined once in the Lua mocks")
+    twice = dict((k, v) for k, v in mock_helpers().items() if len(v) > 1 and MOCK_HELPER_OVERRIDES.get(k) != v)
+    sc.eq(twice, {}, "mocks: each MOCK helper (the font sizes, the top-centre frames, the minimap...) defined once")
     me = open(os.path.abspath(__file__), "rb").read().decode("utf-8")
     for api in MOCK_APIS:
         n = len(re.findall(mock_api_pattern(api), me))
@@ -26069,18 +26159,18 @@ def fl_in_small(fn):
 
 def fl_small(w):
     """The world's flight timer is the slim bar."""
-    return w.ns.settings.flightBar == "small"
+    return w.ns.settings.flightStyle == "small"
 
 
 def fl_world(ref, items, saved=None, login=(True, False), t=None, now=None, on_taxi=False, pos=None,
              guid=None, ff=False, before=None, style="", **kw):
     """A world for the flight timers: GetTime at t, on a taxi or not, at world x, y pos. style:
-    "big" (the default), "small" (/gl flights small) or "" (FL_STYLE's); a saved flightBar wins."""
+    "big" (the default), "small" (/gl flights small) or "" (FL_STYLE's); a saved flightStyle wins."""
     style = style or FL_STYLE[0]
-    if style == "small" and not (isinstance(saved, dict) and "flightBar" in saved):
+    if style == "small" and not (isinstance(saved, dict) and "flightStyle" in saved):
         saved = dict(saved) if isinstance(saved, dict) else ({} if saved is None else saved)
         if isinstance(saved, dict):
-            saved["flightBar"] = "small"
+            saved["flightStyle"] = "small"
 
     def setup(w):
         M = w.M
@@ -27008,12 +27098,16 @@ def sc_flights_joins(sc, ref, items):
 
 
 # --- flights: the big timer (the default) ---
-FL_SCREENS = [(1280, 720), (1920, 1080), (2560, 1440)]
+# The screens the big timers are tested on (the boat timer's BT_SCREENS): 16:9, 21:9, 16:10, 5:4.
+BT_SCREENS_ALL = (("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440), ("1280x720", 1280, 720), ("3440x1440", 3440, 1440),
+                  ("1680x1050", 1680, 1050), ("1280x1024", 1280, 1024))
+FL_SCREENS = [(pw, ph) for _, pw, ph in BT_SCREENS_ALL]   # (the boat timer's: 16:9, 21:9, 16:10 and 5:4)
 FL_SCALES = [1.0, 0.8, 0.62]
 FL_MSG_NAMES = ["UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame", "ZoneTextString",
                 "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString", "GoblinTestMirrorTimer1", "GoblinTestMirrorTimer2",
                 "GoblinTestMirrorTimer3", "UIWidgetTopCenterContainerFrame"]
 FL_EM = 0.58   # Friz Quadrata's letters and digits: about 0.58 of the font's size wide (an estimate)
+FL_LONGEST = "Brackenwall Village"   # the longest place there is (its name before the comma)
 
 
 def fl_top_frames(w, o=None):
@@ -27023,16 +27117,19 @@ def fl_top_frames(w, o=None):
     w.M.ShowMirrorTimers(3)
 
 
-def fl_top_world(ref, items, screen, elvui=False, top=None, **kw):
+def fl_top_world(ref, items, screen, elvui=False, top=None, tracker=True, questie=False, **kw):
     """A flight world at screen (pixels w, h and the UI scale: UIParent's scale is h / 768 times it)
     with the game's messages at the top centre up and the three timer bars (M.InstallTopFrames,
-    M.ShowMirrorTimers; top: its options, hidden: the raid warnings and the zone's names hidden)."""
+    M.ShowMirrorTimers; top: its options, hidden: the raid warnings and the zone's names hidden), the
+    minimap and the quest tracker (the game's, or ElvUI's with elvui; Questie's with questie)."""
     o = dict(top or {})
     o["shown"] = not o.pop("hidden", False)
 
     def setup(w):
         fl_top_frames(w, o)
+        w.M.InstallMinimap(w.to_lua({"tracker": tracker, "coords": False, "questie": questie}))
         if elvui:
+            w.M.InstallElvUIMinimap()
             w.M.InstallBlizzardBags()
             w.M.InstallElvUIAddon(w.to_lua({}))
     pw, ph, s = screen
@@ -27055,6 +27152,43 @@ def fl_big_line_w(dest, left):
     """The big timer's line in the mock's letters (6 a letter at 12, M.fontSizes): the place at 16,
     8 more, the time at 32 (every digit as wide as the widest: all one width here)."""
     return len(dest) * 6 * 16 / 12.0 + 8 + len(left) * 6 * 32 / 12.0
+
+
+def fl_side_parts(w):
+    """What the big timers keep clear of at both their places while it shows, beside the messages at
+    the top centre: the minimap's parts and the quest trackers (bt_minimap_parts), the buffs, a toast
+    with something in it, the boat timer's frames. [(name, frame)]"""
+    g = w.g
+    out = bt_minimap_parts(w) if g.MinimapCluster is not None else []
+    out += [(n, g[n]) for n in ("BuffFrame", "DebuffFrame", "GoblinLedgerBoatsBig", "GoblinLedgerBoats")]
+    et = g.EventToastManagerFrame
+    if et is not None and et.GetHeight(et) > 12:
+        out.append(("the toast", et))
+    return [(n, o) for n, o in out if o is not None and o.IsVisible(o)]
+
+
+def fl_tracker_way(sc, w, label):
+    """Where the big timer has to be with the quest trackers up (the boat timer's bt_tracker_way): with
+    them hidden the middle; with them back the middle, unless it would cover one of the minimap's
+    parts or a tracker there: then the top, unless that too: the slim bar. (The rectangle is the
+    addon's, the choice the harness's.)"""
+    FL = w.ns.Flights
+    trackers = [o for o in (w.g.ObjectiveTrackerFrame, w.g.Questie_BaseFrame) if o is not None and o.IsShown(o)]
+    for o in trackers:
+        o.Hide(o)
+    fl_wait(w, 1.0)
+    b = FL.Bar()
+    sc.eq(FL.spot, "middle", "%s: with the quest trackers hidden: the middle" % label)
+    r = w.rect(b)
+    for o in trackers:
+        o.Show(o)
+    fl_wait(w, 1.0)
+    side = [w.rect(o) for _, o in fl_side_parts(w)]
+    if not any(fl_hit(r, q) for q in side):
+        return "middle"
+    es = b.GetEffectiveScale(b)
+    top = (r[0], w.M.screenH - (18 + FL_BIG_H) * es, r[2], w.M.screenH - 18 * es)
+    return "slim" if any(fl_hit(top, q) for q in side) else "top"
 
 
 def fl_big_place_checks(sc, w, label, spot="middle"):
@@ -27095,7 +27229,12 @@ def fl_big_place_checks(sc, w, label, spot="middle"):
         zr = ((zs[0] + zs[2]) / 2 - 256 * es, zs[3] - 102 * es, (zs[0] + zs[2]) / 2 + 256 * es, zs[3])
         if fl_hit(r, zr):
             hits.append("the zone's names %s" % fl_px(zr))
-    sc.eq(hits, [], "%s: clear of the game's messages and the timer bars (%s)" % (label, fl_px(r)))
+    # What the boat timer keeps clear of at both places too, while it shows: the minimap's parts,
+    # the quest trackers, the buffs, a toast, the boat timer itself.
+    for n, o in fl_side_parts(w):
+        if fl_hit(r, w.rect(o)):
+            hits.append("%s %s" % (n, fl_px(w.rect(o))))
+    sc.eq(hits, [], "%s: clear of the game's messages, the timer bars, the minimap, the trackers, the buffs (%s)" % (label, fl_px(r)))
     sc.eq((b.GetFrameStrata(b), b.IsMouseEnabled(b), ln.IsMouseEnabled(ln), b._backdrop, b._template),
           ("LOW", False, False, None, None), "%s: no panel, under the windows (the boat timer's strata), clicks go through" % label)
     sc.check(abs((lr[0] + lr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01 and abs(lr[3] - r[3]) < 0.01
@@ -27114,21 +27253,24 @@ def fl_big_place_checks(sc, w, label, spot="middle"):
         sc.check(abs(kr[3] - (lr[1] - 3 * es)) < 0.01 and abs((kr[3] - kr[1]) - 3 * es) < 0.01 and abs(kr[0] - lr[0]) < 0.01
                  and abs(kr[2] - lr[2]) < 0.01, "%s: the strip 3 under the line, 3 high, as wide (%s)" % (label, fl_px(kr)))
     longest = max((fl_source()[0][i][0].split(",")[0] for i in fl_source()[0]), key=len)
+    sc.eq(len(longest), len(FL_LONGEST), "%s: FL_LONGEST is as long as the longest place" % label)
     sc.check((len(longest) * FL_EM * 16 + 8 + len("12:34 so far") * FL_EM * 32 + 40) * es <= sw,
              "%s: the longest place (%s) and time (12:34 so far) fit the screen" % (label, longest))
     return r
 
 
 def sc_flights_big(sc, ref, items):
-    """The big timer (the default): where it sits at 1280x720, 1920x1080 and 2560x1440, UI scale 1.0, 0.8
-    and 0.62, the default UI and ElvUI: centred in the upper middle (the big boat timer's spot), above the
-    character, clear of the error lines, raid warnings, the zone's names and the timer bars; its X at the
-    top right; its words, the fill; where it goes when the middle is taken."""
+    """The big timer (the default): where it sits on the big boat timer's screens (1920x1080, 2560x1440,
+    1280x720, 3440x1440, 1680x1050, 1280x1024), UI scale 1.0, 0.8 and 0.62, the default UI and ElvUI with
+    their minimap and quest tracker: centred in the upper middle (the big boat timer's spot), above the
+    character, clear of the error lines, raid warnings, the zone's names, the timer bars, the minimap and
+    the tracker (where the tracker reaches the middle: the top); its X at the top right; its words, the
+    fill; where it goes when the middle is taken."""
     # The words for Stormwind to Ironforge: the data's estimate (the map says "about"), your own time.
     est = fl_est([FL_SW, FL_IF])[0]
     w = fl_top_world(ref, items, (1920, 1080, 1.0))
     FL, M, S = w.ns.Flights, w.M, w.ns.settings
-    sc.eq((S.flightBar, FL.WantBig()), (None, True), "big: the default")
+    sc.eq((S.flightStyle, FL.WantBig()), (None, True), "big: the default")
     slot = fl_open(w)
     lines, _ = fl_hover(w, slot[FL_IF])
     sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "big: the map: about 4:19 (the estimate)")
@@ -27190,19 +27332,36 @@ def sc_flights_big(sc, ref, items):
         if style == "big":
             fl_big_place_checks(sc, w, "so far")
         sc.clean(w, "%s so far" % style)
-    # Every screen and UI scale, the default UI and ElvUI.
+    # Every screen and UI scale the boat timer's tests use, the default UI and ElvUI, with the
+    # minimap and the quest tracker: where the tracker reaches the middle (a narrower screen, ElvUI's
+    # tracker, a long place), the top. Ironforge, and the longest place there is.
+    tops = []
     for pw, ph in FL_SCREENS:
         for s in FL_SCALES:
             for elv in (False, True):
-                label = "%dx%d %.2f %s" % (pw, ph, s, "elvui" if elv else "default")
-                w = fl_top_world(ref, items, (pw, ph, s), elvui=elv)
-                slot = fl_open(w)
-                fl_take(w, slot[FL_IF])
-                r = fl_big_place_checks(sc, w, label)
-                b = w.ns.Flights.Bar()
-                if elv and b is not None:
-                    sc.eq((b._template, b.x.glLook), (None, "elvui"), "%s: ElvUI's X, no panel (as the big boat timer)" % label)
-                sc.clean(w, label)
+                for dest in ("Ironforge", FL_LONGEST):
+                    label = "%dx%d %.2f %s %s" % (pw, ph, s, "elvui" if elv else "default", dest)
+                    w = fl_top_world(ref, items, (pw, ph, s), elvui=elv)
+                    slot = fl_open(w, names={FL_IF: dest + ", Somewhere"})
+                    fl_take(w, slot[FL_IF])
+                    want = fl_tracker_way(sc, w, label)
+                    if want != "middle":
+                        tops.append(label + " " + want)
+                    if pw * 9 >= ph * 16 and not elv:
+                        sc.eq(want, "middle", "%s: the game's UI on a 16:9 or wider screen: the tracker is not in the way" % label)
+                    if want == "slim":
+                        sc.eq(w.ns.Flights.spot, "slim", "%s: no room clear of the tracker and the minimap: the slim bar" % label)
+                    else:
+                        fl_big_place_checks(sc, w, label, spot=want)
+                    b = w.ns.Flights.Bar()
+                    if elv and b is not None and want != "slim":
+                        sc.eq((b._template, b.x.glLook), (None, "elvui"), "%s: ElvUI's X, no panel (as the big boat timer)" % label)
+                    sc.clean(w, label)
+    print("      [flight timer] at the top for the quest tracker: %d of %d cases (%s ...)" % (
+        len(tops), len(FL_SCREENS) * len(FL_SCALES) * 4, "; ".join(tops[:3])))
+    sc.check(any(t.startswith("1280x1024 1.00 default %s" % FL_LONGEST) for t in tops)
+             and any(t.startswith("1280x1024 1.00 elvui") for t in tops),
+             "big: at 5:4, UI scale 1, the tracker moves the timer to the top (%d cases)" % len(tops))
     # ElvUI's pixel-perfect scales (768 / screen height) too.
     for pw, ph in ((1920, 1080), (2560, 1440)):
         w = fl_top_world(ref, items, (pw, ph, 768.0 / ph), elvui=True)
@@ -27332,7 +27491,7 @@ def sc_flights_style(sc, ref, items):
     sc.eq(out, ["Goblin Ledger: flight timer: the slim bar at the top. /gl flights big for the big one."], "style: small, one line")
     b = FL.Bar()
     bars = FL.Bars()
-    sc.eq((S.flightBar, b.GetName(b), fl_shown(bars.big), FL.spot, FL.anchor),
+    sc.eq((S.flightStyle, b.GetName(b), fl_shown(bars.big), FL.spot, FL.anchor),
           ("small", "GoblinLedgerFlightBar", False, "slim", "MirrorTimerContainer"), "style: saved; the slim bar at once, the big one gone")
     sc.eq(fl_bar_line(w), fl_line("Ironforge", fl_state(w)[0].est, fl_el(w)), "style: the same words on it")
     r = w.rect(b)
@@ -27342,19 +27501,19 @@ def sc_flights_style(sc, ref, items):
           "Goblin Ledger: flight timers are on (slim bar). Your own times for 0 routes.", "style: status says slim")
     fl_wait(w, 40)
     saved = lua_to_py(w.g.ForeverAH_Settings)
-    sc.eq(saved.get("flightBar"), "small", "style: in the saved settings")
+    sc.eq(saved.get("flightStyle"), "small", "style: in the saved settings")
     w2 = fl_world(ref, items, saved=saved, login=(False, True), t=w.M.t + 3, now=w.M.now + 3, on_taxi=True, style="big")
-    sc.eq((w2.ns.Flights.resumed, w2.ns.settings.flightBar, w2.ns.Flights.Bar().GetName(w2.ns.Flights.Bar())),
+    sc.eq((w2.ns.Flights.resumed, w2.ns.settings.flightStyle, w2.ns.Flights.Bar().GetName(w2.ns.Flights.Bar())),
           ("reload", "small", "GoblinLedgerFlightBar"), "style: /reload in the air: still the slim bar")
     sc.eq(fl_bar_line(w2), fl_line("Ironforge", fl_state(w2)[0].est, fl_el(w2)), "style: after the reload, the same clock")
     out = [strip_codes(c) for c in w2.slash("/gl flights big")]
     sc.eq(out, ["Goblin Ledger: flight timer: big, in the upper middle of the screen. /gl flights small for the slim bar."],
           "style: big, one line")
     b2 = w2.ns.Flights.Bar()
-    sc.eq((w2.ns.settings.flightBar, b2.GetName(b2), fl_shown(w2.ns.Flights.Bars().small)),
+    sc.eq((w2.ns.settings.flightStyle, b2.GetName(b2), fl_shown(w2.ns.Flights.Bars().small)),
           (None, "GoblinLedgerFlightTimer", False), "style: the big timer at once, the slim bar gone")
     saved2 = lua_to_py(w2.g.ForeverAH_Settings)
-    sc.check("flightBar" not in saved2, "style: big is the default: nothing saved for it")
+    sc.check("flightStyle" not in saved2, "style: big is the default: nothing saved for it")
     w3 = fl_world(ref, items, saved=saved2, login=(False, True), t=w2.M.t + 3, now=w2.M.now + 3, on_taxi=True, style="big")
     sc.eq(w3.ns.Flights.Bar().GetName(w3.ns.Flights.Bar()), "GoblinLedgerFlightTimer", "style: /reload again: big")
     sc.clean(w2, "style reload")
@@ -27368,7 +27527,7 @@ def sc_flights_style(sc, ref, items):
     out = [strip_codes(c) for c in w.slash("/gl flights small")]
     sc.eq(out, ["Goblin Ledger: flight timer: the slim bar at the top. /gl flights big for the big one. "
                 "Flight timers are off: /gl flights on turns them on."], "style: off: saved, says they are off")
-    sc.eq((S.flightBar, fl_bar_line(w)), ("small", None), "style: off: nothing shows")
+    sc.eq((S.flightStyle, fl_bar_line(w)), ("small", None), "style: off: nothing shows")
     sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
           "Goblin Ledger: flight timers are off (slim bar). Your own times for 0 routes.", "style: status while off")
     w.slash("/gl flights on")
@@ -27376,7 +27535,7 @@ def sc_flights_style(sc, ref, items):
     for cmd in ("/gl flights BIG", "/gl fly big"):
         w.slash("/gl flights small")
         w.slash(cmd)
-        sc.eq(S.flightBar, None, "style: %s" % cmd)
+        sc.eq(S.flightStyle, None, "style: %s" % cmd)
     sc.clean(w, "style")
 
 
@@ -27451,80 +27610,486 @@ def sc_flights_place(sc, ref, items):
     sc.clean(w, "place cost")
 
 
-def sc_flights_boats(sc, ref, items):
-    """The big boat timer (Boats.lua's GoblinLedgerBoatsBig) never shows with the flight timer: at the
-    dock you take off from it goes; shown as you fly over a dock, hidden at once (also with the
-    flight timer hidden by its X); after you land it shows again. With a Boats.lua that has the big
-    timer, the real thing: Darkshire to Booty Bay passes the Booty Bay pier, never both at once."""
-    est = fl_est([FL_SW, FL_IF])[0]
-    w = fl_top_world(ref, items, (1920, 1080, 1.0))
-    FL, M, P = w.ns.Flights, w.M, w.g.UIParent
-    boat = w.g.GoblinLedgerBoatsBig or w.g.CreateFrame("Frame", "GoblinLedgerBoatsBig", P)   # (as at a dock)
-    boat.SetSize(boat, 400, 32)
-    boat.ClearAllPoints(boat)
-    boat.SetPoint(boat, "TOP", P, "TOP", 0, -290)
-    boat.Show(boat)
-    slot = fl_open(w)
-    fl_take(w, slot[FL_IF])
-    sc.eq((fl_shown(boat), fl_shown(FL.Bar())), (False, True), "boats: the boat timer goes as you take off")
-    fl_wait(w, 30)
-    boat.Show(boat)   # (Boats.lua shows it at each step at a dock)
-    sc.eq((fl_shown(boat), fl_shown(FL.Bar())), (False, True), "boats: over a dock: hidden at once")
-    M.click(FL.Bar().x)
-    boat.Show(boat)
-    sc.eq((fl_shown(boat), fl_bar_line(w)), (False, None), "boats: hidden too with the flight timer hidden by its X")
-    fl_wait(w, est - fl_el(w) + 1, dt=0.5)
-    fl_land(w, FL_IF)
-    boat.Show(boat)
-    sc.check(fl_shown(boat), "boats: after landing it shows again at a dock")
-    sc.clean(w, "boats")
-    # The first dock of the session under you on the way: made then, hidden within a tick.
-    w = fl_top_world(ref, items, (1920, 1080, 1.0))
-    FL, P = w.ns.Flights, w.g.UIParent
-    slot = fl_open(w)
-    fl_take(w, slot[FL_IF])
-    fl_wait(w, 20)
-    boat = w.g.GoblinLedgerBoatsBig or w.g.CreateFrame("Frame", "GoblinLedgerBoatsBig", P)
-    boat.Show(boat)
-    fl_wait(w, 0.1)
-    sc.check(not fl_shown(boat) and fl_shown(FL.Bar()), "boats: made on the way: hidden within a tick")
-    boat.Show(boat)
-    sc.check(not fl_shown(boat), "boats: then hidden at once")
-    sc.clean(w, "boats on the way")
-    # The real flight, with a Boats.lua that has the big timer (Darkshire to Booty Bay, 1 s steps).
-    track = fl_source()[2].get("12>19")
+# --- flights and boats: one rule for the two big timers ---
+# On a flight the middle of the screen is the flight timer's: the boat timer (Boats.lua's busy:
+# the game's taxi, or Flights.lua's flight until its timer goes) shows its small line under the
+# minimap meanwhile and is big again the moment the flight timer goes; Flights.lua tells it as a
+# flight starts and ends, and never shows or hides the boat timer's frames itself (no hook to
+# fight its updates). The places, as flight nodes and boat piers (world x, y, continent).
+FL_BB, FL_RATCHET, FL_THERAMORE, FL_MENETHIL, FL_DARKSHIRE, FL_ORG, FL_BRACKEN = 19, 80, 32, 7, 12, 23, 55
 
+
+def fl_boat_world(ref, items, screen=(1920, 1080, 1.0), faction="Alliance", **kw):
+    """A flight world with the boat timers' game API (BOAT_MOCK_LUA), the game's frames at the top
+    centre (shown), the timer bars, the minimap and the quest tracker: both timers, as in the game."""
     def setup(w):
         w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
         fl_top_frames(w)
         w.M.InstallMinimap(w.to_lua({"tracker": True, "coords": False, "questie": False}))
-    w = fl_world(ref, items, screen=(1920, 1080, 1080 / 768.0), before=setup)
+    pw, ph, s = screen
+    return fl_world(ref, items, screen=(pw, ph, ph / 768.0 * s), before=setup, faction=faction, **kw)
+
+
+def fl_vis(o):
+    return o is not None and bool(o.IsVisible(o))
+
+
+def fl_rects(t):
+    """A Lua list of { l, b, r, t } as tuples."""
+    return [(q[1], q[2], q[3], q[4]) for q in fl_values(t)]
+
+
+FL_COUNT_LUA = """function(t)
+  for _, n in ipairs({ "GoblinLedgerBoatsBig", "GoblinLedgerBoats", "GoblinLedgerFlightTimer" }) do
+    local f = _G[n]
+    if f and not t["hooked " .. n] then
+      t["hooked " .. n] = true
+      t[n] = f:IsVisible() and 1 or 0   -- (made and shown since the last look)
+      f:HookScript("OnShow", function() t[n] = (t[n] or 0) + 1 end)
+      f:HookScript("OnHide", function() t[n .. " hide"] = (t[n .. " hide"] or 0) + 1 end)
+    end
+  end
+end"""
+
+
+class FlWatch(object):
+    """Looks at both timers after every tick: never both big, the flight timer never over the boat's
+    small line and always at its spot; counts each frame's shows (OnShow, hooked once it exists)
+    against the shows seen tick by tick (a show and a hide within one tick is a fight)."""
+
+    def __init__(self, w, spot="middle"):
+        self.w, self.spot = w, spot
+        self.counts = w.lua.table()
+        self.hook = w.lua.eval(FL_COUNT_LUA)
+        self.both, self.over, self.moved, self.small, self.boat_big = [], [], [], 0, 0
+        self.seen = {"GoblinLedgerBoatsBig": 0, "GoblinLedgerBoats": 0}
+        self.last = {"GoblinLedgerBoatsBig": False, "GoblinLedgerBoats": False}
+        self.ticks = 0
+        self.see()
+
+    def see(self):
+        w = self.w
+        self.hook(self.counts)
+        g = w.g
+        fb = w.ns.Flights.Bar()
+        fv = fl_vis(fb) and fb.GetName(fb) == "GoblinLedgerFlightTimer"
+        bb, bs = g.GoblinLedgerBoatsBig, g.GoblinLedgerBoats
+        bv, sv = fl_vis(bb), fl_vis(bs)
+        for n, v in (("GoblinLedgerBoatsBig", bv), ("GoblinLedgerBoats", sv)):
+            if v and not self.last[n]:
+                self.seen[n] += 1
+            self.last[n] = v
+        t = self.ticks
+        if fv and bv:
+            self.both.append(t)
+        if fv and sv and fl_hit(w.rect(fb), w.rect(bs)):
+            self.over.append(t)
+        if fv and w.ns.Flights.spot != self.spot:
+            self.moved.append((t, w.ns.Flights.spot))
+        self.small += 1 if sv else 0
+        self.boat_big += 1 if bv else 0
+        self.ticks += 1
+        return fv, bv, sv
+
+    def shows(self, n):
+        return int(self.counts[n] or 0)
+
+    def report(self, sc, label, near=True):
+        sc.eq(self.both, [], "%s: never the big boat timer with the big flight timer" % label)
+        sc.eq(self.over, [], "%s: the flight timer never over the boat's small line" % label)
+        sc.eq(self.moved[:3], [], "%s: the flight timer stays at its %s spot (nothing of the boat timer in its way)" % (label, self.spot))
+        if near:
+            sc.check(self.small > 0, "%s: the boat's small line shows on the way (%d ticks)" % (label, self.small))
+        for n in ("GoblinLedgerBoatsBig", "GoblinLedgerBoats"):
+            sc.eq(self.shows(n), self.seen[n], "%s: %s shown %d times, each seen (no show and hide within a tick)" % (label, n, self.seen[n]))
+
+
+def fl_track(key):
+    tr = fl_source()[2].get(key)
+    assert tr, key
+    return tr
+
+
+def fl_fly_track(w, track, inst, watch, upto=None, step=0.1):
+    """Flies the route's track (20 s from point to point) in steps of step seconds, the zone changing
+    every 5 s (the boat timers look again then), watch looking after each step; upto: stop after
+    that many seconds."""
+    M = w.M
+    n = int(round(20.0 / step))
+    t = 0.0
+    for i in range(len(track) - 1):
+        (x1, y1), (x2, y2) = track[i], track[i + 1]
+        for k in range(n):
+            f = k / float(n)
+            M.pos = w.to_lua([x1 + (x2 - x1) * f, y1 + (y2 - y1) * f, 0, inst])
+            if k % int(round(5.0 / step)) == 0:
+                M.fire("ZONE_CHANGED")
+            fl_wait(w, step, dt=step)
+            watch.see()
+            t += step
+            if upto is not None and t >= upto - 1e-9:
+                return
+
+
+def fl_land_at(w, x, y, inst, watch, secs=2.0):
+    """The flight comes down at x, y; watch looks at every 0.1 s tick for secs. Gives the ticks: (the
+    flight timer, the big boat timer, the small line) each tick."""
+    w.M.pos = w.to_lua([x, y, 0, inst])
+    w.M.Land()
+    out = []
+    for _ in range(int(round(secs / 0.1))):
+        fl_wait(w, 0.1)
+        out.append(watch.see())
+    return out
+
+
+def fl_walk(w, a, b, inst, watch, speed=7.0):
+    """Walks from a to b (world x, y) at speed yd/s in 0.1 s steps; then a second there."""
+    d = math.hypot(b[0] - a[0], b[1] - a[1])
+    n = max(1, int(d / (speed * 0.1)))
+    for k in range(1, n + 1):
+        f = k / float(n)
+        w.M.pos = w.to_lua([a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, 0, inst])
+        fl_wait(w, 0.1)
+        watch.see()
+    for _ in range(11):
+        fl_wait(w, 0.1)
+        watch.see()
+
+
+def fl_boat_big(w):
     B = w.ns.Boats
-    if B is None or B.ui is None or B.ui.big is None or not track:
-        sc.clean(w, "boats real (this Boats.lua has no big timer)")
-        return
+    return B.ui.style == "big" and fl_vis(B.ui.big.holder) and not fl_vis(w.g.GoblinLedgerBoats)
+
+
+def fl_boat_small(w):
+    B = w.ns.Boats
+    return B.ui.style == "small" and fl_vis(w.g.GoblinLedgerBoats) and not fl_vis(B.ui.big.holder)
+
+
+def sc_flights_boats(sc, ref, items):
+    """The two big timers never show at once and never run into each other, on real flights: over a
+    dock (Darkshire to Booty Bay past the Booty Bay pier, Orgrimmar to Brackenwall past Ratchet's),
+    taking off from a dock, the flight timer hidden by its X over a dock, the flight timers off, a
+    fight at a dock. One rule: on a flight the boat timer is its small line under the minimap, the
+    middle the flight timer's (Boats.lua decides; Flights.lua never touches the boat timer's frames)."""
+    # Source: one rule, in one place.
+    src = open(os.path.join(ADDON, "Flights.lua"), "rb").read().decode("ascii")
+    code = re.sub(r"--[^\n]*", "", src)
+    sc.check(not re.search(r"GoblinLedgerBoats|HookScript", code),
+             "rule: Flights.lua never names, shows, hides or hooks the boat timer's frames")
+    bsrc = re.sub(r"--[^\n]*", "", open(os.path.join(ADDON, "Boats.lua"), "rb").read().decode("ascii"))
+    sc.check("FL.InAir()" in bsrc and "UnitOnTaxi" in bsrc and "GoblinLedgerFlight" not in bsrc,
+             "rule: Boats.lua's busy reads the taxi and the flight timer's flight (FL.InAir), not its frames")
+    # Over a dock: Darkshire to Booty Bay (the Booty Bay pier, 7 yd off the route), Orgrimmar to
+    # Brackenwall (Ratchet's pier, 44 yd off it; a Horde flight).
+    for label, a, b, inst, faction in (("Darkshire > Booty Bay", FL_DARKSHIRE, FL_BB, 0, "Alliance"),
+                                       ("Orgrimmar > Brackenwall", FL_ORG, FL_BRACKEN, 1, "Horde")):
+        track = fl_track("%d>%d" % (a, b))
+        w = fl_boat_world(ref, items, faction=faction)
+        M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+        M.pos = w.to_lua([track[0][0], track[0][1], 0, inst])
+        slot = fl_open(w, routes={b: [a, b]}, current=a, extra=())
+        fl_take(w, slot[b])
+        watch = FlWatch(w)
+        fl_fly_track(w, track, inst, watch)
+        watch.report(sc, label)
+        sc.eq(watch.boat_big, 0, "%s: the big boat timer never shows in the air" % label)
+        sc.check(B.stats.renders <= watch.ticks / 10 + 10, "%s: the boat timer updates about once a second (%d renders in %d ticks)"
+                 % (label, B.stats.renders, watch.ticks))
+        sc.clean(w, label)
+    # Taking off from a dock: at Ratchet's pier (its flight master next to it) the big boat timer;
+    # the flight starts: the boat's small line at once, the flight timer in the middle from its first
+    # look (the boat timer was out of its way first), never both; away from the pier nothing.
+    rx, ry, rinst = bt_stop("bootybay_ratchet", 1)
+    w = fl_boat_world(ref, items)
+    M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+    M.pos = w.to_lua([rx, ry, 0, rinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    sc.check(fl_boat_big(w) and B.ui.big.mode.startswith("middle"), "take-off: at Ratchet's pier the big boat timer (%s, %s)"
+             % (B.ui.style, B.ui.big.mode))
+    slot = fl_open(w, routes={FL_THERAMORE: [FL_RATCHET, FL_THERAMORE]}, current=FL_RATCHET, extra=())
+    watch = FlWatch(w)
+    M.click(w.g["TaxiButton%d" % slot[FL_THERAMORE]])
+    first = None
+    for _ in range(6):
+        fl_wait(w, 0.1)
+        fv, bv, sv = watch.see()
+        if fv and first is None:
+            first = (FL.places, FL.spot, bv, sv)
+    sc.eq(first, (1, "middle", False, True), "take-off: the flight timer in the middle at its first look, the boat's small line at once")
+    track = fl_track("%d>%d" % (FL_RATCHET, FL_THERAMORE))
+    fl_fly_track(w, [(rx, ry)] + track[1:], rinst, watch, upto=60)
+    watch.report(sc, "take-off")
+    sc.check(not B.ui.shown, "take-off: away from the pier no boat timer")
+    sc.clean(w, "take-off")
+    # The flight timer hidden by its X over the Booty Bay pier: still a flight: the small line, the
+    # middle left alone (never the big boat timer until you land).
+    track = fl_track("%d>%d" % (FL_DARKSHIRE, FL_BB))
+    w = fl_boat_world(ref, items)
     M, FL = w.M, w.ns.Flights
     M.pos = w.to_lua([track[0][0], track[0][1], 0, 0])
-    slot = fl_open(w, routes={19: [12, 19]}, current=12, extra=())
-    fl_take(w, slot[19])
-    fb = FL.Bar()
-    both, near = [], 0
-    for i in range(len(track) - 1):
-        for k in range(20):
-            f = k / 20.0
-            M.pos = w.to_lua([track[i][0] + (track[i + 1][0] - track[i][0]) * f,
-                              track[i][1] + (track[i + 1][1] - track[i][1]) * f, 0, 0])
-            if k == 0:
-                M.fire("ZONE_CHANGED")
-            fl_wait(w, 1.0)
-            if B.ui.shown:
-                near += 1
-            bb = w.g.GoblinLedgerBoatsBig
-            if bb is not None and bb.IsVisible(bb) and fb.IsVisible(fb):
-                both.append(i * 20 + k)
-    sc.check(near > 0, "boats real: the flight passes a dock (a boat timer for %d s)" % near)
-    sc.eq(both, [], "boats real: the big boat timer never with the big flight timer")
-    sc.clean(w, "boats real")
+    slot = fl_open(w, routes={FL_BB: [FL_DARKSHIRE, FL_BB]}, current=FL_DARKSHIRE, extra=())
+    fl_take(w, slot[FL_BB])
+    M.click(FL.Bar().x)
+    watch = FlWatch(w)
+    fl_fly_track(w, track, 0, watch)
+    sc.check(fl_bar_line(w) is None and watch.small > 0 and watch.boat_big == 0,
+             "x: the flight timer hidden: over the pier the small line, never the big boat timer (%d, %d)" % (watch.small, watch.boat_big))
+    watch.report(sc, "x")
+    sc.clean(w, "x")
+    # The flight timers off (/gl flights off): no flight timer, but on the taxi the boat timer is the
+    # small line all the same (the game's taxi), big again as you land at the pier.
+    w = fl_boat_world(ref, items)
+    M, B = w.M, w.ns.Boats
+    M.pos = w.to_lua([rx, ry, 0, rinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    w.slash("/gl flights off")
+    slot = fl_open(w, routes={FL_THERAMORE: [FL_RATCHET, FL_THERAMORE]}, current=FL_RATCHET, extra=())
+    fl_take(w, slot[FL_THERAMORE])
+    sc.check(fl_boat_small(w) and fl_bar_line(w) is None, "flights off: on the taxi the boat's small line (%s)" % B.ui.style)
+    fl_wait(w, 10)
+    M.Land()   # (at the pier, where it took off)
+    sc.check(fl_boat_big(w), "flights off: landed at the pier: the big boat timer at once (%s)" % B.ui.style)
+    sc.clean(w, "flights off")
+    # A fight at a dock (no flight): the small line at once, big again as it ends.
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = fl_boat_world(ref, items)
+    M, B = w.M, w.ns.Boats
+    M.pos = w.to_lua([tx, ty, 0, tinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    sc.check(fl_boat_big(w), "fight: at Theramore's pier the big boat timer (%s)" % B.ui.style)
+    M.Fight(True)
+    sc.check(fl_boat_small(w), "fight: the small line at once (%s)" % B.ui.style)
+    fl_wait(w, 3)
+    sc.check(fl_boat_small(w), "fight: still the small line (%s)" % B.ui.style)
+    M.Fight(False)
+    sc.check(fl_boat_big(w), "fight: over: the big boat timer at once (%s)" % B.ui.style)
+    sc.clean(w, "fight")
+
+
+def sc_flights_boats_land(sc, ref, items):
+    """Landing at a flight master next to a dock (Booty Bay, Ratchet, Theramore, Menethil): the real
+    flight there, never both timers; off the flight, walking onto the pier, the big boat timer (no
+    small line any more). Landing on the pier itself: while the flight timer is still up (half a
+    second: a blip off the taxi is no landing) the small line, and the big boat timer the very tick
+    the flight timer goes; landing into a fight: the small line until the fight ends."""
+    for label, a, b, key, j in (("Booty Bay", FL_DARKSHIRE, FL_BB, "bootybay_ratchet", 0),
+                                ("Ratchet", FL_THERAMORE, FL_RATCHET, "bootybay_ratchet", 1),
+                                ("Theramore", FL_RATCHET, FL_THERAMORE, "menethil_theramore", 1),
+                                ("Menethil", 6, FL_MENETHIL, "menethil_theramore", 0)):
+        px, py, inst = bt_stop(key, j)
+        track = fl_track("%d>%d" % (a, b))
+        node = fl_source()[0][b]
+        w = fl_boat_world(ref, items)
+        M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+        M.pos = w.to_lua([track[0][0], track[0][1], 0, inst])
+        slot = fl_open(w, routes={b: [a, b]}, current=a, extra=())
+        fl_take(w, slot[b])
+        watch = FlWatch(w)
+        fl_fly_track(w, track, inst, watch)
+        ticks = fl_land_at(w, node[1], node[2], inst, watch)
+        sc.check(fl_state(w)[0] is None and not ticks[-1][0], "%s: landed at the flight master, the flight timer gone" % label)
+        fl_walk(w, (node[1], node[2]), (px, py), inst, watch)
+        sc.check(fl_boat_big(w), "%s: walked onto the pier (%.0f yd from the flight master): the big boat timer (%s)"
+                 % (label, math.hypot(px - node[1], py - node[2]), B.ui.style))
+        watch.report(sc, label, near=False)
+        sc.clean(w, label)
+        # Its flight master on the pier: the landing seen tick by tick.
+        w = fl_boat_world(ref, items)
+        M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+        M.pos = w.to_lua([track[0][0], track[0][1], 0, inst])
+        slot = fl_open(w, routes={b: [a, b]}, current=a, extra=())
+        fl_take(w, slot[b])
+        watch = FlWatch(w)
+        fl_fly_track(w, track, inst, watch, upto=20)
+        M.pos = w.to_lua([px + 30, py + 30, 0, inst])   # (coming in over the pier)
+        M.fire("ZONE_CHANGED")
+        for _ in range(15):
+            fl_wait(w, 0.1)
+            watch.see()
+        ticks = fl_land_at(w, px, py, inst, watch)
+        up = [k for k, t in enumerate(ticks) if t[0]]
+        gone = len(up)
+        sc.check(up == list(range(gone)) and 1 <= gone <= 6, "%s pier: the flight timer up for half a second after touching down (%d ticks)" % (label, gone))
+        sc.check(all(t[2] and not t[1] for t in ticks[:gone]), "%s pier: meanwhile the boat's small line, not the big one (%s)" % (label, ticks[:gone]))
+        sc.check(gone < len(ticks) and ticks[gone][1] and not ticks[gone][2],
+                 "%s pier: the big boat timer the very tick the flight timer goes (%s)" % (label, ticks[gone:gone + 2]))
+        sc.check(all(t[1] and not t[2] for t in ticks[gone:]), "%s pier: then it stays (%s)" % (label, ticks[gone:]))
+        watch.report(sc, label + " pier")
+        sc.clean(w, label + " pier")
+    # Landing into a fight at the pier: the small line until it ends, then the big timer at once.
+    px, py, inst = bt_stop("bootybay_ratchet", 1)
+    w = fl_boat_world(ref, items)
+    M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+    track = fl_track("%d>%d" % (FL_THERAMORE, FL_RATCHET))
+    M.pos = w.to_lua([track[0][0], track[0][1], 0, inst])
+    slot = fl_open(w, routes={FL_RATCHET: [FL_THERAMORE, FL_RATCHET]}, current=FL_THERAMORE, extra=())
+    fl_take(w, slot[FL_RATCHET])
+    watch = FlWatch(w)
+    fl_fly_track(w, track, inst, watch, upto=10)
+    M.pos = w.to_lua([px + 30, py + 30, 0, inst])   # (coming in over the pier)
+    M.fire("ZONE_CHANGED")
+    for _ in range(15):
+        fl_wait(w, 0.1)
+        watch.see()
+    M.Fight(True)
+    ticks = fl_land_at(w, px, py, inst, watch)
+    sc.check(not ticks[-1][0] and all(t[2] and not t[1] for t in ticks), "fight landing: the small line all along (%s)" % ticks[-3:])
+    M.Fight(False)
+    sc.check(fl_boat_big(w), "fight landing: the fight over: the big boat timer at once (%s)" % B.ui.style)
+    watch.report(sc, "fight landing")
+    sc.clean(w, "fight landing")
+    # Straight onto the pier from far off (no look on the way, no zone change): the big boat timer
+    # the tick the flight timer goes all the same (it is told: it looks where you landed).
+    w = fl_boat_world(ref, items)
+    M, B = w.M, w.ns.Boats
+    M.pos = w.to_lua([track[0][0], track[0][1], 0, inst])
+    slot = fl_open(w, routes={FL_RATCHET: [FL_THERAMORE, FL_RATCHET]}, current=FL_THERAMORE, extra=())
+    fl_take(w, slot[FL_RATCHET])
+    watch = FlWatch(w)
+    fl_fly_track(w, track, inst, watch, upto=12)
+    ticks = fl_land_at(w, px, py, inst, watch)
+    gone = len([t for t in ticks if t[0]])
+    sc.check(gone < len(ticks) and ticks[gone][1] and not any(t[1] for t in ticks[:gone]),
+             "far landing: the big boat timer the tick the flight timer goes (%s)" % ticks[:gone + 2])
+    watch.report(sc, "far landing", near=False)
+    sc.clean(w, "far landing")
+
+
+def sc_flights_side(sc, ref, items):
+    """The big flight timer keeps clear of what the big boat timer keeps clear of, at its middle place
+    too (ns.Big's one rule): the game's quest tracker moved there in Edit Mode, Questie's tracker
+    dragged there, the buffs moved there, a minimap moved there (a minimap addon): the top; a toast
+    while it shows (a tall one reaches the middle: the top); found again within a second."""
+    for what in ("tracker", "questie", "buffs", "minimap"):
+        lab = "side " + what
+        w = fl_top_world(ref, items, (1920, 1080, 1.0), questie=(what == "questie"))
+        g = w.g
+        if what == "buffs":
+            o = g.CreateFrame("Frame", "BuffFrame", g.UIParent)
+            o.SetSize(o, 300, 40)
+            home = ("TOPRIGHT", g.UIParent, "TOPRIGHT", -205, -13)
+        elif what == "minimap":
+            o = g.MinimapCluster
+            home = ("TOPRIGHT", g.UIParent, "TOPRIGHT", 0, 0)
+        else:
+            o = g.Questie_BaseFrame if what == "questie" else g.ObjectiveTrackerFrame
+            home = ("TOPRIGHT", g.UIParent, "TOPRIGHT", -110, -275)
+        o.ClearAllPoints(o)
+        o.SetPoint(o, *home)
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        fl_big_place_checks(sc, w, lab + ": before")
+        o.ClearAllPoints(o)
+        if what == "minimap":
+            o.SetPoint(o, "TOP", g.UIParent, "TOP", 150, -230)
+        else:
+            o.SetPoint(o, "TOPRIGHT", g.UIParent, "TOPRIGHT", -420, -280 if what == "buffs" else -250)
+        fl_wait(w, 1.0)
+        fl_big_place_checks(sc, w, lab + ": moved to the middle", spot="top")
+        o.ClearAllPoints(o)
+        o.SetPoint(o, *home)
+        fl_wait(w, 1.0)
+        fl_big_place_checks(sc, w, lab + ": back")
+        sc.clean(w, lab)
+    # A toast (a level up) at TOP -190: while it shows it counts; a tall one reaches the middle.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    et = w.g.EventToastManagerFrame
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    et.Show(et)
+    fl_wait(w, 1.0)
+    fl_big_place_checks(sc, w, "side toast")
+    et.SetSize(et, 418, 140)
+    fl_wait(w, 1.0)
+    fl_big_place_checks(sc, w, "side tall toast", spot="top")
+    et.Hide(et)
+    fl_wait(w, 1.0)
+    fl_big_place_checks(sc, w, "side toast gone")
+    sc.clean(w, "side toast")
+
+
+def sc_boats_big_flight(sc, ref, items):
+    """The boat timer's avoid list names the flight timer's frames (the big one, GoblinLedgerFlightTimer,
+    and the slim bar, GoblinLedgerFlightBar) only while they show: after a flight the hidden big
+    flight frame still sits on the middle spot and does not push the boat timer off it; shown (no
+    flight under way: only a test does that), it does. /gl help, /gl boats and /gl flights status in
+    the air and on the ground; flightStyle and boatStyle both kept in the saved settings."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = fl_boat_world(ref, items)
+    M, FL, B = w.M, w.ns.Flights, w.ns.Boats
+    M.pos = w.to_lua(list(fl_pos(FL_SW)) + [0, 0])
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are on (big timer). Your own times for 0 routes.", "status: /gl flights status in the air")
+    fl_wait(w, fl_state(w)[0].est - fl_el(w) + 1, dt=0.5)
+    fl_land(w, FL_IF)
+    ft = w.g.GoblinLedgerFlightTimer
+    sc.check(ft is not None and not ft.IsShown(ft), "frames: after the flight its big timer is hidden")
+    M.pos = w.to_lua([tx, ty, 0, tinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    br = w.rect(B.ui.big.holder)
+    sc.check(fl_boat_big(w) and B.ui.big.mode == "middle" and fl_hit(br, w.rect(ft)),
+             "frames: the hidden big flight frame on the middle spot does not push the boat timer off it (%s, %s)"
+             % (B.ui.big.mode, fl_px(w.rect(ft))))
+    sc.check(not any(fl_hit(q, w.rect(ft)) for q in fl_rects(B.BigObstacles(False))), "frames: hidden, it is not on the boat timer's list")
+    ft.Show(ft)
+    fl_wait(w, 1.1)
+    sc.check(B.ui.big.mode != "middle" and (not fl_vis(B.ui.big.holder) or not fl_hit(w.rect(B.ui.big.holder), w.rect(ft))),
+             "frames: shown, the boat timer keeps clear of it (%s, %s)" % (B.ui.style, B.ui.big.mode))
+    ft.Hide(ft)
+    fl_wait(w, 1.1)
+    sc.check(fl_boat_big(w) and B.ui.big.mode == "middle", "frames: hidden again: the middle (%s)" % B.ui.big.mode)
+    w.slash("/gl flights small")
+    sb = w.g.GoblinLedgerFlightBar
+    if sb is None:   # (no slim bar flown yet: one with its name, size and place)
+        sb = w.g.CreateFrame("Frame", "GoblinLedgerFlightBar", w.g.UIParent)
+        sb.SetSize(sb, 180, 16)
+        sb.SetPoint(sb, "TOP", w.g.MirrorTimerContainer, "TOP", 0, 0)
+    obs = lambda: [tuple(round(v, 3) for v in q) for q in fl_rects(B.BigObstacles(True))]
+    sbr = lambda: tuple(round(v, 3) for v in w.rect(sb))
+    sb.Hide(sb)
+    hid = sbr() in obs()
+    sb.Show(sb)
+    sc.eq((hid, sbr() in obs()), (False, True), "frames: the slim flight bar on the list only while it shows")
+    sb.Hide(sb)
+    # /gl help: each timer's line once.
+    out = [strip_codes(c) for c in w.slash("/gl help")]
+    sc.eq([t for t in out if "/gl flights" in t or "/gl boats" in t],
+          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)",
+           "Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer"],
+          "help: one line for each timer")
+    # /gl boats status at the dock, then on a flight over it (the small line shows: it says so).
+    out = [strip_codes(c) for c in w.slash("/gl boats status")]
+    sc.eq(out[0], BT_ON_BIG, "status: /gl boats at the dock")
+    M.onTaxi = True
+    M.fire("PLAYER_CONTROL_LOST")
+    out = [strip_codes(c) for c in w.slash("/gl boats status")]
+    sc.eq(out[0], "Goblin Ledger: boat timers are on: big, in the middle of the screen, but on a flight or in a fight the line under "
+                  "the minimap (/gl boats small: always there). /gl boats all lists every route.", "status: /gl boats on a flight over the dock")
+    sc.check(fl_boat_small(w), "status: meanwhile the small line (%s)" % B.ui.style)
+    M.Land(tx, ty)
+    sc.eq([strip_codes(c) for c in w.slash("/gl boats status")][0], BT_ON_BIG, "status: landed: big again")
+    # Both styles saved, both kept over a /reload; big is nothing saved for either.
+    w.slash("/gl boats small")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.eq((saved.get("flightStyle"), saved.get("boatStyle"), "flightBar" in saved), ("small", "small", False),
+          "saved: flightStyle and boatStyle")
+    w2 = fl_boat_world(ref, items, saved=saved, login=(False, True))
+    S2 = w2.ns.settings
+    sc.eq((S2.flightStyle, S2.boatStyle, w2.ns.Flights.WantBig()), ("small", "small", False), "saved: both kept over a /reload")
+    w2.slash("/gl flights big")
+    w2.slash("/gl boats big")
+    saved2 = lua_to_py(w2.g.ForeverAH_Settings)
+    sc.check("flightStyle" not in saved2 and "boatStyle" not in saved2, "saved: big for both: nothing saved")
+    sc.clean(w, "frames")
+    sc.clean(w2, "frames reload")
 
 
 # --- boats: the boat timers under the minimap (Boats.lua) ---
@@ -27533,14 +28098,9 @@ BOAT_GEN = os.path.join(ROOT, "tools", "wow", "boats")
 
 # The game API the boat timers use: the player's world position (UnitPosition), how they
 # move, the group and guild, addon messages, the weekly reset and a server clock that runs
-# with GetTime (whole seconds, as GetServerTime gives them). The minimap as Forever's default
-# UI builds it (Blizzard_Minimap Mainline/Minimap.xml and Camelot/MinimapZoneTextButton.xml:
-# MinimapCluster 256x256 at the top right, the zone text button 152x23 at its top, the map
-# 198x198 in a 215x226 container 30 below, the coordinates under the map, the widgets below
-# the cluster) with the quest tracker at its Edit Mode default (TOPRIGHT -110, -275), and as
-# ElvUI v16.01 moves it (Modules/Maps/Minimap.lua: ElvUI_MinimapHolder at TOPRIGHT -3, -3, a
-# 175 map, the datatext panel MinimapPanel under it, the zone text button hidden; the tracker
-# at its ObjectiveFrameMover, TOPRIGHT -163, -325).
+# with GetTime (whole seconds, as GetServerTime gives them). (The minimap, the quest trackers
+# and the frames at the top centre are the main mock's: M.InstallMinimap, M.InstallElvUIMinimap,
+# M.InstallTopFrames, shared with the flight timer's worlds.)
 BOAT_MOCK_LUA = r'''
 local M = MOCK
 M.fontSizes = true   -- (font strings as big as their Font: the big timer's sizes count)
@@ -27592,74 +28152,6 @@ function GetCVarBool(name)
   local v = M.cvars[name]
   if v == nil then return nil end
   return v == "1"
-end
-
-function M.InstallMinimap(o)
-  o = o or {}
-  local cl = CreateFrame("Frame", "MinimapCluster", UIParent)
-  cl:SetSize(256, 256)
-  cl:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", 0, 0)
-  local zb = CreateFrame("Button", nil, cl)
-  zb:SetSize(152, 23)
-  zb:SetPoint("TOP", cl, "TOP", 10, 0)
-  cl.ZoneTextButton = zb
-  local zt = zb:CreateFontString("MinimapZoneText", "OVERLAY", "GameFontHighlightSmall")
-  zt:SetSize(110, 12)
-  zt:SetPoint("LEFT", zb, "LEFT", 8, -1)
-  local ct = CreateFrame("Frame", nil, cl)
-  ct:SetSize(215, 226)
-  ct:SetPoint("TOP", cl, "TOP", 10, -30)
-  cl.MinimapContainer = ct
-  local mm = CreateFrame("Frame", "Minimap", ct)
-  mm:SetSize(198, 198)
-  mm:SetPoint("CENTER", ct, "CENTER", 0, 0)
-  local bd = CreateFrame("Frame", "MinimapBackdrop", mm)
-  bd:SetSize(215, 226)
-  bd:SetPoint("CENTER", mm, "CENTER", 0, 0)
-  local pc = CreateFrame("Frame", nil, ct)
-  pc:SetSize(90, 10)
-  pc:SetPoint("BOTTOM", mm, "BOTTOM", 0, -18)
-  ct.PlayerCoords = pc
-  pc.CoordText = pc:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-  pc.CoordText:SetAllPoints(pc)
-  -- Always shown, as in the game: MinimapPlayerCoordsMixin only blanks the text when the
-  -- minimapShowPlayerCoords setting is off.
-  M.cvars.minimapShowPlayerCoords = o.coords and "1" or "0"
-  pc.CoordText:SetText(o.coords and "12, 34" or "")
-  local wd = CreateFrame("Frame", "UIWidgetBelowMinimapContainerFrame", UIParent)
-  wd:SetSize(1, 1)
-  wd:SetPoint("TOPRIGHT", cl, "BOTTOMRIGHT", 0, 0)
-  if o.tracker ~= false then
-    local ot = CreateFrame("Frame", "ObjectiveTrackerFrame", UIParent)
-    ot:SetSize(248, 400)
-    ot:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
-  end
-  if o.questie then
-    -- Questie (Modules/Tracker/TrackerBaseFrame.lua, QuestieCompat.lua): its own tracker frame
-    -- at the game tracker's point, and the game's tracker hidden.
-    local q = CreateFrame("Frame", "Questie_BaseFrame", UIParent)
-    q:SetSize(280, 180)
-    q:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
-    if ObjectiveTrackerFrame then ObjectiveTrackerFrame:Hide() end
-  end
-end
-function M.InstallElvUIMinimap()
-  local holder = CreateFrame("Frame", "ElvUI_MinimapHolder", UIParent)
-  holder:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -3, -3)
-  holder:SetSize(177, 199)
-  Minimap:ClearAllPoints()
-  Minimap:SetPoint("TOPRIGHT", holder, "TOPRIGHT", -1, -1)
-  Minimap:SetSize(175, 175)
-  MinimapBackdrop:ClearAllPoints()
-  MinimapBackdrop:SetAllPoints(Minimap)
-  local panel = CreateFrame("Frame", "MinimapPanel", Minimap)
-  panel:SetPoint("TOPLEFT", Minimap, "BOTTOMLEFT", -1, 0)
-  panel:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", 1, -22)
-  MinimapCluster.ZoneTextButton:Hide()
-  if ObjectiveTrackerFrame then
-    ObjectiveTrackerFrame:ClearAllPoints()
-    ObjectiveTrackerFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -163, -325)
-  end
 end
 '''
 
@@ -29674,8 +30166,7 @@ def sc_boats_x(sc, ref, items):
 # 1 whatever its pixels, UIParent 768 / UI scale), so 1920x1080, 2560x1440 and 1280x720 lay out
 # alike; 3440x1440 is wider; 1680x1050 (16:10) and 1280x1024 (5:4) narrower: there the quest
 # tracker reaches the middle. ElvUI sets the UI scale to the screen's pixels (768 / height).
-BT_SCREENS = (("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440), ("1280x720", 1280, 720), ("3440x1440", 3440, 1440),
-              ("1680x1050", 1680, 1050), ("1280x1024", 1280, 1024))
+BT_SCREENS = BT_SCREENS_ALL
 BT_SCALES = (1.0, 0.8, 0.62)
 BT_BIG = {"value": 32, "head": 16, "med": 20, "hint": 13, "sub": 15, "x": 14}
 BT_SMALL_GAME_FONT = 10   # the small line's font in the game: GameFontHighlightSmall (SystemFont_Shadow_Small, 10)
@@ -33427,6 +33918,9 @@ SCENARIOS = [
     ("flights-style", sc_flights_style),
     ("flights-place", sc_flights_place),
     ("flights-boats", sc_flights_boats),
+    ("flights-boats-land", sc_flights_boats_land),
+    ("flights-side", sc_flights_side),
+    ("boats-big-flight", sc_boats_big_flight),
     ("flights-small-bar", fl_in_small(sc_flights_bar)),
     ("flights-small-x", fl_in_small(sc_flights_x)),
     ("flights-small-reload", fl_in_small(sc_flights_reload)),
