@@ -52,7 +52,7 @@ SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in gob
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
 TOC_FILES = ["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua",
-             "Consumes.lua", "Flights.lua"]
+             "Consumes.lua", "Flights.lua", "Boats.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -2875,14 +2875,20 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED",
   "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
   "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
-  "PLAYER_CONTROL_GAINED"}
+  "PLAYER_CONTROL_GAINED",
+  "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
+  "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
+  "CHAT_MSG_RAID_BOSS_EMOTE"}
 -- The legacy client has no TRAIT_CONFIG_UPDATED or ACTIVE_TALENT_GROUP_CHANGED: registering them must not break anything.
 M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "AUCTION_ITEM_LIST_UPDATE", "NEW_AUCTION_UPDATE",
   "AUCTION_OWNED_LIST_UPDATE", "AUCTION_BIDDER_LIST_UPDATE", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
   "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_MONEY",
   "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
-  "PLAYER_CONTROL_GAINED"}
+  "PLAYER_CONTROL_GAINED",
+  "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
+  "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
+  "CHAT_MSG_RAID_BOSS_EMOTE"}
 function M.SetClient(kind)
   M.client = kind
   M.knownEvents = {}
@@ -3807,6 +3813,9 @@ class Scenario:
         fl = ns.Flights
         if fl is not None:
             self.check(fl.lastError is None, "%s: Flights.lastError is nil (%s)" % (label, fl.lastError))
+        bt = ns.Boats
+        if bt is not None:
+            self.check(bt.lastError is None, "%s: Boats.lastError is nil (%s)" % (label, bt.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
@@ -23958,6 +23967,1755 @@ def sc_flights_joins(sc, ref, items):
     sc.clean(w, "joins ff")
 
 
+# --- boats: the boat timers under the minimap (Boats.lua) ---
+BOAT_JSON = os.path.join(ROOT, "tools", "wow", "boats", "transports.json")
+BOAT_GEN = os.path.join(ROOT, "tools", "wow", "boats")
+
+# The game API the boat timers use: the player's world position (UnitPosition), how they
+# move, the group and guild, addon messages, the weekly reset and a server clock that runs
+# with GetTime (whole seconds, as GetServerTime gives them). The minimap as Forever's default
+# UI builds it (Blizzard_Minimap Mainline/Minimap.xml and Camelot/MinimapZoneTextButton.xml:
+# MinimapCluster 256x256 at the top right, the zone text button 152x23 at its top, the map
+# 198x198 in a 215x226 container 30 below, the coordinates under the map, the widgets below
+# the cluster) with the quest tracker at its Edit Mode default (TOPRIGHT -110, -275), and as
+# ElvUI v16.01 moves it (Modules/Maps/Minimap.lua: ElvUI_MinimapHolder at TOPRIGHT -3, -3, a
+# 175 map, the datatext panel MinimapPanel under it, the zone text button hidden; the tracker
+# at its ObjectiveFrameMover, TOPRIGHT -163, -325).
+BOAT_MOCK_LUA = r'''
+local M = MOCK
+M.pos = nil
+M.speed, M.falling, M.moving, M.taxi, M.inInstance = 0, false, false, false, false
+M.guild, M.party, M.raid = false, false, false
+M.addonSent, M.prefixes, M.sendResult, M.sendCalls, M.prefixResult = {}, {}, 0, 0, 0
+M.realm, M.resetIn = "TestRealm", 3 * 86400
+M.sbase = M.now - M.t
+function GetServerTime() return math.floor(M.sbase + M.t) end
+function M.serverNow() return M.sbase + M.t end
+function UnitPosition(unit)
+  if unit ~= "player" or not M.pos or M.inInstance then return nil end
+  local p = M.pos
+  return p[1], p[2], p[3], p[4]
+end
+function GetUnitSpeed(unit) if unit == "player" then return M.speed, 7, 7, 4.72 end return 0, 7, 7, 4.72 end
+function IsFalling() return M.falling end
+function IsPlayerMoving() return M.moving end
+function IsFlying() return false end
+function UnitOnTaxi(unit) return unit == "player" and M.taxi end
+function IsInInstance() return M.inInstance, M.inInstance and "party" or "none" end
+function IsInGuild() return M.guild end
+function IsInGroup() return M.party or M.raid end
+function IsInRaid() return M.raid end
+function GetNormalizedRealmName() return M.realm end
+C_ChatInfo = C_ChatInfo or {}
+function C_ChatInfo.RegisterAddonMessagePrefix(p)
+  if type(p) ~= "string" or #p > 16 then error("RegisterAddonMessagePrefix: bad prefix", 2) end
+  if M.prefixes[p] then return 1 end                       -- DuplicatePrefix
+  if M.prefixResult ~= 0 then return M.prefixResult end    -- e.g. 3 MaxPrefixes: the client's limit is full
+  M.prefixes[p] = true
+  return 0
+end
+function C_ChatInfo.SendAddonMessage(p, msg, ch, target)
+  if type(p) ~= "string" or type(msg) ~= "string" or type(ch) ~= "string" then error("SendAddonMessage: bad arguments", 2) end
+  M.sendCalls = M.sendCalls + 1
+  if not M.prefixes[p] then return 1 end
+  if #msg > 255 or msg:find("[\r\n%z]") then return 2 end
+  if ch ~= "GUILD" and ch ~= "PARTY" and ch ~= "RAID" and ch ~= "INSTANCE_CHAT" then return 4 end
+  if M.sendResult ~= 0 then return M.sendResult end
+  M.addonSent[#M.addonSent + 1] = { prefix = p, msg = msg, ch = ch, at = M.sbase + M.t }
+  return 0
+end
+C_DateAndTime = C_DateAndTime or {}
+function C_DateAndTime.GetSecondsUntilWeeklyReset() return M.resetIn end
+function GetCVarBool(name)
+  local v = M.cvars[name]
+  if v == nil then return nil end
+  return v == "1"
+end
+
+function M.InstallMinimap(o)
+  o = o or {}
+  local cl = CreateFrame("Frame", "MinimapCluster", UIParent)
+  cl:SetSize(256, 256)
+  cl:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", 0, 0)
+  local zb = CreateFrame("Button", nil, cl)
+  zb:SetSize(152, 23)
+  zb:SetPoint("TOP", cl, "TOP", 10, 0)
+  cl.ZoneTextButton = zb
+  local zt = zb:CreateFontString("MinimapZoneText", "OVERLAY", "GameFontHighlightSmall")
+  zt:SetSize(110, 12)
+  zt:SetPoint("LEFT", zb, "LEFT", 8, -1)
+  local ct = CreateFrame("Frame", nil, cl)
+  ct:SetSize(215, 226)
+  ct:SetPoint("TOP", cl, "TOP", 10, -30)
+  cl.MinimapContainer = ct
+  local mm = CreateFrame("Frame", "Minimap", ct)
+  mm:SetSize(198, 198)
+  mm:SetPoint("CENTER", ct, "CENTER", 0, 0)
+  local bd = CreateFrame("Frame", "MinimapBackdrop", mm)
+  bd:SetSize(215, 226)
+  bd:SetPoint("CENTER", mm, "CENTER", 0, 0)
+  local pc = CreateFrame("Frame", nil, ct)
+  pc:SetSize(90, 10)
+  pc:SetPoint("BOTTOM", mm, "BOTTOM", 0, -18)
+  ct.PlayerCoords = pc
+  pc.CoordText = pc:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  pc.CoordText:SetAllPoints(pc)
+  -- Always shown, as in the game: MinimapPlayerCoordsMixin only blanks the text when the
+  -- minimapShowPlayerCoords setting is off.
+  M.cvars.minimapShowPlayerCoords = o.coords and "1" or "0"
+  pc.CoordText:SetText(o.coords and "12, 34" or "")
+  local wd = CreateFrame("Frame", "UIWidgetBelowMinimapContainerFrame", UIParent)
+  wd:SetSize(1, 1)
+  wd:SetPoint("TOPRIGHT", cl, "BOTTOMRIGHT", 0, 0)
+  if o.tracker ~= false then
+    local ot = CreateFrame("Frame", "ObjectiveTrackerFrame", UIParent)
+    ot:SetSize(248, 400)
+    ot:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
+  end
+  if o.questie then
+    -- Questie (Modules/Tracker/TrackerBaseFrame.lua, QuestieCompat.lua): its own tracker frame
+    -- at the game tracker's point, and the game's tracker hidden.
+    local q = CreateFrame("Frame", "Questie_BaseFrame", UIParent)
+    q:SetSize(280, 180)
+    q:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
+    if ObjectiveTrackerFrame then ObjectiveTrackerFrame:Hide() end
+  end
+end
+function M.InstallElvUIMinimap()
+  local holder = CreateFrame("Frame", "ElvUI_MinimapHolder", UIParent)
+  holder:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -3, -3)
+  holder:SetSize(177, 199)
+  Minimap:ClearAllPoints()
+  Minimap:SetPoint("TOPRIGHT", holder, "TOPRIGHT", -1, -1)
+  Minimap:SetSize(175, 175)
+  MinimapBackdrop:ClearAllPoints()
+  MinimapBackdrop:SetAllPoints(Minimap)
+  local panel = CreateFrame("Frame", "MinimapPanel", Minimap)
+  panel:SetPoint("TOPLEFT", Minimap, "BOTTOMLEFT", -1, 0)
+  panel:SetPoint("BOTTOMRIGHT", Minimap, "BOTTOMRIGHT", 1, -22)
+  MinimapCluster.ZoneTextButton:Hide()
+  if ObjectiveTrackerFrame then
+    ObjectiveTrackerFrame:ClearAllPoints()
+    ObjectiveTrackerFrame:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -163, -325)
+  end
+end
+'''
+
+BOAT_EVENTS = ["ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED",
+               "LOADING_SCREEN_DISABLED", "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY",
+               "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE", "CHAT_MSG_RAID_BOSS_EMOTE"]
+_BOAT_DATA = {}
+
+
+def boat_data():
+    """transports.json's routes by key, and the generator's error tables."""
+    if not _BOAT_DATA:
+        import json
+        sys.path.insert(0, BOAT_GEN)
+        import gen_boats_lua
+        sys.path.pop(0)
+        _BOAT_DATA["routes"] = {r["id"]: r for r in json.load(open(BOAT_JSON, encoding="ascii"))["routes"]}
+        _BOAT_DATA["gen"] = gen_boats_lua
+    return _BOAT_DATA["routes"], _BOAT_DATA["gen"]
+
+
+def boat_world(ref, items, elvui=False, tracker=True, coords=False, saved=None, screen=None, faction="Alliance",
+               questie=False, login=(True, False), prefix_result=0):
+    def setup(w):
+        w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
+        w.M.prefixResult = prefix_result
+        w.M.InstallMinimap(w.to_lua({"tracker": tracker, "coords": coords, "questie": questie}))
+        if elvui:
+            w.M.InstallElvUIMinimap()
+    return World(ref, items, before_addon=setup, saved=saved, screen=screen, faction=faction, login=login)
+
+
+def bt_now(w):
+    return w.M.sbase + w.M.t
+
+
+def bt_at(w, x, y, inst, zone=True):
+    w.M.pos = w.to_lua([x, y, 0, inst])
+    if zone:
+        w.M.fire("ZONE_CHANGED")
+    w.settle(0.1)
+
+
+def bt_stop(key, j=0):
+    routes, _ = boat_data()
+    s = routes[key]["stops"][j]
+    return s["world"]["x"], s["world"]["y"], s["world"]["mapID"]
+
+
+def bt_lines(w):
+    L = w.ns.Boats.Lines()
+    return [L[i] for i in range(1, len(L) + 1)]
+
+
+def bt_anchor(w, path):
+    rec = w.ns.Boats.Store()[path]
+    if rec is None:
+        return None
+    out = {k: rec[k] for k in ("t0", "s", "src", "seen", "obs", "ok", "p0", "v", "ses")}
+    # Your own sighting from an earlier login is a second less sure (the server clock's tenths).
+    out["earlier"] = out["src"] != "G" and out["ses"] != w.ns.Boats.session
+    return out
+
+
+def bt_set(w, path, t0, s=1.0, src="R", seen=None, obs=1, ses=None, v=None):
+    """Puts an anchor straight into the saved state (as a saved file would have it); by
+    default one of this login."""
+    B = w.ns.Boats
+    rt = B.byPath[path]
+    rec = {"t0": t0, "s": s, "src": src, "seen": seen if seen is not None else bt_now(w), "obs": obs, "ok": 0, "p0": rt.P,
+           "v": v or rt.ver}
+    if src != "G":
+        rec["ses"] = ses if ses is not None else B.session
+    B.Store()[path] = w.to_lua(rec)
+
+
+def bt_a1(w, path, j, T, sg=2, src="R", P=None, ver=None):
+    """A sighting message as another player's addon sends it."""
+    rt = w.ns.Boats.byPath[path]
+    return "A1|%d|%d|%.1f|%d|%s|%.3f|%s" % (path, j, T, sg, src, rt.P if P is None else P, ver or rt.ver)
+
+
+def bt_clock(sec):
+    sec = max(0, int(math.ceil(sec - 1e-6)))
+    return "%d:%02d" % (sec // 60, sec % 60)
+
+
+def bt_want(key, j, rec, now, hint=True, reset_penalty=False):
+    """The line for stop j of route key, from the research data (not the addon's code)."""
+    routes, gen = boat_data()
+    r = routes[key]
+    P, sP = r["cycle_s"], gen.PERIOD_SIGMA[key]
+    st = r["stops"][j]
+    to = gen.dest_label(r["stops"], j)
+    head = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}[r["type"]] + " to " + to + ": "
+    if rec is None:
+        return head + "unknown" + (" - /gl boat now when it docks" if hint else "")
+    err = lambda i: 0 if i == 0 else gen.STOP_SIGMA.get(key, 0.5)
+    sg = rec["s"] + (abs(now - rec["seen"]) / P + 1) * sP
+    if rec["obs"] != j + 1:
+        sg += err(j) + (err(rec["obs"] - 1) if rec["obs"] > 0 else 0)
+    if rec.get("earlier"):
+        sg += 1
+    if reset_penalty:
+        sg += 10
+    d = (now - rec["t0"] - st["arrive_s"]) % P
+    docked = d < st["wait_s"]
+    sec = st["wait_s"] - d if docked else P - d
+    if sg > 30:
+        return head + "unknown" + (" - /gl boat now when it docks" if hint else "")
+    if sg <= 5:
+        return head + ("docked, leaves in " + bt_clock(sec) if docked else bt_clock(sec))
+    if docked or sec <= sg:
+        return head + "about now"
+    return head + "about %d min" % max(1, int(math.floor(sec / 60 + 0.5)))
+
+
+def bt_rect_ok(sc, w, label, others):
+    """The lines' holder is where the addon says, inside the screen, and covers none of others."""
+    B = w.ns.Boats
+    h = B.ui.holder
+    r = w.rect(h)
+    want = B.ui.rect
+    sc.check(r is not None and want is not None, "%s: the lines have a place" % label)
+    if r is None or want is None:
+        return None
+    sc.check(all(abs(r[i] - want[i + 1]) < 0.6 for i in range(4)),
+             "%s: the place the addon worked out is where the lines are (%s vs %s)" % (label, [round(v, 1) for v in r],
+                                                                                       [round(want[i], 1) for i in range(1, 5)]))
+    sc.check(r[0] >= -0.5 and r[2] <= w.M.screenW + 0.5 and r[1] >= -0.5 and r[3] <= w.M.screenH + 0.5,
+             "%s: on screen (%s)" % (label, [round(v) for v in r]))
+    for name, o in others:
+        if o is None or not o.IsVisible(o):
+            continue
+        q = w.rect(o)
+        hit = q is not None and r[0] < q[2] - 0.5 and r[2] > q[0] + 0.5 and r[1] < q[3] - 0.5 and r[3] > q[1] + 0.5
+        sc.check(not hit, "%s: the lines do not cover %s (%s vs %s)" % (label, name, [round(v) for v in r],
+                                                                         [round(v) for v in q] if q else None))
+    return r
+
+
+def bt_minimap_parts(w):
+    g = w.g
+    cl = g.MinimapCluster
+    # (The coordinates frame is always there; it shows something only while they are on.)
+    coords = cl.MinimapContainer.PlayerCoords if w.M.cvars.minimapShowPlayerCoords == "1" else None
+    return [("the minimap", g.Minimap), ("the zone text", cl.ZoneTextButton), ("the minimap border", g.MinimapBackdrop),
+            ("the coordinates", coords), ("the quest tracker", g.ObjectiveTrackerFrame), ("Questie's tracker", g.Questie_BaseFrame),
+            ("ElvUI's minimap", g.ElvUI_MinimapHolder), ("ElvUI's minimap datatexts", g.MinimapPanel)]
+
+
+def sc_boats_data(sc, ref, items):
+    """The route table in Boats.lua is transports.json's (12 routes: cycle, stops, map changes,
+    track) and gen_boats_lua.py --check agrees; the harbors several boats share."""
+    routes, gen = boat_data()
+    gen.LUA_FILE = os.path.join(ADDON, "Boats.lua")   # the copy under test (FAH_ADDON_DIR)
+    sc.eq(gen.main(["--check"]), 0, "data: gen_boats_lua.py --check (Boats.lua's table is up to date)")
+    w = boat_world(ref, items)
+    B = w.ns.Boats
+    sc.eq(len(B.routes), 12, "data: 12 routes")
+    for i in range(1, len(B.routes) + 1):
+        rt = B.routes[i]
+        r = routes.get(rt.key)
+        if not sc.check(r is not None, "data: %s is in transports.json" % rt.key):
+            continue
+        sc.eq((rt.path, rt.P, rt.sP), (r["taxiPathID"], r["cycle_s"], gen.PERIOD_SIGMA[rt.key]), "data: %s path, cycle" % rt.key)
+        sc.eq(len(rt.stops), len(r["stops"]), "data: %s stop count" % rt.key)
+        for j in range(1, len(rt.stops) + 1):
+            st, js = rt.stops[j], r["stops"][j - 1]
+            sc.eq((st.place, st.inst, st.x, st.y, st.r, st.arr, st.wait, st.area),
+                  (js["name"], js["world"]["mapID"], js["world"]["x"], js["world"]["y"], js["radius_yards"], js["arrive_s"],
+                   js["wait_s"], js["areaID"] or 0), "data: %s stop %d" % (rt.key, j))
+        tele = [(rt.tele[k].t, rt.tele[k]["from"], rt.tele[k].to) for k in range(1, len(rt.tele) + 1)]
+        sc.eq(tele, [(t["t_s"], t["fromMap"], t["toMap"]) for t in r["teleports"]], "data: %s map changes" % rt.key)
+        tr = B.Track(rt)
+        sc.eq(len(tr), len(r["track"]), "data: %s track points" % rt.key)
+        if len(tr) == len(r["track"]):
+            bad = [k for k in range(len(tr)) if abs(tr[k + 1][1] - r["track"][k][0]) > 1e-6 or tr[k + 1][2] != r["track"][k][1]
+                   or abs(tr[k + 1][3] - r["track"][k][2]) > 0.051 or abs(tr[k + 1][4] - r["track"][k][3]) > 0.051]
+            sc.eq(bad, [], "data: %s track points match" % rt.key)
+    sc.eq(sorted(B.byPath[p].key for p in (292, 11167, 293, 11616, 303, 241, 11391, 11398)),
+          sorted(["menethil_theramore", "menethil_southshore_auberdine", "auberdine_rutheran", "stormwind_auberdine",
+                  "feathermoon_ferry", "bootybay_ratchet", "tanaris_riverglades", "dalaran_zephras"]), "data: path ids")
+
+    def group_of(key, j):
+        st = B.routes[[B.routes[i].key for i in range(1, 13)].index(key) + 1].stops[j]
+        return sorted(st.group[k].rt.key for k in range(1, len(st.group) + 1))
+    sc.eq(group_of("stormwind_auberdine", 2), ["auberdine_rutheran", "menethil_southshore_auberdine"], "data: Auberdine's three piers")
+    sc.eq(group_of("menethil_theramore", 1), ["menethil_southshore_auberdine"], "data: Menethil's two piers")
+    sc.eq(group_of("orgrimmar_undercity", 1), ["orgrimmar_gromgol"], "data: the Orgrimmar tower's two zeppelins")
+    sc.eq(group_of("undercity_gromgol", 2), ["orgrimmar_gromgol"], "data: Grom'gol's two zeppelins")
+    sc.eq(group_of("feathermoon_ferry", 1), [], "data: Feathermoon has one boat")
+    # The Dalaran skyship: the measured round trip (two dock announcement intervals), sure to 2 s.
+    rd = B.byPath[11398]
+    sc.eq((rd.P, rd.sP, rd.stops[2].arr), (353, 2, 167.61), "data: the Dalaran skyship's measured round trip")
+    sc.eq(routes["dalaran_zephras"]["cycle_source"], "nauticus_forever", "data: (from the announcement timestamps)")
+    # Each route's data fingerprint (saved and shared timers carry it), and how far a measured
+    # or shared round trip may be from the data's.
+    vers = [B.routes[i].ver for i in range(1, len(B.routes) + 1)]
+    sc.check(len(set(vers)) == len(vers) and all(len(v) == 6 and all(c in "0123456789abcdef" for c in v) for v in vers),
+             "data: a different fingerprint per route (%s)" % vers)
+    for path, pct in ((292, 0.5), (11616, 2.024), (11391, 1.476), (11398, 2.5), (11457, 0.865)):
+        g = B.byPath[path].gate / B.byPath[path].P * 100
+        sc.check(abs(g - pct) < 0.01, "data: route %d's round trip gate %.3f%% (want %.3f%%)" % (path, g, pct))
+    raw = open(os.path.join(ADDON, "Boats.lua"), "rb").read()
+    sc.check(all(b < 128 for b in raw), "data: Boats.lua is plain ASCII")
+    sc.check(raw.count(b"\r\n") == raw.count(b"\n") or raw.count(b"\r") == 0, "data: Boats.lua line ends all alike")
+    sc.clean(w, "data")
+
+
+def sc_boats_dock(sc, ref, items):
+    """Only at a dock: one line under the minimap, the unknown one says what to do; walking
+    away hides it; far from docks nothing runs (no OnUpdate, no checks), near ones a slow
+    check; an instance hides it. The coordinates under the map and a /reload."""
+    w = boat_world(ref, items)
+    B, M = w.ns.Boats, w.M
+    def running():
+        return B.driver.frame is not None and B.driver.frame.IsShown(B.driver.frame)
+    sc.check(B.ui.holder is None and not running(), "dock: nothing built or running at login (no position yet)")
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore: one boat
+    bt_at(w, x, y + 3000, inst)
+    w.settle(3)
+    st0 = B.stats.steps
+    w.settle(30)
+    sc.eq(B.stats.steps, st0, "dock: 3000 yd from a dock nothing runs after the one extra look")
+    sc.check(not running(), "dock: the driver frame is hidden far away")
+    sc.eq(bt_lines(w), [], "dock: no line far away")
+    bt_at(w, x + 600, y, inst)
+    sc.eq(B.driver.interval, 3, "dock: within 1500 yd: a check every 3 s")
+    sc.eq(bt_lines(w), [], "dock: 600 yd away: no line")
+    bt_at(w, x + 100, y, inst, zone=False)
+    w.settle(3.1)
+    sc.eq(B.driver.interval, 1, "dock: within 150 yd: every second")
+    sc.eq(bt_lines(w), [], "dock: 100 yd away: no line")
+    bt_at(w, x + 20, y - 10, inst, zone=False)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boat to Menethil: unknown - /gl boat now when it docks"], "dock: on the pier, unknown")
+    sc.check(w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "dock: the line shows")
+    sc.eq(B.ui.mode, "stacked", "dock: under the minimap")
+    r = bt_rect_ok(sc, w, "dock", bt_minimap_parts(w))
+    cl = w.rect(w.g.MinimapCluster)
+    mm = w.rect(w.g.Minimap)
+    if r and cl and mm:
+        sc.check(abs(r[3] - (cl[1] - 2)) < 0.6, "dock: 2 px under the minimap cluster (%s, %s)" % (r[3], cl[1]))
+        sc.check(r[0] >= mm[0] - 200 and r[2] <= w.M.screenW, "dock: under the map, on screen")
+    # It updates once a second while shown, and not faster.
+    n = B.stats.renders
+    w.settle(5)
+    sc.check(4 <= B.stats.renders - n <= 6, "dock: about one update a second while shown (%d in 5 s)" % (B.stats.renders - n))
+    # Standing at the end of the pier (inside the radius plus a little while shown): still there.
+    bt_at(w, x + 75, y, inst, zone=False)
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 1, "dock: 75 yd out while shown: still shown (10 yd to spare)")
+    bt_at(w, x + 90, y, inst, zone=False)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), [], "dock: 90 yd away: hidden")
+    sc.check(not w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "dock: the line is hidden")
+    # With the map's coordinates shown, the line goes under them.
+    w2 = boat_world(ref, items, coords=True)
+    bt_at(w2, x, y, inst)
+    w2.settle(1.1)
+    r2 = bt_rect_ok(sc, w2, "dock coords", bt_minimap_parts(w2))
+    pc = w2.rect(w2.g.MinimapCluster.MinimapContainer.PlayerCoords)
+    if r2 and pc:
+        sc.check(r2[3] <= pc[1] - 1.5, "dock coords: under the coordinates")
+    # In an instance (no position) nothing shows and nothing runs.
+    w2.M.inInstance = True
+    w2.M.fire("ZONE_CHANGED_NEW_AREA")
+    w2.settle(1.2)
+    sc.eq(bt_lines(w2), [], "dock: in an instance nothing shows")
+    sc.check(not w2.ns.Boats.driver.frame.IsShown(w2.ns.Boats.driver.frame), "dock: in an instance nothing runs")
+    sc.clean(w, "dock")
+    sc.clean(w2, "dock coords")
+
+
+def sc_boats_countdown(sc, ref, items):
+    """The countdown across a whole cycle and its wrap, at both ends of a route, docked and
+    coming, against the research data; the error grows with the round trips: m:ss, then
+    "about", then unknown."""
+    w = boat_world(ref, items, tracker=False)
+    B = w.ns.Boats
+    routes, _ = boat_data()
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore
+    arr2 = routes["menethil_theramore"]["stops"][1]["arrive_s"]
+    bt_at(w, x, y, inst)
+    w.settle(2.5)   # the clock learns its tenths
+    sc.check(w.ns.Boats.clock.off is not None, "countdown: the server clock's tenths are known")
+    now = B.Now()
+    sc.check(abs(now - bt_now(w)) <= 0.06, "countdown: server time to a frame (%.3f vs %.3f)" % (now, bt_now(w)))
+    t0 = now - 100.25
+    bt_set(w, 292, t0, s=1.0, src="R", obs=2)
+    P = routes["menethil_theramore"]["cycle_s"]
+    bad = []
+    for k in range(0, 100):
+        B.Step()
+        now = B.Now()
+        rec = bt_anchor(w, 292)
+        want = bt_want("menethil_theramore", 1, rec, now)
+        got = bt_lines(w)
+        if got != [want]:
+            bad.append((round(now - t0, 2), got, want))
+        w.M.tick(7.3)
+    sc.eq(bad[:3], [], "countdown: Theramore, every 7.3 s over two round trips")
+    seen = set()
+    for k in range(0, 60):
+        now = B.Now()
+        seen.add(bt_want("menethil_theramore", 1, bt_anchor(w, 292), now).split(": ")[1][:6])
+        w.M.tick(6.1)
+    sc.check(any(s.startswith("docked") for s in seen) and any(s[0].isdigit() for s in seen), "countdown: docked and coming both seen")
+    # The exact moments: arriving, leaving, and the wrap at the end of the cycle; rounded up
+    # like a countdown (1:00 as it docks, 0:01 in the last second, never 0:00).
+    for off, want in ((0.4, "docked, leaves in 1:00"), (1.4, "docked, leaves in 0:59"), (59.6, "docked, leaves in 0:01"),
+                      (60.4, bt_clock(P - 60.4)), (P - 1.6, "0:02"), (P - 0.6, "0:01"), (P + 0.4, "docked, leaves in 1:00")):
+        bt_set(w, 292, B.Now() - off - arr2, s=1.0, src="R", obs=2)
+        B.Step()
+        sc.eq(bt_lines(w), ["Boat to Menethil: " + want], "countdown: %.1f s after it arrived" % off)
+    # The other end: the same anchor carried over with the stop's offset error (Menethil has
+    # two boats: the first line is this one).
+    mx, my, minst = bt_stop("menethil_theramore", 0)
+    bt_at(w, mx + 10, my, minst)
+    bt_set(w, 292, B.Now() - 30 - arr2, s=1.0, src="R", obs=2)
+    bad = []
+    for k in range(40):
+        B.Step()
+        now = B.Now()
+        want = bt_want("menethil_theramore", 0, bt_anchor(w, 292), now)
+        got = bt_lines(w)
+        if got[:1] != [want] or len(got) != 2:
+            bad.append((k, got, want))
+        w.M.tick(9.7)
+    sc.eq(bad[:3], [], "countdown: Menethil (the first of its two lines), from a Theramore sighting")
+    # The error grows with time: exact, about, unknown.
+    bt_at(w, x, y, inst)
+    seen0 = B.Now()
+    bt_set(w, 292, seen0 - 200, s=1.5, src="R", obs=2, seen=seen0)
+    for days, kind in ((0.5, "exact"), (2.5, "about"), (12, "unknown")):
+        w.M.tick(days * 86400 - (B.Now() - seen0))
+        B.Step()
+        line = bt_lines(w)[0] if bt_lines(w) else ""
+        want = bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now())
+        sc.eq(line, want, "countdown: %.1f days later" % days)
+        got_kind = "unknown" if "unknown" in line else ("about" if "about" in line else "exact")
+        sc.eq(got_kind, kind, "countdown: %.1f days later it is %s" % (days, kind))
+    # A Forever-only route grows much faster (0.5 s a round trip): about after an hour.
+    sx, sy, sinst = bt_stop("stormwind_auberdine", 0)
+    bt_at(w, sx, sy, sinst)
+    bt_set(w, 11616, B.Now() - 300, s=1.0, src="R", obs=1)
+    w.M.tick(3600)
+    B.Step()
+    sc.check("about" in (bt_lines(w) or [""])[0], "countdown: Stormwind's boat an hour later: about (%s)" % bt_lines(w))
+    sc.clean(w, "countdown")
+
+
+def sc_boats_manual(sc, ref, items):
+    """/gl boat now at the pier, away from docks, at a harbor with three boats (the nearest
+    pier), while it already says docked; a click on the line, which needs a second click when
+    a good timer says the boat is far."""
+    w = boat_world(ref, items)
+    B = w.ns.Boats
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    bt_at(w, x, y + 3000, inst)
+    out = bt_slash(w, "/gl boat now")
+    sc.eq(out, ["Goblin Ledger: you are not at a dock. Stand on the pier when the boat docks, then type /gl boat now."],
+          "manual: not at a dock")
+    sc.eq(bt_anchor(w, 292), None, "manual: nothing learned away from a dock")
+    bt_at(w, x + 15, y + 5, inst)
+    w.settle(2.5)
+    t = B.Now()
+    out = bt_slash(w, "/gl boat now")
+    sc.eq(out, ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "manual: set")
+    a = bt_anchor(w, 292)
+    sc.check(a and a["src"] == "M" and a["obs"] == 2 and abs(a["t0"] + arr2 - t) < 0.2 and a["s"] == 4, "manual: the anchor (%s)" % a)
+    sc.eq(bt_lines(w), [bt_want("menethil_theramore", 1, a, B.Now())], "manual: the line right away")
+    sc.check(bt_lines(w)[0] in ("Boat to Menethil: docked, leaves in 1:00", "Boat to Menethil: docked, leaves in 0:59"),
+             "manual: docked, a minute to go (%s)" % bt_lines(w))
+    # Pressed again 3 s later, when the timer says it just docked: that agrees (no shift).
+    w.settle(3)
+    out = bt_slash(w, "/gl boat now")
+    a2 = bt_anchor(w, 292)
+    sc.check(abs(a2["t0"] - a["t0"]) < 0.01 and a2["ok"] == 1, "manual: pressed as it just docked keeps the time (%s)" % a2)
+    sc.eq(out, ["Goblin Ledger: boat timer kept: it already had the boat to Menethil docking now."], "manual: and says so")
+    w.settle(17)
+    sc.eq(bt_lines(w), [bt_want("menethil_theramore", 1, a, B.ui.at)], "manual: 20 s later")
+    sc.check(bt_lines(w)[0] in ("Boat to Menethil: docked, leaves in 0:41", "Boat to Menethil: docked, leaves in 0:40"),
+             "manual: 20 s later (%s)" % bt_lines(w))
+    # A good ride timer that says the boat docked 40 s ago, pressed as it really docks: the
+    # press is right (the old timer is off by 40 s), so it is set to now.
+    bt_set(w, 292, B.Now() - 40 - arr2, s=1.5, src="R", obs=2)
+    w.settle(1.1)
+    sc.check(bt_lines(w)[0] in ("Boat to Menethil: docked, leaves in 0:20", "Boat to Menethil: docked, leaves in 0:19"),
+             "manual: the ride timer says it leaves soon (%s)" % bt_lines(w))
+    t = B.Now()
+    out = bt_slash(w, "/gl boat now")
+    a3 = bt_anchor(w, 292)
+    sc.check(a3["src"] == "M" and abs(a3["t0"] + arr2 - t) < 0.2, "manual: a press 40 s after the timer's docking sets it (%s)" % a3)
+    sc.eq(out, ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "manual: set (40 s off)")
+    w.settle(0.3)
+    B.Step()
+    sc.eq(bt_lines(w), ["Boat to Menethil: docked, leaves in 1:00"], "manual: and it leaves in a minute")
+    # The same ride timer pressed 3 s after its docking: it agrees, the sharper ride stays.
+    bt_set(w, 292, B.Now() - 3 - arr2, s=1.5, src="R", obs=2)
+    bt_slash(w, "/gl boat now")
+    sc.eq(bt_anchor(w, 292)["src"], "R", "manual: a press as the ride timer says docked keeps the ride")
+    # Pressed 10 s after it: a sighting (4 s), but the ride agrees and is sharper: kept.
+    bt_set(w, 292, B.Now() - 10 - arr2, s=1.5, src="R", obs=2)
+    out = bt_slash(w, "/gl boat now")
+    sc.eq((bt_anchor(w, 292)["src"], out), ("R", ["Goblin Ledger: boat timer kept: it already had the boat to Menethil docking now."]),
+          "manual: 10 s after: the sharper ride agrees and stays")
+    # Auberdine: the pier you stand at.
+    for key, j, path in (("stormwind_auberdine", 1, 11616), ("auberdine_rutheran", 0, 293), ("menethil_southshore_auberdine", 2, 11167)):
+        ax, ay, ainst = bt_stop(key, j)
+        bt_at(w, ax + 5, ay - 5, ainst)
+        bt_slash(w, "/gl boat now")
+        sc.check(bt_anchor(w, path) is not None and bt_anchor(w, path)["obs"] == j + 1, "manual: Auberdine, %s's pier" % key)
+    # Clicks: a click on the line sets it; a good timer far from docking needs a second click.
+    w3 = boat_world(ref, items)
+    B3 = w3.ns.Boats
+    bt_at(w3, x, y, inst)
+    w3.settle(2.5)
+    btn = B3.ui.btn[1]
+    mark = w3.chat_mark()
+    w3.M.click(btn)
+    sc.check(bt_anchor(w3, 292) is not None and bt_anchor(w3, 292)["src"] == "M", "manual: a click sets an unknown timer")
+    bt_set(w3, 292, B3.Now() - 150 - arr2, s=1.0, src="R", obs=2)
+    w3.settle(1.1)
+    before = bt_anchor(w3, 292)
+    mark = w3.chat_mark()
+    w3.M.click(btn)
+    sc.eq(bt_anchor(w3, 292)["t0"], before["t0"], "manual: one stray click does not spoil a good timer")
+    sc.check(any("Click again if it is docking now" in c for c in [strip_codes(c) for c in w3.chat(mark)]), "manual: it asks for a second click")
+    w3.settle(1)
+    w3.M.click(btn)
+    sc.check(abs(bt_anchor(w3, 292)["t0"] + arr2 - B3.Now()) < 1.5, "manual: the second click sets it")
+    # A good timer that says it docked 40 s ago: one click is not enough either.
+    w3.settle(6)
+    bt_set(w3, 292, B3.Now() - 40 - arr2, s=1.0, src="R", obs=2)
+    before = bt_anchor(w3, 292)
+    mark = w3.chat_mark()
+    w3.M.click(btn)
+    sc.eq(bt_anchor(w3, 292)["t0"], before["t0"], "manual: one click 40 s after a good timer's docking: not yet")
+    sc.check(any("docked 0:40 ago. Click again if it is docking now" in c for c in [strip_codes(c) for c in w3.chat(mark)]),
+             "manual: it says when the timer had it docking (%s)" % [strip_codes(c) for c in w3.chat(mark)])
+    w3.M.click(btn)
+    sc.check(abs(bt_anchor(w3, 292)["t0"] + arr2 - B3.Now()) < 0.2, "manual: the second click sets it")
+    # Hover: one short tooltip line.
+    w3.M.enter(btn)
+    tt = w3.g.GameTooltip
+    sc.check(tt.IsShown(tt) and "Click when this boat docks" in str(w3.all_lines(tt)), "manual: the tooltip says what a click does")
+    w3.M.leave(btn)
+    sc.clean(w, "manual")
+    sc.clean(w3, "manual clicks")
+
+
+def bt_track_pos(r, t):
+    """Where route r's boat is at model time t (0 <= t < cycle): docked at a stop, speeding up
+    from it or slowing down to it at 1 yd/s each second, else on the track between points."""
+    P = r["cycle_s"]
+    t = t % P
+    tr = list(r["track"])
+    kf = r["keyframes"]
+    for i, k in enumerate(kf):   # both sides of each map change, so the boat moves right up to it
+        if k[7] and i + 1 < len(kf):
+            tr += [[k[0] - 1e-6, k[1], k[2], k[3], 0], [kf[i + 1][0], kf[i + 1][1], kf[i + 1][2], kf[i + 1][3], 0]]
+    tr.sort(key=lambda p: p[0])
+
+    def on_track(tt):
+        for a, b in zip(tr, tr[1:]):
+            if a[0] <= tt <= b[0] and a[1] == b[1] and b[0] - a[0] <= 5.5:
+                u = (tt - a[0]) / max(1e-9, b[0] - a[0])
+                return a[2] + u * (b[2] - a[2]), a[3] + u * (b[3] - a[3]), a[1]
+        return None
+    for s in r["stops"]:
+        arr, dep = s["arrive_s"], s["arrive_s"] + s["wait_s"]
+        sx, sy, si = s["world"]["x"], s["world"]["y"], s["world"]["mapID"]
+        if arr <= t <= dep:
+            return sx, sy, si
+        for edge, sign in ((dep, 1), (arr, -1)):
+            dt = (t - edge) * sign
+            if 0 < dt < 12:
+                p = on_track(edge + sign * 12)
+                if p is None or p[2] != si:
+                    continue
+                ex, ey = p[0] - sx, p[1] - sy
+                n = math.hypot(ex, ey)
+                return sx + ex / n * 0.5 * dt * dt, sy + ey / n * 0.5 * dt * dt, si
+    p = on_track(t)
+    if p is None:
+        for a, b in zip(tr, tr[1:]):   # the stretch right after a dock before the first track point
+            if a[0] <= t <= b[0]:
+                return a[2], a[3], a[1]
+        return tr[-1][2], tr[-1][3], tr[-1][1]
+    return p
+
+
+def bt_ride(w, key, t0, until, dx=6.0, dy=-4.0, walk=None, step=0.05, speed_counts_boat=False):
+    """Moves the player (dx, dy off the boat's middle) with route key's boat (t = 0 at server
+    time t0) until server time `until`, with a loading screen at each map change. walk: a
+    server time span when the player walks about (IsPlayerMoving, GetUnitSpeed 7).
+    speed_counts_boat: GetUnitSpeed reads the boat's speed on deck (it may, in the game)."""
+    routes, _ = boat_data()
+    r = routes[key]
+    M = w.M
+    last = None
+    while bt_now(w) < until:
+        t = bt_now(w) - t0
+        x, y, inst = bt_track_pos(r, t)
+        if last is not None and inst != last:
+            # The loading screen: 1.5 s without frame updates; after it you are where the boat is then.
+            M.fire("LOADING_SCREEN_ENABLED")
+            M.fire("PLAYER_LEAVING_WORLD")
+            M.t = M.t + 1.5
+            x, y, inst = bt_track_pos(r, bt_now(w) - t0)
+            M.pos = w.to_lua([x + dx, y + dy, 0, inst])
+            M.fire("PLAYER_ENTERING_WORLD", False, False)
+        walking = bool(walk and walk[0] <= bt_now(w) <= walk[1])
+        M.moving = walking
+        if walking:
+            M.speed = 7
+        elif speed_counts_boat and last is not None:
+            px, py, _ = bt_track_pos(r, t - step)
+            M.speed = math.hypot(x - px, y - py) / step
+        else:
+            M.speed = 0
+        M.pos = w.to_lua([x + dx, y + dy, 0, inst])
+        last = inst
+        M.tick(step)
+    M.speed, M.moving = 0, False
+
+
+def sc_boats_ride(sc, ref, items):
+    """Learning while riding: the moment the docked boat starts moving with you on it, the
+    stop at the far dock (both checked against the leg time), the loading screen on the way,
+    your place on the track when you got on late or /reloaded; walking about does not count."""
+    routes, _ = boat_data()
+    r = routes["menethil_theramore"]
+    w = boat_world(ref, items)
+    B = w.ns.Boats
+    x, y, inst = bt_stop("menethil_theramore", 0)
+    t0 = bt_now(w) + 5 - 0.37   # the boat arrived at Menethil 0.37 s before the player gets there + 5 s
+    bt_at(w, x + 6, y - 4, inst)
+    bt_ride(w, "menethil_theramore", t0, t0 + 59.5, speed_counts_boat=True)
+    sc.eq(bt_anchor(w, 292), None, "ride: nothing learned while the boat waits")
+    bt_ride(w, "menethil_theramore", t0, t0 + 64, speed_counts_boat=True)
+    a = bt_anchor(w, 292)
+    sc.check(a is not None and a["src"] == "R" and a["obs"] == 1, "ride: learned when the boat left Menethil (%s)" % a)
+    if a:
+        sc.check(abs(a["t0"] - t0) <= 0.4, "ride: the departure is right to 0.4 s (%.2f)" % (a["t0"] - t0))
+    sc.check(B.ride.ride is not None, "ride: riding")
+    bt_ride(w, "menethil_theramore", t0, t0 + r["stops"][1]["arrive_s"] + 4)
+    a2 = bt_anchor(w, 292)
+    sc.check(a2 is not None and abs(a2["t0"] - t0) <= 0.4, "ride: still right after the loading screen and the arrival (%s)" % a2)
+    sc.check(B.ride.ride is None, "ride: the ride ended at Theramore")
+    sc.eq(bt_lines(w), ["Boat to Menethil: " + bt_want("menethil_theramore", 1, a2, B.Now()).split(": ", 1)[1]],
+          "ride: at Theramore the line says when it leaves")
+    sc.check("docked, leaves in 0:5" in bt_lines(w)[0], "ride: docked, leaves in 0:5x (%s)" % bt_lines(w))
+    # The arrival alone teaches the time too: a rider whose departure was not seen.
+    w2 = boat_world(ref, items)
+    t0b = bt_now(w2) - 120
+    x1, y1, i1 = bt_track_pos(r, 120)
+    bt_at(w2, x1 + 6, y1 - 4, i1)
+    w2.ns.Boats.ride.ride = None
+    bt_ride(w2, "menethil_theramore", t0b, t0b + r["stops"][1]["arrive_s"] + 4)
+    a3 = bt_anchor(w2, 292)
+    sc.check(a3 is not None and abs(a3["t0"] - t0b) <= 0.5 and a3["obs"] in (0, 2),
+             "ride: got on late: the track, then the arrival (%s)" % a3)
+    # Walking about on deck as it leaves: no departure; the track then still finds the boat.
+    w3 = boat_world(ref, items)
+    t0c = bt_now(w3) + 3
+    bt_at(w3, x + 6, y - 4, inst)
+    bt_ride(w3, "menethil_theramore", t0c, t0c + 66, walk=(t0c + 58, t0c + 66))
+    a4 = bt_anchor(w3, 292)
+    sc.check(a4 is None or a4["src"] != "R" or a4["obs"] != 1, "ride: walking as it leaves is no departure (%s)" % a4)
+    bt_ride(w3, "menethil_theramore", t0c, t0c + 105)
+    a4 = bt_anchor(w3, 292)
+    sc.check(a4 is not None and a4["src"] == "T" and abs(a4["t0"] - t0c) <= 3, "ride: then the track (%s)" % a4)
+    # A loading screen on a ride the track found: a sharper time.
+    bt_ride(w3, "menethil_theramore", t0c, t0c + 115)
+    a5 = bt_anchor(w3, 292)
+    sc.check(a5 is not None and a5["src"] == "L" and abs(a5["t0"] - t0c) <= 1.6, "ride: the loading screen (%s)" % a5)
+    # Standing on the pier (not on the boat) as it leaves: nothing moves, nothing learned.
+    w4 = boat_world(ref, items)
+    t0d = bt_now(w4) + 2
+    bt_at(w4, x + 30, y + 30, inst)
+    w4.settle(70)
+    sc.eq(bt_anchor(w4, 292), None, "ride: standing on the pier teaches nothing")
+    # A blink on the pier while resting: no departure.
+    w4.M.pos = w4.to_lua([x + 30, y + 50, 0, inst])
+    w4.settle(1.1)
+    w4.M.pos = w4.to_lua([x + 30, y + 51, 0, inst])
+    w4.settle(2.2)
+    sc.eq(bt_anchor(w4, 292), None, "ride: a blink is no boat")
+    # UnitPosition is read in the documented order (positionX, positionY): standing where the
+    # Dalaran pier would be with x and y swapped (in Alterac, 170 yd from that pier) changes
+    # nothing, and the real piers still show their lines.
+    w5 = boat_world(ref, items)
+    bt_at(w5, 430.0, 540.0, 0)
+    w5.settle(4)
+    sc.eq(bt_lines(w5), [], "ride: no line 170 yd from the Dalaran pier")
+    for key, j in (("dalaran_zephras", 0), ("menethil_theramore", 0), ("menethil_theramore", 1)):
+        tx, ty, tinst = bt_stop(key, j)
+        bt_at(w5, tx + 3, ty, tinst)
+        w5.settle(1.1)
+        sc.check(len(bt_lines(w5)) >= 1, "ride: then the %s pier %d shows its line (%s)" % (key, j, bt_lines(w5)))
+    for ww, lab in ((w, "ride"), (w2, "ride late"), (w3, "ride walk"), (w4, "ride pier"), (w5, "ride swap")):
+        sc.clean(ww, lab)
+
+
+def sc_boats_ride_all(sc, ref, items):
+    """Every route (boats, zeppelins, skyships, loading screens included): standing on deck
+    as it leaves the first stop, the departure is learned to 0.5 s; the arrival at the next
+    stop keeps it right; at that dock the line shows the boat docked."""
+    routes, _ = boat_data()
+    for key in sorted(routes):
+        r = routes[key]
+        w = boat_world(ref, items, tracker=False)
+        B = w.ns.Boats
+        path = r["taxiPathID"]
+        x, y, inst = bt_stop(key, 0)
+        t0 = bt_now(w) - 50.3
+        bt_at(w, x - 5, y + 7, inst)
+        bt_ride(w, key, t0, t0 + 66, dx=-5, dy=7, step=0.1)
+        a = bt_anchor(w, path)
+        sc.check(a is not None and a["src"] == "R" and abs(a["t0"] - t0) <= 0.5,
+                 "ride all: %s: learned as it left (%s)" % (key, None if a is None else round(a["t0"] - t0, 2)))
+        s2 = r["stops"][1]
+        bt_ride(w, key, t0, t0 + s2["arrive_s"] + 3, dx=-5, dy=7, step=0.1)
+        a = bt_anchor(w, path)
+        sc.check(a is not None and abs(a["t0"] - t0) <= 0.5 and B.ride.ride is None,
+                 "ride all: %s: right after the arrival too (%s)" % (key, None if a is None else round(a["t0"] - t0, 2)))
+        # The arrival itself is learned (the ride lasts over the loading screens); the Grom'gol
+        # zeppelin's jump within one map without a loading screen looks like a blink: the ride
+        # ends there.
+        if key != "undercity_gromgol":
+            sc.eq(a and a["obs"], 2, "ride all: %s: the arrival at %s learned" % (key, s2["name"]))
+        lines = bt_lines(w)
+        sc.check(lines and "docked, leaves in 0:5" in lines[0], "ride all: %s: docked at %s (%s)" % (key, s2["name"], lines))
+        sc.clean(w, "ride all " + key)
+
+
+def bt_slash(w, text):
+    return [strip_codes(x) for x in w.slash(text)]
+
+
+def bt_msg(w, text, sender="Other-TestRealm", ch="GUILD", prefix="GLBoat"):
+    """An addon message reaches the addon only for a prefix registered with the game."""
+    if w.M.prefixes[prefix]:
+        w.M.fire("CHAT_MSG_ADDON", prefix, text, ch, sender)
+
+
+def bt_sent(w, mark=0):
+    s = w.M.addonSent
+    return [(s[i].ch, s[i].msg) for i in range(mark + 1, len(s) + 1)]
+
+
+def sc_boats_share(sc, ref, items):
+    """Sharing with guild and group: what is sent after your own sighting (and how often),
+    questions and delayed answers (cancelled when someone else answered, never a sighting you
+    were told), what is accepted (valid) and what is not (malformed, stale, out of range,
+    yourself, a flood from one sender), a send the game refuses, two senders against ours."""
+    w = boat_world(ref, items)
+    B, M = w.ns.Boats, w.M
+    V = B.byPath[292].ver   # the route data's fingerprint, sent with every sighting
+    B.rand = w.lua.eval("function() return 0.5 end")
+    M.guild = True
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore: one boat
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    bt_at(w, x, y, inst)
+    w.settle(2.5)
+    sent = bt_sent(w)
+    sc.eq(sent, [("GUILD", "Q1|292")], "share: at a dock with no timer: one question to the guild")
+    w.settle(30)
+    sc.eq(bt_sent(w), sent, "share: not asked again soon")
+    w.M.tick(240)
+    w.settle(1.1)
+    sc.eq(bt_sent(w), sent, "share: nor 4.5 minutes later")
+    w.M.tick(40)
+    w.settle(1.1)
+    sent = sent + [("GUILD", "Q1|292")]
+    sc.eq(bt_sent(w), sent, "share: asked again after 5 minutes (once a round trip or so)")
+    sc.check(M.prefixes.GLBoat is True, "share: the GLBoat prefix is registered")
+    # Valid: a guild member's sighting.
+    now = B.Now()
+    arr = round(now - 100, 1)
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % arr)
+    a = bt_anchor(w, 292)
+    sc.check(a is not None and a["src"] == "G" and abs(a["t0"] - arr) < 0.01 and 3 <= a["s"] <= 3.1, "share: a valid sighting (%s)" % a)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), [bt_want("menethil_theramore", 1, a, B.ui.at)], "share: the line uses it")
+    sc.check(not any(m.startswith("A1") for _, m in bt_sent(w)), "share: a sighting you were told is never passed on")
+    # A question when the only timer is a shared one: no answer (one hop). (Long enough after
+    # that sighting arrived that it does not count as someone else's answer.)
+    w.settle(5)
+    mark = len(M.addonSent)
+    bt_msg(w, "Q1|292", sender="Asker-TestRealm")
+    w.settle(5)
+    sc.eq(bt_sent(w, mark), [], "share: no answer with only a shared timer")
+    # Malformed, stale or out of range: all ignored.
+    base = bt_anchor(w, 292)
+    d0 = B.stats.dropped
+    bad = [("A1|292|1|abc|2|R|329.316|" + V), ("A1|999|1|%.1f|2|R|329.316|" + V) % arr, ("A1|292|3|%.1f|2|R|329.316|" + V) % arr,
+           ("A1|292|1|%.1f|0|R|329.316|" + V) % arr, ("A1|292|1|%.1f|31|R|329.316|" + V) % arr, ("A1|292|1|%.1f|2|R|331.000|" + V) % arr,
+           ("A1|292|1|%.1f|2|G|329.316|" + V) % arr, "A1|292|1|%.1f|2|R|329.316|x" % arr, "A1|292|1|%.1f|2|R" % arr,
+           ("A1|292|1|%.1f|2|R|329.316|" + V) % (now + 400), ("A1|292|1|%.1f|2|R|329.316|" + V) % (now - 31 * 86400),
+           "A2|292|1|%.1f|2|R|329.316" % arr, "Q1|abc", "Q1|999", "hello", "",
+           "A1|292|1|%.1f|2|R|329.316" % arr, ("A1|292|1|%.1f|2|R|329.316|" + "000000") % arr,
+           ("A1|292|1|%.1f|2|R|329.316|" + V + "0") % arr]   # no, another or a broken data fingerprint
+    for i, t in enumerate(bad):
+        bt_msg(w, t, sender="Bad%d-TestRealm" % i)
+    sc.eq(B.stats.dropped - d0, len(bad), "share: %d bad messages dropped" % len(bad))
+    # Stale: 20 days old, the error grown past 30 s.
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % (now - 20 * 86400 + 0.3))
+    sc.eq(B.stats.dropped - d0, len(bad) + 1, "share: a 20 day old sighting is too stale")
+    # Older than 30 days is dropped even when our measured round trip would keep its error small.
+    B.Store().periods[292] = w.to_lua({"P": 329.316, "sP": 0.002, "p0": 329.316})
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % (now - 31 * 86400 + 0.3))
+    sc.eq(B.stats.dropped - d0, len(bad) + 2, "share: 31 days old: dropped (the 30 day limit)")
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % (now - 29 * 86400 + 0.3), sender="Old-TestRealm")
+    sc.eq(B.stats.dropped - d0, len(bad) + 2, "share: 29 days old with a measured round trip: read")
+    B.Store().periods[292] = None
+    bt_set(w, 292, base["t0"], s=base["s"], src="G", seen=base["seen"], obs=base["obs"])
+    B.Store()[11616] = None
+    for t, ch, who, why in ((("A1|292|1|%.1f|2|R|329.316|" + V) % (arr + 40), "WHISPER", "Other-TestRealm", "a whisper"),
+                            (("A1|292|1|%.1f|2|R|329.316|" + V) % (arr + 40), "GUILD", "Player-TestRealm", "yourself"),
+                            (("A1|292|1|%.1f|2|R|329.316|" + V) % (arr + 40), "GUILD", "Player", "yourself, no realm")):
+        g0 = B.stats.got
+        bt_msg(w, t, sender=who, ch=ch)
+        bt_msg(w, bt_a1(w, 11616, 1, round(now - 30, 1)), sender=who, ch=ch)   # a route with no timer yet
+        sc.eq((bt_anchor(w, 292)["t0"], bt_anchor(w, 11616), B.stats.got), (base["t0"], None, g0), "share: ignored: %s" % why)
+    M.prefixes["OtherAddon"] = True   # (another addon's prefix)
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % arr, prefix="OtherAddon")
+    bt_msg(w, "x" * 300)
+    sc.eq(bt_anchor(w, 292)["t0"], base["t0"], "share: other prefixes and long junk ignored")
+    # A flood from one sender: after 20 in 10 minutes, the rest are not even read.
+    g0, d1 = B.stats.got, B.stats.dropped
+    for i in range(25):
+        bt_msg(w, "Q1|292", sender="Flood-TestRealm")
+    sc.eq((B.stats.got - g0, B.stats.dropped - d1), (20, 5), "share: one sender: 20 read, 5 dropped")
+    # Your own sighting beats a shared one and is sent (once a minute per channel).
+    mark = len(M.addonSent)
+    bt_slash(w, "/gl boat now")
+    own_ = bt_anchor(w, 292)
+    sc.eq(own_["src"], "M", "share: your own /gl boat now replaces the shared timer")
+    s1 = bt_sent(w, mark)
+    sc.eq([c for c, _ in s1], ["GUILD"], "share: sent to the guild")
+    if s1:
+        f = s1[0][1].split("|")
+        sc.check(f[0] == "A1" and f[1] == "292" and f[2] == "2" and abs(float(f[3]) - own_["t0"] - arr2) <= 0.06 and f[5] == "M"
+                 and f[6] == "329.316" and 4 <= int(f[4]) <= 5 and len(f) == 8 and f[7] == V, "share: the message (%s)" % s1[0][1])
+    bt_slash(w, "/gl boat now")   # pressed again while it says docked: agrees, nothing new to send
+    sc.eq([c for c, _ in bt_sent(w, mark)], ["GUILD"], "share: pressed again: nothing more")
+    M.party = True
+    w.settle(10)
+    mark2 = len(M.addonSent)
+    rt292 = B.byPath[292]
+    B.Observe(rt292, 2, own_["t0"] + arr2 + 0.3, 1.5, "R")
+    B.Observe(rt292, 2, own_["t0"] + arr2 + 0.2, 1.5, "R")
+    sc.eq([c for c, _ in bt_sent(w, mark2)], ["PARTY"],
+          "share: within a minute: nothing more to the guild; the party joined since: once")
+    # A question with an own timer: answered after 1 to 4 s (here 2.5 s), on that channel.
+    w.settle(61)
+    mark = len(M.addonSent)
+    bt_msg(w, "Q1|292", sender="Asker-TestRealm", ch="PARTY")
+    w.settle(2.3)
+    sc.eq(bt_sent(w, mark), [], "share: no answer before the delay")
+    w.settle(0.4)
+    ans = bt_sent(w, mark)
+    sc.check(len(ans) == 1 and ans[0][0] == "PARTY" and ans[0][1].startswith("A1|292|2|"), "share: answered in the party (%s)" % ans)
+    # Someone else answers first: ours is dropped.
+    w.settle(40)
+    mark = len(M.addonSent)
+    bt_msg(w, "Q1|292", sender="Asker-TestRealm", ch="GUILD")
+    w.settle(1)
+    me = bt_anchor(w, 292)
+    bt_msg(w, ("A1|292|2|%.1f|3|R|329.316|" + V) % (me["t0"] + arr2 + 0.5), sender="Fast-TestRealm")
+    w.settle(4)
+    sc.eq(bt_sent(w, mark), [], "share: someone else answered first: no answer from us")
+    # A shared sighting against your good own one: ignored.
+    bt_msg(w, ("A1|292|2|%.1f|2|R|329.316|" + V) % (me["t0"] + arr2 + 90), sender="Wrong-TestRealm")
+    sc.check(abs(bt_anchor(w, 292)["t0"] - me["t0"]) < 0.6, "share: one sender against your own fresh timer: ignored")
+    # Against a shared (or stale) timer: two senders who agree win; one alone does not.
+    w2 = boat_world(ref, items)
+    B2 = w2.ns.Boats
+    bt_at(w2, x, y, inst)
+    w2.settle(2.5)
+    n2 = B2.Now()
+    bt_msg(w2, ("A1|292|1|%.1f|2|R|329.316|" + V) % (n2 - 50))
+    first = bt_anchor(w2, 292)["t0"]
+    bt_msg(w2, ("A1|292|1|%.1f|2|R|329.316|" + V) % (n2 - 150), sender="Second-TestRealm")
+    sc.eq(bt_anchor(w2, 292)["t0"], first, "share: one sender against a shared timer: kept aside")
+    bt_msg(w2, ("A1|292|1|%.1f|2|R|329.316|" + V) % (n2 - 150.4), sender="Second-TestRealm")
+    sc.eq(bt_anchor(w2, 292)["t0"], first, "share: the same sender twice is still one")
+    bt_msg(w2, ("A1|292|1|%.1f|2|R|329.316|" + V) % (n2 - 149.8), sender="Third-TestRealm")
+    sc.check(abs(bt_anchor(w2, 292)["t0"] - (n2 - 149.8)) < 0.01, "share: a second sender agrees: switched")
+    # The game refuses (a trial account, its own throttle): nothing said, nothing breaks.
+    w3 = boat_world(ref, items)
+    w3.M.guild = True
+    w3.M.sendResult = 3
+    bt_at(w3, x, y, inst)
+    mark = w3.chat_mark()
+    bt_slash(w3, "/gl boat now")
+    sc.eq(bt_sent(w3), [], "share: a refused send is not shared")
+    sc.eq([strip_codes(c) for c in w3.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "share: and not mentioned")
+    # Our own limit: at most 8 at once, then one each 5 s.
+    w4 = boat_world(ref, items)
+    w4.M.guild = True
+    B4 = w4.ns.Boats
+    for path in (292, 11167, 293, 11616, 303, 241, 11391, 11398, 302, 285, 301, 11457):
+        B4.Observe(B4.byPath[path], 1, B4.Now(), 1.5, "R")
+    sc.eq(len(bt_sent(w4)), 8, "share: 12 sightings at once: 8 messages (our own limit)")
+    sc.check(w4.M.sendCalls == 8, "share: the game is not even asked for the rest")
+    for ww, lab in ((w, "share"), (w2, "share two"), (w3, "share refused"), (w4, "share limit")):
+        sc.clean(ww, lab)
+
+
+def sc_boats_expiry(sc, ref, items):
+    """Saved timers: kept over a /reload (a second less sure: another login), dropped when 30
+    days old or learned with other route data; a weekly reset adds 10 s until sharp sightings
+    show whether resets keep the schedule (one side has to lead by two), and once they show
+    resets move the boats, older timers say unknown (until later sightings say otherwise)."""
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    w = boat_world(ref, items)
+    B = w.ns.Boats
+    bt_at(w, x, y, inst)
+    w.settle(2.5)
+    bt_slash(w, "/gl boat now")
+    rec = bt_anchor(w, 292)
+    sc.eq((rec["ses"], rec["v"]), (B.session, B.byPath[292].ver), "expiry: your sighting keeps its login and the route data")
+    now = B.Now()
+    saved_rec = {k: v for k, v in rec.items() if k != "earlier"}
+    # The saved file as the game writes it back: a /reload later (the same login: the game's
+    # server clock is the same) and the next login (a second less sure).
+    keep = {"boatTimes": {"TestRealm": {292: dict(saved_rec), "periods": {}}}, "boatSession": w.ns.settings.boatSession}
+    w2 = boat_world(ref, items, saved=keep, login=(False, True))
+    w2.M.sbase = now - w2.M.t + 30
+    bt_at(w2, x, y, inst)
+    w2.settle(1.1)
+    B2 = w2.ns.Boats
+    sc.eq(B2.session, B.session, "expiry: a /reload is the same login")
+    sc.eq(bt_anchor(w2, 292)["t0"], rec["t0"], "expiry: a saved timer is there after a reload")
+    sc.check(bt_lines(w2) and "docked, leaves in 0:" in bt_lines(w2)[0], "expiry: and shows (%s)" % bt_lines(w2))
+    w2b = boat_world(ref, items, saved=keep)
+    w2b.M.sbase = now - w2b.M.t + 30
+    bt_at(w2b, x, y, inst)
+    w2b.settle(1.1)
+    B2b = w2b.ns.Boats
+    sc.eq(B2b.session, B.session + 1, "expiry: the next login has the next number")
+    rt292 = B2b.byPath[292]
+    n2 = B2b.Now()
+    want_sg = 4 + (abs(n2 - rec["seen"]) / 329.316 + 1) * 0.01 + 1
+    got_sg = B2b.Sigma(rt292, B2b.AnchorOf(rt292, n2), 2, n2)
+    sc.check(abs(got_sg - want_sg) < 1e-6, "expiry: a second less sure in the next login (%.3f, want %.3f)" % (got_sg, want_sg))
+    sc.check(bt_lines(w2b) and bt_lines(w2b)[0] == "Boat to Menethil: about now", "expiry: a /gl boat now timer is about then (%s)"
+             % bt_lines(w2b))
+    sc.clean(w2b, "expiry relogin")
+    # 31 days old: dropped.
+    old = dict(saved_rec, seen=now - 31 * 86400, t0=rec["t0"] - 31 * 86400)
+    w3 = boat_world(ref, items, saved={"boatTimes": {"TestRealm": {292: old}}})
+    w3.M.sbase = now - w3.M.t
+    bt_at(w3, x, y, inst)
+    w3.settle(1.1)
+    sc.eq(bt_anchor(w3, 292), None, "expiry: 31 days old: dropped")
+    sc.eq(bt_lines(w3), ["Boat to Menethil: unknown - /gl boat now when it docks"], "expiry: and unknown")
+    # Learned with other route data (a new version changed the round trip, or moved or
+    # reordered the stops with the same round trip): dropped.
+    for what, changed in (("round trip", dict(saved_rec, p0=329.4)), ("stops", dict(saved_rec, v="0badc0")),
+                          ("no fingerprint", {k: v for k, v in saved_rec.items() if k != "v"})):
+        w4 = boat_world(ref, items, saved={"boatTimes": {"TestRealm": {292: changed}}})
+        bt_at(w4, x, y, inst)
+        sc.eq(bt_anchor(w4, 292), None, "expiry: other route data (%s): dropped" % what)
+        sc.clean(w4, "expiry data " + what)
+    # Junk in the saved file: dropped, no error.
+    w5 = boat_world(ref, items, saved={"boatTimes": {"TestRealm": {292: {"t0": "x"}, 293: 5, "periods": 7}}, "boats": True,
+                                       "boatSession": "x"})
+    bt_at(w5, x, y, inst)
+    sc.eq(bt_anchor(w5, 292), None, "expiry: junk dropped")
+    sc.eq(w5.ns.Boats.session, 1, "expiry: a broken login number starts again")
+    # A weekly reset since the sighting: +10 s (about) until sharp sightings decide.
+    w6 = boat_world(ref, items)
+    B6 = w6.ns.Boats
+    bt_at(w6, x, y, inst)
+    w6.settle(2.5)
+    n6 = B6.Now()
+    bt_set(w6, 292, n6 - 150 - arr2, s=1.0, src="R", obs=2, seen=n6 - 3600)
+    bt_set(w6, 293, n6 - 100, s=1.0, src="R", obs=1, seen=n6 - 3600)
+    bt_set(w6, 241, n6 - 100, s=1.0, src="R", obs=1, seen=n6 - 3600)
+    w6.M.resetIn = 7 * 86400 - 1800   # the reset was half an hour ago
+    B6.Step()
+    sc.eq(bt_lines(w6), [bt_want("menethil_theramore", 1, bt_anchor(w6, 292), B6.Now(), reset_penalty=True)],
+          "expiry: after a reset the timer is less sure")
+    sc.check("about" in bt_lines(w6)[0], "expiry: about (%s)" % bt_lines(w6))
+    B6.Observe(B6.byPath[292], 2, n6 - 150 + 329.316 * 11 + 0.8, 1.5, "R")
+    sc.eq(B6.Store().resetKeeps, None, "expiry: one sharp sighting that agrees: not decided yet")
+    B6.Observe(B6.byPath[292], 2, n6 - 150 + 329.316 * 11 + 0.5, 1.5, "R")
+    sc.eq(B6.Store().resetVotes.k, 1, "expiry: (a timer from after the reset is no test)")
+    B6.Observe(B6.byPath[293], 1, n6 - 100 + 316.099 * 11 - 0.6, 1.5, "R")
+    sc.eq(B6.Store().resetKeeps, True, "expiry: a second one that agrees: resets keep the schedule")
+    B6.Step()
+    sc.check("about" not in bt_lines(w6)[0], "expiry: and the timer is sure again (%s)" % bt_lines(w6))
+    rb = B6.byPath[241]
+    sc.check(B6.Sigma(rb, B6.AnchorOf(rb, B6.Now()), 1, B6.Now()) < 3, "expiry: other old timers too")
+    # Sightings that do not agree: resets move the boats here; older timers say unknown.
+    w7 = boat_world(ref, items)
+    B7 = w7.ns.Boats
+    bt_at(w7, x, y, inst)
+    w7.settle(2.5)
+    n7 = B7.Now()
+    for path in (292, 293, 11616, 303, 241):
+        bt_set(w7, path, n7 - 150, s=1.0, src="R", obs=1, seen=n7 - 3600)
+    w7.M.resetIn = 7 * 86400 - 1800
+    B7.Observe(B7.byPath[292], 1, n7 - 60, 1.5, "R")
+    sc.eq(B7.Store().resetKeeps, None, "expiry: one sighting that does not agree: not decided yet")
+    sc.check(abs(bt_anchor(w7, 292)["t0"] - (n7 - 60)) < 0.01, "expiry: the new sighting wins")
+    B7.Observe(B7.byPath[293], 1, n7 - 20, 1.5, "R")
+    sc.eq(B7.Store().resetKeeps, False, "expiry: a second one: resets move boats")
+    rs = B7.byPath[11616]
+    sc.check(B7.Sigma(rs, B7.AnchorOf(rs, B7.Now()), 1, B7.Now()) > 30, "expiry: other timers from before the reset: unknown")
+    sx, sy, sinst = bt_stop("stormwind_auberdine", 0)
+    bt_at(w7, sx, sy, sinst)
+    w7.settle(1.1)
+    sc.check(bt_lines(w7)[0].startswith("Boat to Auberdine: unknown"), "expiry: and the line says so (%s)" % bt_lines(w7))
+    sc.check(any("unknown since the weekly reset" in l for l in bt_slash(w7, "/gl boats all")), "expiry: /gl boats all says why")
+    # Later sharp sightings that agree with old timers count against it: undecided again (+10 s).
+    B7.Observe(B7.byPath[303], 1, n7 - 150 + 317.045 * 11 + 0.4, 1.5, "R")
+    B7.Observe(B7.byPath[241], 1, n7 - 150 + 350.823 * 11 - 0.4, 1.5, "R")
+    sc.eq(B7.Store().resetKeeps, None, "expiry: two later sightings that agree: undecided again")
+    sg_s = B7.Sigma(rs, B7.AnchorOf(rs, B7.Now()), 1, B7.Now())
+    sc.check(10 < sg_s <= 30, "expiry: old timers back to +10 s (%.1f)" % sg_s)
+    # An old, unsure timer is no test: a Stormwind boat seen 6 days ago (its round trip is
+    # known to 0.5 s) moved 40 s at the reset; that decides nothing either way.
+    w9 = boat_world(ref, items)
+    B9 = w9.ns.Boats
+    bt_at(w9, sx, sy, sinst)
+    w9.settle(2.5)
+    n9 = B9.Now()
+    w9.M.resetIn = 7 * 86400 - 86400
+    for k in range(3):
+        bt_set(w9, 11616, n9 - 100, s=1.0, src="R", obs=1, seen=n9 - 6 * 86400)
+        B9.Observe(B9.byPath[11616], 1, n9 - 100 + 247.015 * (2 + k) + 40, 1.5, "R")
+    sc.eq((B9.Store().resetKeeps, B9.Store().resetVotes), (None, None), "expiry: old timers decide nothing")
+    sc.clean(w9, "expiry old test")
+    # Two good sightings some round trips apart refine the round trip.
+    w8 = boat_world(ref, items)
+    B8 = w8.ns.Boats
+    bt_at(w8, *bt_stop("stormwind_auberdine", 0))
+    w8.settle(2.5)
+    n8 = B8.Now()
+    true_P = 246.7
+    B8.Observe(B8.byPath[11616], 1, n8 - true_P * 6, 1.0, "R")
+    w8.M.tick(1.0)
+    B8.Observe(B8.byPath[11616], 1, n8, 1.0, "R")
+    pp = B8.Store().periods[11616]
+    sc.check(pp is not None and abs(pp.P - true_P) < 0.01 and pp.sP < 0.5, "expiry: the round trip refined from two rides (%s)"
+             % str(None if pp is None else (pp.P, pp.sP)))
+    for ww, lab in ((w, "expiry"), (w2, "expiry reload"), (w3, "expiry old"), (w5, "expiry junk"),
+                    (w6, "expiry reset"), (w7, "expiry reset moves"), (w8, "expiry refine")):
+        sc.clean(ww, lab)
+
+
+def sc_boats_harbors(sc, ref, items):
+    """Docks with several boats: one line per boat, nearest pier first, the hint once; three
+    lines would run into the quest tracker, so they become one line; without a tracker they
+    stack; never over the minimap. The zeppelin tower and a skyship dock say so."""
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w = boat_world(ref, items, tracker=False)
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown - /gl boat now when it docks", "Boat to Menethil, Southshore: unknown",
+                        "Boat to Rut'theran: unknown"], "harbors: Auberdine, at the Stormwind pier: three boats")
+    sc.eq(w.ns.Boats.ui.mode, "stacked", "harbors: no tracker: stacked")
+    bt_rect_ok(sc, w, "harbors stacked", bt_minimap_parts(w))
+    B = w.ns.Boats
+    bt_set(w, 293, B.Now() - 30, s=1.0, src="R", obs=1)
+    w.settle(1.1)
+    sc.eq(bt_lines(w)[2], bt_want("auberdine_rutheran", 0, bt_anchor(w, 293), B.ui.at, hint=False), "harbors: each line its own boat")
+    sc.check(bt_lines(w)[2] in ("Boat to Rut'theran: docked, leaves in 0:29", "Boat to Rut'theran: docked, leaves in 0:30"),
+             "harbors: docked (%s)" % bt_lines(w)[2])
+    rx, ry, rinst = bt_stop("auberdine_rutheran", 0)
+    bt_at(w, rx - 3, ry, rinst)
+    w.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w)], ["Boat to Rut'theran", "Boat to Stormwind", "Boat to Menethil, Southshore"],
+          "harbors: at the Rut'theran pier it comes first")
+    sc.eq(bt_lines(w)[1], "Boat to Stormwind: unknown - /gl boat now when it docks", "harbors: the hint on the first unknown line")
+    # Clicking the second line sets that boat.
+    w.M.click(B.ui.btn[2])
+    sc.check(bt_anchor(w, 11616) is not None and bt_anchor(w, 11616)["obs"] == 2, "harbors: a click on a line sets that boat")
+    # With the quest tracker below the minimap: one line.
+    w2 = boat_world(ref, items)
+    bt_at(w2, ax + 4, ay + 4, ainst)
+    w2.settle(1.1)
+    sc.eq(w2.ns.Boats.ui.mode, "joined", "harbors: the tracker is in the way: one line")
+    sc.eq(bt_lines(w2), ["Boats: Stormwind unknown; Menethil, Southshore unknown; Rut'theran unknown"], "harbors: the one line")
+    bt_rect_ok(sc, w2, "harbors joined", bt_minimap_parts(w2))
+    # Menethil: two boats; one line fits above the tracker, two do not.
+    mx, my, minst = bt_stop("menethil_theramore", 0)
+    bt_at(w2, mx, my, minst)
+    w2.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w2)], ["Boats"], "harbors: Menethil with the tracker: one line")
+    sc.check("Theramore" in bt_lines(w2)[0] and "Southshore, Auberdine" in bt_lines(w2)[0], "harbors: both boats (%s)" % bt_lines(w2))
+    w3 = boat_world(ref, items, tracker=False)
+    bt_at(w3, mx, my, minst)
+    w3.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w3)], ["Boat to Theramore", "Boat to Southshore, Auberdine"], "harbors: Menethil: two lines")
+    # The Orgrimmar tower: zeppelins; Dalaran: the skyship.
+    ox, oy, oinst = bt_stop("orgrimmar_undercity", 0)
+    bt_at(w3, ox, oy, oinst)
+    w3.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w3)], ["Zeppelin to Undercity", "Zeppelin to Grom'gol"], "harbors: the Orgrimmar tower")
+    dx, dy, dinst = bt_stop("dalaran_zephras", 0)
+    bt_at(w3, dx, dy, dinst)
+    w3.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w3)], ["Skyship to Zephras Isle"], "harbors: Dalaran")
+    # A tracker moved up under the minimap and buffs left of it: the line moves beside the map.
+    w4 = boat_world(ref, items)
+    ot = w4.g.ObjectiveTrackerFrame
+    ot.ClearAllPoints(ot)
+    ot.SetPoint(ot, "TOPRIGHT", w4.g.UIParent, "TOPRIGHT", -2, -258)
+    bt_at(w4, mx, my, minst)
+    w4.settle(1.1)
+    sc.eq(w4.ns.Boats.ui.mode, "left", "harbors: no room under the minimap: beside it")
+    bt_rect_ok(sc, w4, "harbors left", bt_minimap_parts(w4))
+    for ww, lab in ((w, "harbors"), (w2, "harbors tracker"), (w3, "harbors two"), (w4, "harbors left")):
+        sc.clean(ww, lab)
+
+
+def sc_boats_elvui(sc, ref, items):
+    """ElvUI's minimap (its holder at the top right, the datatext panel under the map, the
+    zone text hidden, the tracker at ElvUI's spot): the lines hang under ElvUI's holder, all
+    three stacked, at the player's UI scale, covering nothing."""
+    w = boat_world(ref, items, elvui=True, screen=(768 * 16 / 9, 768, 0.62))
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    bt_at(w, ax, ay, ainst)
+    w.settle(1.1)
+    B = w.ns.Boats
+    sc.eq(len(bt_lines(w)), 3, "elvui: three lines")
+    sc.eq(B.ui.mode, "stacked", "elvui: stacked under ElvUI's minimap")
+    r = bt_rect_ok(sc, w, "elvui", bt_minimap_parts(w))
+    h = w.rect(w.g.ElvUI_MinimapHolder)
+    mm = w.rect(w.g.Minimap)
+    if r and h and mm:
+        es = w.g.UIParent.GetEffectiveScale(w.g.UIParent)
+        sc.check(abs(r[3] - (h[1] - 2 * es)) < 0.6, "elvui: 2 px under ElvUI's holder")
+        sc.check(abs((r[0] + r[2]) / 2 - (mm[0] + mm[2]) / 2) < 0.6 or r[2] >= w.M.screenW - 4 * es - 0.6,
+                 "elvui: centred under the map (or kept on screen)")
+    sc.check(w.g.MinimapCluster.IsVisible(w.g.MinimapCluster), "elvui: (ElvUI leaves the empty cluster shown)")
+    sc.clean(w, "elvui")
+
+
+def sc_boats_switch(sc, ref, items):
+    """/gl boats off hides the line, stops every check, ignores guild messages and is saved;
+    /gl boats on brings it back; /gl boats (or /gl boat, /gl boats status) says two lines: on
+    or off, and the nearest dock with its boats; /gl boats all lists every route and what is
+    known; /gl help has one line; the dockmasters' lines (said, yelled or emoted)."""
+    w = boat_world(ref, items)
+    B, M = w.ns.Boats, w.M
+    V = B.byPath[292].ver   # the route data's fingerprint, sent with every sighting
+    M.guild = True
+    x, y, inst = bt_stop("menethil_theramore", 1)   # Theramore
+    bt_at(w, x, y, inst)
+    w.settle(2.5)
+    bt_slash(w, "/gl boat now")
+    out = bt_slash(w, "/gl boats off")
+    sc.eq(out, ["Goblin Ledger: boat timers are off. /gl boats on brings them back."], "switch: off")
+    sc.eq(w.ns.settings.boats, False, "switch: saved as off")
+    sc.eq(bt_lines(w), [], "switch: off: no line")
+    sc.check(not w.g.GoblinLedgerBoats.IsShown(w.g.GoblinLedgerBoats), "switch: the line is hidden")
+    st0 = B.stats.steps
+    M.fire("ZONE_CHANGED")
+    w.settle(10)
+    sc.eq(B.stats.steps, st0, "switch: off: nothing runs, not even after a zone change")
+    mark = len(M.addonSent)
+    a = bt_anchor(w, 292)
+    bt_msg(w, ("A1|292|1|%.1f|2|R|329.316|" + V) % (a["t0"] + 50))
+    bt_msg(w, "Q1|292", sender="Asker-TestRealm")
+    w.settle(5)
+    sc.eq((bt_anchor(w, 292)["t0"], bt_sent(w, mark)), (a["t0"], []), "switch: off: guild messages ignored, none sent")
+    sc.eq(bt_slash(w, "/gl boat now"), ["Goblin Ledger: boat timers are off. /gl boats on turns them on."], "switch: off: boat now says so")
+    bt_slash(w, "/gl boats on")
+    sc.check(w.ns.settings.boats is None, "switch: on again")
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 1, "switch: on: the line is back")
+    for cmd in ("/gl boats", "/gl boat", "/gl boats status"):
+        out = bt_slash(w, cmd)
+        want = ["Goblin Ledger: boat timers are on. /gl boats all lists every route.",
+                "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. " + bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now())]
+        sc.eq(out, want, "switch: %s: two lines, the nearest dock and its boat" % cmd)
+    out = bt_slash(w, "/gl boats all")
+    sc.eq(out[0], "Goblin Ledger: boat timers are on: at a dock, a line under the minimap says when the boat comes.",
+          "switch: all: first line")
+    sc.check(any(l.startswith("Goblin Ledger: Menethil Harbor - Theramore Isle (5:29 round trip): known to 5 s (/gl boat now,")
+                 for l in out), "switch: all: Theramore known (%s)" % out[1:3])
+    sc.check(any("Auberdine - Rut'theran Village (5:16 round trip): unknown" in l for l in out), "switch: all: Rut'theran unknown")
+    sc.check(any("Dalaran - Zephras Isle - High Order Dock (5:53 round trip): unknown" in l for l in out),
+             "switch: all: the Dalaran skyship's measured round trip")
+    sc.check(any("zeppelin tower" in l for l in out), "switch: all: the other faction's routes too")
+    sc.eq(out[-1], "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. " + bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now()),
+          "switch: all: the nearest dock last")
+    sc.eq(len(out), 14, "switch: all 12 routes")
+    # At a harbor with three boats the nearest-dock line names them all.
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    bt_at(w, ax + 30, ay, ainst)
+    sc.eq(bt_slash(w, "/gl boats")[1:], ["Goblin Ledger: nearest dock: Auberdine, 30 yd. Stormwind unknown; Menethil, Southshore unknown; "
+                                         "Rut'theran unknown"], "switch: the nearest dock at Auberdine")
+    bt_at(w, x, y, inst)
+    sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, /gl boats off or /gl boats all."],
+          "switch: a wrong choice")
+    help_ = bt_slash(w, "/gl help")
+    sc.eq([l for l in help_ if "boat" in l], ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, all); "
+                                               "/gl boat now as a boat docks sets its timer"], "switch: one help line")
+    bt_slash(w, "/gl boats off")
+    sc.eq(bt_slash(w, "/gl boats"), ["Goblin Ledger: boat timers are off. /gl boats on turns them on."], "switch: off: one line")
+    bt_slash(w, "/gl boats on")
+    # Saved off: stays off after a login.
+    w2 = boat_world(ref, items, saved={"boats": False})
+    bt_at(w2, x, y, inst)
+    w2.settle(3)
+    sc.eq(bt_lines(w2), [], "switch: saved off: no line after a login")
+    sc.check(w2.ns.Boats.driver.frame is None, "switch: saved off: no driver frame made")
+    # The dockmasters: heard only near their dock; a second line (no "just arrived") and a secret one ignored.
+    w3 = boat_world(ref, items)
+    B3 = w3.ns.Boats
+    dx, dy, dinst = bt_stop("dalaran_zephras", 0)
+    bt_at(w3, dx + 200, dy, dinst)
+    w3.settle(1.1)
+    sc.check(not w3.g.GoblinLedgerBoats or not B3.driver.listening, "switch: the dockmaster is not listened to 200 yd away")
+    bt_at(w3, dx + 5, dy, dinst)
+    w3.settle(2.5)
+    sc.check(B3.driver.listening, "switch: at the Dalaran skyship dock the dockmaster is listened to")
+    w3.g.issecretvalue = w3.lua.eval("function(v) return v == 'SECRET' end")
+    w3.M.fire("CHAT_MSG_MONSTER_SAY", "SECRET", "Arcanist Laurain")
+    w3.M.fire("CHAT_MSG_MONSTER_SAY", "The ride can sometimes be bumpy.", "Arcanist Laurain")
+    sc.eq(bt_anchor(w3, 11398), None, "switch: a secret line and a flavour line teach nothing")
+    t = B3.Now()
+    w3.M.fire("CHAT_MSG_MONSTER_SAY", "The skycutter to Zephras Isle has just arrived. All aboard!", "Arcanist Laurain")
+    a3 = bt_anchor(w3, 11398)
+    sc.check(a3 is not None and a3["src"] == "A" and a3["obs"] == 1 and abs(a3["t0"] - t) < 0.1, "switch: the dockmaster's arrival (%s)" % a3)
+    w3.settle(1.1)
+    sc.eq(bt_lines(w3), [bt_want("dalaran_zephras", 0, a3, B3.ui.at)], "switch: the skyship line")
+    sc.check(bt_lines(w3)[0] in ("Skyship to Zephras Isle: docked, leaves in 1:00", "Skyship to Zephras Isle: docked, leaves in 0:59"),
+             "switch: docked (%s)" % bt_lines(w3))
+    bt_at(w3, dx + 400, dy, dinst)
+    w3.settle(3.5)
+    sc.check(not B3.driver.listening, "switch: walking away stops listening")
+    # An emoted line is heard too (which chat type the dockmasters use is not known); in an
+    # instance (before the next check notices) nothing is learned; off stops listening.
+    w4 = boat_world(ref, items)
+    B4 = w4.ns.Boats
+    bt_at(w4, dx + 5, dy, dinst)
+    w4.settle(2.5)
+    w4.M.inInstance = True
+    w4.M.fire("CHAT_MSG_MONSTER_SAY", "The skycutter to Zephras Isle has just arrived. All aboard!", "Arcanist Laurain")
+    sc.eq(bt_anchor(w4, 11398), None, "switch: in an instance a dockmaster line teaches nothing")
+    w4.M.inInstance = False
+    w4.settle(1.1)
+    sc.check(B4.driver.listening, "switch: out of it, listening again")
+    t = B4.Now()
+    w4.M.fire("CHAT_MSG_MONSTER_EMOTE", "The skycutter to Zephras Isle has just arrived.", "Arcanist Laurain")
+    a4 = bt_anchor(w4, 11398)
+    sc.check(a4 is not None and a4["src"] == "A" and abs(a4["t0"] - t) < 0.1, "switch: an emoted arrival (%s)" % a4)
+    bt_slash(w4, "/gl boats off")
+    sc.check(not B4.driver.listening, "switch: off: not listening")
+    for ev in ("CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE", "CHAT_MSG_RAID_BOSS_EMOTE"):
+        sc.check(not B4.eventFrame.IsEventRegistered(B4.eventFrame, ev), "switch: off: %s not registered" % ev)
+    for ww, lab in ((w, "switch"), (w2, "switch saved"), (w3, "switch dockmaster"), (w4, "switch emote")):
+        sc.clean(ww, lab)
+
+
+def bt_walk(w, x0, y0, inst, vx, vy, secs, step=0.25):
+    """The player moves by themselves (IsPlayerMoving) from x0, y0 at vx, vy yd/s for secs s."""
+    M = w.M
+    M.moving, M.speed = True, 7
+    t = 0.0
+    while t < secs - 1e-9:
+        t += step
+        M.pos = w.to_lua([x0 + vx * t, y0 + vy * t, 0, inst])
+        M.tick(step)
+    M.moving, M.speed = False, 0
+    return x0 + vx * secs, y0 + vy * secs
+
+
+def bt_hearth(w, x, y, inst, load=4.0):
+    """A hearthstone or a portal: a loading screen, then the player is somewhere else."""
+    M = w.M
+    M.fire("LOADING_SCREEN_ENABLED")
+    M.fire("PLAYER_LEAVING_WORLD")
+    M.pos = w.to_lua([x, y, 0, inst])
+    M.t = M.t + load   # (no frame updates while the loading screen is up)
+    M.fire("PLAYER_ENTERING_WORLD", False, False)
+    w.settle(1.2)
+
+
+def bt_wrapd(a, P):
+    return (a + P / 2) % P - P / 2
+
+
+def sc_boats_ride_end(sc, ref, items):
+    """A ride whose arrival was missed (you ran off as the boat stopped) ends: when you are off
+    the boat's track, or 20 s after it should have docked. A hearthstone after it is no boat
+    (the timer stays, nothing is sent), the driver is not kept running, the next ride is
+    learned. A loading screen counts only on the track, at the map change the ride expects,
+    with you standing on deck, and never for a same-map jump; a blink ends a ride; an arrival
+    that does not fit the leg time, a departure the wrong way and a taxi flight teach nothing."""
+    routes, _ = boat_data()
+    key = "menethil_theramore"
+    r = routes[key]
+    arr = r["stops"][1]["arrive_s"]
+    P = r["cycle_s"]
+    IF_X, IF_Y = -4900.0, -950.0   # Ironforge (Eastern Kingdoms), far from every boat track
+    w = boat_world(ref, items)
+    B, M = w.ns.Boats, w.M
+    M.guild = True
+    x, y, inst = bt_stop(key, 0)
+    t0 = bt_now(w) + 5 - 0.37
+    bt_at(w, x + 6, y - 4, inst)
+    bt_ride(w, key, t0, t0 + 64)
+    good = bt_anchor(w, 292)
+    sc.check(good is not None and good["src"] == "R" and B.ride.ride is not None, "ride end: the departure (%s)" % good)
+    bt_ride(w, key, t0, t0 + arr + 0.5)   # on deck until half a second after it stops
+    sc.check(B.ride.ride is not None, "ride end: (still riding as it stops)")
+    until = B.ride.ride.untilT
+    ends = B.stats.rideEnds
+    px, py, pinst = bt_track_pos(r, arr)
+    # Runs off at once (mounted, north-west into Theramore), never standing still.
+    ex, ey = bt_walk(w, px + 6, py - 4, pinst, 10, 10, 14)
+    sc.check(B.ride.ride is None and B.stats.rideEnds == ends + 1, "ride end: off the track, the ride is over")
+    sc.check(bt_now(w) < until, "ride end: (before its time was up: %.1f s left)" % (until - bt_now(w)))
+    sc.eq(bt_anchor(w, 292)["t0"], good["t0"], "ride end: the timer is untouched")
+    ex, ey = bt_walk(w, ex, ey, pinst, 0, 7, 20)
+    w.settle(5)
+    s0 = B.stats.steps
+    w.settle(60)
+    sc.check(B.stats.steps - s0 <= 22, "ride end: in town the checks are slow again (%d in 60 s)" % (B.stats.steps - s0))
+    mark = len(M.addonSent)
+    # An hour later: hearthstone to Ironforge (Kalimdor to the Eastern Kingdoms, as the boat goes).
+    M.tick(3600)
+    w.settle(2)
+    bt_hearth(w, IF_X, IF_Y, 0)
+    after = bt_anchor(w, 292)
+    sc.check(after is not None and after["src"] == "R" and abs(after["t0"] - good["t0"]) < 0.01,
+             "ride end: a hearthstone later is no boat (%s)" % after)
+    sc.eq(bt_sent(w, mark), [], "ride end: and nothing is sent")
+    # The next ride (Ratchet to Booty Bay) is learned.
+    k2 = "bootybay_ratchet"
+    r2 = routes[k2]
+    x2, y2, i2 = bt_stop(k2, 1)
+    bt_hearth(w, x2 - 5, y2 + 7, i2)
+    t0b = bt_now(w) - r2["stops"][1]["arrive_s"] - 50.3
+    bt_ride(w, k2, t0b, t0b + r2["stops"][1]["arrive_s"] + 66, dx=-5, dy=7, step=0.1)
+    a2 = bt_anchor(w, 241)
+    sc.check(a2 is not None and a2["src"] == "R" and abs(a2["t0"] - t0b) <= 0.5, "ride end: the next ride is learned (%s)" % a2)
+    sc.clean(w, "ride end")
+
+    # Ran off and hearthed at once (the ride still on, 113 yd from the pier): no boat either.
+    w2 = boat_world(ref, items)
+    B2, M2 = w2.ns.Boats, w2.M
+    M2.guild = True
+    t0 = bt_now(w2) + 5 - 0.37
+    bt_at(w2, x + 6, y - 4, inst)
+    bt_ride(w2, key, t0, t0 + arr + 0.5)
+    good = bt_anchor(w2, 292)
+    bt_walk(w2, px + 6, py - 4, pinst, 10, 10, 8)
+    w2.settle(5)   # a short cast (a mage's teleport), standing still
+    sc.check(B2.ride.ride is not None, "ride end: (the ride is still on during the cast)")
+    sc.check(bt_now(w2) + 4 + 1.5 < B2.ride.ride.untilT, "ride end: (its time is not up when the loading screen ends)")
+    mark = len(M2.addonSent)
+    bt_hearth(w2, IF_X, IF_Y, 0)
+    after = bt_anchor(w2, 292)
+    sc.check(after["src"] == "R" and abs(after["t0"] - good["t0"]) < 0.01 and B2.ride.ride is None,
+             "ride end: a hearthstone right after is no boat (%s)" % after)
+    sc.eq(bt_sent(w2, mark), [], "ride end: and nothing is sent")
+    sc.clean(w2, "ride end hearth")
+
+    # Standing about on the pier after a missed arrival: the ride ends 20 s after the docking.
+    w3 = boat_world(ref, items)
+    B3 = w3.ns.Boats
+    t0 = bt_now(w3) + 5 - 0.37
+    bt_at(w3, x + 6, y - 4, inst)
+    bt_ride(w3, key, t0, t0 + arr + 0.5)
+    qx, qy = bt_walk(w3, px + 6, py - 4, pinst, 0, 3, 3)
+    for k in range(6):   # walking up and down the pier
+        qx, qy = bt_walk(w3, qx, qy, pinst, 0, 3 if k % 2 else -3, 2)
+    sc.check(B3.ride.ride is not None, "ride end: (still on, walking on the pier)")
+    qx, qy = bt_walk(w3, qx, qy, pinst, 0, 2, 6)
+    sc.check(B3.ride.ride is None, "ride end: 20 s after the docking it is over")
+    sc.clean(w3, "ride end pier")
+
+    # A loading screen that is not at the map change the ride expects: nothing learned.
+    for what in ("time", "walking"):
+        w4 = boat_world(ref, items)
+        B4 = w4.ns.Boats
+        t0c = bt_now(w4) - 100
+        x1, y1, i1 = bt_track_pos(r, 100)
+        bt_at(w4, x1 + 6, y1 - 4, i1)
+        B4.ride.ride = None
+        bt_ride(w4, key, t0c, t0c + 106)
+        a = bt_anchor(w4, 292)
+        sc.check(a is not None and a["src"] == "T" and B4.ride.ride is not None, "ride end %s: found on the track (%s)" % (what, a))
+        if what == "time":
+            B4.ride.ride.t0 = B4.ride.ride.t0 + 40   # (as if the track had put it 40 s off)
+            bt_ride(w4, key, t0c, t0c + 118)
+        else:
+            bt_ride(w4, key, t0c, t0c + 118, walk=(t0c + 108, t0c + 113))
+        a = bt_anchor(w4, 292)
+        sc.check(a["src"] == "T", "ride end %s: that loading screen teaches nothing (%s)" % (what, a))
+        sc.check(B4.ride.ride is not None, "ride end %s: and the ride goes on (on the track)" % what)
+        sc.clean(w4, "ride end " + what)
+
+    # A same-map jump (Undercity to Grom'gol, both on the Eastern Kingdoms) is no map change to learn.
+    k3 = "undercity_gromgol"
+    r3 = routes[k3]
+    tp = r3["teleports"][0]
+    sc.eq((tp["fromMap"], tp["toMap"]), (0, 0), "ride end: (the Grom'gol zeppelin jumps within one map)")
+    w5 = boat_world(ref, items, faction="Horde")
+    B5, M5 = w5.ns.Boats, w5.M
+    t0g = bt_now(w5) - (tp["t_s"] - 3)
+    gx, gy, gi = bt_track_pos(r3, tp["t_s"] - 3)
+    bt_at(w5, gx, gy, gi)
+    w5.settle(2.2)
+    B5.ride.ride = w5.to_lua({"rt": B5.byPath[301], "from": 1, "dep": t0g + 60, "t0": t0g, "ts": 1.5, "untilT": bt_now(w5) + 300})
+    bt_hearth(w5, *bt_track_pos(r3, tp["t_s"] + 1.6)[:2], 0, load=1.5)
+    sc.eq(bt_anchor(w5, 301), None, "ride end: the same-map jump teaches nothing")
+    sc.clean(w5, "ride end same map")
+
+    # A blink (or a charge) while riding ends the ride at once.
+    w6 = boat_world(ref, items)
+    B6, M6 = w6.ns.Boats, w6.M
+    t0 = bt_now(w6) + 5 - 0.37
+    bt_at(w6, x + 6, y - 4, inst)
+    bt_ride(w6, key, t0, t0 + 80)
+    sc.check(B6.ride.ride is not None, "ride end blink: riding")
+    M6.tick(0.3)
+    bx, by, bi = bt_track_pos(r, bt_now(w6) - t0)
+    M6.pos = w6.to_lua([bx + 6 + 200, by - 4, 0, bi])
+    B6.Step()
+    sc.check(B6.ride.ride is None, "ride end blink: a 200 yd jump ends the ride at the first look")
+    sc.clean(w6, "ride end blink")
+
+    # An arrival that does not fit the leg time from the departure: not learned.
+    w7 = boat_world(ref, items)
+    B7 = w7.ns.Boats
+    t0 = bt_now(w7) + 5 - 0.37
+    bt_at(w7, x + 6, y - 4, inst)
+    bt_ride(w7, key, t0, t0 + 150)
+    B7.ride.ride.dep = B7.ride.ride.dep + 30
+    bt_ride(w7, key, t0, t0 + arr + 4)
+    a = bt_anchor(w7, 292)
+    sc.check(a["obs"] == 1 and B7.ride.ride is None, "ride end: an arrival 30 s off the leg time is not learned (%s)" % a)
+    sc.clean(w7, "ride end leg")
+
+    # Carried away from the pier the wrong way (not the boat's way out): no departure; the
+    # right way: the departure.
+    for right in (False, True):
+        w8 = boat_world(ref, items)
+        B8, M8 = w8.ns.Boats, w8.M
+        dx0, dy0 = x + 2, y - 1
+        bt_at(w8, dx0, dy0, inst)
+        w8.settle(3.2)
+        tr = r["track"]
+        out = next(p for p in tr if p[0] >= r["stops"][0]["wait_s"] + 12)
+        ux, uy = out[2] - x, out[3] - y
+        n = math.hypot(ux, uy)
+        ux, uy = ux / n, uy / n
+        if not right:
+            ux, uy = -ux, -uy
+        tau = 0.0
+        while tau < 9:
+            tau += 0.1
+            M8.pos = w8.to_lua([dx0 + ux * 0.5 * tau * tau, dy0 + uy * 0.5 * tau * tau, 0, inst])
+            M8.tick(0.1)
+        a = bt_anchor(w8, 292)
+        if right:
+            sc.check(a is not None and a["src"] == "R" and a["obs"] == 1, "ride end: carried the boat's way: a departure (%s)" % a)
+        else:
+            sc.eq(a, None, "ride end: carried the other way: no departure")
+        sc.clean(w8, "ride end direction")
+
+    # On a taxi (a flight master's flight) over a boat's track at boat speed: no ride.
+    for taxi in (True, False):
+        w9 = boat_world(ref, items)
+        B9, M9 = w9.ns.Boats, w9.M
+        t0d = bt_now(w9) - 70
+        fx, fy, fi = bt_track_pos(r, 70)
+        bt_at(w9, fx, fy, fi)
+        M9.taxi = taxi
+        bt_ride(w9, key, t0d, t0d + 100, dx=0, dy=0)
+        M9.taxi = False
+        a = bt_anchor(w9, 292)
+        if taxi:
+            sc.eq(a, None, "ride end: a taxi flight along the track is no boat")
+        else:
+            sc.check(a is not None and a["src"] == "T", "ride end: the same carried without a taxi: the track (%s)" % a)
+        sc.clean(w9, "ride end taxi")
+
+
+def sc_boats_trust(sc, ref, items):
+    """Whom to believe: one sender never moves your own fresh timer, nor a shared one it set
+    itself (pushing at the edge of what agrees, at either stop); a sharper second sender may;
+    a stale timer takes a fitting shared one. Answers only from timers good to 10 s; our own
+    message limit refills one each 5 s; the prefix is registered at login (and a full prefix
+    list is no error); the round trip a message may carry; measured round trips (a wider gate
+    for the less sure Forever-only routes, the stops' error between different stops); saved
+    timers from the future and round trips from other route data are dropped."""
+    w = boat_world(ref, items)
+    B, M = w.ns.Boats, w.M
+    sx, sy, sinst = bt_stop("stormwind_auberdine", 0)
+    bt_at(w, sx, sy, sinst)
+    w.settle(2.5)
+    sc.check(M.prefixes.GLBoat is True and M.sendCalls == 0, "trust: the prefix is registered at login, before anything is sent")
+    rt = B.byPath[11616]
+    Ps = rt.P
+    arrs = [0, rt.stops[2].arr]
+    B.Observe(rt, 1, B.Now() - 10, 1.5, "R")
+    base = bt_anchor(w, 11616)["t0"]
+    moved = []
+    for i in range(20):
+        M.tick(30)
+        now = B.Now()
+        rec = bt_anchor(w, 11616)
+        j = 2 if i % 2 == 0 else 1
+        T = rec["t0"] + arrs[j - 1]
+        T = T + math.floor((now - T) / Ps) * Ps
+        sold = B.Sigma(rt, B.AnchorOf(rt, now), j, now)
+        push = 3 * (sold + 2.05) - 0.3   # just inside the widest window that still counts as agreeing
+        bt_msg(w, bt_a1(w, 11616, j, T + push, sg=1), sender="Mallory-TestRealm")
+        moved.append(bt_wrapd(bt_anchor(w, 11616)["t0"] - base, Ps))
+    sc.check(max(abs(m) for m in moved) < 0.01, "trust: one sender pushing 20 times does not move your ride's timer (%s)"
+             % [round(m) for m in moved[:6]])
+    sc.eq(bt_anchor(w, 11616)["src"], "R", "trust: (still your ride)")
+    sc.clean(w, "trust own")
+
+    # A shared timer: the sender who set it cannot walk it; a second, sharper sender may set it.
+    w2 = boat_world(ref, items)
+    B2, M2 = w2.ns.Boats, w2.M
+    bt_at(w2, sx, sy, sinst)
+    w2.settle(2.5)
+    n = B2.Now()
+    bt_msg(w2, bt_a1(w2, 11616, 1, round(n - 40, 1), sg=3), sender="Mallory-TestRealm")
+    first = bt_anchor(w2, 11616)
+    sc.check(first is not None and first["src"] == "G", "trust: a shared timer (%s)" % first)
+    moved = []
+    for i in range(10):
+        M2.tick(20)
+        now = B2.Now()
+        rec = bt_anchor(w2, 11616)
+        j = 2 if i % 2 == 0 else 1
+        T = rec["t0"] + arrs[j - 1]
+        T = T + math.floor((now - T) / Ps) * Ps
+        sold = B2.Sigma(B2.byPath[11616], B2.AnchorOf(B2.byPath[11616], now), j, now)
+        bt_msg(w2, bt_a1(w2, 11616, j, T + sold + 1.9, sg=1), sender="Mallory-TestRealm")
+        moved.append(bt_wrapd(bt_anchor(w2, 11616)["t0"] - first["t0"], Ps))
+    sc.check(max(abs(m) for m in moved) < 0.01, "trust: the sender who set a shared timer cannot walk it (%s)"
+             % [round(m, 1) for m in moved[:6]])
+    now = B2.Now()
+    bt_msg(w2, bt_a1(w2, 11616, 1, round(first["t0"] + math.floor((now - first["t0"]) / Ps) * Ps + 2, 1), sg=1),
+           sender="Trent-TestRealm")
+    sc.check(abs(bt_wrapd(bt_anchor(w2, 11616)["t0"] - first["t0"] - 2, Ps)) < 0.11, "trust: a second, sharper sender that fits: set")
+    sc.clean(w2, "trust shared")
+
+    # A stale own timer (2 days old: unknown) takes a fitting shared sighting.
+    w3 = boat_world(ref, items)
+    B3, M3 = w3.ns.Boats, w3.M
+    M3.guild = True
+    bt_at(w3, sx, sy, sinst)
+    w3.settle(2.5)
+    n = B3.Now()
+    bt_set(w3, 11616, n - 100, s=1.5, src="R", obs=1, seen=n - 2 * 86400)
+    bt_msg(w3, bt_a1(w3, 11616, 1, round(n - 70, 1), sg=2), sender="Helper-TestRealm")
+    sc.check(abs(bt_anchor(w3, 11616)["t0"] - round(n - 70, 1)) < 0.01, "trust: a stale timer takes a shared sighting")
+    # Answers come only from your own timers good to 10 s: one 20 round trips old (14.5 s) is not.
+    bt_set(w3, 11616, n - 100 - 20 * Ps, s=4, src="M", obs=1, seen=n - 20 * Ps)
+    w3.settle(5)   # (a question within 2 s of a sighting heard counts as answered already)
+    mark = len(M3.addonSent)
+    bt_msg(w3, "Q1|11616", sender="Asker-TestRealm")
+    w3.settle(5)
+    sc.eq(bt_sent(w3, mark), [], "trust: no answer from a timer off by more than 10 s")
+    bt_set(w3, 11616, B3.Now() - 100, s=1.5, src="R", obs=1)
+    bt_msg(w3, "Q1|11616", sender="Asker2-TestRealm")
+    w3.settle(5)
+    ans = bt_sent(w3, mark)
+    sc.check(len(ans) == 1 and ans[0][1].startswith("A1|11616|1|"), "trust: a fresh one is answered (%s)" % ans)
+    sc.clean(w3, "trust stale")
+
+    # Our own limit refills one message each 5 s.
+    w4 = boat_world(ref, items)
+    B4, M4 = w4.ns.Boats, w4.M
+    M4.guild = True
+    paths = (292, 11167, 293, 11616, 303, 241, 11391, 11398, 302, 285, 301, 11457)
+    for path in paths:
+        B4.Observe(B4.byPath[path], 1, B4.Now(), 1.5, "R")
+    sc.eq(len(bt_sent(w4)), 8, "trust: 8 at once")
+    M4.tick(4.0)
+    B4.Observe(B4.byPath[302], 1, B4.Now(), 1.5, "R")
+    sc.eq(len(bt_sent(w4)), 8, "trust: 4 s later: none yet")
+    M4.tick(1.2)
+    B4.Observe(B4.byPath[285], 1, B4.Now(), 1.5, "R")
+    B4.Observe(B4.byPath[301], 1, B4.Now(), 1.5, "R")
+    sc.eq(len(bt_sent(w4)), 9, "trust: 5.2 s later: one")
+    sc.clean(w4, "trust limit")
+
+    # The client's addon prefix list is full: nothing is sent or read, nothing breaks.
+    w5 = boat_world(ref, items, prefix_result=3)
+    B5, M5 = w5.ns.Boats, w5.M
+    M5.guild = True
+    sc.check(not M5.prefixes.GLBoat and B5.RegisterPrefix() is False, "trust: a full prefix list: not registered")
+    B5.Observe(B5.byPath[292], 1, B5.Now(), 1.5, "R")
+    sc.eq((len(bt_sent(w5)), M5.sendCalls), (0, 0), "trust: and nothing is sent")
+    sc.clean(w5, "trust prefix")
+
+    # The round trip a message may carry: 0.5% on a classic route, up to 2% (Stormwind) and
+    # 2.5% (the Dalaran skyship) on the Forever-only ones, whose own round trip is less sure.
+    w6 = boat_world(ref, items)
+    B6 = w6.ns.Boats
+    bt_at(w6, sx, sy, sinst)
+    w6.settle(2.5)
+    n = B6.Now()
+    for k, (path, f, ok) in enumerate(((11616, 1.015, True), (11616, 1.025, False), (11398, 1.024, True), (11398, 1.026, False),
+                                       (292, 1.004, True), (292, 1.006, False))):
+        B6.Store()[path] = None
+        g0 = B6.stats.got
+        rtp = B6.byPath[path]
+        bt_msg(w6, bt_a1(w6, path, 1, round(n - 20, 1), sg=2, P=rtp.P * f), sender="Gate%d-TestRealm" % k)
+        sc.eq(B6.stats.got - g0, 1 if ok else 0, "trust: route %d, a round trip %.1f%% off: %s" % (path, (f - 1) * 100,
+                                                                                               "read" if ok else "dropped"))
+    sc.clean(w6, "trust gate")
+
+    # Measured round trips: the Dalaran skyship's (two dockmaster lines 6 round trips apart, the
+    # true one 2 s longer than the data's 353 s) is learned; two Stormwind rides 6 round trips
+    # apart at different piers are no better than the data's (the stops' 1.5 s error counts).
+    w7 = boat_world(ref, items)
+    B7 = w7.ns.Boats
+    dx, dy, dinst = bt_stop("dalaran_zephras", 0)
+    bt_at(w7, dx, dy, dinst)
+    w7.settle(2.5)
+    n = B7.Now()
+    rd = B7.byPath[11398]
+    sc.eq((rd.P, rd.sP), (353, 2), "trust: the Dalaran skyship's round trip is the measured 353 s, sure to 2 s")
+    B7.Observe(rd, 1, n - 6 * 355.0, 1.5, "A")
+    B7.Observe(rd, 1, n, 1.5, "A")
+    pp = B7.Store().periods[11398]
+    sc.check(pp is not None and abs(pp.P - 355.0) < 0.01, "trust: the Dalaran round trip measured (%s)" % (None if pp is None else pp.P))
+    rt7 = B7.byPath[11616]
+    B7.Observe(rt7, 1, n - 6 * 246.7, 1.0, "R")
+    B7.Observe(rt7, 2, n + rt7.stops[2].arr, 1.0, "R")
+    sc.eq(B7.Store().periods[11616], None, "trust: two sightings at different piers: the stops' error counts")
+    # From the future, or a round trip from other route data: not used.
+    bt_set(w7, 292, n - 50, seen=n + 1000)
+    sc.eq(B7.AnchorOf(B7.byPath[292], n), None, "trust: a saved timer from the future is dropped")
+    B7.Store().periods[292] = w7.to_lua({"P": 329.3, "sP": 0.002, "p0": 329.4})
+    sc.eq(B7.Period(B7.byPath[292]), (329.316, 0.01), "trust: a round trip measured with other route data is not used")
+    sc.clean(w7, "trust periods")
+
+
+def sc_boats_layout(sc, ref, items):
+    """Questie's tracker (it hides the game's) and the durability figure are not covered;
+    with ElvUI the game's widgets under its minimap neither; the line's words at the edges of
+    m:ss (5 s) and about (30 s)."""
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w = boat_world(ref, items, questie=True)
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.check(not w.g.ObjectiveTrackerFrame.IsShown(w.g.ObjectiveTrackerFrame) and w.g.Questie_BaseFrame.IsShown(w.g.Questie_BaseFrame),
+             "layout: (Questie's tracker instead of the game's)")
+    sc.check(w.ns.Boats.ui.mode != "stacked", "layout: three lines would run into Questie's tracker (%s)" % w.ns.Boats.ui.mode)
+    bt_rect_ok(sc, w, "layout questie", bt_minimap_parts(w))
+    sc.clean(w, "layout questie")
+    # The durability figure just under the minimap.
+    w2 = boat_world(ref, items, tracker=False)
+    w2.lua.execute('''
+      local d = CreateFrame("Frame", "DurabilityFrame", UIParent)
+      d:SetSize(58, 75)
+      d:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -150, -262)
+    ''')
+    bt_at(w2, ax + 4, ay + 4, ainst)
+    w2.settle(1.1)
+    bt_rect_ok(sc, w2, "layout durability", bt_minimap_parts(w2) + [("the durability figure", w2.g.DurabilityFrame)])
+    sc.clean(w2, "layout durability")
+    # ElvUI with the game's widgets (a capture bar) right under its minimap.
+    w3 = boat_world(ref, items, elvui=True)
+    w3.lua.execute('''
+      local wd = UIWidgetBelowMinimapContainerFrame
+      wd:ClearAllPoints()
+      wd:SetSize(200, 40)
+      wd:SetPoint("TOP", ElvUI_MinimapHolder, "BOTTOM", 0, -2)
+    ''')
+    bt_at(w3, ax + 4, ay + 4, ainst)
+    w3.settle(1.1)
+    bt_rect_ok(sc, w3, "layout elvui widgets", bt_minimap_parts(w3) + [("the widgets", w3.g.UIWidgetBelowMinimapContainerFrame)])
+    sc.clean(w3, "layout elvui widgets")
+    # The edges: up to 5 s m:ss, up to 30 s about, else unknown.
+    w4 = boat_world(ref, items, tracker=False)
+    B4 = w4.ns.Boats
+    x, y, inst = bt_stop("menethil_theramore", 1)
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    bt_at(w4, x, y, inst)
+    w4.settle(2.5)
+    for s, kind in ((4.94, "exact"), (5.04, "about"), (29.94, "about"), (30.04, "unknown")):
+        n = B4.Now()
+        bt_set(w4, 292, n - 200 - arr2, s=s, src="R", obs=2)
+        B4.Step()
+        line = bt_lines(w4)[0]
+        got = "unknown" if "unknown" in line else ("about" if "about" in line else "exact")
+        sc.eq(got, kind, "layout: an error of %.2f s is %s (%s)" % (s + 0.01, kind, line))
+    sc.clean(w4, "layout edges")
+
+
+# --- boats: end ---
+
+
+
+
+
+
+
+
+
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -24114,6 +25872,20 @@ SCENARIOS = [
     ("flights-elvui", sc_flights_elvui),
     ("flights-guards", sc_flights_guards),
     ("flights-joins", sc_flights_joins),
+    ("boats-data", sc_boats_data),
+    ("boats-dock", sc_boats_dock),
+    ("boats-countdown", sc_boats_countdown),
+    ("boats-manual", sc_boats_manual),
+    ("boats-ride", sc_boats_ride),
+    ("boats-ride-all", sc_boats_ride_all),
+    ("boats-share", sc_boats_share),
+    ("boats-expiry", sc_boats_expiry),
+    ("boats-harbors", sc_boats_harbors),
+    ("boats-elvui", sc_boats_elvui),
+    ("boats-switch", sc_boats_switch),
+    ("boats-ride-end", sc_boats_ride_end),
+    ("boats-trust", sc_boats_trust),
+    ("boats-layout", sc_boats_layout),
 ]
 
 

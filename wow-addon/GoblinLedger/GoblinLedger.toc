@@ -16,3 +16,4 @@ Bags.lua
 Enchants.lua
 Consumes.lua
 Flights.lua
+Boats.lua
