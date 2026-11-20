@@ -24120,13 +24120,16 @@ def boat_data():
 
 
 def boat_world(ref, items, elvui=False, tracker=True, coords=False, saved=None, screen=None, faction="Alliance",
-               questie=False, login=(True, False), prefix_result=0):
+               questie=False, login=(True, False), prefix_result=0, elvui_addon=False):
     def setup(w):
         w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
         w.M.prefixResult = prefix_result
         w.M.InstallMinimap(w.to_lua({"tracker": tracker, "coords": coords, "questie": questie}))
         if elvui:
             w.M.InstallElvUIMinimap()
+        if elvui_addon:   # ElvUI itself too (its skins: its own close X)
+            w.M.InstallBlizzardBags()
+            w.M.InstallElvUIAddon(w.to_lua({}))
     return World(ref, items, before_addon=setup, saved=saved, screen=screen, faction=faction, login=login)
 
 
@@ -25704,6 +25707,280 @@ def sc_boats_layout(sc, ref, items):
     sc.clean(w4, "layout edges")
 
 
+BT_X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+BT_HIDDEN_STATUS = "Goblin Ledger: boat timers are on, hidden at this dock until you leave it (/gl boats on shows them)."
+BT_ON_STATUS = "Goblin Ledger: boat timers are on. /gl boats all lists every route."
+
+
+def bt_hit(w, o):
+    """What the mouse can hit of o: its screen rectangle widened by its hit rect insets."""
+    r = w.rect(o)
+    if r is None:
+        return None
+    il, ir, it, ib = o.GetHitRectInsets(o)
+    es = o.GetEffectiveScale(o)
+    return (r[0] + il * es, r[1] + ib * es, r[2] - ir * es, r[3] - it * es)
+
+
+def bt_overlap(a, b):
+    return a[0] < b[2] - 0.5 and a[2] > b[0] + 0.5 and a[1] < b[3] - 0.5 and a[3] > b[1] + 0.5
+
+
+def bt_x_ok(sc, w, label, others=()):
+    """The boat lines' X: shown at their top right inside the holder's place (the place the
+    addon checks against the minimap, the tracker and the rest), on screen, and what the mouse
+    can hit of it covers no line's words or click area, nor any of others."""
+    B = w.ns.Boats
+    x, h = B.ui.x, B.ui.holder
+    if not sc.check(x is not None and x.IsVisible(x), "%s: the X shows" % label):
+        return None
+    xr, hr, hit = w.rect(x), w.rect(h), bt_hit(w, x)
+    if not sc.check(xr is not None and hr is not None and hit is not None, "%s: the X has a place" % label):
+        return None
+    es = x.GetEffectiveScale(x)
+    sc.check(abs(xr[2] - xr[0] - 12 * es) < 0.01 and abs(xr[3] - xr[1] - 12 * es) < 0.01, "%s: the X is 12 px" % label)
+    sc.check(abs(xr[2] - hr[2]) < 0.6 and abs(xr[3] - hr[3]) < 0.6 and xr[0] >= hr[0] - 0.5 and xr[1] >= hr[1] - 0.5,
+             "%s: the X at the top right inside the lines' place (%s in %s)" % (label, [round(v, 1) for v in xr],
+                                                                                [round(v, 1) for v in hr]))
+    sc.check(hit[0] >= -0.5 and hit[2] <= w.M.screenW + 0.5 and hit[1] >= -0.5 and hit[3] <= w.M.screenH + 0.5,
+             "%s: the X on screen (%s)" % (label, [round(v) for v in hit]))
+    shown = 0
+    for i in range(1, 4):
+        b, fs = B.ui.btn[i], B.ui.fs[i]
+        if not b.IsVisible(b):
+            continue
+        shown += 1
+        br, fr = w.rect(b), w.rect(fs)
+        sc.check(br is not None and not bt_overlap(hit, br), "%s: the X is off line %d's click area (%s vs %s)" % (
+            label, i, [round(v, 1) for v in hit], [round(v, 1) for v in br] if br else None))
+        sc.check(fr is not None and not bt_overlap(hit, fr), "%s: the X is off line %d's words" % (label, i))
+        sc.check(br is not None and br[2] <= xr[0] + 0.01, "%s: line %d is left of the X" % (label, i))
+    sc.eq(shown, len(bt_lines(w)), "%s: one click area per line" % label)
+    first = w.rect(B.ui.btn[1])
+    sc.check(first is not None and abs(first[3] - xr[3]) < 0.01 and abs(first[1] - xr[1]) < 0.01,
+             "%s: the X beside the first line" % label)
+    for name, o in others:
+        if o is None or not o.IsVisible(o):
+            continue
+        q = w.rect(o)
+        sc.check(q is None or not bt_overlap(hit, q), "%s: the X does not cover %s (%s vs %s)" % (
+            label, name, [round(v, 1) for v in hit], [round(v, 1) for v in q] if q else None))
+    return xr
+
+
+def sc_boats_x(sc, ref, items):
+    """The X at the lines' right end: its hover says what it does; a click hides the line(s)
+    until you leave that dock (250 yd from its piers): walking about the harbor keeps them
+    hidden, leaving and coming back shows them, another dock shows its own; a /reload there
+    keeps them hidden, a /reload elsewhere or the next login does not; /gl boats says so and
+    /gl boats on brings them back. A click on a line still sets the timer. The X never covers
+    the minimap, the lines' words or their click area: under the minimap (one line, three,
+    joined), above it, beside it, with ElvUI (its own X) and at UI scale 0.62."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)   # Theramore: one boat
+    w = boat_world(ref, items)
+    B, M, S = w.ns.Boats, w.M, w.ns.settings
+    tt = w.g.GameTooltip
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 1, "x: at Theramore, one line")
+    x = B.ui.x
+    sc.check(x is not None, "x: the lines have an X")
+    if x is None:
+        return
+    sc.eq((x.glLook, x.GetWidth(x), x.GetHeight(x), w.same(x.GetParent(x), B.ui.holder), x.GetHitRectInsets(x)),
+          ("game", 12, 12, True, (-2, -2, -2, -2)), "x: the game's X (the flight bar's), 12 px, on the lines")
+    bt_rect_ok(sc, w, "x one", bt_minimap_parts(w))
+    bt_x_ok(sc, w, "x one", bt_minimap_parts(w))
+    # Hover: one line.
+    M.enter(x)
+    sc.check(tt.IsShown(tt) and w.same(tt.GetOwner(tt), x), "x: hovering shows a tooltip")
+    sc.eq([l for l, _ in w.all_lines(tt)], [BT_X_TIP], "x: what the hover says")
+    M.leave(x)
+    sc.check(not tt.IsShown(tt), "x: the tooltip goes when the mouse leaves")
+    # A click on the line still sets the timer (an unknown one: one click is enough).
+    M.click(B.ui.btn[1])
+    sc.check(bt_anchor(w, 292) is not None and bt_anchor(w, 292)["src"] == "M", "x: a click on the line still sets the timer")
+    w.settle(1.1)
+    sc.check(len(bt_lines(w)) == 1 and "unknown" not in bt_lines(w)[0], "x: the line shows it (%s)" % bt_lines(w))
+    # The X: hidden, nothing said in chat, the tooltip gone too.
+    mark = w.chat_mark()
+    M.enter(x)
+    M.click(x)
+    sc.eq(bt_lines(w), [], "x: a click on the X hides the line")
+    sc.check(not w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "x: the holder is hidden")
+    sc.check(not tt.IsShown(tt), "x: its tooltip goes with it")
+    sc.eq(w.chat(mark), [], "x: nothing said in chat")
+    sc.eq(lua_to_py(S.boatHide), {"inst": tinst, "ses": B.session, "piers": {1: "292:2"}}, "x: saved: this dock, this login")
+    w.settle(20)
+    sc.eq(bt_lines(w), [], "x: stays hidden at the dock")
+    sc.eq(B.driver.interval, 1, "x: still checking every second (for leaving the dock, and rides)")
+    sc.eq(bt_slash(w, "/gl boats")[0], BT_HIDDEN_STATUS, "x: /gl boats says it is hidden here")
+    # Walking about the harbor: 200 yd out and back is not leaving it.
+    bt_at(w, tx + 200, ty, tinst, zone=False)
+    w.settle(6.5)
+    sc.check(S.boatHide is not None, "x: 200 yd out: still this dock")
+    bt_at(w, tx, ty, tinst, zone=False)
+    w.settle(3.5)
+    sc.eq(bt_lines(w), [], "x: 200 yd out and back: still hidden")
+    # A /reload at the dock: still hidden; a /reload elsewhere or the next login: shown.
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    w2 = boat_world(ref, items, saved=saved, login=(False, True))
+    w2.M.sbase = B.Now() - w2.M.t + 3
+    bt_at(w2, tx + 5, ty - 5, tinst)
+    w2.settle(2.5)
+    sc.eq(bt_lines(w2), [], "x: a /reload at the dock: still hidden")
+    sc.check(w2.ns.Boats.ui.holder is None or not w2.g.GoblinLedgerBoats.IsVisible(w2.g.GoblinLedgerBoats),
+             "x: nothing shows after the /reload")
+    sc.eq(bt_slash(w2, "/gl boats")[0], BT_HIDDEN_STATUS, "x: /gl boats says so after the /reload")
+    bt_at(w2, tx + 300, ty, tinst, zone=False)
+    w2.settle(3.5)
+    bt_at(w2, tx, ty, tinst, zone=False)
+    w2.settle(3.5)
+    sc.eq(len(bt_lines(w2)), 1, "x: after the /reload, leaving and coming back shows it")
+    sc.clean(w2, "x reload")
+    mx, my, minst = bt_stop("menethil_theramore", 0)   # Menethil, the other end
+    w2b = boat_world(ref, items, saved=saved, login=(False, True))
+    bt_at(w2b, mx, my, minst)
+    w2b.settle(1.1)
+    sc.check(len(bt_lines(w2b)) == 1 and w2b.ns.settings.boatHide is None, "x: a /reload at another dock: shown, the hiding over")
+    sc.clean(w2b, "x reload elsewhere")
+    w3 = boat_world(ref, items, saved=saved)
+    bt_at(w3, tx, ty, tinst)
+    w3.settle(1.1)
+    sc.check(w3.ns.Boats.session != B.session, "x: (the next login)")
+    sc.eq(len(bt_lines(w3)), 1, "x: the next login at that dock shows it")
+    sc.eq(bt_slash(w3, "/gl boats")[0], BT_ON_STATUS, "x: /gl boats: not hidden")
+    sc.clean(w3, "x next login")
+    # Leaving (300 yd) and coming back: shown again.
+    bt_at(w, tx + 300, ty, tinst, zone=False)
+    w.settle(3.5)
+    sc.check(S.boatHide is None, "x: 300 yd away the hiding is over")
+    bt_at(w, tx, ty, tinst, zone=False)
+    w.settle(3.5)
+    sc.eq(len(bt_lines(w)), 1, "x: back at the dock: shown again")
+    sc.eq(bt_slash(w, "/gl boats")[0], BT_ON_STATUS, "x: /gl boats: not hidden any more")
+    # A hearthstone away (a zone change far off) ends it too.
+    M.click(x)
+    bt_at(w, tx + 5000, ty, tinst)
+    w.settle(1.5)
+    sc.check(S.boatHide is None, "x: a hearthstone away ends it")
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 1, "x: and the next visit shows it")
+    # /gl boats on brings them back at once; /gl boats off and on as well.
+    M.click(x)
+    sc.eq(bt_lines(w), [], "x: hidden again")
+    bt_slash(w, "/gl boats on")
+    sc.eq(len(bt_lines(w)), 1, "x: /gl boats on shows it again")
+    M.click(x)
+    bt_slash(w, "/gl boats off")
+    bt_slash(w, "/gl boats on")
+    sc.eq(len(bt_lines(w)), 1, "x: off and on again: shown")
+    # Another dock: hidden at Menethil (two boats), then the boat to Theramore: Theramore shows.
+    bt_at(w, mx, my, minst)
+    w.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w)], ["Boats"], "x: Menethil, one line for its two boats")
+    bt_x_ok(sc, w, "x joined", bt_minimap_parts(w))
+    M.click(x)
+    sc.eq(lua_to_py(S.boatHide)["piers"], {1: "292:1", 2: "11167:1"}, "x: Menethil's two piers")
+    sc.eq(bt_lines(w), [], "x: hidden at Menethil")
+    bt_at(w, mx + 196, my, minst, zone=False)   # (near the other pier)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), [], "x: at Menethil's other pier: still hidden")
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 1, "x: another dock (Theramore) shows its line")
+    sc.check(S.boatHide is None, "x: and the hiding is over")
+    # A dock the X was not clicked at shows its lines, even within 250 yd of one it was.
+    sx, sy, _ = bt_stop("menethil_southshore_auberdine", 0)
+    bt_at(w, mx, my, minst)
+    w.settle(1.1)
+    S.boatHide = w.to_lua({"inst": minst, "ses": B.session, "piers": ["11167:1"]})
+    w.settle(1.1)
+    sc.check(round(math.hypot(mx - sx, my - sy)) == 196 and len(bt_lines(w)) == 1 and S.boatHide is None,
+             "x: hidden at one pier, at another 196 yd away: shown (%s)" % bt_lines(w))
+    # Saved junk: dropped, nothing breaks.
+    for junk in ("junk", {"inst": minst, "ses": B.session, "piers": ["nope", "99999:1", "292:9"]},
+                 {"inst": minst, "ses": B.session, "piers": "292:1"}, {"inst": 1, "ses": B.session, "piers": ["292:1"]},
+                 {"inst": minst, "ses": B.session + 7, "piers": ["292:1"]}):
+        S.boatHide = w.to_lua(junk)
+        w.settle(1.1)
+        sc.check(len(bt_lines(w)) == 1 and S.boatHide is None, "x: saved junk dropped (%r)" % (junk,))
+    sc.clean(w, "x")
+    # Auberdine: three piers about 190 yd apart, one harbor: hidden at one, hidden at all;
+    # the other end of the ferry shows. A click on the second line still sets that boat.
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w4 = boat_world(ref, items, tracker=False)
+    B4 = w4.ns.Boats
+    bt_at(w4, ax + 4, ay + 4, ainst)
+    w4.settle(1.1)
+    sc.eq((len(bt_lines(w4)), B4.ui.mode), (3, "stacked"), "x: Auberdine, three lines stacked")
+    bt_rect_ok(sc, w4, "x stacked", bt_minimap_parts(w4))
+    bt_x_ok(sc, w4, "x stacked", bt_minimap_parts(w4))
+    sc.eq(len([1 for i in range(1, 4) if B4.ui.btn[i].IsVisible(B4.ui.btn[i])]), 3, "x: (three click areas, one X)")
+    w4.M.click(B4.ui.btn[2])
+    sc.check(bt_anchor(w4, 11167) is not None and bt_anchor(w4, 11167)["obs"] == 3, "x: a click on the second line sets that boat")
+    w4.M.click(B4.ui.x)
+    sc.eq(bt_lines(w4), [], "x: Auberdine hidden")
+    for key, j in (("auberdine_rutheran", 0), ("menethil_southshore_auberdine", 2)):
+        px, py, pinst = bt_stop(key, j)
+        bt_at(w4, px - 3, py, pinst, zone=False)
+        w4.settle(1.1)
+        sc.eq(bt_lines(w4), [], "x: at Auberdine's %s pier: still hidden" % key)
+    rx, ry, rinst = bt_stop("auberdine_rutheran", 1)
+    bt_at(w4, rx, ry, rinst)
+    w4.settle(1.1)
+    sc.eq([l.split(":")[0] for l in bt_lines(w4)], ["Boat to Auberdine"], "x: Rut'theran shows its boat")
+    sc.clean(w4, "x stacked")
+    # The layouts: beside the minimap, above it (a minimap at the bottom), the coordinates at
+    # UI scale 0.62, ElvUI (its own X) at 0.62.
+    w5 = boat_world(ref, items)
+    ot = w5.g.ObjectiveTrackerFrame
+    ot.ClearAllPoints(ot)
+    ot.SetPoint(ot, "TOPRIGHT", w5.g.UIParent, "TOPRIGHT", -2, -258)
+    bt_at(w5, mx, my, minst)
+    w5.settle(1.1)
+    sc.eq(w5.ns.Boats.ui.mode, "left", "x: beside the minimap")
+    bt_rect_ok(sc, w5, "x left", bt_minimap_parts(w5))
+    xr = bt_x_ok(sc, w5, "x left", bt_minimap_parts(w5) + [("the tracker", ot)])
+    mm = w5.rect(w5.g.Minimap)
+    if xr and mm:
+        sc.check(abs(mm[0] - xr[2] - 12) < 0.6, "x left: the X at the end nearest the minimap, 12 px off it")
+    w5.M.click(w5.ns.Boats.ui.x)
+    sc.eq(bt_lines(w5), [], "x left: the X hides it")
+    sc.clean(w5, "x left")
+    w6 = boat_world(ref, items, tracker=False)
+    cl = w6.g.MinimapCluster
+    cl.ClearAllPoints(cl)
+    cl.SetPoint(cl, "BOTTOMRIGHT", w6.g.UIParent, "BOTTOMRIGHT", 0, 0)
+    bt_at(w6, ax + 4, ay + 4, ainst)
+    w6.settle(1.1)
+    r6 = bt_rect_ok(sc, w6, "x above", bt_minimap_parts(w6))
+    c6 = w6.rect(cl)
+    sc.check(r6 is not None and c6 is not None and r6[1] >= c6[3], "x above: (the lines above the minimap)")
+    bt_x_ok(sc, w6, "x above", bt_minimap_parts(w6))
+    sc.clean(w6, "x above")
+    for elv in (False, True):
+        lab = "x elvui 0.62" if elv else "x coords 0.62"
+        ww = boat_world(ref, items, elvui=elv, elvui_addon=elv, coords=not elv, screen=(768 * 16 / 9, 768, 0.62))
+        bt_at(ww, ax + 4, ay + 4, ainst)
+        ww.settle(1.1)
+        sc.check(len(bt_lines(ww)) >= 1, "%s: shown" % lab)
+        bt_rect_ok(sc, ww, lab, bt_minimap_parts(ww))
+        bt_x_ok(sc, ww, lab, bt_minimap_parts(ww))
+        xx = ww.ns.Boats.ui.x
+        if elv:
+            sc.eq((xx.glLook, xx.GetWidth(xx), xx.Texture.GetWidth(xx.Texture), xx.GetHitRectInsets(xx)),
+                  ("elvui", 12, 10, (-2, -2, -2, -2)), "%s: ElvUI's own X, still easy to hit" % lab)
+        ww.M.enter(xx)
+        t2 = ww.g.GameTooltip
+        sc.eq([l for l, _ in ww.all_lines(t2)] if t2.IsShown(t2) else None, [BT_X_TIP], "%s: the hover" % lab)
+        ww.M.leave(xx)
+        ww.M.click(xx)
+        sc.eq(bt_lines(ww), [], "%s: the X hides them" % lab)
+        sc.clean(ww, lab)
+
+
 # --- boats: end ---
 
 
@@ -25886,6 +26163,7 @@ SCENARIOS = [
     ("boats-ride-end", sc_boats_ride_end),
     ("boats-trust", sc_boats_trust),
     ("boats-layout", sc_boats_layout),
+    ("boats-x", sc_boats_x),
 ]
 
 

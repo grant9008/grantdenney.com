@@ -7,7 +7,9 @@ local ADDON_NAME, ns = ...
 --   "Boat to Theramore: unknown - /gl boat now when it docks"
 -- A dock that several boats use (Menethil, Auberdine, the zeppelin towers) gets one line per
 -- boat, nearest first (3 at most); when the lines would run into the quest tracker they
--- become one line. Zeppelins and skyships say Zeppelin and Skyship.
+-- become one line. Zeppelins and skyships say Zeppelin and Skyship. A small X at their right
+-- end hides them until you leave that dock (250 yd from its piers; a /reload there keeps them
+-- hidden, the next visit shows them again).
 --
 -- Each boat runs a fixed loop (the table below, from the game's own data). Where in its loop
 -- a boat is right now is in no game data, so the addon learns it, best first:
@@ -120,7 +122,10 @@ local HARBOR_YD = 250            -- piers this close are one harbor (Auberdine's
 local EXACT_S, ABOUT_S = 5, 30   -- the timer's error: m:ss up to 5 s, "about" up to 30 s, else unknown
 local MAX_AGE = 30 * 86400
 local MAX_LINES, LINE_H, GAP = 3, 12, 2
+-- The X: as tall as a line; its hit area reaches 2 px past it, so 4 px keep it off the lines'.
+local X_SIZE, X_GAP = 12, 4
 local HINT = " - /gl boat now when it docks"
+local X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
 
 local function isSecret(v)
   local f = ns.IsSecret
@@ -972,8 +977,9 @@ end
 ---------------------------------------------------------------------------
 -- The line(s) under the minimap
 ---------------------------------------------------------------------------
-local UI = { holder = nil, btn = {}, fs = {}, list = nil, mode = nil, shown = false, confirm = nil }
+local UI = { holder = nil, btn = {}, fs = {}, x = nil, list = nil, mode = nil, shown = false, confirm = nil }
 B.ui = UI
+local hideHere
 
 -- m:ss, rounded up like a countdown: 1:00 as it docks, 0:01 in its last second, never 0:00.
 local function clockText(sec)
@@ -1095,7 +1101,7 @@ local function buildUI()
     local b = _G.CreateFrame("Button", nil, h)
     b.idx = i
     b:SetSize(10, LINE_H)
-    b:SetPoint("TOP", h, "TOP", 0, -(i - 1) * LINE_H)
+    b:SetPoint("TOPLEFT", h, "TOPLEFT", 0, -(i - 1) * LINE_H)
     b:EnableMouse(true)
     b:RegisterForClicks("LeftButtonUp")
     local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
@@ -1117,6 +1123,24 @@ local function buildUI()
     end)
     UI.btn[i], UI.fs[i] = b, fs
   end
+  -- One X for all the lines, at the holder's top right (the lines take the rest of it).
+  local x = type(ns.CloseX) == "function" and ns.CloseX(h, function() hideHere() end, X_SIZE) or nil
+  if x then
+    x:SetPoint("TOPRIGHT", h, "TOPRIGHT", 0, 0)
+    -- (Hooked: ElvUI's X colours itself on hover with its own hooks.)
+    pcall(x.HookScript, x, "OnEnter", function(self)
+      local tt = _G.GameTooltip
+      if type(tt) ~= "table" then return end
+      pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
+      pcall(tt.SetText, tt, X_TIP)
+      pcall(tt.Show, tt)
+    end)
+    pcall(x.HookScript, x, "OnLeave", function()
+      local tt = _G.GameTooltip
+      if type(tt) == "table" then pcall(tt.Hide, tt) end
+    end)
+  end
+  UI.x = x
   UI.holder = h
   return h
 end
@@ -1139,11 +1163,12 @@ local function apply(texts, where)
   end
   for i = 1, MAX_LINES do UI.btn[i]:SetWidth(w) end
   local H = #texts * LINE_H
-  h:SetSize(w, H)
+  local hw = w + (UI.x and X_GAP + X_SIZE or 0)   -- the lines, then the X at the right end
+  h:SetSize(hw, H)
   h:ClearAllPoints()
   local target, mm = minimapParts()
   local hes = call(h, "GetEffectiveScale") or 1
-  local W, HH = w * hes, H * hes
+  local W, HH = hw * hes, H * hes
   local sl, sb, sr, stp = rectOf(_G.UIParent)
   if not target then
     h:SetPoint("TOPRIGHT", _G.UIParent, "TOPRIGHT", -16, -262)
@@ -1193,6 +1218,58 @@ local function hideUI()
   UI.shown, UI.list, UI.texts = false, nil, nil
 end
 B.Hide = hideUI
+
+-- The X: the lines stay hidden until you leave that dock. Kept in the saved settings for this
+-- login only (a /reload keeps it): boatHide = { inst, ses = the login, piers = { "path:stop" } },
+-- the piers its lines were for.
+local function hiddenPiers()
+  local S = settings()
+  local H = S.boatHide
+  if H == nil then return nil end
+  local out = {}
+  if type(H) == "table" and H.ses == sessionId() and type(H.piers) == "table" then
+    for _, k in ipairs(H.piers) do
+      local p, j = smatch(type(k) == "string" and k or "", "^(%d+):(%d+)$")
+      local rt = p and byPath[tonumber(p)]
+      local st = rt and rt.stops[tonumber(j)]
+      if st and st.inst == H.inst then out[#out + 1] = st end
+    end
+  end
+  if not out[1] then
+    S.boatHide = nil
+    return nil
+  end
+  return out
+end
+
+-- True while the X has them hidden here: within HARBOR_YD of one of its piers, and (at a pier)
+-- one of them is the nearest. Anywhere else the hiding is over: the next visit shows them.
+local function hiddenHere(x, y, inst, list)
+  local piers = hiddenPiers()
+  if not piers then return false end
+  local near, same = false, list[1] == nil
+  for _, st in ipairs(piers) do
+    if st.inst == inst and dist(x, y, st.x, st.y) <= HARBOR_YD then near = true end
+    if list[1] and list[1].st == st then same = true end
+  end
+  if near and same then return true end
+  settings().boatHide = nil
+  return false
+end
+B.HiddenHere = hiddenHere
+
+hideHere = function()
+  local list = UI.list
+  if type(list) == "table" and list[1] then
+    local piers = {}
+    for i, e in ipairs(list) do piers[i] = e.st.rt.path .. ":" .. e.st.i end
+    settings().boatHide = { inst = list[1].st.inst, ses = sessionId(), piers = piers }
+  end
+  local tt = _G.GameTooltip
+  if UI.x and type(tt) == "table" and call(tt, "GetOwner") == UI.x then pcall(tt.Hide, tt) end
+  hideUI()
+end
+B.HideHere = hideHere
 
 local function render(list, now)
   buildUI()
@@ -1286,7 +1363,9 @@ step = function()
   if not now or not x or callG("IsInInstance") == true then stopAll() return end
   sampleRide(now, x, y, inst)
   local list = docksHere(x, y, inst, UI.shown and 10 or 0)
-  if #list > 0 then
+  if hiddenHere(x, y, inst, list) then
+    hideUI()   -- (the X: nothing shown or asked here; rides still learn)
+  elseif #list > 0 then
     render(list, now)
     for _, e in ipairs(list) do
       local rec = anchorOf(e.st.rt, now)
@@ -1494,7 +1573,12 @@ local function status()
     say("boat timers are off. /gl boats on turns them on.")
     return
   end
-  say("boat timers are on. /gl boats all lists every route.")
+  local x, y, inst = pos()
+  if x and hiddenHere(x, y, inst, docksHere(x, y, inst, 0)) then
+    say("boat timers are on, hidden at this dock until you leave it (/gl boats on shows them).")
+  else
+    say("boat timers are on. /gl boats all lists every route.")
+  end
   local now = serverNow()
   local t = now and nearestText(now)
   if t then say(t) end
@@ -1526,7 +1610,7 @@ local function boatsCommand(rest)
   rest = slower(rest or "")
   local S = settings()
   if rest == "on" then
-    S.boats = nil
+    S.boats, S.boatHide = nil, nil   -- (and back at a dock the X hid them at)
     say("boat timers are on: at a dock, a line under the minimap says when the boat comes.")
     wake()
   elseif rest == "off" then
