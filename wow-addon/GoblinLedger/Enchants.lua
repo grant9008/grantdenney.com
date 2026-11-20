@@ -1,7 +1,8 @@
 local ADDON_NAME, ns = ...
 -- Goblin Ledger: the best enchants for the gear under the mouse.
 --
--- Gear in your bags, item links and gear you wear: the two best enchants for
+-- Gear you wear (the character panel's slots; /gl enchants bags on adds bags,
+-- the bank and item links): the two best enchants for
 -- your role (Top 2), or those and up to three budget options that cost less
 -- than the best (Top 5), each with its mats and what they cost at today's AH
 -- value. Upgrades you buy and use yourself are options too: Leatherworking
@@ -775,9 +776,36 @@ local function whereOf(info)
 end
 E.WhereOf = whereOf
 
--- The places that get the lines (the same number of options everywhere).
-local SHOW = { bag = true, link = true, script = true, equipped = true }
-E.SHOW = SHOW
+-- The places that get the lines (the same number of options everywhere): your own worn gear;
+-- with /gl enchants bags on (settings().enchantsBags) bags, the bank and links too.
+local SHOW = { equipped = true }
+local SHOW_BAGS = { equipped = true, bag = true, link = true, script = true }
+E.SHOW, E.SHOW_BAGS = SHOW, SHOW_BAGS
+local function shows(where)
+  return (settings().enchantsBags == true and SHOW_BAGS or SHOW)[where] == true
+end
+E.Shows = shows
+
+-- The older path ("script") does not say where the item is: worn gear when the tooltip's owner
+-- is one of the character panel's slot buttons (CharacterHeadSlot...: its id is the slot) and
+-- that slot holds this item.
+local function scriptWhere(tt, itemID)
+  if type(tt.GetOwner) ~= "function" or type(_G.GetInventoryItemLink) ~= "function" then return "script" end
+  local ok, owner = pcall(tt.GetOwner, tt)
+  if not ok or type(owner) ~= "table" or type(owner.GetName) ~= "function" or type(owner.GetID) ~= "function" then
+    return "script"
+  end
+  local okN, name = pcall(owner.GetName, owner)
+  if not okN or type(name) ~= "string" or isSecret(name) or not smatch(name, "^Character%w+Slot$") then return "script" end
+  local okI, slot = pcall(owner.GetID, owner)
+  slot = okI and plainNumber(slot) or nil
+  if not slot or slot < 1 or slot > 19 then return "script" end
+  local okL, worn = pcall(_G.GetInventoryItemLink, "player", slot)
+  if okL and type(worn) == "string" and not isSecret(worn) and tonumber(smatch(worn, "item:(%d+)") or "") == itemID then
+    return "equipped"
+  end
+  return "script"
+end
 
 -- Top 2 (the two best, the default) or Top 5 (the best, then cheaper budget options).
 local TOPS = { [2] = true, [5] = true }
@@ -1308,7 +1336,7 @@ E.PULL_NOTE = PULL_NOTE
 
 -- The options for an item at a place, best first (a list of keys), or nil; then the note under them.
 local function optionsFor(itemID, link, where)
-  if not SHOW[where] then return nil end
+  if not shows(where) then return nil end
   local f = facts(itemID)
   if not f then return nil end
   if quality(itemID, link) == 0 then return nil end   -- grey junk
@@ -1332,6 +1360,8 @@ local function addLines(tt, itemID, link, info)
   if not where then return false end
   itemID = plainNumber(itemID)
   if not itemID then return false end
+  if where == "script" then where = scriptWhere(tt, itemID) end
+  if not shows(where) then return false end
   if type(link) ~= "string" or isSecret(link) then link = fallbackLink(info) end
   if not link then return false end   -- without the link the current enchant is unknown
   local keys, note = optionsFor(itemID, link, where)
@@ -1449,7 +1479,7 @@ local function showToggleTip(self)
   local r = role and sformat("Role: %s (%s).", role, ROLE_HOW[how] or "auto") or "Role: none for this class."
   tt:SetOwner(self, "ANCHOR_RIGHT")
   tt:SetText("Goblin Ledger: Enchant tips", 1, 1, 1)
-  tt:AddLine("The best enchants for your role, with their cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
+  tt:AddLine("The best enchants for your role, with their cost, on the gear you wear.", tx[1], tx[2], tx[3], true)
   if tooltipsOff() then
     tt:AddLine("Goblin Ledger tooltips are off: /gl tooltip turns them on.", mu[1], mu[2], mu[3], true)
   else
@@ -1743,15 +1773,22 @@ local function topStatus()
   return " Top 2: the two best (/gl enchants top5 adds cheaper budget options)."
 end
 
+-- Worn gear only (the default) or bags and links too: the sentence for each.
+local BAGS_ON = "On worn gear, bags and links (/gl enchants bags off: worn gear only)."
+local BAGS_OFF = "On worn gear only (/gl enchants bags on adds bags and links)."
+local function bagsStatus()
+  return " " .. (settings().enchantsBags == true and BAGS_ON or BAGS_OFF)
+end
+
 local function statusText()
   local v = settings().enchants
   if v == "off" then return "enchant tips are off. /gl enchants auto turns them back on." end
   local d = detect()
   if ROLES[v] then
     return sformat("enchant tips are for %s (picked by hand; your talents say %s). /gl enchants auto follows your talents.",
-      v, autoText(d)) .. topStatus()
+      v, autoText(d)) .. topStatus() .. bagsStatus()
   end
-  return "enchant tips: auto, " .. autoText(d) .. "." .. topStatus()
+  return "enchant tips: auto, " .. autoText(d) .. "." .. topStatus() .. bagsStatus()
 end
 
 local CHOICES = "auto, melee, agility, tank, caster, healer, hunter, off, top2 or top5"
@@ -1763,6 +1800,21 @@ local function enchantsCommand(rest)
   rest = slower(rest or "")
   if rest == "" or rest == "status" then
     say(statusText())
+    return
+  end
+  -- /gl enchants bags on / off: bags, the bank and links too, or worn gear only (the default).
+  local bags = smatch(rest, "^bags?%s*(%a*)$")
+  if bags then
+    if bags == "on" then
+      S.enchantsBags = true
+    elseif bags == "off" then
+      S.enchantsBags = nil
+    elseif bags ~= "" then
+      say("use /gl enchants bags on or /gl enchants bags off.")
+      return
+    end
+    if bags ~= "" then refreshItemTips() end
+    say("enchant tips: " .. (S.enchantsBags == true and BAGS_ON or BAGS_OFF))
     return
   end
   local top = TOP_WORDS[rest]
@@ -1823,6 +1875,7 @@ function ns.HandleSlash(msg)
       .. "hunter or off (auto follows your talents); top2 shows the two best, top5 adds cheaper budget options")
     say("   the price is the mats at AH value (a kit, scope or other upgrade: its own); an enchant needs an enchanter")
     say("   the Enchant tips box on the character panel turns them off and on")
+    say("   they show on worn gear only; /gl enchants bags on adds bags and links")
   end
 end
 
@@ -1852,6 +1905,8 @@ if type(_G.CreateFrame) == "function" then
         if S.enchants ~= "off" or (was ~= "auto" and not ROLES[was]) then S.enchantsBeforeOff = nil end
         -- Top 2 or Top 5, kept apart from the role; anything else is the default (Top 2).
         if S.enchantsTop ~= nil and not TOPS[S.enchantsTop] then S.enchantsTop = nil end
+        -- Bags and links too only when it is true; anything else is the default (worn gear only).
+        if S.enchantsBags ~= true then S.enchantsBags = nil end
       end
     end)
   end

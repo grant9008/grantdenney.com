@@ -1311,7 +1311,7 @@ function M.TooltipData(getterName, args)
     link = M.SlotLink(slot)
     guid = "Item-1-0-" .. args[1] .. "-" .. args[2]
     M.guids[guid] = ItemLocation:CreateFromBagAndSlot(args[1], args[2])
-  elseif getterName == "GetItemByID" then
+  elseif getterName == "GetItemByID" or getterName == "GetItemKey" then
     id = args[1]
   elseif getterName == "GetHyperlink" then
     id = tonumber(tostring(args[1]):match("item:(%d+)"))
@@ -1394,6 +1394,8 @@ function Tooltip:SetBagItem(bag, slot) return self:ProcessInfo({ getterName = "G
 function Tooltip:SetItemByID(id) return self:ProcessInfo({ getterName = "GetItemByID", getterArgs = { id } }) end
 function Tooltip:SetHyperlink(link) return self:ProcessInfo({ getterName = "GetHyperlink", getterArgs = { link } }) end
 function Tooltip:SetInventoryItem(unit, slot) return self:ProcessInfo({ getterName = "GetInventoryItem", getterArgs = { unit, slot } }) end
+-- An auction house row (the browse list's items).
+function Tooltip:SetItemKey(id, level, suffix) return self:ProcessInfo({ getterName = "GetItemKey", getterArgs = { id, level or 0, suffix or 0 } }) end
 
 ---------------------------------------------------------------------------
 -- CreateFrame and templates
@@ -16310,7 +16312,9 @@ def en_count(w, tt):
     return sum(1 for l, _ in w.all_lines(tt) if en_is_label(l))
 
 
-def en_world(ref, items, unlisted=(), cls="WARRIOR", points=(31, 5, 0), level=60, mode="forever", **kw):
+def en_world(ref, items, unlisted=(), cls="WARRIOR", points=(31, 5, 0), level=60, mode="forever", bags=True, **kw):
+    """bags: with the /gl enchants bags on opt-in (lines on bags, the bank and links too), which the
+    bag and link checks run under; False: the default, worn gear only (enchants-worn-only)."""
     if kw.get("data_src") is None:
         kw["data_src"], prices = en_data(ref, unlisted)
     else:
@@ -16321,6 +16325,8 @@ def en_world(ref, items, unlisted=(), cls="WARRIOR", points=(31, 5, 0), level=60
                      itemLevel=EN_GEAR_ILVL.get(iid, 60))
     w.M.equipped = w.lua.table()
     w.M.inspected = w.lua.table()
+    if bags:
+        w.ns.settings.enchantsBags = True
     en_player(w, cls, points, mode, level)
     return w, prices
 
@@ -16370,6 +16376,8 @@ def en_hover(w, how, iid, enchant=None, slot=None):
         tt.SetHyperlink(tt, M.ItemLink(iid, None, None, enchant))
     elif how == "byid":
         tt.SetItemByID(tt, iid)
+    elif how == "ahrow":   # an auction house browse row
+        tt.SetItemKey(tt, iid)
     else:
         raise AssertionError(how)
     return tt
@@ -17142,21 +17150,25 @@ def sc_enchants_roles(sc, ref, items):
 
 EN_TOP2_TAIL = " Top 2: the two best (/gl enchants top5 adds cheaper budget options)."
 EN_TOP5_TAIL = " Top 5: the best, then cheaper budget options (/gl enchants top2 for the two best)."
+EN_BAGS_OFF = "On worn gear only (/gl enchants bags on adds bags and links)."
+EN_BAGS_ON = "On worn gear, bags and links (/gl enchants bags off: worn gear only)."
+EN_BAGS_HELP = "   they show on worn gear only; /gl enchants bags on adds bags and links"
 
 
 def sc_enchants_slash(sc, ref, items):
     """/gl enchants: status, a role by hand, off, auto, top2 and top5; kept in the saved settings; in /gl help."""
-    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 5, 0))
+    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 5, 0), bags=False)
     S = w.ns.settings
     out = [strip_codes(x) for x in w.slash("/gl enchants")]
-    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP2_TAIL], "enchants slash: status")
+    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP2_TAIL + " " + EN_BAGS_OFF],
+          "enchants slash: status")
     out = [strip_codes(x) for x in w.slash("/gl enchants tank")]
     sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips are now for tank."], "tank"), "enchants slash: tank")
     tt = en_hover(w, "equipped", 990109)
     sc.eq(w.lines(tt), en_want(w, prices, ["s1248665", "s13931"]), "enchants slash: tank picks on the bracers")
     out = [strip_codes(x) for x in w.slash("/gl enchants")]
     sc.eq(out, ["Goblin Ledger: enchant tips are for tank (picked by hand; your talents say melee (Arms, 31 points)). "
-                "/gl enchants auto follows your talents." + EN_TOP2_TAIL], "enchants slash: status with a pick")
+                "/gl enchants auto follows your talents." + EN_TOP2_TAIL + " " + EN_BAGS_OFF], "enchants slash: status with a pick")
     out = [strip_codes(x) for x in w.slash("/gl enchant HEALER")]
     sc.eq((out, S.enchants), (["Goblin Ledger: enchant tips are now for healer."], "healer"), "enchants slash: /gl enchant alias")
     out = [strip_codes(x) for x in w.slash("/gl enchants wizard")]
@@ -17191,7 +17203,8 @@ def sc_enchants_slash(sc, ref, items):
     tt = en_hover(w, "equipped", 990102)
     sc.eq(w.lines(tt), en_want(w, prices, en_five(en_arms(990102), prices)), "enchants slash: auto, Top 5")
     out = [strip_codes(x) for x in w.slash("/gl enchants")]
-    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP5_TAIL], "enchants slash: status says Top 5")
+    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP5_TAIL + " " + EN_BAGS_OFF],
+          "enchants slash: status says Top 5")
     for word, n in (("top2", 2), ("5", 5), ("2", 2), ("TOP5", 5), ("top 2", 2)):
         out = [strip_codes(x) for x in w.slash("/gl enchants " + word)]
         msg = ("enchant tips show the top 5: the best, then cheaper budget options." if n == 5
@@ -17214,7 +17227,7 @@ def sc_enchants_slash(sc, ref, items):
     en_player(w, "WARRIOR", (3, 0, 0), level=12)
     out = [strip_codes(x) for x in w.slash("/gl enchants")]
     sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (the warrior default: fewer than 5 points in one talent tree)."
-                + EN_TOP2_TAIL], "enchants slash: status at low level")
+                + EN_TOP2_TAIL + " " + EN_BAGS_OFF], "enchants slash: status at low level")
     out = [strip_codes(x) for x in w.slash("/gl help")]
     sc.check(any(t.endswith("/gl enchants : the best enchants on gear tooltips for your role: auto, melee, agility, tank, "
                             "caster, healer, hunter or off (auto follows your talents); top2 shows the two best, top5 adds "
@@ -17224,7 +17237,9 @@ def sc_enchants_slash(sc, ref, items):
                  for t in out), "enchants slash: /gl help says what the price is")
     sc.check(any("/gl compact" in t for t in out) and any("/gl bags" in t for t in out) and any("/gl watch" in t for t in out),
              "enchants slash: /gl help still lists the other commands")
-    sc.eq(sum(1 for t in out if "/gl enchants" in t), 1, "enchants slash: listed once")
+    sc.eq(sum(1 for t in out if "/gl enchants :" in t), 1, "enchants slash: listed once")
+    sc.eq(sum(1 for t in out if t.endswith(EN_BAGS_HELP)), 1, "enchants slash: /gl help names bags on once")
+    sc.eq(sum(1 for t in out if "bags on" in t), 1, "enchants slash: /gl help says bags on in one line only")
     sc.check(not any("2nd best" in t for t in out), "enchants slash: /gl help no longer says 2nd best")
     out = [strip_codes(x) for x in w.slash("/gl")]
     sc.check(not any("enchant" in t for t in out), "enchants slash: /gl status is unchanged")
@@ -17242,6 +17257,252 @@ def sc_enchants_slash(sc, ref, items):
         sc.eq((w.ns.settings.enchants, w.ns.settings.enchantsTop), (want, top), "enchants slash: %s after login" % label)
         sc.check(w.same(w.g.ForeverAH_Settings, w.ns.settings), "enchants slash: %s is in the saved settings" % label)
         sc.clean(w, "enchants slash " + label)
+
+
+# Places that never get enchant lines, with or without /gl enchants bags on.
+EN_NEVER = ("inspect", "ahrow", "byid", "shopping")
+EN_BAG_PLACES = ("bag", "bank", "link", "gamelink")
+
+
+def en_panel_hover(w, iid, owner, slot=None, enchant=None, bag=False):
+    """A tooltip owned by a frame (the character panel's slot button, say), the older client's way:
+    worn gear (SetInventoryItem) or, bag=True, the item in bag 0 slot 1."""
+    g, M = w.g, w.M
+    tt = g.GameTooltip
+    tt.SetOwner(tt, owner, "ANCHOR_RIGHT")
+    if bag:
+        bag_put(w, 0, 1, iid, 1, enchant=enchant, bound=True)
+        tt.SetBagItem(tt, 0, 1)
+    else:
+        slot = slot or EN_GEAR[iid][5]
+        s = w.to_lua({"itemID": iid, "bound": True})
+        s.enchant = enchant
+        M.equipped[slot] = s
+        tt.SetInventoryItem(tt, "player", slot)
+    return tt
+
+
+def en_button(w, name, slot):
+    """A button with this name and id (the character panel's Character<Slot>Slot: its id is the slot)."""
+    return w.lua.eval("function(n, id) local b = _G[n] or CreateFrame('Button', n, UIParent); b:SetID(id); return b end")(name, slot)
+
+
+def en_priced_gear(w, ref):
+    """A priced item made into a cloak (in the mock), as the gear in the user's screenshot: returns its id."""
+    g = w.g
+    tt = g.GameTooltip
+    for iid in sorted(ref.items):
+        if iid in ROLE_IDS() or iid in en_source_mats() or iid in EN_ITEMS:
+            continue
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetItemByID(tt, iid)
+        if big_fontstrings(w, tt):
+            it = w.M["items"][iid]
+            it.equipLoc, it.classID, it.subclassID = "INVTYPE_CLOAK", 4, 1
+            w.ns.Enchants.Invalidate()   # an item's slot never changes in game: it is remembered
+            return iid
+    return None
+
+
+def sc_enchants_worn_only(sc, ref, items):
+    """The default: enchant tips on your own worn gear only (the character panel's slots); none on bag
+    and bank items, chat links, auction house rows or gear you inspect. Their price lines stay."""
+    w, prices = en_world(ref, items, bags=False)
+    g, S = w.g, w.ns.settings
+    sc.eq(S.enchantsBags, None, "worn only: worn gear only at first")
+    for iid, want in ((990102, ["s13898", "s20034"]), (990108, ["s1219587", "s13419"]), (990109, ["s20010", "s13939"])):
+        tt = en_hover(w, "equipped", iid)
+        sc.eq(w.lines(tt), en_want(w, prices, want), "worn only: worn %s: the two best" % EN_GEAR[iid][0])
+        en_styles_ok(sc, w, tt, "worn only: worn %s" % EN_GEAR[iid][0])
+        for how in EN_BAG_PLACES + EN_NEVER:
+            tt = en_hover(w, how, iid)
+            sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "worn only: %s %s: no enchant lines (%s)"
+                     % (how, EN_GEAR[iid][0], [strip_codes(l or "") for l, _ in w.all_lines(tt)]))
+    # Every slot group: worn gets what the rule says, the same item in a bag nothing.
+    for gname, iid in EN_GROUP_ITEM:
+        want = en_top(gname, "melee", "WARRIOR", 1, 2, prices=prices, sub=en_sub(iid), ilvl=en_ilvl(iid), loc=EN_GEAR[iid][1])
+        if (gname == "ranged" and EN_GEAR[iid][3] not in (2, 3, 18)) or not en_can_use("WARRIOR", iid):
+            want = []
+        tt = en_hover(w, "equipped", iid)
+        sc.eq(w.lines(tt), en_want_for(w, prices, want, gname, "melee", "WARRIOR", 1), "worn only: worn %s" % EN_GEAR[iid][0])
+        tt = en_hover(w, "bag", iid)
+        sc.eq(en_count(w, tt), 0, "worn only: %s in a bag: nothing" % EN_GEAR[iid][0])
+    # The screenshot: priced gear in a bag keeps its price lines and gets no enchant lines; worn: both.
+    pid = en_priced_gear(w, ref)
+    if sc.check(pid is not None, "worn only: a priced item with verdict lines"):
+        tt = g.GameTooltip
+        w.put_bag(1, 1, pid, 1)
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetBagItem(tt, 1, 1)
+        got = w.lines(tt)
+        sc.check(len(got) > 0 and en_count(w, tt) == 0 and big_fontstrings(w, tt),
+                 "worn only: priced cloak in a bag: price lines, no enchant lines (%s)" % got)
+        w.M.equipped[15] = w.to_lua({"itemID": pid})
+        tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+        tt.SetInventoryItem(tt, "player", 15)
+        sc.eq(en_block(w, tt), en_want(w, prices, ["s1219587", "s13419"]), "worn only: the priced cloak worn: the two best")
+        sc.check(len(w.lines(tt)) > len(en_block(w, tt)), "worn only: the priced cloak worn: its price lines first")
+        tt = en_hover(w, "link", pid)
+        sc.eq(en_count(w, tt), 0, "worn only: the priced cloak's chat link: nothing")
+        it = w.M["items"][pid]
+        it.equipLoc, it.classID, it.subclassID = None, None, None
+        w.M.equipped[15] = None
+        w.ns.Enchants.Invalidate()
+    # Top 2 / Top 5 and off still work on worn gear; bags stay empty.
+    w.slash("/gl enchants top5")
+    five = en_five(en_arms(990102), prices)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, five), "worn only: Top 5 on worn gear")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_count(w, tt), 0, "worn only: Top 5: a bag still nothing")
+    w.slash("/gl enchants off")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "worn only: off: worn gear nothing")
+    w.slash("/gl enchants auto")
+    w.slash("/gl enchants top2")
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s13898", "s20034"]), "worn only: auto, Top 2 again")
+    sc.eq(S.enchantsBags, None, "worn only: the role, Top and off leave the bags setting alone")
+    sc.clean(w)
+    # The character panel's box and Top button: worn gear only.
+    w, prices = char_world(ref, items, bags=False)
+    g, M = w.g, w.M
+    char_show(w)
+    cb, tb = tg(w), g.GoblinLedgerEnchantTop
+    M.click(cb)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(en_count(w, tt), 0, "worn only: the box cleared: worn gear nothing")
+    M.click(cb)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, ["s13898", "s20034"]), "worn only: the box ticked: worn gear the two best")
+    M.click(tb)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, en_five(en_arms(990102), prices)), "worn only: the Top button: Top 5 on worn gear")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_count(w, tt), 0, "worn only: the Top button: a bag still nothing")
+    M.click(tb)
+    sc.eq(w.ns.settings.enchantsTop, 2, "worn only: the Top button back to Top 2")
+    sc.clean(w, "worn only: character panel")
+    # The older client (OnTooltipSetItem does not say where): worn gear from the character panel's
+    # slot buttons only.
+    w, prices = en_world(ref, items, client="legacy", mode="tabs-name", points=(31, 0, 0), bags=False)
+    sc.eq(w.ns.tooltipMode, "script", "worn only: legacy: script hooks")
+    g = w.g
+    main = en_button(w, "CharacterMainHandSlot", 16)
+    cloak = en_button(w, "CharacterBackSlot", 15)
+    for iid, btn, want in ((990102, main, ["s13898", "s20034"]), (990108, cloak, ["s1219587", "s13419"])):
+        tt = en_panel_hover(w, iid, btn)
+        sc.eq(en_block(w, tt), en_want(w, prices, want), "worn only: legacy: worn %s from its slot button" % EN_GEAR[iid][0])
+        tt = en_panel_hover(w, iid, g.UIParent)
+        sc.eq(en_count(w, tt), 0, "worn only: legacy: worn %s, the owner not a slot button: nothing" % EN_GEAR[iid][0])
+        tt = en_hover(w, "bag", iid)
+        sc.eq(en_count(w, tt), 0, "worn only: legacy: %s in a bag: nothing" % EN_GEAR[iid][0])
+        tt = en_hover(w, "link", iid)
+        sc.eq(en_count(w, tt), 0, "worn only: legacy: %s's chat link: nothing" % EN_GEAR[iid][0])
+    tt = en_panel_hover(w, 990102, main, enchant=803)
+    sc.eq(en_count(w, tt), 0, "worn only: legacy: worn Greatsword with Fiery Weapon: nothing")
+    # A bag slot's button (its id is the bag slot) and the bag bar's (inventory slot 20): nothing,
+    # also when the worn item is the same one.
+    en_panel_hover(w, 990102, main)
+    tt = en_panel_hover(w, 990102, g.ContainerFrame1Item16, bag=True)
+    sc.eq(en_count(w, tt), 0, "worn only: legacy: the same Greatsword from a bag button: nothing")
+    tt = en_panel_hover(w, 990102, en_button(w, "CharacterBag0Slot", 20), slot=20)
+    sc.eq(en_count(w, tt), 0, "worn only: legacy: the bag bar's slot (20): nothing")
+    head = en_button(w, "CharacterHeadSlot", 1)
+    tt = en_panel_hover(w, 990113, head)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["a18329", "a11645"]), "worn only: legacy: the worn head from its slot button")
+    tt = en_panel_hover(w, 990102, head, bag=True)
+    sc.eq(en_count(w, tt), 0, "worn only: legacy: a bag item under the head slot's button (another item there): nothing")
+    w.slash("/gl enchants bags on")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["s13898", "s20034"]), "worn only: legacy, bags on: a bag Greatsword")
+    tt = en_panel_hover(w, 990102, g.UIParent)
+    sc.eq(en_block(w, tt), en_want(w, prices, ["s13898", "s20034"]), "worn only: legacy, bags on: worn, owner unknown")
+    sc.clean(w, "worn only: legacy")
+
+
+def sc_enchants_bags_opt_in(sc, ref, items):
+    """/gl enchants bags on: bag and bank items and links get the lines too (the same as worn);
+    bags off: worn gear only again. Inspect, AH rows and the comparison tooltips never."""
+    w, prices = en_world(ref, items, bags=False)
+    g, S = w.g, w.ns.settings
+    two = ["s13898", "s20034"]
+    ref_tt = en_hover(w, "link", 990108)
+    sc.eq(en_count(w, ref_tt), 0, "bags opt-in: an open chat link, no lines yet")
+    out = [strip_codes(x) for x in w.slash("/gl enchants bags on")]
+    sc.eq((out, S.enchantsBags), (["Goblin Ledger: enchant tips: " + EN_BAGS_ON], True), "bags opt-in: bags on")
+    sc.eq(en_count(w, g.ItemRefTooltip), 2, "bags opt-in: the open link's tooltip gets the lines at once")
+    for enchant, want in ((None, two), (1898, two), (1900, ["s13898"]), (803, [])):
+        for how in ("equipped",) + EN_BAG_PLACES:
+            tt = en_hover(w, how, 990102, enchant)
+            sc.eq(en_block(w, tt), en_want(w, prices, want), "bags opt-in: %s Greatsword, enchant %s" % (how, enchant))
+    for how in EN_NEVER:
+        tt = en_hover(w, how, 990102)
+        sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "bags opt-in: %s: still nothing" % how)
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.eq(out, ["Goblin Ledger: enchant tips: auto, melee (Arms, 31 points)." + EN_TOP2_TAIL + " " + EN_BAGS_ON],
+          "bags opt-in: the status says bags and links")
+    w.slash("/gl enchants top5")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_block(w, tt), en_want(w, prices, en_five(en_arms(990102), prices)), "bags opt-in: Top 5 in a bag")
+    w.slash("/gl enchants top2")
+    w.slash("/gl enchants off")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_count(w, tt), 0, "bags opt-in: off: a bag nothing")
+    sc.eq(S.enchantsBags, True, "bags opt-in: off keeps bags on")
+    w.slash("/gl enchants auto")
+    tt = en_hover(w, "bag", 990102)
+    sc.eq(en_block(w, tt), en_want(w, prices, two), "bags opt-in: auto again: a bag the two best")
+    # /gl enchants bags alone says which; a word it does not know changes nothing.
+    for cmd, reply in (("/gl enchants bags", "enchant tips: " + EN_BAGS_ON),
+                       ("/gl enchants bags maybe", "use /gl enchants bags on or /gl enchants bags off.")):
+        out = [strip_codes(x) for x in w.slash(cmd)]
+        sc.eq((out, S.enchantsBags), (["Goblin Ledger: " + reply], True), "bags opt-in: %s" % cmd)
+    sc.eq((S.enchants, S.enchantsTop), (None, 2), "bags opt-in: the role and Top are unchanged")
+    ref_tt = en_hover(w, "link", 990108)
+    sc.eq(en_count(w, ref_tt), 2, "bags opt-in: an open chat link with the lines")
+    out = [strip_codes(x) for x in w.slash("/gl enchants BAG OFF")]
+    sc.eq((out, S.enchantsBags), (["Goblin Ledger: enchant tips: " + EN_BAGS_OFF], None), "bags opt-in: bag off (any case)")
+    sc.eq(en_count(w, g.ItemRefTooltip), 0, "bags opt-in: the open link's tooltip loses the lines at once")
+    for how in EN_BAG_PLACES:
+        tt = en_hover(w, how, 990102)
+        sc.eq(en_count(w, tt), 0, "bags opt-in: bags off: %s nothing" % how)
+    tt = en_hover(w, "equipped", 990102)
+    sc.eq(w.lines(tt), en_want(w, prices, two), "bags opt-in: bags off: worn gear still the two best")
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.check(out and out[0].endswith(" " + EN_BAGS_OFF), "bags opt-in: the status says worn gear only (%s)" % out)
+    sc.clean(w)
+
+
+def sc_enchants_bags_saved(sc, ref, items):
+    """bags on is kept in ForeverAH_Settings (enchantsBags = true) over a /reload; anything else saved is the default."""
+    w, prices = en_world(ref, items, bags=False)
+    w.slash("/gl enchants bags on")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.eq(saved.get("enchantsBags"), True, "bags saved: true in ForeverAH_Settings")
+    sc.clean(w, "bags saved: before the reload")
+    w2, prices = en_world(ref, items, bags=False, saved=saved)
+    tt = en_hover(w2, "bag", 990102)
+    sc.eq(en_block(w2, tt), en_want(w2, prices, ["s13898", "s20034"]), "bags saved: after /reload: a bag Greatsword has the lines")
+    w2.slash("/gl enchants bags off")
+    saved2 = lua_to_py(w2.g.ForeverAH_Settings)
+    sc.check("enchantsBags" not in saved2, "bags saved: bags off clears it (%r)" % saved2.get("enchantsBags"))
+    sc.clean(w2, "bags saved: after the reload")
+    w3, prices = en_world(ref, items, bags=False, saved=saved2)
+    tt = en_hover(w3, "bag", 990102)
+    sc.eq(en_count(w3, tt), 0, "bags saved: after a second /reload: worn gear only")
+    sc.clean(w3, "bags saved: after the second reload")
+    for value, want, label in ((True, True, "true"), (False, None, "false"), ("yes", None, "a word"), (1, None, "a number"),
+                               ("on", None, "on as a word"), (None, None, "not saved")):
+        sv = {"enchantsBags": value} if value is not None else {}
+        w, prices = en_world(ref, items, bags=False, saved=sv)
+        sc.eq(w.ns.settings.enchantsBags, want, "bags saved: %s after login" % label)
+        sc.check(w.same(w.g.ForeverAH_Settings, w.ns.settings), "bags saved: %s: the settings are the saved table" % label)
+        tt = en_hover(w, "bag", 990102)
+        sc.eq(en_count(w, tt), 2 if want else 0, "bags saved: %s: a bag Greatsword" % label)
+        tt = en_hover(w, "equipped", 990102)
+        sc.eq(en_count(w, tt), 2, "bags saved: %s: worn gear the two best" % label)
+        sc.clean(w, "bags saved " + label)
 
 
 def sc_enchants_modes(sc, ref, items):
@@ -18448,7 +18709,7 @@ TG_AVOID = (["Character%sSlot" % s for s in CHAR_SLOTS] +
              "PetPaperDollFrameExpBar", "MockPawnRight", "MockPawnLeft", "MockGearMaticSets", "MockGearMaticLoadouts",
              "MockGearMaticPrev", "MockGearMaticNext", "MockGearMaticPrevTop", "MockGearMaticNextTop", "MockHeadPopout",
              "MockHandsPopout"])
-TG_TIP_HEAD = ["Goblin Ledger: Enchant tips", "The best enchants for your role, with their cost, on gear tooltips."]
+TG_TIP_HEAD = ["Goblin Ledger: Enchant tips", "The best enchants for your role, with their cost, on the gear you wear."]
 TOP_TIP = ["Top 2: the two best. Top 5: adds cheaper budget options. Click to switch."]
 TG_TIP_TOOLTIP_OFF = "Goblin Ledger tooltips are off: /gl tooltip turns them on."
 TG_HELP = "   the Enchant tips box on the character panel turns them off and on"
@@ -18809,7 +19070,7 @@ def sc_enchants_toggle(sc, ref, items):
     # /gl help names the box in one line.
     out = [strip_codes(x) for x in w.slash("/gl help")]
     sc.check(any(t.endswith(TG_HELP) for t in out), "toggle: /gl help names the box")
-    sc.eq(sum(1 for t in out if "/gl enchants" in t), 1, "toggle: /gl help lists /gl enchants once")
+    sc.eq(sum(1 for t in out if "/gl enchants :" in t), 1, "toggle: /gl help lists /gl enchants once")
     sc.eq(sum(1 for t in out if "Enchant tips box" in t), 1, "toggle: /gl help names the box once")
     sc.clean(w)
 
@@ -20095,7 +20356,7 @@ def sc_consumes_slash(sc, ref, items):
     sc.check(F.IsVisible(F), "slash: unknown changes nothing")
     out = [strip_codes(x) for x in w.slash("/gl help")]
     sc.eq([t for t in out if "/gl consumes" in t], ["Goblin Ledger: " + CS_HELP], "slash: /gl help names it in one line")
-    sc.check(sum(1 for t in out if "/gl enchants" in t) == 1, "slash: /gl help still lists /gl enchants once")
+    sc.check(sum(1 for t in out if "/gl enchants :" in t) == 1, "slash: /gl help still lists /gl enchants once")
     sc.clean(w, "slash")
     # Saved off: never shows after a reload, until /gl consumes on.
     w = cs_world(ref, items, saved={"consumes": False})
@@ -22318,6 +22579,9 @@ SCENARIOS = [
     ("enchants-links", sc_enchants_links),
     ("enchants-roles", sc_enchants_roles),
     ("enchants-slash", sc_enchants_slash),
+    ("enchants-worn-only", sc_enchants_worn_only),
+    ("enchants-bags-opt-in", sc_enchants_bags_opt_in),
+    ("enchants-bags-saved", sc_enchants_bags_saved),
     ("enchants-modes", sc_enchants_modes),
     ("enchants-quiet", sc_enchants_quiet),
     ("enchants-legacy", sc_enchants_legacy),
