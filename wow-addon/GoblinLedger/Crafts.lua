@@ -20,12 +20,13 @@ local ADDON_NAME, ns = ...
 --     for a bind-on-pickup item you cannot make, the plans that make it.
 -- Prices: the mats at the cheapest listing (the live one while the auction
 -- house shows it, not your own, or a vendor's when that is cheaper), the item
--- at 1c under its cheapest listing (yours: matched) but never above its AH
--- value (the tooltip's: the live cheapest while the auction house shows one,
--- so it sells at Sell now (live)) nor 25% over what it sold for in the last
--- day, after the 5% cut, times the average number one craft makes. A profit is only claimed (green) when it
--- is more than 10% of the mats at the cheapest prices, at AH value and at the
--- 7-day averages (the smallest of the three is the one shown), and the made
+-- at the price its own tooltip says to sell at (Recommend.lua's ns.SellAt:
+-- Sell now, 1c under the cheapest listing, the live one while the auction
+-- house shows it, yours matched; or the usual price when Sell now is under 70%
+-- of it), after the 5% cut, times the average number one craft makes. A profit is only claimed (green) when it
+-- is more than 10% of the mats at the cheapest prices (the item at that price),
+-- at AH value (the item at most 25% over what it sold for in the last day) and
+-- at the 7-day averages (the smallest of the three is the one shown), and the made
 -- item has 3 or more listings and sells 3 or more a day ("unsure" when not).
 -- Else "about even" (grey), or red when it loses at every price. A
 -- bind-on-pickup or random-suffix item never gets a profit, only the cost of
@@ -6354,12 +6355,12 @@ local function mismatch()
   return ok and r and true or false
 end
 
--- Prices older than Core's limit (6 hours): no green or red, the lines are grey.
+-- Stale prices (Core's one rule, ns.AgeState: 3 hours old or more): no green or red, the lines
+-- are grey (as on the enchant and consumable tips), and no craft idea.
 local function stale()
-  local f, most = ns.DataAge, ns.STALE_SECONDS
-  if type(f) ~= "function" or type(most) ~= "number" then return false end
-  local ok, age = pcall(f)
-  return ok and type(age) == "number" and age > most or false
+  if type(ns.AgeState) ~= "function" then return false end
+  local ok, st = pcall(ns.AgeState)
+  return ok and st == "stale"
 end
 
 -- The name to show: the price data's or the game's, else the recipe table's.
@@ -6659,23 +6660,37 @@ local function buyAt(p, basis)
   return x, false
 end
 
--- What the made item sells for each on a basis: 1c under the cheapest listing (yours: matched),
--- never above AH value, nor 25% over what it sold for in the last day. The AH value is the one
--- the tooltip shows (Core.lua): the live cheapest while the open auction house shows one (then
--- this is its Sell now (live)), else the data's.
+-- The price the item's own tooltip says to sell it at, from the one rule for it (Recommend.lua's
+-- ns.SellAt, which the tooltip's ns.SellPrices uses too) with the live listing the tooltip uses
+-- (p: pricesOf; the AH code's ns.LivePrice is the listing Core.lua's Sell now (live) follows):
+-- Sell now, 1c under the cheapest listing (yours: matched), or the usual price when Sell now is
+-- under 70% of it (the yellow "Sell now (38% under usual)" and its "Sell at"); nothing listed:
+-- the usual price. When the tooltip gives none because the price may be one player's guess (a
+-- few units far above what a vendor pays: "Few listed"), its Sell now before that doubt and
+-- true: a profit is never claimed at it. nil when there is neither.
+local function tooltipSellAt(id, p)
+  local f = ns.SellAt
+  if type(f) ~= "function" then return nil end
+  local ok, P = pcall(f, id, p.live and p.lo or nil, p.own == true)
+  if not ok or type(P) ~= "table" then return nil end
+  local at = plain(P.at)
+  if at and at > 0 then return at, false end
+  local raw = P.atWhy == "unreliable" and plain(P.raw) or nil
+  if raw and raw > 0 then return raw, true end
+  return nil
+end
+
+-- What the made item sells for each on a basis: at the cheapest prices, the tooltip's own
+-- price to sell at (so the profit follows the Sell now / Sell at lines above it); at AH value
+-- that, but never 25% over what it sold for in the last day; the 7-day average.
 local function sellAt(p, basis)
-  local s
-  if basis == "lo" then
-    local lo = p.lo and (p.own and p.lo or p.lo - 1)
-    local cap = p.live and p.lo or p.mkt
-    if lo and cap then s = min(lo, cap) else s = lo or cap end
-  elseif basis == "mkt" then
-    s = p.mkt
-  else
-    return p.avg
+  if basis == "lo" then return p.at end
+  if basis == "mkt" then
+    local s = p.mkt
+    if s and p.cap and s > p.cap then s = p.cap end
+    return s
   end
-  if s and p.cap and s > p.cap then s = p.cap end
-  return s
+  return p.avg
 end
 
 local function soldPerDay(item)
@@ -6767,6 +6782,7 @@ quote = function(r, depth)
   end
   local pp = pricesOf(r.product)
   pp.cap = soldCap(r.product)
+  pp.at, q.doubt = tooltipSellAt(r.product, pp)
   if pp.live then q.live = true end
   for _, b in ipairs(BASES) do
     local s = sellAt(pp, b)
@@ -6780,12 +6796,15 @@ quote = function(r, depth)
   q.sold = soldPerDay(pp.item)
   q.item = pp.item
   q.suffix = r.suffix or hasVersions(r.product)
-  -- Thin: 1 or 2 separate listings of the made item (one seller's price), or under 3 sold a day.
+  -- Thin: 1 or 2 separate listings of the made item (one seller's price), under 3 sold a day,
+  -- or a price its tooltip doubts (a few units far above what a vendor pays).
   local auctions = pp.item and plain(tonumber(pp.item.auctions)) or nil
   if auctions and auctions >= 1 and auctions < THIN_AUCTIONS then
     q.thin, q.auctions = "listings", auctions
   elseif (q.sold or 0) < THIN_SOLD then
     q.thin = "sales"
+  elseif q.doubt then
+    q.thin = "doubt"
   end
   local P = q.profit
   if r.bop or r.unsure or q.suffix or q.missing > 0 or not P.lo then
@@ -6904,6 +6923,7 @@ local function unsureText(q)
   if q.thin == "listings" then
     return "unsure, " .. q.auctions .. (q.auctions == 1 and " listing" or " listings")
   end
+  if q.thin == "doubt" then return "unsure, few listed" end   -- the tooltip's "Few listed" line
   return "unsure, few sales"
 end
 
@@ -6958,7 +6978,8 @@ local function recipeItemLines(tt, id, compact)
   end
   if not r then return false end
   local q = quote(r)
-  local quiet = stale() or not canMake(r)   -- a profit only for someone who could make it
+  local old = stale()
+  local quiet = old or not canMake(r)   -- a profit only for someone who could make it
   local tx, mu, wh = colour("text"), colour("muted"), { 1, 1, 1 }
   if not compact then
     if r.bop then
@@ -6972,7 +6993,9 @@ local function recipeItemLines(tt, id, compact)
       else
         right, rc = "no AH price", mu
       end
-      tt:AddDoubleLine("Makes: " .. countPrefix(r) .. nameOf(r.product), right, tx[1], tx[2], tx[3], rc[1], rc[2], rc[3])
+      local lc = old and mu or tx   -- stale prices: the line grey
+      if old then rc = mu end
+      tt:AddDoubleLine("Makes: " .. countPrefix(r) .. nameOf(r.product), right, lc[1], lc[2], lc[3], rc[1], rc[2], rc[3])
     end
     tt:AddLine(matsText(q, true), mu[1], mu[2], mu[3], true)
   end
@@ -7126,6 +7149,7 @@ C.PW = PW
 -- "Mats 1g 23s - sells 3g 31s - +2g 8s after AH cut" (or "loses 45s after AH cut", "about even after AH cut")
 local function professionsText(r)
   local q = quote(r)
+  local old = stale()
   local parts = { "Mats " .. totalText(q, true) }
   if r.bop then
     parts[2] = "bind on pickup"
@@ -7134,7 +7158,7 @@ local function professionsText(r)
   elseif q.sells then
     parts[2] = "sells " .. moneyText(roundCopper(q.sells))
     local p = q.shown
-    local quiet = stale() or not canMake(r)
+    local quiet = old or not canMake(r)
     if q.verdict == "profit" then
       parts[3] = paint("+" .. moneyText(roundCopper(p)) .. " after AH cut", quiet and "muted" or "pos")
     elseif q.verdict == "loss" then
@@ -7146,6 +7170,10 @@ local function professionsText(r)
     end
   else
     parts[2] = "no AH price"
+  end
+  if old then   -- stale prices: the mats and the sale grey too (the profit already is)
+    parts[1] = paint(parts[1], "muted")
+    if parts[2] then parts[2] = paint(parts[2], "muted") end
   end
   return tconcat(parts, " - ")
 end
@@ -7403,7 +7431,7 @@ local function listedOf(id)
 end
 
 local function craftIdeas(gold)
-  if not isOn() or not hasData() or mismatch() then return {} end
+  if not isOn() or not hasData() or mismatch() or stale() then return {} end
   if gold == nil and type(ns.PlayerGold) == "function" then gold = ns.PlayerGold() end
   local dayValue = ns.DayValue
   if type(dayValue) ~= "function" then return {} end
@@ -7650,7 +7678,7 @@ end
 -- priced ones and "+4 others"; a mat you make yourself "(from 1 Copper Ore)" (the total counts
 -- it so). Some mats unpriced: the priced ones and how many are left out, "= 777g + 1 with no
 -- price" (not "at least 40c" for a vial when the herbs have no price); none priced: no total
--- (never "0c").
+-- (never "0c"). Stale prices (ns.AgeState): the total is grey.
 local function searchMats(q)
   local list, keep = q.mats, dearest(q.mats, true)
   local total = q.missing == 0 and q.cost.lo or q.partial
@@ -7664,8 +7692,9 @@ local function searchMats(q)
   if keep then parts[#parts + 1] = "+" .. (#list - MATS_SHOWN) .. " others" end
   local t = "Mats: " .. tconcat(parts, ", ")
   if total > 0 then
-    t = t .. " = " .. moneyText(total)
-    if q.missing > 0 then t = t .. " + " .. q.missing .. " with no price" end
+    local sum = moneyText(total)
+    if q.missing > 0 then sum = sum .. " + " .. q.missing .. " with no price" end
+    t = t .. " = " .. (stale() and paint(sum, "muted") or sum)
   end
   return t
 end

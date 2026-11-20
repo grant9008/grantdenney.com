@@ -1,8 +1,11 @@
 """The craft profit rule (Crafts.lua's quote) on smelting and Blacksmithing recipes at
 past hours, checked 2 hours later: mats bought at T, the made item sold at T+2h's
 price. A port of the quote (prices, the 10% robust share over cheapest, market and
-average, the thin rule, the 1.25x sold-at cap), with mats bought (no own
-sub-recipes) and no live prices: what a player sees right after a /reload.
+average, the thin rule, the 1.25x sold-at cap on the market basis), with mats bought
+(no own sub-recipes) and no live prices: what a player sees right after a /reload.
+At the cheapest prices the made item sells at its tooltip's price to sell at (rule G:
+the shipped advice model's Sell at, as Crafts.lua asks ns.SellAt), or, when the
+tooltip doubts its price, at Sell now with no profit claim.
 Needs Crafts.lua (the crafts build); without it the test is skipped."""
 import math
 import os
@@ -62,13 +65,11 @@ def quote(view, r, vendor):
 
     def sell_at(p, b):
         if b == "lo":
-            lo = p.get("lo") and p["lo"] - 1
-            s = min(lo, p["mkt"]) if (lo and p.get("mkt")) else (lo or p.get("mkt"))
-        elif b == "mkt":
+            return p.get("at")
+        if b == "mkt":
             s = p.get("mkt")
-        else:
-            return p.get("avg")
-        return p["cap"] if s and p.get("cap") and s > p["cap"] else s
+            return p["cap"] if s and p.get("cap") and s > p["cap"] else s
+        return p.get("avg")
 
     cost = {b: 0 for b in BASES}
     for mid, n in r["mats"]:
@@ -84,6 +85,11 @@ def quote(view, r, vendor):
     st = day_stats(view, r["product"])
     if st and st["soldAt"]:
         pp["cap"] = math.floor(1.25 * st["soldAt"])
+    # the tooltip's price to sell at (ns.SellAt: rule G); a doubted price: Sell now, never green
+    _, sp, _ = B.advice(pp["item"], view.salesHours)
+    pp["at"], doubt = sp["at"], False
+    if not pp["at"] and sp["atWhy"] == "unreliable" and sp.get("raw"):
+        pp["at"], doubt = sp["raw"], True
     prof, net = {}, {}
     for b in BASES:
         s = sell_at(pp, b)
@@ -95,11 +101,14 @@ def quote(view, r, vendor):
         return None
     it = pp["item"]
     per, _ = B.RM.sold_per_day(it["sold24"], view.salesHours)
-    thin = (it["auctions"] is not None and 1 <= it["auctions"] < 3) or (per or 0) < 3
+    thin = (it["auctions"] is not None and 1 <= it["auctions"] < 3) or (per or 0) < 3 or doubt
     good = all(prof.get(b) is not None and prof[b] > 0.10 * cost[b] for b in BASES)
     bad = all(prof.get(b) is None or prof[b] < 0 for b in BASES) and any(b in prof for b in BASES)
     verdict = "profit" if good and not thin else "thin" if good else "loss" if bad else "even"
-    tsm = math.floor(min(x for x in (pp.get("lo"), pp.get("mkt")) if x) * r["count"] * 0.95) - cost["lo"]
+    # a TSM-style claim: the cheaper of the cheapest listing and the market value (none: no claim; Sell
+    # at is the usual price then, with nothing listed now)
+    ref_p = [x for x in (pp.get("lo"), pp.get("mkt")) if x]
+    tsm = math.floor(min(ref_p) * r["count"] * 0.95) - cost["lo"] if ref_p else None
     return {"verdict": verdict, "cost": cost["lo"], "net": net.get("lo"), "tsm": tsm}
 
 
@@ -149,7 +158,7 @@ def run(src, hist, hours, path, log=print):
             if q0["verdict"] == "profit":
                 x["green"] += 1
                 x["real"] += real > 0
-            if q0["tsm"] > 0:
+            if q0["tsm"] is not None and q0["tsm"] > 0:
                 x["tsm"] += 1
                 x["tsmReal"] += real > 0
         views.pop(T - 7200, None)

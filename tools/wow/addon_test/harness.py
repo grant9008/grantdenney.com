@@ -27945,22 +27945,33 @@ def cr_buy(p, b):
     return x, False
 
 
+def cr_tooltip_sell_at(w, iid, ctx):
+    """Crafts.lua tooltipSellAt: (price, doubt). The price the item's own tooltip says to sell at
+    (rule G: Recommend.lua ns.SellAt, with the live listing the tooltip uses; yours: matched),
+    doubt False; when the tooltip has none because the price may be one player's guess ("Few
+    listed"), its Sell now before that doubt, doubt True; else (None, None)."""
+    ref = w.cr_ref
+    if iid not in ref.items:
+        return None, None
+    sp = ref_sell_prices(ref, iid, "1D", ctx.live.get(iid), iid in ctx.own)
+    if sp["at"] and sp["at"] > 0:
+        return sp["at"], False
+    if sp["atWhy"] == "unreliable" and sp["raw"]:
+        return sp["raw"], True
+    return None, None
+
+
 def cr_sell(p, b):
+    """What the made item sells for each: at the cheapest prices the tooltip's price to sell at
+    (p["at"]), at AH value at most 25% over what it sold for in the last day, the 7-day average."""
     if b == "lo":
-        lo = None if p["lo"] is None else (p["lo"] if p["own"] else p["lo"] - 1)
-        # never above the AH value the tooltip shows: the live cheapest while there is one
-        cap = p["lo"] if p["live"] else p["mkt"]
-        if lo is not None and cap is not None:
-            s = min(lo, cap)
-        else:
-            s = lo if lo is not None else cap
-    elif b == "mkt":
+        return p["at"]
+    if b == "mkt":
         s = p["mkt"]
-    else:
-        return p["avg"]
-    if s and p["cap"] and s > p["cap"]:
-        s = p["cap"]
-    return s
+        if s and p["cap"] and s > p["cap"]:
+            s = p["cap"]
+        return s
+    return p["avg"]
 
 
 def cr_q(w, sp, ctx, depth=0):
@@ -27994,6 +28005,7 @@ def cr_q(w, sp, ctx, depth=0):
         mats.append(e)
     pp = cr_p(w, r["product"], ctx)
     pp["cap"] = cr_cap(w, r["product"])
+    pp["at"], doubt = cr_tooltip_sell_at(w, r["product"], ctx)
     sell, net, profit = {}, {}, {}
     for b in CR_BASES:
         s = cr_sell(pp, b)
@@ -28012,6 +28024,8 @@ def cr_q(w, sp, ctx, depth=0):
         thin = "listings"
     elif (sold or 0) < 3:
         thin = "sales"
+    elif doubt:
+        thin = "doubt"   # the tooltip doubts the price ("Few listed")
     P = profit
     shown = None
     if r["bop"] or r["unsure"] or suffix or missing > 0 or P.get("lo") is None:
@@ -28100,7 +28114,7 @@ def cr_expect_plain(ref, iid, age, compact):
     if w is None or w.ref is not ref:
         w = CrRefWorld(ref)
         _CR_PLAIN[id(ref)] = w
-    return cr_expect(w, iid, CrCtx(compact=compact, stale=age > 6 * 3600))
+    return cr_expect(w, iid, CrCtx(compact=compact, stale=age >= STALE_SECONDS))
 
 
 def cr_prefix(r):
@@ -28150,6 +28164,8 @@ def cr_total(q, icons=True):
 def cr_unsure(q):
     if q["thin"] == "listings":
         return "unsure, %d listing%s" % (q["auctions"], "" if q["auctions"] == 1 else "s")
+    if q["thin"] == "doubt":
+        return "unsure, few listed"
     return "unsure, few sales"
 
 
@@ -28214,7 +28230,7 @@ def cr_expect(w, iid, ctx, result_recipe=None):
                 else:
                     right, rc = "no AH price", "muted"
                 lines.append(("Makes: " + cr_prefix(r) + cr_name(w, r["product"]), right))
-                cols.append(("text", rc))
+                cols.append(("muted", "muted") if ctx.stale else ("text", rc))   # stale prices: the line grey
             lines.append((cr_mats(w, q, shift=ctx.shift), None))
             cols.append(("muted", None))
         # grey for someone who could not make it
@@ -28417,6 +28433,9 @@ def cr_pw_want(w, q, ctx=None):
             parts.append("|c%s%s|r" % (lua_hex(TT_RGB["muted"]), cr_unsure(q)))
     else:
         parts.append("no AH price")
+    if ctx is not None and ctx.stale:   # stale prices: the mats and the sale grey too
+        mu = lua_hex(TT_RGB["muted"])
+        parts[:2] = ["|c%s%s|r" % (mu, x) for x in parts[:2]]
     return " - ".join(parts)
 
 
@@ -28893,7 +28912,11 @@ def sc_crafts_robust(sc, ref, items):
              ("losing at the 7-day average", {12359: ("Thorium Bar", 2490, 2490, 2495, 121, 1500, 600)}, None),
              ("losing at AH value", {10620: ("Thorium Ore", 1625, 2700, 2418, 121, 1700, 250)}, None),
              ("under 10% at the 7-day average", {12359: ("Thorium Bar", 2490, 2490, 2495, 121, 1810, 600)}, None),
-             ("losing at every price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)}, None))
+             ("losing at every price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)},
+              {12359: steady_series(1500)}),
+             # listed at 15s under its usual 24s 90c (under 70%): sold at the usual price, as the tooltip's
+             # Sell at says, so it pays at the cheapest prices and loses at the others: about even
+             ("dumped under its usual price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)}, None))
     for label, fix, series in cases:
         w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix=fix, series=series)
         ctx = CrCtx(ranks={CR_SMELT: 300})
@@ -28901,6 +28924,9 @@ def sc_crafts_robust(sc, ref, items):
         q = cr_q(w, CR_THORIUM, ctx)
         want = {"losing at every price": "loss", "not selling": "thin"}.get(label, "even")
         sc.eq(q["verdict"], want, "robust: %s (model: %s)" % (label, q["profit"]))
+        if label.startswith("dumped"):
+            sc.eq((q["sell"]["lo"], w.ns.Crafts.Quote(CR_THORIUM).sellUnit.lo), (2490, 2490),
+                  "robust: dumped: the bar counts at its usual 24s 90c (model, Crafts.lua)")
         cr_tip_ok(sc, w, "byid", 10620, ctx, "robust: Thorium Ore, %s" % label)
         cr_tip_ok(sc, w, "byid", 12359, ctx, "robust: Thorium Bar, %s" % label)
         sc.clean(w)
@@ -28966,9 +28992,12 @@ def sc_crafts_live(sc, ref, items):
     # Sell now (live) says, not the data's 24s 90c; at most 25% over the day's sales (31s 12c)
     sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={12359: 3000}))["sell"]["lo"], 2999,
           "live: above the data's AH value, 1c under the live listing (model)")
-    sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={12359: 4000}))["sell"]["lo"], 3112,
-          "live: never 25% over what it sold for in the last day (model)")
-    sc.eq(cr_q(w, CR_SPURS, ctx)["sell"]["lo"], 3480, "no live listing: never above the data's AH value (34s 80c, cheapest 35s) (model)")
+    q4 = cr_q(w, CR_THORIUM, ctx.copy(live={12359: 4000}))
+    sc.eq((q4["sell"]["lo"], q4["sell"]["mkt"]), (3999, 2490),
+          "live: listed at 40s: at the cheapest prices 1c under it, as Sell now (live) says; at AH value the data's "
+          "24s 90c (never 25% over what it sold for in the last day, 31s 12c) (model)")
+    sc.eq(cr_q(w, CR_SPURS, ctx)["sell"]["lo"], 3499,
+          "no live listing: 1c under the cheapest 35s, as the tooltip's Sell now (above the data's AH value 34s 80c) (model)")
     t = w.to_lua({10620: 2000})
     w.ns.LivePrice = mk(t)
     w.settle(1)   # nothing else pending that would make it quote again
@@ -29043,7 +29072,7 @@ def sc_crafts_window(sc, ref, items, elvui=False):
     cr_open(w, CR_BS, [CR_SPURS, CR_OFFICER, CR_HGS], [CR_SPURS, CR_OFFICER, CR_HGS], select=CR_SPURS, ctx=ctx)
     sc.check(C.attached, "%s: attached when Blizzard_Professions loads" % label)
     sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_SPURS, ctx), ctx), "%s: Mithril Spurs" % label)
-    sc.eq(strip_codes(cr_line(w)), "Mats 79s 64c - sells 34s 80c - loses 46s 58c after AH cut", "%s: the words" % label)
+    sc.eq(strip_codes(cr_line(w)), "Mats 79s 64c - sells 34s 99c - loses 46s 40c after AH cut", "%s: the words" % label)
     cr_layout_ok(sc, w, "%s: Mithril Spurs (2 reagents)" % label)
     cr_select(w, CR_OFFICER)
     sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_OFFICER, ctx), ctx), "%s: picks Officer's Boots: updated" % label)
@@ -29089,8 +29118,11 @@ def sc_crafts_window_elvui(sc, ref, items):
 
 
 def cr_ideas_ref(w, ctx, gold):
-    """Crafts.lua's craft flip ideas, in Python: known recipes that pay at every price, sized to gold."""
+    """Crafts.lua's craft flip ideas, in Python: known recipes that pay at every price, sized to gold;
+    none on stale prices (3 hours or more, as the sidebar's own flip ideas)."""
     out = []
+    if ctx.stale:
+        return out
     for sk in sorted(ctx.ranks):
         if ctx.ranks[sk] <= 0:
             continue
@@ -29339,10 +29371,11 @@ def cr_from(w, e):
                                      for fid, fn in e["sub"]["mats"])
 
 
-def cr_search_mats(w, q):
+def cr_search_mats(w, q, stale=False):
     """"Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s": 4 or more, the 2 dearest priced ones and
     "+N others"; a mat you make "(from 1 Copper Ore)"; no costs each; some unpriced: the priced ones and how
-    many are left out ("= 777g + 1 with no price"); none priced: no total (never 0c)."""
+    many are left out ("= 777g + 1 with no price"); none priced: no total (never 0c). Stale prices (3 hours
+    or more): the total is grey."""
     mats, keep = q["mats"], cr_dearest(q["mats"], priced_first=True)
     total = q["cost"]["lo"] if q["missing"] == 0 else q["partial"]
     total = cr_round(total) if total else 0
@@ -29355,9 +29388,10 @@ def cr_search_mats(w, q):
         parts.append("+%d others" % (len(mats) - 2))
     t = "Mats: " + ", ".join(parts)
     if total > 0:
-        t += " = " + money_text(total)
+        tot = money_text(total)
         if q["missing"]:
-            t += " + %d with no price" % q["missing"]
+            tot += " + %d with no price" % q["missing"]
+        t += " = " + ("|c%s%s|r" % (lua_hex(TT_RGB["muted"]), tot) if stale else tot)
     return t
 
 
@@ -29366,10 +29400,10 @@ def cr_search_bop(e, r):
     return _CR["RI"].get(e["id"]) == "B" if e["kind"] == "recipe" else bool(r["bop"])
 
 
-def cr_search_make(w, q):
+def cr_search_make(w, q, stale=False):
     """"make it (5 a craft). Mats: ..."."""
     n = cr_prefix(q["r"])
-    return "make it" + (" (%sa craft)" % n if n else "") + ". " + cr_search_mats(w, q)
+    return "make it" + (" (%sa craft)" % n if n else "") + ". " + cr_search_mats(w, q, stale)
 
 
 def cr_search_about(w, e, sp, ctx, bop):
@@ -29379,8 +29413,8 @@ def cr_search_about(w, e, sp, ctx, bop):
     r = q["r"]
     lead = "Bind on pickup. " if bop and cr_search_bop(e, r) else ""
     if e["kind"] == "recipe":
-        return lead + "Makes " + cr_prefix(r) + cr_name(w, r["product"]) + ". " + cr_search_mats(w, q)
-    return lead + "You can " + cr_search_make(w, q)
+        return lead + "Makes " + cr_prefix(r) + cr_name(w, r["product"]) + ". " + cr_search_mats(w, q, ctx.stale)
+    return lead + "You can " + cr_search_make(w, q, ctx.stale)
 
 
 def cr_search_named(w, e, sp, ctx):
@@ -29390,10 +29424,10 @@ def cr_search_named(w, e, sp, ctx):
     name = cr_name(w, e["id"])
     tag = " (bind on pickup)" if cr_search_bop(e, r) else ""
     if e["kind"] == "product":
-        return name + tag + " - you can " + cr_search_make(w, q)
+        return name + tag + " - you can " + cr_search_make(w, q, ctx.stale)
     prod, n = cr_name(w, r["product"]), cr_prefix(r)
     makes = "makes %s%s. " % (n, prod) if n or not name.lower().endswith(prod.lower()) else ""
-    return name + tag + " - " + makes + cr_search_mats(w, q)
+    return name + tag + " - " + makes + cr_search_mats(w, q, ctx.stale)
 
 
 def cr_search_lines(w, text, iid, ctx):
@@ -29793,8 +29827,8 @@ def sc_crafts_slash(sc, ref, items):
 
 def sc_crafts_thin(sc, ref, items):
     """A made item behind 1 or 2 listings, or selling under 3 a day: no green profit ("unsure") on the
-    tooltips, in the window, on its mats or in the ideas. A sale counts at most 25% over what it sold
-    for in the last day."""
+    tooltips, in the window, on its mats or in the ideas. At AH value a sale counts at most 25% over
+    what it sold for in the last day (at the cheapest prices it is the tooltip's own Sell now)."""
     cases = (("1 listing at 50g", {7969: ("Mithril Spurs", 500000, 500000, 1, 1, 500000, 250, 1)}, "listings", "unsure, 1 listing"),
              ("2 listings", {7969: ("Mithril Spurs", 500000, 500000, 2, 200, 500000, 250, 2)}, "listings", "unsure, 2 listings"),
              # none sold in the measured hours (any sold scales up to a day, 6 from 1 in 4 hours)
@@ -29821,15 +29855,16 @@ def sc_crafts_thin(sc, ref, items):
         cr_close(w)
         sc.check(not any(x.recipe == CR_SPURS for x in lua_list(C.Ideas(MOCK_GOLD))), "thin: %s: never a craft idea" % label)
         sc.clean(w)
-    # Thorium Bar sold at 24s 90c all day, listed at 40s now: it counts at 31s 12c (1.25 x 24s 90c)
+    # Thorium Bar sold at 24s 90c all day, listed at 40s now: at AH value it counts at 31s 12c (1.25 x
+    # 24s 90c); at the cheapest prices at the tooltip's Sell now, 39s 99c
     w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={12359: ("Thorium Bar", 4000, 4000, 2495, 121, 4000, 600)})
     ctx = CrCtx(ranks={CR_SMELT: 300})
     cr_know(w, ctx, [CR_THORIUM])
     q = cr_q(w, CR_THORIUM, ctx)
-    sc.eq((q["sell"]["lo"], q["sell"]["mkt"], q["sell"]["avg"]), (3112, 3112, 4000),
-          "thin: counted at 31s 12c now and at AH value, the 7-day average as it is (model)")
+    sc.eq((q["sell"]["lo"], q["sell"]["mkt"], q["sell"]["avg"]), (3999, 3112, 4000),
+          "thin: counted at Sell now 39s 99c, at AH value 31s 12c, the 7-day average as it is (model)")
     lq = w.ns.Crafts.Quote(CR_THORIUM)
-    sc.eq((lq.sellUnit.lo, lq.sellUnit.mkt, lq.sellUnit.avg), (3112, 3112, 4000), "thin: Crafts.lua counts it at 31s 12c")
+    sc.eq((lq.sellUnit.lo, lq.sellUnit.mkt, lq.sellUnit.avg), (3999, 3112, 4000), "thin: Crafts.lua counts it so")
     cr_tip_ok(sc, w, "byid", 10620, ctx, "thin: Thorium Ore, the bar listed over what it sold for")
     cr_tip_ok(sc, w, "byid", 12359, ctx, "thin: Thorium Bar, listed over what it sold for")
     sc.clean(w)
@@ -30072,6 +30107,195 @@ def sc_crafts_yield(sc, ref, items):
     sc.clean(w)
 
 
+def tip_sell_price(lines):
+    """The price a tooltip says to sell at: its Sell at line, else its Sell now (...) line, or None."""
+    for left, right in lines:
+        if left == "Sell at":
+            return right
+    for left, right in lines:
+        if (left or "").startswith("Sell now"):
+            return right
+    return None
+
+
+def sc_crafts_sell_rule(sc, ref, items):
+    """A made item sells at the price its own tooltip says to sell at (Recommend.lua ns.SellAt, the
+    rule the tooltip's ns.SellPrices uses): Sell now; while someone dumps (Sell now under 70% of the
+    usual price) the yellow line's Sell at, the usual price; the live listing (Sell now (live), yours
+    matched, a live dump too). The tooltip is Core's lines in their order, then the craft lines, no
+    line twice; the Professions window says the same price. A price the tooltip doubts (a few units
+    far above what a vendor pays) is never a green profit: "unsure, few listed"."""
+    usual = 2490   # Thorium Bar: a steady last day at 24s 90c (CR_SERIES)
+    cases = (("listed at 26s", 2600, None, False, 2599, None),
+             ("dumped at 15s (39% under usual)", 1500, None, False, usual, 39),
+             ("live at 20s", 2490, 2000, False, 1999, None),
+             ("live dump at 16s (35% under usual)", 2490, 1600, False, usual, 35),
+             ("your live listing at 26s", 2490, 2600, True, 2600, None))
+    for label, cheap, live, own, want, under in cases:
+        fix = {12359: ("Thorium Bar", cheap, cheap, 2495, 121, 2400, 600)}
+        w = cr_world(ref, items, ranks={CR_SMELT: 300, CR_BS: 300}, fix=fix)
+        C = w.ns.Crafts
+        ctx = CrCtx(ranks={CR_SMELT: 300, CR_BS: 300})
+        cr_know(w, ctx, [CR_THORIUM])
+        if live is not None:
+            w.open_ah_modern()
+            w.set_commodity_results(12359, [(live, 50, own), (live + 100, 100, False)])
+            w.M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", 12359)
+            w.settle(0.3)
+            C.Invalidate()
+            ctx = ctx.copy(live={12359: live}, own={12359} if own else ())
+        lq = C.Quote(CR_THORIUM)
+        q = cr_q(w, CR_THORIUM, ctx)
+        sc.eq((lq.sellUnit.lo, q["sell"]["lo"]), (want, want), "sell rule: %s: the bar counts at %s (Crafts.lua, model)"
+              % (label, money_text(want)))
+        tt = cr_show(w, "byid", 12359)
+        lines = w.lines(tt)
+        sc.eq(tip_sell_price(lines), money_icons(want), "sell rule: %s: the tooltip says to sell at that price" % label)
+        nows = [l for l, _ in lines if (l or "").startswith("Sell now")]
+        if under:
+            word = ("Sell now (live, %d%% under usual)" if live else "Sell now (%d%% under usual)") % under
+        else:
+            word = "Sell now (live)" if live else "Sell now"
+        sc.eq(nows, [word], "sell rule: %s: the Sell now line" % label)
+        sc.eq("Sell at" in [l for l, _ in lines], under is not None, "sell rule: %s: a Sell at line only while dumped" % label)
+        # the whole tooltip: Core's lines as the model has them, then the craft lines; nothing twice
+        age = w.now - w.cr_ref.updated
+        core = expected_tooltip(w.cr_ref, 12359, age, live=live, own=own)
+        crafts = cr_expect(w, 12359, ctx)[0]
+        sc.eq(lines, core + crafts, "sell rule: %s: Core's lines, then the craft lines" % label)
+        lefts = [l for l, _ in lines]
+        sc.eq(sorted(set(l for l in lefts if lefts.count(l) > 1)), [], "sell rule: %s: no line said twice" % label)
+        sc.check(len(crafts) >= 2 and crafts[0][0].startswith("Smelt: 1 Thorium Ore"), "sell rule: %s: the smelt lines (%s)"
+                 % (label, crafts))
+        if live is None:
+            # the Professions window: the same price
+            cr_open(w, CR_SMELT, [CR_THORIUM], [CR_THORIUM], select=CR_THORIUM, ctx=ctx)
+            sc.eq(cr_line(w), cr_pw_want(w, q, ctx), "sell rule: %s: the window line" % label)
+            sc.check(" - sells %s" % money_text(want) in strip_codes(cr_line(w) or ""),
+                     "sell rule: %s: the window sells at %s (%s)" % (label, money_text(want), strip_codes(cr_line(w) or "")))
+            cr_close(w)
+        else:
+            w.close_ah_modern()
+        sc.clean(w, "sell rule: %s" % label)
+    # a price the tooltip doubts: 5 units at 50g of an item a vendor pays 2s 50c for
+    fix = {7969: ("Mithril Spurs", 500000, 500000, 5, 100, 500000, 250, 5)}
+    w = cr_world(ref, items, ranks={CR_BS: 300}, fix=fix)
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, ctx, [CR_SPURS])
+    q = cr_q(w, CR_SPURS, ctx)
+    lq = w.ns.Crafts.Quote(CR_SPURS)
+    sc.eq((q["verdict"], q["thin"], lq.verdict, lq.thin), ("thin", "doubt", "thin", "doubt"),
+          "sell rule: doubted price: unsure (model, Crafts.lua)")
+    sc.eq(lq.sellUnit.lo, 499999, "sell rule: doubted price: counted at its Sell now before the doubt")
+    lines = w.lines(cr_show(w, "byid", 7969))
+    sc.check("Few listed: the price may not be reliable" in [l for l, _ in lines] and tip_sell_price(lines) is None,
+             "sell rule: doubted price: the tooltip says Few listed and gives no price (%s)" % lines)
+    got = cr_tip_ok(sc, w, "byid", 7969, ctx, "sell rule: Mithril Spurs, doubted price")
+    sc.eq(got[-1][1] if got else None, "Profit: unsure, few listed", "sell rule: doubted price: Profit: unsure, few listed")
+    sc.check(not any(x.recipe == CR_SPURS for x in lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))),
+             "sell rule: doubted price: never a craft idea")
+    sc.clean(w, "sell rule: doubted price")
+
+
+def sc_crafts_stale(sc, ref, items):
+    """Old prices, Core's one rule (ns.AgeState, stale from exactly 3 hours): the craft lines on a
+    made item, a mat and a recipe item are grey, so is the Professions window line (its mats, sale
+    and profit) and the empty search's mats total, and there is no craft idea (the sidebar's own
+    flip ideas say why). 3 hours less a second: in colour, as the model says."""
+    mu = "|c%s" % lua_hex(TT_RGB["muted"])
+    for age, stale in ((3 * 3600 - 1, False), (3 * 3600, True)):
+        label = "stale %s" % ("3h" if stale else "3h less 1s")
+        w = cr_world(ref, items, ranks={CR_SMELT: 300, CR_BS: 300}, now=ref.updated + age)
+        C = w.ns.Crafts
+        sc.eq(w.ns.AgeState(), "stale" if stale else "old", "%s: ns.AgeState" % label)
+        ctx = CrCtx(ranks={CR_SMELT: 300, CR_BS: 300}, stale=stale)
+        cr_know(w, ctx, [CR_THORIUM, CR_SPURS])
+        for iid, what in ((12359, "Thorium Bar"), (10620, "Thorium Ore"), (7989, "Plans: Mithril Spurs")):
+            cr_tip_ok(sc, w, "byid", iid, ctx, "%s: %s" % (label, what))
+            cols = cr_tip(w, "byid", iid)[1]
+            if stale:
+                sc.check(bool(cols) and all(c in ("muted", None) for pair in cols for c in pair),
+                         "%s: %s: every craft line grey (%s)" % (label, what, cols))
+            else:
+                sc.check(any(c not in ("muted", None) for pair in cols for c in pair),
+                         "%s: %s: in colour (%s)" % (label, what, cols))
+        cr_open(w, CR_SMELT, [CR_THORIUM], [CR_THORIUM], select=CR_THORIUM, ctx=ctx)
+        sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_THORIUM, ctx), ctx), "%s: the window line" % label)
+        sc.eq((cr_line(w) or "").startswith(mu + "Mats "), stale, "%s: the window's mats grey only when stale" % label)
+        cr_close(w)
+        want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+        sc.eq([x.recipe for x in lua_list(C.Ideas(MOCK_GOLD))], [x["recipe"] for x in want], "%s: craft ideas" % label)
+        sc.check(bool(want) != stale, "%s: %s craft idea (%s)" % (label, "no" if stale else "a", want))
+        res = w.ns.FlipIdeas(5, MOCK_GOLD)
+        ideas, why = (res[0], res[1]) if isinstance(res, tuple) else (res, None)
+        if stale:
+            sc.eq((len(lua_list(ideas)), why), (0, "stale"), "%s: no flip ideas, and why" % label)
+        else:
+            sc.check(any(x.kind == "craft" for x in lua_list(ideas)), "%s: the craft idea is in the flip ideas" % label)
+        # the empty AH search: the AH code's lines (with their own ages), the craft line's total grey
+        w.open_ah_modern()
+        es_search(w, "plans officer")
+        es_lines_ok(sc, w, w.cr_ref, "plans officer", "%s: 'plans officer'" % label, ctx=ctx)
+        shown = es_shown(w)
+        sc.eq(any((" = " + mu) in l for l in shown), stale, "%s: 'plans officer': the mats total grey only when stale (%s)"
+              % (label, shown))
+        sc.check(bool(shown) and not any(re.search(r"\bavg\b|average", l) for l in shown),
+                 "%s: the empty search never says avg or average (the badge says vs usual)" % label)
+        w.close_ah_modern()
+        sc.clean(w, label)
+
+
+def sc_tooltip_all_modules(sc, ref, items):
+    """Worn gear you can make, with every module's lines: Core's (header, AH value with its badge
+    against the usual price, the sell lines), then Crafts.lua's (the mats and the profit), then the
+    enchant tips (worn gear only) last; the same item in a bag has no enchant tips; no line said
+    twice, and the craft lines are what the craft model says."""
+    fix = {12628: ("Demon Forged Breastplate", 100000, 100000, 20, 10, 100000, 5000),
+           12662: ("Demonic Rune", 2000, 2000, 100, 20, 2000, 500), 12361: ("Blue Sapphire", 5000, 5000, 100, 20, 5000, 500),
+           7910: ("Star Ruby", 3000, 3000, 100, 20, 3000, 500)}
+    w = cr_world(ref, items, ranks={CR_BS: 300}, fix=fix, series={12628: steady_series(100000)})
+    M, g = w.M, w.g
+    M.knownSpells[9788] = True   # an Armorsmith who knows the breastplate's plans
+    w.ns.Crafts.Invalidate()
+    ctx = CrCtx(ranks={CR_BS: 300}, specs={9788})
+    cr_know(w, ctx, [CR_DEMON])
+    it = M["items"][12628]
+    it.equipLoc, it.classID, it.subclassID = "INVTYPE_CHEST", 4, 4
+    en_player(w, "WARRIOR", (31, 5, 0))
+    w.ns.Enchants.Invalidate()
+    M.equipped = w.lua.table()
+    M.equipped[5] = w.to_lua({"itemID": 12628})
+    tt = g.GameTooltip
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    tt.SetInventoryItem(tt, "player", 5)
+    lines = w.lines(tt)
+    lefts = [l for l, _ in lines]
+    crafts = cr_expect(w, 12628, ctx)[0]
+    ench = en_block(w, tt)
+    sc.check(bool(crafts) and bool(ench), "all modules: craft lines and enchant tips (%s)" % lines)
+    sc.check(bool(lines) and lines[0][0] == "Goblin Ledger", "all modules: Core's header first (%s)" % lines[:1])
+    if crafts and ench and len(lines) >= len(crafts) + len(ench) + 2:
+        k = len(lines) - len(ench)
+        sc.eq(lines[k:], ench, "all modules: the enchant tips last")
+        sc.eq(lines[k - len(crafts):k], crafts, "all modules: the craft lines right before them")
+        core = lines[:k - len(crafts)]
+        sc.check(any((l or "") == "AH value" for l, _ in core) and any((l or "").startswith(("Sell now", "Sell at"))
+                 for l, _ in core), "all modules: Core's AH value and sell lines in Core's block (%s)" % core)
+        sc.check(any(" vs usual" in strip_codes(r or "") for l, r in core if l == "AH value"),
+                 "all modules: the badge against the usual price (%s)" % core)
+        sc.check(not any(en_is_label(l) or (l or "").startswith(("Make:", "Mats:")) for l, _ in core),
+                 "all modules: nothing of the others' in Core's block")
+    sc.eq(sorted(set(l for l in lefts if lefts.count(l) > 1)), [], "all modules: no line said twice (%s)" % lefts)
+    # the same item in a bag: Core's and the craft lines, no enchant tips
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    w.put_bag(1, 1, 12628, 1)
+    tt.SetBagItem(tt, 1, 1)
+    bag = w.lines(tt)
+    sc.check(en_count(w, tt) == 0 and bag[-len(crafts):] == crafts if crafts else False,
+             "all modules: in a bag: the craft lines last, no enchant tips (%s)" % bag)
+    sc.clean(w, "all modules")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -30272,6 +30496,9 @@ SCENARIOS = [
     ("crafts-ideas-limits", sc_crafts_ideas_limits),
     ("crafts-scan", sc_crafts_scan),
     ("crafts-yield", sc_crafts_yield),
+    ("crafts-sell-rule", sc_crafts_sell_rule),
+    ("crafts-stale", sc_crafts_stale),
+    ("tooltip-all-modules", sc_tooltip_all_modules),
     ("one-sell-price", sc_one_sell_price),
     ("deposit-reading", sc_deposit_reading),
     ("verdict-edges", sc_verdict_edges),

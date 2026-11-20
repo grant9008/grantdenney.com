@@ -415,6 +415,35 @@ function ns.Recommend(itemID, tf, liveCheapest)
   }
 end
 
+-- The prices to sell at from what they rest on: the cheapest listing now
+-- (live: from the open auction house), own (that live one is yours), the
+-- usual price and vendorFar (Recommend's price doubt). SellPrices and
+-- SellAt both give these.
+local function sellOut(item, cheap, live, own, usual, vendorFar)
+  local vendor = tonumber(item and item.vendor) or 0
+  cheap = tonumber(cheap) or 0
+  local mine = live and own == true
+  usual = tonumber(usual)
+  local out = { live = live, own = mine, cheapest = cheap, usual = usual }
+  -- raw: Sell now before the price doubt (nil with nothing listed). Only for
+  -- Crafts.lua, which counts a made item the tooltip gives no price for at
+  -- it and then never claims a profit.
+  if cheap > 1 then out.raw = mine and cheap or (cheap - 1) end
+  if vendorFar then
+    out.nowWhy, out.atWhy = "unreliable", "unreliable"
+  elseif cheap > 1 then
+    out.now = out.raw
+    out.at, out.under = ruleG(out.now, usual)
+  else
+    out.nowWhy = "none"
+    out.at = ruleG(nil, usual)
+    if not out.at then out.atWhy = "none" end
+  end
+  out.nowVendor = vendor > 0 and out.now ~= nil and floor(out.now * AH_CUT) <= vendor
+  out.atVendor = vendor > 0 and out.at ~= nil and floor(out.at * AH_CUT) <= vendor
+  return out
+end
+
 -- ns.SellPrices(itemID [, tf, liveCheapest, own])
 -- The price to sell at, the same on every surface (the tooltip, the sell
 -- buttons, the chart's Sell at box, the bag panel), in copper. tf is not
@@ -436,25 +465,24 @@ end
 function ns.SellPrices(itemID, tf, liveCheapest, own)
   local rec = ns.Recommend(itemID, "1D", liveCheapest)
   if not rec then return nil end
-  local item = ns.GetItem(itemID)
-  local vendor = tonumber(item and item.vendor) or 0
-  local cheap = tonumber(rec.cheapestNow) or 0
-  local mine = rec.live and own == true
-  local usual = tonumber(rec.usual)
-  local out = { rec = rec, live = rec.live, own = mine, cheapest = cheap, usual = usual }
-  if rec.vendorFar then
-    out.nowWhy, out.atWhy = "unreliable", "unreliable"
-  elseif cheap > 1 then
-    out.now = mine and cheap or (cheap - 1)
-    out.at, out.under = ruleG(out.now, usual)
-  else
-    out.nowWhy = "none"
-    out.at = ruleG(nil, usual)
-    if not out.at then out.atWhy = "none" end
-  end
-  out.nowVendor = vendor > 0 and out.now ~= nil and floor(out.now * AH_CUT) <= vendor
-  out.atVendor = vendor > 0 and out.at ~= nil and floor(out.at * AH_CUT) <= vendor
+  local out = sellOut(ns.GetItem(itemID), rec.cheapestNow, rec.live, own, rec.usual, rec.vendorFar)
+  out.rec = rec
   return out
+end
+
+-- ns.SellAt(itemID [, liveCheapest, own]): ns.SellPrices's prices (now, at,
+-- under, usual, live, own, nowVendor, atVendor ...) without the advice
+-- (no rec): the same numbers from the same rule, for many items at once
+-- (Crafts.lua sells what a craft makes at `at`, so its profit line follows
+-- the tooltip's Sell now / Sell at). nil without the item.
+function ns.SellAt(itemID, liveCheapest, own)
+  if type(ns.GetItem) ~= "function" then return nil end
+  local item = ns.GetItem(itemID)
+  if not item then return nil end
+  local live = tonumber(liveCheapest)
+  if live and live <= 0 then live = nil end
+  local _, vendorFar = priceDoubt(item)
+  return sellOut(item, live or tonumber(item.cheapest) or 0, live ~= nil, own, usualPrice(itemID), vendorFar)
 end
 
 ---------------------------------------------------------------------------

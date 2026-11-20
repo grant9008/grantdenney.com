@@ -274,6 +274,8 @@ def sell_prices(rec, live=None, own=False, vendor=0):
     usual  the usual price (rec["usual"]).
     at     Sell now, unless under 70% of usual (then usual, under = % under it);
            nothing listed: usual; None (atWhy "none" / "unreliable") without.
+    raw    Sell now before the "unreliable" check (None with nothing listed):
+           what Crafts.lua counts a made item at when the tooltip has no price.
     rec is recommend(...) on 1D for the same live price (ns.SellPrices ignores
     the chart's timeframe)."""
     cheap = rec["cheapestNow"]
@@ -281,11 +283,11 @@ def sell_prices(rec, live=None, own=False, vendor=0):
     mine = is_live and bool(own)
     usual = rec.get("usual")
     out = {"now": None, "at": None, "under": None, "nowWhy": None, "atWhy": None, "live": is_live, "own": mine,
-           "cheapest": cheap, "usual": usual}
+           "cheapest": cheap, "usual": usual, "raw": (cheap if mine else cheap - 1) if cheap > 1 else None}
     if rec["vendorFar"]:
         out["nowWhy"] = out["atWhy"] = "unreliable"
     elif cheap > 1:
-        out["now"] = cheap if mine else cheap - 1
+        out["now"] = out["raw"]
         out["at"], out["under"] = rule_g(out["now"], usual)
     else:
         out["nowWhy"] = "none"
