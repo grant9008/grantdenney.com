@@ -6,8 +6,11 @@ local ADDON_NAME, ns = ...
 -- and oils when there are some) for your role and level, what each costs at
 -- today's AH value (or a vendor's price) and how many you carry. Well Fed food
 -- gives +5% XP from kills in Forever (below level 60): those rows say so in
--- green. A click on the header folds it to one line (remembered); All shows
--- every usable item instead of the best 4. Best / Budget (next to All) shows the
+-- green. Elixirs and scrolls: the best one of each kind, all usable at once (the
+-- title says how many: "ELIXIRS - 3 at once"); under some, indented, an "or" row
+-- of the same kind to take instead (flasks: one at a time, the rest "or" rows).
+-- A click on the header folds it to one line (remembered); All shows
+-- every usable item instead of the best ones. Best / Budget (next to All) shows the
 -- strongest, or for each of them one for less gold: a cheaper one that does the
 -- same job and is better value (a cheap one stays; a dear one with nothing like it
 -- goes; with All: those first, then cheapest first). The
@@ -1170,15 +1173,28 @@ C.CostOf = costOf
 -- What to show: the sections and their items
 ---------------------------------------------------------------------------
 -- The panel's sections, in order; one with nothing usable is left out.
+-- marks: the rows say what goes together. "kinds" (elixirs, scrolls): the best one of each kind,
+-- plain, all usable at once; under one, indented and starting with "or", one of the same kind in its
+-- place. "one" (flasks): the best one plain, the rest "or". once: the title says "1 at a time".
+-- rule: the title's hover line. What is known (Forever, Nov 2026): one flask at a time (the game's
+-- tooltip), one Well Fed, elixirs have no Battle / Guardian slots and those for different stats
+-- stack (rankedboost.com/world-of-warcraft/forever/buffs/consumables/); two for one stat (or two
+-- crit elixirs, or a two-stat one with either): only one counts is the classic rule, not confirmed
+-- for Forever, so such two are never shown as going together.
 local SECTIONS = {
-  { key = "food", title = "FOOD", lists = { "food" } },
+  { key = "food", title = "FOOD", lists = { "food" }, once = true,
+    rule = "One Well Fed at a time: a new food replaces the old one." },
   { key = "potion", title = "POTIONS" },   -- lists: POTIONS[role]
-  { key = "elixir", title = "ELIXIRS", lists = { "elixir" } },
-  { key = "scroll", title = "SCROLLS", lists = { "scroll" } },
-  { key = "flask", title = "FLASKS", lists = { "flask" } },
+  { key = "elixir", title = "ELIXIRS", lists = { "elixir" }, marks = "kinds",
+    rule = "Different kinds stack. Two of one kind (two Agility elixirs): only one counts, as in classic." },
+  { key = "scroll", title = "SCROLLS", lists = { "scroll" }, marks = "kinds",
+    rule = "Different stats stack. Two of one stat (two Strength scrolls): only one counts, as in classic." },
+  { key = "flask", title = "FLASKS", lists = { "flask" }, marks = "one", once = true,
+    rule = "One flask at a time: a new one replaces the old one." },
   { key = "weapon", title = "STONES AND OILS", lists = { "weapon" } },
 }
 local BEST_N = 4
+local MAX_ROWS, MAX_ALTS, USEFUL = 8, 3, 0.15   -- marked: at most 8 rows and 3 "or" rows; a kind under 15% of the best: out
 local FLOORS = { 1 / 2, 1 / 3 }   -- Budget: a stand-in at least half as strong as the Best pick (a dear one's: a third)
 local CHEAP, DEAR = 10, 25        -- copper a level: a Best pick this cheap stays in Budget; dearer with no stand-in: out
 local NO_XP = 0.25   -- below 60, a food without the +5% XP counts a quarter (below every XP food while levelling)
@@ -1347,8 +1363,9 @@ end
 --    b, at least half as strong as b (when b is dear: over DEAR copper a level, no price, PvP-only or
 --    random, else at least a third);
 --  * none: b, unless it is dear: then nothing (a flask, a 50s elixir with nothing like it for less).
--- Never a PvP-only one, a random one, one without a price or one of a group already shown.
-local function standIn(role, list, b, level, class, seen)
+-- Never a PvP-only one, a random one, one without a price or one of a group already shown (nor one
+-- bar(id) rules out: an elixir or scroll that does not go with the other rows shown).
+local function standIn(role, list, b, level, class, seen, bar)
   local cb, sb = costOf(b), strength(role, list, b, level) or 0
   local own = not PVP[b] and not chancy(list, b)   -- may b itself be the Budget pick?
   if own and cb and cb <= level * CHEAP then return b end
@@ -1360,7 +1377,7 @@ local function standIn(role, list, b, level, class, seen)
     for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
       local it = ITEMS[id]
       if id ~= b and usable(it, level, class) and not PVP[id] and not seen[it[9]] and not chancy(list, id)
-         and peerOf(list, id) == peer then
+         and peerOf(list, id) == peer and not (bar and bar(id)) then
         local c, s = costOf(id), strength(role, list, id, level)
         if c and c > 0 and s and (not cb or c < cb) and s >= FLOORS[f] * sb - 1e-9 then
           local v = valueOf(list, id, s, c)
@@ -1412,13 +1429,15 @@ local function budgetIds(role, key, lists, level, class)
 end
 
 -- Every usable one (the All switch), best first; with Budget: the Budget picks first, then the rest
--- cheapest first (no price last).
-local function allIds(role, key, lists, level, class, budget)
+-- cheapest first (no price last). heads, hfrom: these first instead (a marked section's plain rows).
+local function allIds(role, key, lists, level, class, budget, heads, hfrom)
   local out, from, seen = {}, {}, {}
-  if budget then
+  if heads then
+    for i, id in ipairs(heads) do out[i], from[i] = id, hfrom[i] end
+  elseif budget then
     out, from = budgetIds(role, key, lists, level, class)
-    for _, id in ipairs(out) do seen[id] = true end
   end
+  for _, id in ipairs(out) do seen[id] = true end
   local lead = #out
   for _, list in ipairs(lists) do
     local ids = listAllowed(list, class) and ALL[role] and ALL[role][list] or {}
@@ -1443,8 +1462,167 @@ local function allIds(role, key, lists, level, class, budget)
   return out, from
 end
 
--- { role, class, level, all, budget, sections = { { key, title, ids, lists, pct, ref }, ... } }: each row's
--- list, its strength in % of the strongest usable one of its kind (100: it is that strong), and which that is.
+---------------------------------------------------------------------------
+-- What goes together: elixirs and scrolls of different kinds; one flask
+---------------------------------------------------------------------------
+-- What a buff raises, from its words: "+25 Agi, +2% crit, 30 min" -> { agi = true, crit = true }.
+local STATS = {}
+local function statsOf(id)
+  local s = STATS[id]
+  if s then return s end
+  s = {}
+  local b = ITEMS[id] and ITEMS[id][6] or ""
+  for part in b:gmatch("[^,]+") do
+    local what = smatch(part, "^%s*%+[%d%.]+%%?%s+(.-)%s*$")
+    if what and what ~= "" then s[slower(what)] = true end
+  end
+  STATS[id] = s
+  return s
+end
+
+-- Two that may not both count: one stacking group (Winterfall and Distilled Firewater are one
+-- buff), or a stat in common (two Agility elixirs; Mongoose and Grizzly, both +2% crit; Ferocity,
+-- Str and Agi, with either). Two such are never shown as going together.
+local function clash(a, b)
+  local A, B = ITEMS[a], ITEMS[b]
+  if a == b or not A or not B or A[9] == B[9] then return true end
+  local sb = statsOf(b)
+  for k in pairs(statsOf(a)) do
+    if sb[k] then return true end
+  end
+  return false
+end
+C.Clash = clash
+
+-- Does id go with every plain row but p?
+local function goesWith(heads, p, id)
+  for _, h in ipairs(heads) do
+    if h ~= p and clash(h, id) then return false end
+  end
+  return true
+end
+
+-- The plain row id goes under (its place in heads): the first of its own group, else the first
+-- it clashes with; nil: it goes with all of them (a plain row itself). one: always the first.
+local function headOf(heads, id, one)
+  if one then return heads[1] and 1 or nil end
+  local first
+  for h, hid in ipairs(heads) do
+    if ITEMS[hid][9] == ITEMS[id][9] then return h end
+    if not first and clash(hid, id) then first = h end
+  end
+  return first
+end
+
+-- The rows with each "or" row under its plain row: in the order given, one is a plain row when it
+-- goes with every plain row before it, else an "or" row under the one it would replace.
+-- Returns the ids, their lists and alt (alt[i]: an "or" row).
+local function grouped(ids, from, one)
+  local heads, at, kids = {}, {}, {}
+  for i, id in ipairs(ids) do
+    local h = headOf(heads, id, one)
+    if h then
+      local k = kids[h]
+      k[#k + 1] = i
+    else
+      local n = #heads + 1
+      heads[n], at[n], kids[n] = id, i, {}
+    end
+  end
+  local out, of, alt = {}, {}, {}
+  for h = 1, #heads do
+    out[#out + 1] = heads[h]
+    of[#out] = from[at[h]]
+    for _, i in ipairs(kids[h]) do
+      out[#out + 1] = ids[i]
+      of[#out] = from[i]
+      alt[#out] = true
+    end
+  end
+  return out, of, alt
+end
+
+-- The "or" row under a plain row p: one of its own group that goes with the other plain rows and is
+-- at least a third as strong; the best value of the cheaper ones at least half as strong, else the
+-- strongest of them (never a PvP-only or random one, or one shown).
+local function altFor(role, list, p, level, class, heads, shown)
+  local cp, sp, g = costOf(p), strength(role, list, p, level) or 0, ITEMS[p][9]
+  local cheap, cv, cs, cc, other, os
+  for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
+    local it = ITEMS[id]
+    local s = strength(role, list, id, level) or 0
+    if not shown[id] and it and it[9] == g and usable(it, level, class) and not PVP[id] and not chancy(list, id)
+       and goesWith(heads, p, id) and s >= FLOORS[2] * sp - 1e-9 then
+      local c = costOf(id)
+      if c and c > 0 and (not cp or c < cp) and s >= FLOORS[1] * sp - 1e-9 then
+        local v = valueOf(list, id, s, c)
+        if not cheap or v > cv or (v == cv and (s > cs or (s == cs and c < cc))) then cheap, cv, cs, cc = id, v, s, c end
+      end
+      if not other or s > os then other, os = id, s end
+    end
+  end
+  return cheap or other
+end
+
+-- A marked section's Best or Budget rows (ids, lists, alt). kinds: the best one of each kind in the
+-- research's order (a kind under 15% of the strongest one left out; Budget: each one's stand-in
+-- that goes with the rest), then under the first three one "or" row of their kind (Budget: the Best
+-- one it stands in for, else altFor's), 8 rows at most. one: the Best or Budget picks, the first plain.
+local function markedIds(role, s, level, class, budget)
+  local list, ids, from, alt = s.lists[1], {}, {}, {}
+  if s.marks == "one" then
+    if budget then ids, from = budgetIds(role, s.key, s.lists, level, class)
+    else ids, from = bestIds(role, s.lists, level, class) end
+    for i = 2, #ids do alt[i] = true end
+    return ids, from, alt
+  end
+  local heads, top, keep = {}, 0, {}
+  for _, id in ipairs(rankOrder(role, list, level)) do
+    if usable(ITEMS[id], level, class) and not PVP[id] and not headOf(heads, id) then heads[#heads + 1] = id end
+  end
+  for _, id in ipairs(heads) do top = max(top, strength(role, list, id, level) or 0) end
+  for _, id in ipairs(heads) do
+    if #keep < MAX_ROWS and (strength(role, list, id, level) or 0) >= USEFUL * top - 1e-9 then keep[#keep + 1] = id end
+  end
+  local bestOf = {}
+  if budget then
+    local out, seen = {}, {}
+    for _, b in ipairs(keep) do
+      local id = standIn(role, list, b, level, class, seen, function(x)
+        return not goesWith(keep, b, x) or not goesWith(out, nil, x)
+      end)
+      if id and not seen[ITEMS[id][9]] then
+        seen[ITEMS[id][9]] = true
+        out[#out + 1] = id
+        bestOf[id] = b
+      end
+    end
+    keep = out
+  end
+  local shown, alts, rows = {}, {}, #keep
+  for _, h in ipairs(keep) do shown[h] = true end
+  for k, h in ipairs(keep) do
+    if k > MAX_ALTS or rows >= MAX_ROWS then break end
+    local a = bestOf[h]
+    if not a or a == h or shown[a] or not goesWith(keep, h, a) then a = altFor(role, list, h, level, class, keep, shown) end
+    if a then
+      alts[k], shown[a], rows = a, true, rows + 1
+    end
+  end
+  for k, h in ipairs(keep) do
+    ids[#ids + 1] = h
+    from[#ids] = list
+    if alts[k] then
+      ids[#ids + 1] = alts[k]
+      from[#ids], alt[#ids] = list, true
+    end
+  end
+  return ids, from, alt
+end
+
+-- { role, class, level, all, budget, sections = { { key, title, ids, lists, pct, ref, alt, ... }, ... } }: each
+-- row's list, its strength in % of the strongest usable one of its kind (100: it is that strong), which that
+-- is, and (marked sections) alt[i]: an "or" row, in place of the plain row above it.
 local model
 
 local function buildModel()
@@ -1455,8 +1633,22 @@ local function buildModel()
   for _, s in ipairs(SECTIONS) do
     local lists = s.lists or POTIONS[role] or {}
     local ref = strongest(role, lists, level, class)
-    local ids, from
-    if all then
+    local ids, from, alt
+    if s.marks then
+      ids, from, alt = markedIds(role, s, level, class, budget)
+      if all then
+        -- Every usable one: the plain rows first, each with the rest of its kind under it.
+        local lead, lfrom = {}, {}
+        for i, id in ipairs(ids) do
+          if not alt[i] then
+            lead[#lead + 1] = id
+            lfrom[#lead] = from[i]
+          end
+        end
+        ids, from = allIds(role, s.key, lists, level, class, budget, lead, lfrom)
+        ids, from, alt = grouped(ids, from, s.marks == "one")
+      end
+    elseif all then
       ids, from = allIds(role, s.key, lists, level, class, budget)
     elseif budget then
       ids, from = budgetIds(role, s.key, lists, level, class)
@@ -1473,7 +1665,8 @@ local function buildModel()
           refs[i] = r[2]
         end
       end
-      m.sections[#m.sections + 1] = { key = s.key, title = s.title, ids = ids, lists = from, pct = pct, ref = refs }
+      m.sections[#m.sections + 1] = { key = s.key, title = s.title, ids = ids, lists = from, pct = pct, ref = refs,
+                                      alt = alt, marks = s.marks, once = s.once, rule = s.rule }
     end
   end
   model = m
@@ -1579,6 +1772,7 @@ end
 local NAME = "GoblinLedgerConsumes"
 local HEAD_H, ROW_H, PAD, COL_GAP, GAP = 18, 16, 6, 12, 2
 local PCT_GAP = 4      -- the grey number's gap to the words and to the price
+local OR_W = 16        -- an "or" row: the grey word "or", then its icon this far in
 local BODY_TOP, BODY_BOT = 1, 3
 local MAX_LINES = 16   -- the All list: at most this many lines, the rest scrolls
 local CAP = 24         -- a part more than this under the frame is not ours to avoid
@@ -1647,6 +1841,42 @@ local function colsFor(width)
   return 1
 end
 
+-- Which of a section's rows show with n a section (nil: all): the first n; marked: the plain rows
+-- first (an "or" row only once every plain row is in), in their order.
+local function shownRows(s, n)
+  local k, out = #s.ids, {}
+  if not n or n >= k or not s.alt then
+    for i = 1, (n and n < k) and n or k do out[i] = i end
+    return out
+  end
+  local plain = 0
+  for i = 1, k do
+    if not s.alt[i] then plain = plain + 1 end
+  end
+  local alts, p = n - plain, 0
+  for i = 1, k do
+    if s.alt[i] then
+      if alts > 0 then
+        out[#out + 1] = i
+        alts = alts - 1
+      end
+    elseif p < n then
+      out[#out + 1] = i
+      p = p + 1
+    end
+  end
+  return out
+end
+
+-- A section's title: food and flasks "- 1 at a time"; elixirs and scrolls, how many of the rows shown
+-- go together ("ELIXIRS - 3 at once"), when two or more do.
+local function titleOf(s, plain)
+  if s.once then return s.title .. " - 1 at a time" end
+  if s.marks and plain >= 2 then return s.title .. " - " .. plain .. " at once" end
+  return s.title
+end
+C.TitleOf = titleOf
+
 -- The lines (section titles and rows) for n rows a section (nil: all), sections side by side.
 local function cellsFor(m, cols, n)
   local cells, line, secs = {}, 0, m.sections
@@ -1655,19 +1885,29 @@ local function cellsFor(m, cols, n)
     for c = 0, cols - 1 do
       local s = secs[first + c]
       if s then
-        local k = #s.ids
-        if n and k > n then k = n end
-        cells[#cells + 1] = { line = line, col = c, title = s.title, key = s.key }
-        for i = 1, k do
-          cells[#cells + 1] = { line = line + i, col = c, id = s.ids[i], key = s.key, pct = s.pct and s.pct[i],
-                                ref = s.ref and s.ref[i] }
+        local show, plain = shownRows(s, n), 0
+        local head = { line = line, col = c, key = s.key, rule = s.rule }
+        cells[#cells + 1] = head
+        for k, i in ipairs(show) do
+          local alt = s.alt and s.alt[i] or nil
+          if not alt then plain = plain + 1 end
+          cells[#cells + 1] = { line = line + k, col = c, id = s.ids[i], key = s.key, pct = s.pct and s.pct[i],
+                                ref = s.ref and s.ref[i], alt = alt }
         end
-        if k > tall then tall = k end
+        head.title = titleOf(s, plain)
+        if #show > tall then tall = #show end
       end
     end
     line = line + 1 + tall
   end
   return cells, line
+end
+
+-- The most rows a section has (the best 4, or more for a marked one): the first try at fitting.
+local function longest(m)
+  local n = BEST_N
+  for _, s in ipairs(m.sections) do n = max(n, #s.ids) end
+  return n
 end
 
 local function fitLines(room)
@@ -1679,8 +1919,8 @@ local function heightFor(lines)
   return HEAD_H + BODY_TOP + lines * ROW_H + BODY_BOT
 end
 
--- Pools: section titles (font strings) and rows (buttons), made as they are needed.
-local titles, rows = {}, {}
+-- Pools: section titles (font strings), their hover spots and rows (buttons), made as they are needed.
+local titles, tips, rows = {}, {}, {}
 
 local function newFS(parent, font)
   local fs = parent:CreateFontString(nil, "OVERLAY", font or "GameFontHighlightSmall")
@@ -1689,7 +1929,19 @@ local function newFS(parent, font)
   return fs
 end
 
-local rowEnter, rowLeave, rowClick, onWheel   -- the row scripts (below)
+local rowEnter, rowLeave, rowClick, onWheel, tipEnter   -- the row and title scripts (below)
+
+-- A spot over a section's title: its hover says what goes together (the section's rule).
+local function newTip(i)
+  local t = _G.CreateFrame("Frame", nil, F)
+  t:SetHeight(ROW_H)
+  t:EnableMouse(true)
+  t:SetScript("OnEnter", guarded(tipEnter))
+  t:SetScript("OnLeave", guarded(rowLeave))
+  t:SetScript("OnMouseWheel", guarded(function(_, delta) onWheel(F, delta) end))
+  tips[i] = t
+  return t
+end
 
 local function newRow(i)
   local r = _G.CreateFrame("Button", nil, F)
@@ -1715,6 +1967,13 @@ local function newRow(i)
   r.text = newFS(r)
   r.text:SetPoint("LEFT", r.icon, "RIGHT", 4, 0)
   r.text:SetPoint("RIGHT", r.pct, "LEFT", -PCT_GAP, 0)
+  -- An "or" row (one in place of the row above it): the grey "or" first, the icon further in.
+  r.orWord = newFS(r)
+  r.orWord:SetPoint("LEFT", r, "LEFT", 2, 0)
+  r.orWord:SetWidth(OR_W - 3)
+  r.orWord:SetTextColor(mu[1], mu[2], mu[3], 1)
+  r.orWord:SetText("or")
+  r.orWord:Hide()
   r.glNoEnchants = true   -- Enchants.lua: no enchant lines on a tooltip a row owns
   r.glConsumes = true     -- the tooltip post call: a row of this list
   r:SetScript("OnEnter", guarded(rowEnter))
@@ -1732,8 +1991,11 @@ local function pctText(p)
 end
 C.PctText = pctText
 
-local function fillRow(r, id, stale, pct, ref)
-  r.glID, r.glPct, r.glRef = id, pct, ref
+local function fillRow(r, id, stale, pct, ref, alt)
+  r.glID, r.glPct, r.glRef, r.glAlt = id, pct, ref, alt and true or nil
+  r.icon:ClearAllPoints()
+  r.icon:SetPoint("LEFT", r, "LEFT", alt and OR_W or 1, 0)
+  if alt then r.orWord:Show() else r.orWord:Hide() end
   r.icon:SetTexture(iconOf(id))
   r.text:SetText(leftText(id, model.level))
   r.pct:SetText(pctText(pct))
@@ -1788,9 +2050,20 @@ local function draw()
           fs:SetTextColor(mu[1], mu[2], mu[3], 1)
           fs:ClearAllPoints()
           fs:SetPoint("LEFT", F, "TOPLEFT", x + 2, y - ROW_H / 2)
+          fs:SetWidth(colW - 4)   -- never into the next column (cut short first)
           fs:SetText(cell.title)
           fs.glKey = cell.key
           fs:Show()
+          -- Its hover spot, as wide as its words: what goes together, in one line.
+          local tip = tips[nt] or newTip(nt)
+          local okW, tw = pcall(fs.GetStringWidth, fs)
+          tw = okW and plainNumber(tw) or 0
+          tip:ClearAllPoints()
+          tip:SetPoint("LEFT", F, "TOPLEFT", x, y - ROW_H / 2)
+          tip:SetWidth(max(8, min(colW, floor(tw + 4))))
+          tip.glRule = cell.rule
+          if tip.EnableMouseWheel then tip:EnableMouseWheel(wheel) end
+          tip:SetShown(cell.rule ~= nil)
         else
           nr = nr + 1
           local r = rows[nr] or newRow(nr)
@@ -1799,13 +2072,17 @@ local function draw()
           r:SetWidth(colW)
           r.glKey = cell.key
           if r.EnableMouseWheel then r:EnableMouseWheel(wheel) end
-          fillRow(r, cell.id, stale, cell.pct, cell.ref)
+          fillRow(r, cell.id, stale, cell.pct, cell.ref, cell.alt)
           r:Show()
         end
       end
     end
   end
   for i = nt + 1, #titles do titles[i]:Hide() end
+  for i = nt + 1, #tips do
+    tips[i]:Hide()
+    tips[i].glRule = nil
+  end
   for i = nr + 1, #rows do
     rows[i]:Hide()
     rows[i].glID = nil
@@ -1855,10 +2132,12 @@ local function place()
         lines = max(0, fitBelow)
       end
     else
-      -- The best 4 if they fit, else 3 or 2 a section; under the screen first, then above it.
+      -- Every row if they fit (the best 4; a marked section more), else fewer a section (a marked one's
+      -- "or" rows go first), down to 2; under the screen first, then above it.
+      local most = longest(model)
       for _, where in ipairs({ "below", "above" }) do
         local fit = where == "below" and fitBelow or fitAbove
-        for k = BEST_N, 2, -1 do
+        for k = most, 2, -1 do
           local c, t = cellsFor(model, cols, k)
           if t <= fit then
             side, n, cells, total, lines = where, k, c, t, t
@@ -1868,8 +2147,8 @@ local function place()
         if n then break end
       end
       if not n then
-        -- Not even 2 rows a section fit: all 4, scrolled in what room there is.
-        n = BEST_N
+        -- Not even 2 rows a section fit: all of them, scrolled in what room there is.
+        n = most
         cells, total = cellsFor(model, cols, n)
         if fitAbove > fitBelow and fitAbove > 0 then side, lines = "above", min(total, fitAbove)
         else lines = max(0, min(total, fitBelow)) end
@@ -1982,6 +2261,15 @@ end
 rowLeave = function(self)
   local tt = _G.GameTooltip
   if owns(tt, self) then tt:Hide() end
+end
+
+-- A section title's hover: what goes together there, in one line.
+tipEnter = function(self)
+  local tt, rule = _G.GameTooltip, self.glRule
+  if not rule or type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
+  tt:SetOwner(self, "ANCHOR_RIGHT")
+  tt:SetText(rule, 1, 1, 1, 1, true)
+  tt:Show()
 end
 
 local function chatLink(id)
@@ -2169,7 +2457,7 @@ local function build()
   F.title:SetPoint("LEFT", F.arrow, "RIGHT", 5, 0)
   head:SetScript("OnClick", guarded(toggleCollapsed))
   F.header = head
-  -- All: every usable item instead of the best 4 (gold while on).
+  -- All: every usable item instead of the best ones (gold while on).
   local all = make("Button", nil, F)
   all:SetSize(28, 14)
   all:SetPoint("TOPRIGHT", F, "TOPRIGHT", -4, -2)
@@ -2191,7 +2479,7 @@ local function build()
     if type(tt) ~= "table" or type(tt.SetOwner) ~= "function" then return end
     tt:SetOwner(self, "ANCHOR_RIGHT")
     local S = settings()
-    tt:SetText(S.consumesAll and (S.consumesBudget and "Show the 4 Budget picks" or "Show the best 4") or "Show every usable one",
+    tt:SetText(S.consumesAll and (S.consumesBudget and "Show the Budget picks" or "Show the best ones") or "Show every usable one",
       1, 1, 1)
     tt:Show()
   end))
