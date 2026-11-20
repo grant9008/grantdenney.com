@@ -7,7 +7,10 @@ local ADDON_NAME, ns = ...
 -- at today's AH value. Upgrades you buy and use yourself are options too: Leatherworking
 -- armor kits, Engineering scopes, and Blacksmithing spikes and counterweights
 -- for a blacksmith. Only upgrades show: an item with the 3rd best gets the best
--- and the 2nd, one with the best gets nothing. A warrior's or rogue's gun, bow
+-- and the 2nd, one with the best gets one grey "Best enchant already on". Speed
+-- on boots is a choice, not a better enchant: a boot with Minor Speed, Speed or
+-- Mithril Spurs gets the stat options a bare boot gets, under a grey line that
+-- names it ("Has Mithril Spurs. Stat options:"). A warrior's or rogue's gun, bow
 -- or crossbow only pulls: it gets the best scope only, with a grey "(pulling
 -- only)". The role comes from your talents; /gl enchants picks one by hand or
 -- turns the lines off, and the Enchant tips box on the character panel (with
@@ -396,10 +399,13 @@ local ENCHANTS = {
 }
 
 -- Best first, in value order for the role (rankedboost's Forever stat weights, averaged over the
--- role's specs): an item shows the entries above the enchant it has (nothing when it has the first),
--- as far as the player's level, professions and the item's level allow. up = enchant ids at least as
--- good as the first (nothing is shown); at = { [id] = n }: an enchant not in the list that ranks just
--- above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list (it is worth less).
+-- role's specs): an item shows the entries above the enchant it has (the grey best line when it has
+-- the first), as far as the player's level, professions and the item's level allow. up = enchant ids
+-- at least as good as the first (the grey best line); at = { [id] = n }: an enchant not in the list
+-- that ranks just above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list (it
+-- is worth less). Boots' speed enchants (SPEED below) are not in up: they get the whole list.
+-- The tank's Wild Leather Armor Kit (8719: Defense +4, Stamina +10, worth about 15.5 Stamina by the
+-- tank weights against Greater Stamina +7's 7) is no speed enchant: it beats the list, it stays in up.
 -- Belts, shoulders, rings, trinkets: nothing (Forever has no belt buckle, and its Engineering belt
 -- tinkers need schematics and parts that are not in the game).
 -- Weapons: "Enchant Weapon" recipes fit every melee weapon, two-handers too (SpellEquippedItems), so
@@ -518,14 +524,14 @@ local PICKS = {
     ["healer"] = { "s13948", "k252487", "k252462", "k252452", "k252436", up = { 2617 } },
   },
   feet = {
-    ["melee"] = { "k252488", "k252463", "s20023", "k252453", "s13935", "k252437", "s13637", "s7867", up = { 8737, 911, 464 } },
-    ["agility"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437", up = { 8737, 911, 464 } },
-    ["hunter"] = { "s20023", "s13935", "k252488", "s13637", "k252463", "s7867", "k252453", "k252437", up = { 8737, 911, 464 } },
-    ["tank"] = { "s20020", "k15564", "k8173", "s13836", "k4265", "s13644", "k2313", up = { 8737, 911, 464, 8719 }, at = { [8488] = 6, [8491] = 5 } },
-    ["caster"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", "s13644", up = { 8737, 911, 464 }, at = { [8487] = 7, [8490] = 6 } },
-    ["healer"] = { "k252487", "k252462", "k252452", "k252436", "s20024", "s13687", up = { 8737, 911, 464 } },
-    ["healer/PALADIN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [8490] = 6 } },
-    ["healer/SHAMAN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", up = { 8737, 911, 464 }, at = { [8490] = 6 } },
+    ["melee"] = { "k252488", "k252463", "s20023", "k252453", "s13935", "k252437", "s13637", "s7867" },
+    ["agility"] = { "s20023", "k252488", "s13935", "k252463", "s13637", "k252453", "s7867", "k252437" },
+    ["hunter"] = { "s20023", "s13935", "k252488", "s13637", "k252463", "s7867", "k252453", "k252437" },
+    ["tank"] = { "s20020", "k15564", "k8173", "s13836", "k4265", "s13644", "k2313", up = { 8719 }, at = { [8488] = 6, [8491] = 5 } },
+    ["caster"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", "s13644", at = { [8487] = 7, [8490] = 6 } },
+    ["healer"] = { "k252487", "k252462", "k252452", "k252436", "s20024", "s13687" },
+    ["healer/PALADIN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", at = { [8490] = 6 } },
+    ["healer/SHAMAN"] = { "k252487", "k252462", "k252452", "k252436", "s20020", "s13836", at = { [8490] = 6 } },
   },
   neck = {
     ["melee"] = { "s1249019", "s1249059" },
@@ -562,7 +568,12 @@ local PICKS = {
   },
 }
 -- END DATA
-E.DATA = { mats = MATS, enchants = ENCHANTS, picks = PICKS }
+-- Speed on boots: a choice, not a better enchant (the stat lists do not weigh it). A boot with one
+-- gets the options a bare boot gets, under one grey line naming it. Forever's boot enchants with
+-- speed (SpellItemEnchantment, wowf 1.60.1): Minor Speed 911 (+4% run speed), Speed 8737 (+8% run
+-- speed) and Blacksmithing's Mithril Spurs 464 (mount speed); Nitro Boosts is a belt tinker.
+local SPEED = { [911] = "Minor Speed", [8737] = "Speed +8%", [464] = "Mithril Spurs" }
+E.DATA = { mats = MATS, enchants = ENCHANTS, picks = PICKS, speed = SPEED }
 
 ---------------------------------------------------------------------------
 -- Small helpers
@@ -1132,8 +1143,9 @@ local function usable(e, f, level)
   return true
 end
 
--- Where the item's enchant stops the list: entries before this place are upgrades. 0 = nothing
--- (an "up" enchant, or the first entry), nil = the whole list (no enchant, or one the data does not know).
+-- Where the item's enchant stops the list: entries before this place are upgrades. 0 = an "up"
+-- enchant, 1 = the first entry (both: the best is on, nothing above it), nil = the whole list (no
+-- enchant, or one the data does not know).
 local function stopAt(rec, current)
   if not current then return nil end
   if listHas(rec.up, current) then return 0 end
@@ -1291,10 +1303,12 @@ E.DetailText = detailText
 -- The labels by place among the entries the player can use.
 local LABELS = { "Best enchant: ", "2nd: ", "3rd: ", "4th: ", "5th: " }
 
--- The lines for the options: { left, right, grey } rows; mats rows (and the note) have mats = true.
-local function buildLines(keys, full, stale, note)
+-- The lines for the options: { left, right, grey } rows; mats rows (and the note, and the head
+-- line over the options) have mats = true.
+local function buildLines(keys, full, stale, note, head)
   E.builds = E.builds + 1
   local out = {}
+  if head then out[1] = { head, mats = true } end   -- shown in compact mode too
   for i, key in ipairs(keys) do
     local cost, grey = costText(key, stale)
     out[#out + 1] = { (LABELS[i] or (i .. "th: ")) .. ENCHANTS[key].n, cost, grey }
@@ -1304,14 +1318,15 @@ local function buildLines(keys, full, stale, note)
   return out
 end
 
-local function linesFor(keys, full, note)
+local function linesFor(keys, full, note, head)
   freshMemos()
   -- The age grows while the data stays the same: whether it is old is part of the key.
   local stale = stalePrices()
   local k = tconcat(keys, "|") .. (full and "|f" or "|c") .. (stale and "|s" or "") .. (note and "|n" or "")
+  if note or head then k = k .. "|" .. (note or "") .. "|" .. (head or "") end   -- which note, which head
   local l = lineMemo[k]
   if not l then
-    l = buildLines(keys, full, stale, note)
+    l = buildLines(keys, full, stale, note, head)
     lineMemo[k] = l
   end
   return l
@@ -1349,7 +1364,12 @@ end
 local PULL_NOTE = "(pulling only)"
 E.PULL_NOTE = PULL_NOTE
 
--- The options for an item at a place, best first (a list of keys), or nil; then the note under them.
+-- The best enchant for the role (the list's first, or an "up" one) on an item: one grey line instead
+-- of nothing, so the tips are seen to work.
+local BEST_ON = "Best enchant already on"
+
+-- The options for an item at a place, best first (a list of keys; empty with the best line), or nil;
+-- then the note under them, and the line over them (a boot with a speed enchant).
 local function optionsFor(itemID, link, where)
   if not SHOW[where] then return nil end
   local f = facts(itemID)
@@ -1359,8 +1379,14 @@ local function optionsFor(itemID, link, where)
   if not role or not canWear(d.class, f) then return nil end
   local rec = pickFor(f.g, role, d.class, d.tab, f)
   if not rec then return nil end
-  local keys = pickKeys(rec, f, d.level or 60, linkEnchant(link), rec.pull and 1 or topN())
-  return keys, keys and rec.pull and PULL_NOTE or nil
+  local current = linkEnchant(link)
+  local speed = f.g == "feet" and current and SPEED[current] or nil
+  if speed then current = nil end   -- a choice, not better: the options a bare boot gets
+  local stop = stopAt(rec, current)
+  if stop and stop <= 1 then return {}, BEST_ON end
+  local keys = pickKeys(rec, f, d.level or 60, current, rec.pull and 1 or topN())
+  if not keys then return nil end
+  return keys, rec.pull and PULL_NOTE or nil, speed and ("Has " .. speed .. ". Stat options:") or nil
 end
 E.OptionsFor = optionsFor
 
@@ -1379,9 +1405,9 @@ local function addLines(tt, itemID, link, info)
   if not SHOW[where] then return false end
   if type(link) ~= "string" or isSecret(link) then link = fallbackLink(info) end
   if not link then return false end   -- without the link the current enchant is unknown
-  local keys, note = optionsFor(itemID, link, where)
+  local keys, note, head = optionsFor(itemID, link, where)
   if not keys then return false end
-  draw(tt, linesFor(keys, not S.compact or shiftDown(), note))
+  draw(tt, linesFor(keys, not S.compact or shiftDown(), note, head))
   return true
 end
 
