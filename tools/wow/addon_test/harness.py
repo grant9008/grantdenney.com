@@ -52,7 +52,7 @@ SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in gob
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
 TOC_FILES = ["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua",
-             "Consumes.lua", "Flights.lua", "Boats.lua"]
+             "Consumes.lua", "Crafts.lua", "Flights.lua", "Boats.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -2755,8 +2755,9 @@ end
 -- M.pos (world x, y) or nothing. M.spells: the spells C_SpellBook.IsSpellKnown knows.
 -- MirrorTimerContainer: Edit Mode's Timer Bars (MirrorTimer.xml: TOP, y -100).
 M.taxi = { open = false, nodes = {}, mapID = 1463, taken = {}, early = 0, delay = 0.3 }
-M.onTaxi, M.pos, M.spells, M.playerGUID = false, nil, {}, "Player-1-0000ABCD"
-function UnitGUID(unit) if unit == "player" then return M.playerGUID end end
+-- M.guid: the one player GUID of the whole mock (flights keep your pace and Crafts.lua the recipes under it).
+M.onTaxi, M.pos, M.spells, M.guid = false, nil, {}, "Player-1-0000ABCD"
+function UnitGUID(unit) if unit == "player" then return M.guid end end
 function UnitOnTaxi(unit) return unit == "player" and M.onTaxi == true end
 function UnitPosition(unit) if unit == "player" and M.pos then return M.pos[1], M.pos[2], 0, 0 end end
 C_SpellBook = { IsSpellKnown = function(id, bank) return M.spells[id] == true end }
@@ -2876,7 +2877,9 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "TOOLTIP_DATA_UPDATE", "GET_ITEM_INFO_RECEIVED", "PLAYER_MONEY", "BAG_UPDATE", "AUCTION_HOUSE_POST_WARNING",
   "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED",
   "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
-  "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
+  "SKILL_LINES_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_CLOSE",
+  "TRADE_SKILL_DATA_SOURCE_CHANGED", "NEW_RECIPE_LEARNED", "LEARNED_SPELL_IN_SKILL_LINE",
+  "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
   "PLAYER_CONTROL_GAINED",
   "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
   "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
@@ -3523,7 +3526,7 @@ class World:
     def __init__(self, ref, items_json, client="modern", data_src=None, now=None, saved=None,
                  faction="Alliance", screen=None, auctionator=False, bare_coin=False, ah_width=800,
                  set_owner_clears=True, copper_values=True, gold=MOCK_GOLD, before_addon=None,
-                 latest_src=None, running_version=None, login=(True, False)):
+                 latest_src=None, running_version=None, login=(True, False), ns_setup=None):
         self.ref = ref
         self.items_json = items_json
         self.lua = lua51.LuaRuntime(unpack_returned_tuples=True)
@@ -3535,6 +3538,8 @@ class World:
         self.M = self.g.MOCK
         M = self.M
         M.SetClient(client)
+        if client == "modern":   # C_TradeSkillUI, C_SpellBook, UnitGUID, the Professions window (Crafts.lua)
+            self.loader(CRAFTS_MOCK_LUA, "@MOCK/crafts.lua")
         self.set_gold(gold)
         M.faction = faction
         M.setOwnerClears = set_owner_clears
@@ -3561,6 +3566,8 @@ class World:
             M.loaded["Auctionator"] = True
             M.fire("ADDON_LOADED", "Auctionator")
         self.ns = self.lua.table()
+        if ns_setup:   # an addon file before ours left something in the shared table
+            self.loader(ns_setup, "@MOCK/ns_setup.lua", self.ns)
         self.load_errors = []
         for fname in TOC_FILES:
             if fname == "Data.lua":
@@ -3818,6 +3825,9 @@ class Scenario:
         bt = ns.Boats
         if bt is not None:
             self.check(bt.lastError is None, "%s: Boats.lastError is nil (%s)" % (label, bt.lastError))
+        cr = ns.Crafts
+        if cr is not None:
+            self.check(cr.lastError is None, "%s: Crafts.lastError is nil (%s)" % (label, cr.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
@@ -3927,6 +3937,8 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     it = ref.items.get(iid)
     if it is None:
         lines, st = [("Goblin Ledger: no recent listings", None)], [("muted", None, False)]
+        cl, cc = cr_expect_plain(ref, iid, age, compact)
+        lines, st = lines + cl, st + [(a, b, False) for a, b in cc]
         return (lines, st) if styles else lines
     if count is None:
         count = mult if mult > 1 else 1
@@ -3998,6 +4010,9 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
         add("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload" % (age // 3600), None, "muted", None)
     if out and out[-1][1][2]:
         out[-1] = (out[-1][0], (out[-1][1][0], out[-1][1][1], False))
+    # then Crafts.lua's: for a player with no professions, a recipe item's (Makes, mats, profit)
+    cl, cc = cr_expect_plain(ref, iid, age, compact)
+    out += [(ln, (c[0], c[1], False)) for ln, c in zip(cl, cc)]
     lines = [x[0] for x in out]
     return (lines, [x[1] for x in out]) if styles else lines
 
@@ -4467,6 +4482,10 @@ def sc_static(sc, ref, items):
                 fname, "once (the drop box)" if fname == "Bags.lua" else "nowhere"))
             for api in ("DeleteItem", "ConfirmDeleteItem", "RunScript"):
                 sc.check(not re.search(r"\b" + api + r"\b", code), "%s never uses %s" % (fname, api))
+            # Never crafts or casts for the player (Crafts.lua only reads the Professions window).
+            for api in ("CraftRecipe", "CraftEnchant", "CraftSalvage", "RecraftRecipe", "CastSpellByID", "CastSpellByName",
+                        "DoTradeSkill", "DoCraft", "CastSpell"):
+                sc.check(not re.search(r"\b" + api + r"\s*\(", code), "%s never calls %s" % (fname, api))
     check_rename_leftovers(sc)
 
 
@@ -21266,8 +21285,9 @@ def sc_consumes_slash(sc, ref, items):
              "slash: Consumes.lua line ends all alike")
     for toc in ("GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         lines = [l.strip() for l in open(os.path.join(ADDON, toc), "rb").read().decode("ascii").splitlines() if l.strip()]
-        at = lines.index("Enchants.lua") if "Enchants.lua" in lines else -2
-        sc.eq(lines[at:at + 2], ["Enchants.lua", "Consumes.lua"], "slash: %s loads Consumes.lua after Enchants.lua" % toc)
+        at = lines.index("Enchants.lua") if "Enchants.lua" in lines else -3
+        sc.eq(lines[at:at + 3], ["Enchants.lua", "Consumes.lua", "Crafts.lua"],
+              "slash: %s loads Consumes.lua after Enchants.lua (then Crafts.lua)" % toc)
 
 
 def sc_consumes_picks(sc, ref, items):
@@ -22625,10 +22645,24 @@ def ref_sold_line(ref, iid):
     return "No sales seen yet."
 
 
-def ref_empty_lines(w, ref, text, extra=(), filtered=False, exact=False):
+def es_game_item(w, text):
+    """The item the mock game knows by that name (any case, the lowest id; only items it has loaded,
+    and only while it answers by name): (id, bind), else (None, None)."""
+    if w.M.infoByName is False:
+        return None, None
+    low = text.lower()
+    for k in sorted(w.M["items"].keys()):
+        it = w.M["items"][k]
+        if it is not None and isinstance(it.name, str) and it.name.lower() == low:
+            return k, it.bind or 0
+    return None, None
+
+
+def ref_empty_lines(w, ref, text, extra=(), filtered=False, exact=False, ctx=None):
     """The lines under "No items found" for a search with no results, and the item the chart shows.
     filtered: the search had a category, a level range or filters that hide items; exact: it matched
-    whole names only (ExactMatch)."""
+    whole names only (ExactMatch). Then Crafts.lua's lines (cr_search_lines, for the character ctx;
+    the live prices are the addon's), then other files' (extra)."""
     iid, how = ref_find_search(ref, text, w)
     out = []
     if iid is not None:
@@ -22648,15 +22682,13 @@ def ref_empty_lines(w, ref, text, extra=(), filtered=False, exact=False):
         out.append(ref_sold_line(ref, iid))
         chart = iid
     else:
-        gid, bind = None, None
-        for k in sorted(w.M["items"].keys()):
-            it = w.M["items"][k]
-            if it is not None and isinstance(it.name, str) and it.name.lower() == text.lower():
-                gid, bind = k, it.bind or 0
-                break
+        gid, bind = es_game_item(w, text)
         out.append({1: "Bind on pickup: never on the AH.", 4: "Quest item: never on the AH."}.get(
-            bind, "Goblin Ledger has no prices for that name."))
+            bind, "No AH prices for that name."))
         chart = gid
+        iid = None
+    cr_model_world(w, ref)
+    out += cr_search_lines(w, text, iid, cr_lua_ctx(w, ctx))
     out += list(extra)
     return out[:7], chart
 
@@ -22681,8 +22713,8 @@ def es_shown(w):
     return fs._text.split("\n")
 
 
-def es_lines_ok(sc, w, ref, text, label, extra=(), tf=None, filtered=False, exact=False):
-    want, chart = ref_empty_lines(w, ref, text, extra, filtered=filtered, exact=exact)
+def es_lines_ok(sc, w, ref, text, label, extra=(), tf=None, filtered=False, exact=False, ctx=None):
+    want, chart = ref_empty_lines(w, ref, text, extra, filtered=filtered, exact=exact, ctx=ctx)
     sc.eq(es_shown(w), want, "%s: lines under No items found" % label)
     al = w.ns.AHState.emptyLines
     sc.eq([al[i] for i in range(1, len(al) + 1)] if al is not None else None, want, "%s: AHState.emptyLines" % label)
@@ -22740,9 +22772,11 @@ def sc_empty_search(sc, ref, items):
     # one day of daily prices: the week
     es_search(w, "glimmerquartz dust")
     chart_check(sc, w, r2, ES_DUST, "1W", "1 day of daily prices: the chart shows the week", saved_tf="1D")
-    # a real item, exact (its last listing is the latest snapshot)
+    # a real item, exact (its last listing is the latest snapshot): only the AH code's 2 lines, no
+    # craft lines for items that merely share its words (Bolt of Linen Cloth)
     es_search(w, N(R.LINEN).upper())
     es_lines_ok(sc, w, r2, N(R.LINEN).upper(), "real item exact", tf="1W")
+    sc.eq(len(es_shown(w)), 2, "real item exact: the AH code's 2 lines only (%s)" % es_shown(w))
     # contains: the whole text, and every word of it
     # (only every word in the name: "words"; the whole text where a word starts beats inside a word)
     for q, want_id, how in (("quillbright spurs", ES_PLANS, "contains"), ("plans quillbright", ES_PLANS, "words"),
@@ -22790,17 +22824,32 @@ def sc_empty_search(sc, ref, items):
     sc.check("|TInterface\\MoneyFrame\\UI-GoldIcon" in es_shown(w)[0], "the price has coin icons (%s)" % es_shown(w)[0])
     # names the data does not have: bind on pickup (the game knows it by name), a quest item, unknown
     es_search(w, "plans: officer's boots")
-    sc.eq(es_shown(w), ["Bind on pickup: never on the AH."], "bind on pickup by name")
+    # its plans' mats under it, not "bind on pickup" again (Steel Bar, Heavy Grinding Stone and Jade
+    # have no price in the simulated data: no total, never "0c")
+    BOOTS = "Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade"
+    want, _ = es_lines_ok(sc, w, r2, "plans: officer's boots", "bind on pickup by name")
+    if R.SIM:
+        sc.eq(want, ["Bind on pickup: never on the AH.", BOOTS], "bind on pickup by name: the lines (simulated data)")
+    sc.eq(want[0], "Bind on pickup: never on the AH.", "bind on pickup by name: the AH code's line first")
+    sc.check(len(want) == 2 and want[1].startswith(BOOTS) and "0c" not in want[1], "bind on pickup by name: the mats (%s)" % want)
     sc.eq(ns.ChartItem(), ES_BOP, "bind on pickup: the chart shows the item")
     sc.check(C.msg._shown and "No recent listings for Plans: Officer's Boots" in (C.msg._text or ""),
              "bind on pickup: the chart says no recent listings (%s)" % C.msg._text)
     es_search(w, "Sealed Quillorders")
     sc.eq(es_shown(w), ["Quest item: never on the AH."], "quest item by name")
-    NOPRICE = "Goblin Ledger has no prices for that name."
+    NOPRICE = "No AH prices for that name."
     es_search(w, "plans officer")
+    # the user's search: no item has that name; the 8 Officer's plans have both words: 2 named, the
+    # priced mats and how many have no price, no total while none has one, and how many more
+    OFFICER = ["Plans: Officer's Belt (bind on pickup) - Mats: 6 Iron Bar, 2 Heavy Grinding Stone, 2 Jade = 30s + 2 with no price",
+               "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade",
+               "6 more match: type more of the name."]
+    want, _ = es_lines_ok(sc, w, r2, "plans officer", "plans officer")
     if ref_find_search(r2, "plans officer")[0] is None:
-        sc.eq(es_shown(w), [NOPRICE], "a name nobody knows (the user's search)")
-    es_lines_ok(sc, w, r2, "plans officer", "plans officer")
+        sc.eq(want[:1], [NOPRICE], "a name nobody knows (the user's search)")
+        sc.eq(want[-1], OFFICER[-1], "plans officer: how many more match")
+        if R.SIM:
+            sc.eq(want, [NOPRICE] + OFFICER, "plans officer: the lines (simulated data)")
     es_search(w, "quillbrigt spur")
     sc.eq(es_shown(w), [NOPRICE], "a typo: no prices for that name (not a claim about the item)")
     es_search(w, "moonlit quilltunic")
@@ -22808,13 +22857,20 @@ def sc_empty_search(sc, ref, items):
     sc.eq(ns.ChartItem(), ES_TUNIC, "known to the game: the chart shows it")
     M.infoByName = False
     es_search(w, "plans: officer's boots")
-    sc.eq(es_shown(w), [NOPRICE], "the game has not loaded it: no bind type to say")
+    # the AH code cannot say it binds on pickup: the craft line does
+    want, _ = es_lines_ok(sc, w, r2, "plans: officer's boots", "the game has not loaded it")
+    sc.eq(want[:1], [NOPRICE], "the game has not loaded it: no bind type to say")
+    sc.check(len(want) == 2 and want[1].startswith("Bind on pickup. " + BOOTS), "the game has not loaded it: its plans say so (%s)" % want)
+    if R.SIM:
+        sc.eq(want, [NOPRICE, "Bind on pickup. " + BOOTS], "the game has not loaded it: the lines (simulated data)")
     M.infoByName = None
     # two letters: no guessing
     es_search(w, "qu")
     sc.eq(es_shown(w), [NOPRICE], "two letters: no best match")
     sc.eq(ns.FindSearchItem("qu"), None, "two letters: FindSearchItem finds nothing")
     # other files' lines: every function's, after ours; a failing one and one with nothing are left out
+    n0 = len(ns.EmptySearchLines)
+    sc.eq(n0, 1, "ns.EmptySearchLines holds Crafts.lua's function")
     ns.EmptySearchLines[len(ns.EmptySearchLines) + 1] = w.lua.eval(
         "function(text, id) MOCK.esArgs = { text, id }; return { 'Mats to craft: 2 Mithril Bar, 22s' } end")
     ns.EmptySearchLines[len(ns.EmptySearchLines) + 1] = w.lua.eval("function() error('boom') end")
@@ -22826,19 +22882,27 @@ def sc_empty_search(sc, ref, items):
     sc.eq((M.esArgs[1], M.esArgs[2]), ("quillbright spur", ES_SPUR), "other files get the search text and the item id")
     sc.check("boom" in str(ns.AHState.emptyError), "the failing function's error is kept, its lines left out")
     es_search(w, "plans officer")
-    sc.eq(es_shown(w), [NOPRICE] + extra, "other files' lines for an unknown name too")
+    want, _ = es_lines_ok(sc, w, r2, "plans officer", "other files' lines for an unknown name too", extra=extra)
+    sc.eq(want[-2:], extra, "other files' lines for an unknown name too: after the craft lines")
+    if R.SIM:
+        sc.eq(want, [NOPRICE] + OFFICER + extra, "other files' lines for an unknown name too (simulated data)")
     sc.eq((M.esArgs[1], M.esArgs[2]), ("plans officer", None), "unknown name: no item id")
-    for k in range(len(ns.EmptySearchLines), 0, -1):
+    for k in range(len(ns.EmptySearchLines), n0, -1):
         ns.EmptySearchLines[k] = None
     ns.EmptySearchLines.zzNamed = None
     # at most 7 lines: ours (2), then the first 5 of 6 other lines
     six = ["Extra line %d" % k for k in range(1, 7)]
-    ns.EmptySearchLines[1] = w.lua.eval("function() return { %s } end" % ", ".join("'%s'" % x for x in six))
+    ns.EmptySearchLines[n0 + 1] = w.lua.eval("function() return { %s } end" % ", ".join("'%s'" % x for x in six))
     es_search(w, "quillbright spur")
     sc.eq(len(es_shown(w)), 7, "at most 7 lines (%d)" % len(es_shown(w)))
     es_lines_ok(sc, w, r2, "quillbright spur", "8 lines cut to 7", extra=six)
     sc.eq(es_shown(w)[-1], "Extra line 5", "the 7th line is the 5th other line")
-    ns.EmptySearchLines[1] = None
+    # the AH code's line, 3 craft lines, then 3 of the 6 other lines
+    es_search(w, "plans officer")
+    want, _ = es_lines_ok(sc, w, r2, "plans officer", "craft lines and 6 other lines cut to 7", extra=six)
+    if R.SIM:
+        sc.eq(want, [NOPRICE] + OFFICER + six[:3], "craft lines and 6 other lines cut to 7 (simulated data)")
+    ns.EmptySearchLines[n0 + 1] = None
     # filters that can hide the item (Blizzard's saved per character): no "Not listed now", and a
     # line that says so. Every quality, nothing else: not filtered; no filters at all: not filtered.
     AF = w.g.Enum.AuctionHouseFilter
@@ -23323,10 +23387,35 @@ def sc_empty_search_real(sc, ref, items):
                 continue
             got = ns.FindSearchItem(q)
             sc.eq(got if isinstance(got, tuple) else (None, None), ref_find_search(ref, q, w), "%r: FindSearchItem" % q)
+    T = cr_table()
+    cr_model_world(w, ref)
     for iid in ids[:40]:
         q = ref.items[iid]["name"].lower()
         es_search(w, q)
         es_lines_ok(sc, w, ref, q, "real %d" % iid)
+        # an item by its whole name that is neither a recipe item nor a crafted item (a mat, gear):
+        # no craft lines, not for the names that only share its words
+        found = ns.FindSearchItem(q)
+        if (isinstance(found, tuple) and found[1] == "exact" and found[0] not in T["byItem"] and found[0] not in T["byProduct"]
+                and not any(e["key"] == cr_norm(q) for e in cr_search_names())):
+            sc.eq(cr_search_lines(w, q, found[0], cr_lua_ctx(w)), [], "real %d: no craft lines for a plain item" % iid)
+    # the data's recipe items and crafted items by their names: a recipe item's line is what it
+    # makes and its mats; a crafted item gets none for a character without its profession
+    plain = [i for i in sorted(ref.items) if known_name(ref.items[i]["name"]) and all(ord(c) < 128 for c in ref.items[i]["name"])
+             and i not in ref.base_of]
+    recs = [i for i in plain if i in T["byItem"]][:15]
+    prods = [i for i in plain if i in T["byProduct"] and i not in T["byItem"]][:10]
+    for iid in recs + prods:
+        q = ref.items[iid]["name"].lower()
+        es_search(w, q)
+        want, _ = es_lines_ok(sc, w, ref, q, "real %d (%s)" % (iid, "recipe item" if iid in recs else "crafted item"))
+        crafts = [l for l in want if l.startswith(("Makes ", "Bind on pickup. Makes ", "You can make it", "Bind on pickup. You can"))]
+        found = ns.FindSearchItem(q)
+        if iid in prods:
+            sc.eq(crafts, [], "real %d (crafted item): no craft lines without its profession" % iid)
+        elif isinstance(found, tuple) and found[0] == iid and any(cr_visible(CrCtx(), sp) for sp in T["byItem"][iid]):
+            sc.eq(len(crafts), 1, "real %d (recipe item): one line, what it makes (%s)" % (iid, want))
+        sc.check(not any(" 0c" in l or "= 0c" in l for l in want), "real %d: never a 0c total (%s)" % (iid, want))
     # timing: a short text over every name (the list is made once, then plain finds)
     t0 = time.time()
     for q in ("cl", "clo", "the", "of the", "zzq none"):
@@ -23492,7 +23581,7 @@ def fl_world(ref, items, saved=None, login=(True, False), t=None, now=None, on_t
         if pos is not None:
             M.pos = w.to_lua(list(pos))
         if guid:
-            M.playerGUID = guid
+            M.guid = guid
         if ff:
             M.spells[FL_FF] = True
         if before:
@@ -26434,6 +26523,2552 @@ def sc_boats_x(sc, ref, items):
 
 
 
+# --- crafts: craft and smelt profit (Crafts.lua) ---
+# Forever has no classic trade skill API: the Professions window (Blizzard_Professions, Camelot) runs
+# on C_TradeSkillUI, recipes are spells (C_SpellBook), and the window's SchematicForm shows the recipe
+# picked. Shaped like github.com/Gethe/wow-ui-source branch forever (1.60.1): TradeSkillUIDocumentation,
+# Blizzard_ProfessionsCrafting.xml / Camelot\Blizzard_ProfessionsCrafting.lua (the page's bar: Create All
+# at BOTTOMRIGHT -362, the count box at -185, Create at -9), Blizzard_ProfessionsRecipeSchematicForm.xml
+# and Camelot overrides (the form 360 x 484, Track Recipe BOTTOMRIGHT -(label + 20), 11, the reagents
+# under the description in columns of 4, "use best quality" BOTTOMLEFT 30, 20 when it shows).
+CRAFTS_MOCK_LUA = r'''
+local M = MOCK
+local floor, max, min = math.floor, math.max, math.min
+-- The character's GUID (Crafts.lua keeps the recipes it learned about under it): M.guid and UnitGUID
+-- come from the main mock, shared with the flight timers.
+
+-- C_SpellBook: M.spellMode "works" (M.knownSpells answers, and the flight mock's M.spells, e.g. Frequent
+-- Flier), "false" (always no), "errors" (raises).
+M.knownSpells, M.spellMode, M.spellCalls = {}, "works", 0
+local function spellAnswer(id)
+  M.spellCalls = M.spellCalls + 1
+  if M.spellMode == "errors" then error("C_SpellBook: bad spell") end
+  if M.spellMode == "false" then return false end
+  return M.knownSpells[id] == true or M.spells[id] == true
+end
+C_SpellBook = {
+  IsSpellInSpellBook = function(id, bank, includeOverrides) return spellAnswer(id) end,
+  IsSpellKnown = function(id, bank) return spellAnswer(id) end,
+}
+
+-- C_TradeSkillUI as the Professions window uses it. M.ts: open, skill (its line, 164 / 186 ...),
+-- child (Forever's child line), rank, ids (the window's recipe list), idset, learned[id], filter (the ids
+-- a search shows; nil = all), changing (IsDataSourceChanging), linked / guild / npc.
+M.ts = { open = false, ids = {}, idset = {}, learned = {}, changing = false, infoCalls = 0 }
+local T = {}
+C_TradeSkillUI = T
+local function flag(k) return M.ts[k] == true end
+function T.IsDataSourceChanging() return flag("changing") end
+function T.IsTradeSkillLinked() return flag("linked") end
+function T.IsTradeSkillGuild() return flag("guild") end
+function T.IsTradeSkillGuildMember() return false end
+function T.IsNPCCrafting() return flag("npc") end
+function T.IsRuneforging() return false end
+function T.IsTradeSkillReady() return flag("open") and not flag("notReady") end
+-- C_Reputation: M.reps[faction id] = the reaction (1 Hated .. 5 Friendly, 6 Honored, 7 Revered, 8 Exalted).
+M.reps = {}
+C_Reputation = {
+  GetFactionDataByID = function(id)
+    local re = M.reps[id]
+    if not re then return nil end
+    return { factionID = id, name = "Faction " .. tostring(id), reaction = re, currentStanding = 0 }
+  end,
+}
+local function profInfo(child)
+  local ts = M.ts
+  if not ts.open then return { professionID = 0, parentProfessionID = 0, skillLevel = 0, maxSkillLevel = 0, profession = 0 } end
+  if child and ts.child then
+    return { professionID = ts.child, parentProfessionID = ts.skill, skillLevel = ts.rank or 0, maxSkillLevel = 300, profession = 0 }
+  end
+  return { professionID = ts.skill, parentProfessionID = 0, skillLevel = ts.rank or 0, maxSkillLevel = 300, profession = 0 }
+end
+function T.GetBaseProfessionInfo() return profInfo(false) end
+function T.GetChildProfessionInfo() return profInfo(true) end
+function T.GetFilteredRecipeIDs()
+  local out = {}
+  if not M.ts.open then return out end
+  for _, id in ipairs(M.ts.ids) do
+    if not M.ts.filter or M.ts.filter[id] then out[#out + 1] = id end
+  end
+  return out
+end
+function T.GetAllRecipeIDs()
+  local out = {}
+  if not M.ts.open then return out end
+  for i, id in ipairs(M.ts.ids) do out[i] = id end
+  return out
+end
+function T.GetRecipeInfo(id)
+  M.ts.infoCalls = M.ts.infoCalls + 1
+  if not M.ts.open or not M.ts.idset[id] then return nil end
+  return { recipeID = id, name = "Recipe " .. tostring(id), learned = M.ts.learned[id] == true, craftable = true,
+           skillLineAbilityID = id, categoryID = 1, isRecraft = false, isDummyRecipe = false, isGatheringRecipe = false }
+end
+
+-- The Professions window's tooltip getters: the output icon and a reagent slot.
+M.recipeResult, M.recipeReagents = {}, {}
+local TT = getmetatable(GameTooltip).__index
+function TT:SetRecipeResultItem(recipeID) return self:ProcessInfo({ getterName = "GetRecipeResultItem", getterArgs = { recipeID } }) end
+function TT:SetRecipeReagentItem(recipeID, slot) return self:ProcessInfo({ getterName = "GetRecipeReagentItem", getterArgs = { recipeID, slot } }) end
+local baseData = M.TooltipData
+function M.TooltipData(getterName, args)
+  if getterName == "GetRecipeResultItem" then
+    local id = M.recipeResult[args[1]]
+    if not id then return nil end
+    return baseData("GetItemByID", { id })
+  elseif getterName == "GetRecipeReagentItem" then
+    local l = M.recipeReagents[args[1]]
+    local id = l and l[args[2]]
+    if not id then return nil end
+    return baseData("GetItemByID", { id })
+  end
+  return baseData(getterName, args)
+end
+
+-- Blizzard_Professions (load on demand): ProfessionsFrame, its CraftingPage and SchematicForm.
+function M.LoadProfessionsUI()
+  if ProfessionsFrame then return ProfessionsFrame end
+  local PF = CreateFrame("Frame", "ProfessionsFrame", UIParent)
+  PF:SetSize(673, 594)
+  PF:SetPoint("TOPLEFT", UIParent, "TOPLEFT", 60, -80)
+  PF:Hide()
+  local page = CreateFrame("Frame", nil, PF)
+  page:SetAllPoints(PF)
+  PF.CraftingPage = page
+  local list = CreateFrame("Frame", nil, page)
+  list:SetWidth(304)
+  list:SetPoint("TOPLEFT", page, "TOPLEFT", 5, -72)
+  list:SetPoint("BOTTOMLEFT", page, "BOTTOMLEFT", 5, 5)
+  page.RecipeList = list
+  local form = CreateFrame("Frame", nil, page)
+  form:SetSize(360, 484)
+  form:SetPoint("TOPLEFT", list, "TOPRIGHT", 2, 0)
+  page.SchematicForm = form
+  local icon = CreateFrame("Button", nil, form)
+  icon:SetSize(53, 53)
+  icon:SetPoint("TOPLEFT", form, "TOPLEFT", 28, -33)
+  form.OutputIcon = icon
+  local out = form:CreateFontString(nil, "ARTWORK", "GameFontHighlight")
+  out:SetPoint("LEFT", icon, "RIGHT", 14, 17)
+  form.OutputText = out
+  local desc = form:CreateFontString(nil, "ARTWORK", "GameFontHighlightSmall")
+  desc:SetSize(305, 30)
+  desc:SetPoint("TOPLEFT", icon, "BOTTOMLEFT", -1, -12)
+  form.Description = desc
+  local reag = CreateFrame("Frame", nil, form)
+  reag:SetSize(325, 10)
+  reag:SetPoint("TOPLEFT", desc, "BOTTOMLEFT", 0, -20)
+  form.Reagents = reag
+  form.reagentSlots = {}
+  local track = CreateFrame("CheckButton", nil, form)
+  track:SetSize(26, 26)
+  track.Text = track:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  track.Text:SetText("Track Recipe")
+  track.Text:SetPoint("LEFT", track, "RIGHT", 2, 0)
+  track:SetPoint("BOTTOMRIGHT", form, "BOTTOMRIGHT", -(track.Text:GetStringWidth() + 20), 11)
+  track:Hide()
+  form.TrackRecipeCheckbox = track
+  local best = CreateFrame("CheckButton", nil, form)
+  best:SetSize(26, 26)
+  best:SetPoint("BOTTOMLEFT", form, "BOTTOMLEFT", 30, 20)
+  best.Text = best:CreateFontString(nil, "ARTWORK", "GameFontNormalSmall")
+  best.Text:SetText("Use Best Quality")
+  best.Text:SetPoint("LEFT", best, "RIGHT", 2, 0)
+  best:Hide()
+  form.AllocateBestQualityCheckbox = best
+  M.formInits = 0
+  function form:GetRecipeInfo() return self.currentRecipeInfo end
+  function form:Init(recipeInfo)
+    M.formInits = M.formInits + 1
+    self.currentRecipeInfo = recipeInfo
+    for _, s in ipairs(self.reagentSlots) do s:Hide() end
+    local n = recipeInfo and #(M.recipeReagents[recipeInfo.recipeID] or {}) or 0
+    for i = 1, n do
+      local s = self.reagentSlots[i]
+      if not s then
+        s = CreateFrame("Button", nil, self.Reagents)
+        s:SetSize(160, 40)
+        self.reagentSlots[i] = s
+      end
+      local col, row = floor((i - 1) / 4), (i - 1) % 4
+      s:ClearAllPoints()
+      s:SetPoint("TOPLEFT", self.Reagents, "TOPLEFT", col * 165, -row * 45)
+      s:Show()
+    end
+    self.Reagents:SetHeight(max(10, min(n, 4) * 45))
+    self.TrackRecipeCheckbox:SetShown(recipeInfo ~= nil)
+  end
+  local function button(w, h)
+    local b = CreateFrame("Button", nil, page, "UIPanelButtonTemplate")
+    b:SetSize(w, h)
+    return b
+  end
+  page.CreateButton = button(80, 22)
+  page.CreateButton:SetPoint("BOTTOMRIGHT", page, "BOTTOMRIGHT", -9, 7)
+  page.CreateAllButton = button(80, 22)
+  page.CreateAllButton:SetPoint("BOTTOMLEFT", page, "BOTTOMRIGHT", -362, 7)
+  local box = CreateFrame("EditBox", nil, page)
+  box:SetSize(50, 20)
+  box:SetPoint("BOTTOMLEFT", page, "BOTTOMRIGHT", -185, 11)
+  page.CreateMultipleInputBox = box
+  M.loaded.Blizzard_Professions = true
+  M.fire("ADDON_LOADED", "Blizzard_Professions")
+  return PF
+end
+'''
+
+# The recipe table, read from Crafts.lua with plain Python (no Lua).
+_CR = {}
+
+
+def cr_table():
+    if _CR:
+        return _CR
+    src = open(os.path.join(ADDON, "Crafts.lua"), "rb").read().decode("ascii")
+    block = src[src.index("-- BEGIN DATA"):src.index("-- END DATA")]
+
+    def tab(name):
+        m = re.search(r"(?ms)^local %s = \{\r?\n(.*?)^\}" % name, block)
+        return m.group(1)
+    _CR["R"] = {int(k): lua_unescape(v) for k, v in re.findall(r'\[(\d+)\]="((?:[^"\\]|\\.)*)"', tab("R"))}
+    _CR["V"] = {int(k): int(v) for k, v in re.findall(r"\[(\d+)\]=(\d+)", tab("V"))}
+    _CR["RI"] = {int(k): lua_unescape(v) for k, v in re.findall(r'\[(\d+)\]="((?:[^"\\]|\\.)*)"', tab("RI"))}
+    _CR["N"] = {int(k): lua_unescape(v) for k, v in re.findall(r'\[(\d+)\]="((?:[^"\\]|\\.)*)"', tab("N"))}
+    by_p, by_m, by_i, by_s = {}, {}, {}, {}
+    for sp in sorted(_CR["R"]):
+        r = cr_recipe(sp)
+        by_s.setdefault(r["skill"], []).append(sp)
+        by_p.setdefault(r["product"], []).append(sp)
+        for mid, _ in r["mats"]:
+            by_m.setdefault(mid, []).append(sp)
+        for ri in r["items"]:
+            by_i.setdefault(ri, []).append(sp)
+    _CR.update(byProduct=by_p, byMat=by_m, byItem=by_i, bySkill=by_s)
+    return _CR
+
+
+def cr_recipe(sp):
+    f = _CR["R"][sp].split("|")
+    fl = f[5]
+    cmin, cmax = int(f[2]), int(f[3])
+    return {"id": sp, "skill": int(f[0]), "product": int(f[1]), "cmin": cmin, "cmax": cmax, "count": (cmin + cmax) / 2,
+            "mats": [(int(a), int(b)) for a, b in re.findall(r"(\d+):(\d+)", f[4])], "flags": fl,
+            "rank": int(f[6]) if f[6] else None, "spec": int(f[7]) if f[7] else None, "rep": f[8] or None,
+            "items": [int(x) for x in re.findall(r"\d+", f[9])], "yellow": int(f[10] or 0),
+            "starts": "K" in fl, "trainer": "T" in fl, "bop": "B" in fl, "unsure": "U" in fl, "suffix": "S" in fl,
+            "side": "A" if "A" in fl else ("H" if "H" in fl else None),
+            "cd": float(f[11]) if len(f) > 11 and f[11] else None}
+
+
+CR_BASES = ("lo", "mkt", "avg")
+CR_SMELT, CR_BS = 186, 164
+# Test prices (copper): id -> (name, cheapest, AH value, listed, sold24, 7-day average, vendor pays).
+CR_FIX = {
+    2770: ("Copper Ore", 169, 172, 6833, 400, 164, 5),
+    2840: ("Copper Bar", 165, 192, 4580, 400, 176, 10),
+    2771: ("Tin Ore", 157, 163, 1060, 300, 153, 25),
+    3576: ("Tin Bar", 93, 154, 2782, 300, 160, 35),
+    2841: ("Bronze Bar", 400, 410, 900, 200, 380, 50),
+    2772: ("Iron Ore", 269, 275, 3265, 500, 256, 150),
+    3575: ("Iron Bar", 290, 291, 1469, 500, 293, 200),
+    2775: ("Silver Ore", 700, 700, 300, 50, 700, 75),
+    2842: ("Silver Bar", 513, 530, 1730, 60, 504, 100),
+    3857: ("Coal", 447, 447, 471, 100, 496, 125),
+    3859: ("Steel Bar", 775, 781, 2800, 300, 840, 60),
+    3858: ("Mithril Ore", 300, 1100, 2602, 300, 1050, 250),   # one listing at 3s, the rest about 11s
+    3860: ("Mithril Bar", 1094, 1096, 7544, 400, 1008, 400),
+    7966: ("Solid Grinding Stone", 1196, 1202, 1714, 100, 980, 200),
+    7969: ("Mithril Spurs", 3500, 3480, 195, 20, 6270, 250),
+    7989: ("Plans: Mithril Spurs", 1500, 1550, 3, 1, 1600, 250),
+    10620: ("Thorium Ore", 1625, 1700, 2418, 121, 1700, 250),
+    12359: ("Thorium Bar", 2490, 2490, 2495, 121, 2400, 600),
+    2838: ("Heavy Stone", 380, 389, 3230, 300, 372, 60),
+    3486: ("Heavy Grinding Stone", 1399, 1470, 1377, 100, 1071, 100),
+    1529: ("Jade", 775, 797, 411, 100, 832, 700),
+    3474: ("Gemmed Copper Gauntlets", 1399, 1500, 28, 5, 901, 300),
+    818: ("Tigerseye", 300, 310, 100, 50, 290, 25),
+    774: ("Malachite", 150, 160, 100, 50, 140, 12),
+}
+CR_SERIES = {12359: steady_series(2490)}   # Thorium Bar: 11 sold an hour for 11 hours, at 24s 90c
+# Items the mock game knows that the price data has not got: id -> (name, bind (1 = on pickup)).
+CR_GAME = {250546: ("Officer's Boots", 1), 251398: ("Plans: Officer's Boots", 1), 12628: ("Demon Forged Breastplate", 2),
+           12696: ("Plans: Demon Forged Breastplate", 1), 277040: ("Cloudy Skyforged Helm", 2),
+           276976: ("Plans: Cloudy Skyforged Helm", 0), 5498: ("Small Lustrous Pearl", 0)}
+CR_THORIUM, CR_IRON, CR_COPPER, CR_SILVER, CR_MITHRIL, CR_BRONZE, CR_STEEL = 16153, 3307, 2657, 2658, 10097, 2659, 3569
+CR_HGS, CR_SPURS, CR_OFFICER, CR_DEMON, CR_GEMMED, CR_CLOUDY = 3337, 9964, 1252295, 16667, 3325, 1301526
+_CR_DATA = {}
+
+
+def cr_data(ref, fix=None, series=None, header=None):
+    """The data text with the test prices in (rows replaced or added) and the {id: row} it holds."""
+    fix, extra = dict(CR_FIX), fix
+    fix.update(extra or {})
+    series, extra = dict(CR_SERIES), series
+    series.update(extra or {})
+    key = (DATA_FILE, tuple(sorted(fix.items())), tuple(sorted((k, repr(v)) for k, v in series.items())),
+           tuple(sorted((header or {}).items())))
+    if key in _CR_DATA:
+        return _CR_DATA[key]
+    text = open(DATA_FILE, "rb").read().decode("utf-8")
+
+    def row(iid):
+        # (name, cheapest, AH value, listed, sold24, 7-day average, vendor pays[, separate listings])
+        name, lo, mkt, listed, sold, avg, vend = fix[iid][:7]
+        auctions = fix[iid][7] if len(fix[iid]) > 7 else 12
+        h = ";;"
+        if iid in series:
+            ch, so, s24, _ = series[iid]
+            h = enc_series(ch, ch, so)
+        return "%s|%d|%d|%d|%d|%d|%d|%s|;;|%d" % (name, lo, mkt, listed, sold, avg, vend, h, auctions)
+
+    def fn(iid, f):
+        return row(iid).split("|") if iid in fix else None
+    text = rewrite_items(text, fn)
+    add = ['[%d] = "%s",' % (iid, row(iid)) for iid in sorted(fix) if iid not in ref.items]
+    text = re.sub(r"(?m)^([ \t]*items[ \t]*=[ \t]*\{[ \t]*\r?\n)",
+                  lambda m: m.group(1) + "".join("    %s\n" % ln for ln in add), text, count=1)
+    for k, v in (header or {}).items():
+        text = set_header(text, k, v)
+    out = (text, fix, RefData(text=text))
+    _CR_DATA[key] = out
+    return out
+
+
+def cr_world(ref, items, ranks=None, fix=None, series=None, header=None, faction="Alliance", **kw):
+    """A world with the test prices, the test items known to the game, and the player's professions."""
+    cr_table()
+    text, prices, cref = cr_data(ref, fix, series, header)
+    w = World(ref, items, data_src=text, faction=faction, **kw)
+    for iid, f in prices.items():
+        if w.M["items"][iid] is None:
+            bag_add_item(w, iid, f[0], 1, f[6])
+    for iid, (name, bind) in CR_GAME.items():
+        bag_add_item(w, iid, name, 2, 0, bind=bind)
+    w.prices = {iid: (it["name"], it["cheapest"], it["market"], it["listed"], it["sold24"], it["avg7"], it["vendor"])
+                for iid, it in cref.items.items()}
+    w.cr_ref = cref
+    en_skills(w, ranks or {})
+    return w
+
+
+class CrCtx(object):
+    """What the model knows about the character: ranks {skill line: rank}, known (recipes the window or
+    the spell book said are learned), scanned (professions whose window was read), side ("A" / "H"),
+    live {item: price}, own (items whose live cheapest listing is yours), compact, stale (old prices),
+    specs (specialization spells known), reps {faction: reaction}, shift (Shift held)."""
+
+    def __init__(self, ranks=None, known=(), scanned=(), side="A", live=None, compact=False, stale=False,
+                 own=(), specs=(), reps=None, shift=False):
+        self.ranks, self.known, self.scanned = dict(ranks or {}), set(known), set(scanned)
+        self.side, self.live, self.compact, self.stale = side, dict(live or {}), compact, stale
+        self.own, self.specs, self.reps, self.shift = set(own), set(specs), dict(reps or {}), shift
+
+    def copy(self, **kw):
+        c = CrCtx(self.ranks, self.known, self.scanned, self.side, self.live, self.compact, self.stale,
+                  self.own, self.specs, self.reps, self.shift)
+        for k, v in kw.items():
+            setattr(c, k, v)
+        return c
+
+
+def cr_state(ctx, sp):
+    """Crafts.lua's knownState: "known", "maybe" or None."""
+    r = cr_recipe(sp)
+    if sp in ctx.known:
+        return "known"
+    rank = ctx.ranks.get(r["skill"], 0)
+    if rank <= 0:
+        return None
+    if r["starts"]:
+        return "known"
+    if r["skill"] in ctx.scanned:
+        return None
+    thr = r["rank"] if r["rank"] is not None else r["yellow"]
+    if r["trainer"] and not r["spec"] and not r["rep"] and rank >= thr:
+        return "maybe"
+    return None
+
+
+def cr_visible(ctx, sp):
+    side = cr_recipe(sp)["side"]
+    return not side or side == ctx.side
+
+
+def cr_can_make(ctx, sp):
+    """Crafts.lua's canMake: known, or the profession at the recipe's rank, its spec and its reputation."""
+    r = cr_recipe(sp)
+    if cr_state(ctx, sp) == "known":
+        return True
+    rank = ctx.ranks.get(r["skill"], 0)
+    if rank <= 0 or rank < (r["rank"] or 0):
+        return False
+    if r["spec"] and r["spec"] not in ctx.specs:
+        return False
+    if r["rep"]:
+        fid, need = (int(x) for x in r["rep"].split(":"))
+        if ctx.reps.get(fid, 0) < need + 1:
+            return False
+    return True
+
+
+def cr_p(w, iid, ctx):
+    """One item's prices as Crafts.lua reads them: lo, mkt, avg, vendor, row, own, dataLo."""
+    f = w.prices.get(iid)
+    p = {"vendor": _CR["V"].get(iid), "lo": None, "mkt": None, "avg": None, "row": f, "live": False, "own": False,
+         "dataLo": None, "cap": None}
+    if f:
+        p["lo"] = f[1] or None
+        p["mkt"] = f[2] or None
+        p["avg"] = f[5] or None
+    if ctx.live.get(iid):
+        p["dataLo"], p["lo"], p["live"], p["own"] = p["lo"], ctx.live[iid], True, iid in ctx.own
+    return p
+
+
+def cr_cap(w, iid):
+    """At most 25% over what it sold for in the last day (Sidebar.lua's DayStats), or None."""
+    st = day_stats(w.cr_ref, iid)
+    if st and st["soldAt"]:
+        return int(math.floor(DAY_PRICE_CAP * st["soldAt"]))
+    return None
+
+
+def cr_buy(p, b):
+    if b == "lo":
+        x = (p["dataLo"] or p["mkt"]) if p["own"] else (p["lo"] or p["mkt"])
+    else:
+        x = (p["mkt"] or p["lo"]) if b == "mkt" else p["avg"]
+    if p["vendor"] and (x is None or p["vendor"] < x):
+        return p["vendor"], True
+    return x, False
+
+
+def cr_sell(p, b):
+    if b == "lo":
+        lo = None if p["lo"] is None else (p["lo"] if p["own"] else p["lo"] - 1)
+        # never above the AH value the tooltip shows: the live cheapest while there is one
+        cap = p["lo"] if p["live"] else p["mkt"]
+        if lo is not None and cap is not None:
+            s = min(lo, cap)
+        else:
+            s = lo if lo is not None else cap
+    elif b == "mkt":
+        s = p["mkt"]
+    else:
+        return p["avg"]
+    if s and p["cap"] and s > p["cap"]:
+        s = p["cap"]
+    return s
+
+
+def cr_q(w, sp, ctx, depth=0):
+    """Crafts.lua's quote: the mats, cost / sell / net / profit on each basis, the verdict."""
+    r = cr_recipe(sp)
+    cost = {"lo": 0, "mkt": 0, "avg": 0}
+    mats, missing, partial = [], 0, 0
+    for mid, n in r["mats"]:
+        p = cr_p(w, mid, ctx)
+        unit = {b: cr_buy(p, b) for b in CR_BASES}
+        sub = None
+        if depth == 0:
+            su, sr = cr_sub(w, mid, r, ctx)
+            if su and (unit["lo"][0] is None or su["lo"] < unit["lo"][0]):
+                sub = sr
+                for b in CR_BASES:
+                    if su[b] is not None and (unit[b][0] is None or su[b] < unit[b][0]):
+                        unit[b] = (su[b], False)
+        e = {"id": mid, "n": n, "cost": {}, "sub": sub, "vendor": unit["lo"][1] is True and not sub}
+        for b in CR_BASES:
+            if unit[b][0] is not None:
+                e["cost"][b] = math.floor(unit[b][0] * n + 0.5)
+                if cost[b] is not None:
+                    cost[b] += e["cost"][b]
+            else:
+                cost[b] = None
+        if unit["lo"][0] is not None:
+            partial += e["cost"]["lo"]
+        else:
+            missing += 1
+        mats.append(e)
+    pp = cr_p(w, r["product"], ctx)
+    pp["cap"] = cr_cap(w, r["product"])
+    sell, net, profit = {}, {}, {}
+    for b in CR_BASES:
+        s = cr_sell(pp, b)
+        if s and s > 0:
+            sell[b] = s
+            net[b] = math.floor(s * r["count"] * 95 / 100)
+            if cost[b] is not None:
+                profit[b] = net[b] - cost[b]
+    sold = rec_model.sold_per_day(pp["row"][4], w.cr_ref.salesHours)[0] if pp["row"] else None
+    suffix = r["suffix"] or r["product"] in w.cr_ref.variants
+    # thin: 1 or 2 separate listings of the made item, or under 3 sold a day
+    it = w.cr_ref.items.get(r["product"])
+    auctions = it["auctions"] if it else None
+    thin = None
+    if auctions is not None and 1 <= auctions < 3:
+        thin = "listings"
+    elif (sold or 0) < 3:
+        thin = "sales"
+    P = profit
+    shown = None
+    if r["bop"] or r["unsure"] or suffix or missing > 0 or P.get("lo") is None:
+        verdict = None
+    else:
+        good = all(P.get(b) is not None and P[b] > 0.10 * cost[b] for b in CR_BASES)
+        bad = all(P[b] < 0 for b in CR_BASES if P.get(b) is not None)
+        if good and not thin:
+            verdict, shown = "profit", min(P[b] for b in CR_BASES)
+        elif good:
+            verdict = "thin"
+        elif bad:
+            verdict, shown = "loss", P["lo"]
+        else:
+            verdict = "even"
+    return {"r": r, "mats": mats, "cost": cost, "missing": missing, "partial": partial, "sell": sell, "net": net,
+            "profit": profit, "sold": sold, "verdict": verdict, "suffix": suffix, "thin": thin, "auctions": auctions,
+            "shown": shown, "sells": math.floor(sell["lo"] * r["count"] + 0.5) if "lo" in sell else None}
+
+
+def cr_sub(w, mid, parent, ctx):
+    best, best_r = None, None
+    for sp in _CR["byProduct"].get(mid, []):
+        r2 = cr_recipe(sp)
+        if sp == parent["id"] or not cr_visible(ctx, sp) or cr_state(ctx, sp) != "known":
+            continue
+        if any(m == parent["product"] for m, _ in r2["mats"]):
+            continue
+        q2 = cr_q(w, sp, ctx, depth=1)
+        if q2["missing"] == 0 and q2["cost"]["lo"] is not None:
+            u = {b: (q2["cost"][b] / r2["count"] if q2["cost"][b] is not None else None) for b in CR_BASES}
+            if best is None or u["lo"] < best["lo"]:
+                best, best_r = u, r2
+    return best, best_r
+
+
+def cr_round(c):
+    a = abs(c)
+    if a >= 100000:
+        r = math.floor(a / 10000 + 0.5) * 10000
+    elif a >= 10000:
+        r = math.floor(a / 100 + 0.5) * 100
+    else:
+        r = math.floor(a + 0.5)
+    return -r if c < 0 else r
+
+
+def cr_name(w, iid):
+    f = w.prices.get(iid)
+    if f and known_name(f[0]):
+        return f[0]
+    it = w.ref.items.get(iid)
+    if it and known_name(it["name"]):
+        return it["name"]
+    return w.game_name(iid) or _CR["N"].get(iid) or "Item %d" % iid
+
+
+# The item names the mock game gives (main() fills it from items.json), for the plain model below.
+CR_ITEMS_JSON = {}
+
+
+class CrRefWorld(object):
+    """What cr_expect needs, from a data file alone: its prices, and the game's names from items.json."""
+
+    def __init__(self, ref):
+        self.ref = self.cr_ref = ref
+        self.prices = {iid: (it["name"], it["cheapest"], it["market"], it["listed"], it["sold24"], it["avg7"], it["vendor"])
+                       for iid, it in ref.items.items()}
+
+    def game_name(self, iid):
+        it = CR_ITEMS_JSON.get(str(iid))
+        n = it.get("name") if it else None
+        return n if known_name(n) else None
+
+
+_CR_PLAIN = {}
+
+
+def cr_expect_plain(ref, iid, age, compact):
+    """Crafts.lua's lines on an item's tooltip for a player with no professions: only a recipe item's."""
+    cr_table()
+    iid = ref.base_of.get(iid, iid)
+    if iid not in _CR["byItem"]:
+        return [], []
+    w = _CR_PLAIN.get(id(ref))
+    if w is None or w.ref is not ref:
+        w = CrRefWorld(ref)
+        _CR_PLAIN[id(ref)] = w
+    return cr_expect(w, iid, CrCtx(compact=compact, stale=age > 6 * 3600))
+
+
+def cr_prefix(r):
+    if r["cmin"] == r["cmax"]:
+        return "%d " % r["cmin"] if r["cmin"] != 1 else ""
+    return "%d-%d " % (r["cmin"], r["cmax"])
+
+
+def cr_mats(w, q, cost=True, all_mats=False, shift=False):
+    """The mats line. With the costs and 4 or more mats only the 2 dearest (unpriced first, in the
+    recipe's order) and "+N others", unless all_mats or Shift."""
+    mats = q["mats"]
+    keep = None
+    if cost and not all_mats and not shift and len(mats) > 3:
+        order = sorted(range(len(mats)), key=lambda i: (0 if "lo" not in mats[i]["cost"] else 1,
+                                                         -mats[i]["cost"].get("lo", 0), i))
+        keep = set(order[:2])
+    parts = []
+    for i, e in enumerate(mats):
+        if keep is not None and i not in keep:
+            continue
+        s = "%d %s" % (e["n"], cr_name(w, e["id"]))
+        if cost:
+            s += (" " + money_text(cr_round(e["cost"]["lo"]))) if "lo" in e["cost"] else " (no price)"
+            if e["sub"]:
+                s += " (from %s)" % " + ".join("%d %s" % (math.floor(e["n"] / e["sub"]["count"] * fn + 0.5), cr_name(w, fid))
+                                              for fid, fn in e["sub"]["mats"])
+            elif e["vendor"]:
+                s += " (vendor)"
+        parts.append(s)
+    if keep is not None:
+        parts.append("+%d others" % (len(mats) - 2))
+    return ", ".join(parts)
+
+
+def cr_total(q, icons=True):
+    """"1g 23s", "1g 23s + 2 more" (mats with no price), "price unknown" when none has one (never 0c)."""
+    if q["cost"]["lo"] is None and q["partial"] <= 0:
+        return "price unknown"
+    c = q["cost"]["lo"] if q["cost"]["lo"] is not None else q["partial"]
+    t = (money_icons if icons else money_text)(cr_round(c))
+    if q["missing"]:
+        t += " + %d more" % q["missing"]
+    return t
+
+
+def cr_unsure(q):
+    if q["thin"] == "listings":
+        return "unsure, %d listing%s" % (q["auctions"], "" if q["auctions"] == 1 else "s")
+    return "unsure, few sales"
+
+
+def cr_profit(q):
+    p = q["shown"]
+    if q["verdict"] == "profit":
+        return "Profit: +" + money_icons(cr_round(p)), "pos"
+    if q["verdict"] == "loss":
+        return "Profit: " + money_icons(cr_round(p)), "neg"
+    if q["verdict"] == "even":
+        return "Profit: about even", "muted"
+    if q["verdict"] == "thin":
+        return "Profit: " + cr_unsure(q), "muted"
+    return None, None
+
+
+def cr_total_line(q, quiet):
+    pt, pc = cr_profit(q)
+    lc = "muted" if quiet else "text"
+    if pt:
+        return ("Mats: " + cr_total(q), pt), (lc, "muted" if quiet else pc)
+    return ("Mats: " + cr_total(q), None), (lc, None)
+
+
+RANK_V = {"profit": 3, "even": 2, "loss": 1}
+
+
+def cr_product_pick(w, iid, ctx):
+    """Crafts.lua's productRecipe (no Professions window): of the recipes that make the item, the one
+    you know before one you may know, then the cheapest. (recipe, state) or (None, None)."""
+    pick, state, best_cost = None, None, None
+    for sp in _CR["byProduct"].get(iid, []):
+        s = cr_state(ctx, sp) if cr_visible(ctx, sp) else None
+        if not s:
+            continue
+        c = cr_q(w, sp, ctx)["cost"]["lo"]
+        c = float("inf") if c is None else c
+        if pick is None or (s == "known" and state != "known") or (s == state and c < best_cost):
+            pick, state, best_cost = sp, s, c
+    return pick, state
+
+
+def cr_expect(w, iid, ctx, result_recipe=None):
+    """The lines (and colours) Crafts.lua adds to an item's tooltip: a recipe item's, a crafted item's,
+    a mat's, in that order."""
+    lines, cols = [], []
+    T = _CR
+    # a recipe item, for everyone
+    rs = [sp for sp in T["byItem"].get(iid, []) if cr_visible(ctx, sp)]
+    if rs:
+        q = cr_q(w, rs[0], ctx)
+        r = q["r"]
+        if not ctx.compact:
+            if r["bop"]:
+                lines.append(("Makes a bind-on-pickup item", None))
+                cols.append(("text", None))
+            else:
+                if q["suffix"]:
+                    right, rc = "price varies by version", "muted"
+                elif q["sells"] is not None:
+                    right, rc = money_icons(cr_round(q["sells"])), "white"
+                else:
+                    right, rc = "no AH price", "muted"
+                lines.append(("Makes: " + cr_prefix(r) + cr_name(w, r["product"]), right))
+                cols.append(("text", rc))
+            lines.append((cr_mats(w, q, shift=ctx.shift), None))
+            cols.append(("muted", None))
+        # grey for someone who could not make it
+        ln, c = cr_total_line(q, ctx.stale or not cr_can_make(ctx, rs[0]))
+        lines.append(ln)
+        cols.append(c)
+    # a crafted item: the recipe the window shows, else the one you know, the cheapest
+    if result_recipe and result_recipe in _CR["R"] and cr_recipe(result_recipe)["product"] == iid and cr_visible(ctx, result_recipe):
+        pick, state = result_recipe, cr_state(ctx, result_recipe) or "shown"
+    else:
+        pick, state = cr_product_pick(w, iid, ctx)
+    if pick:
+        q = cr_q(w, pick, ctx)
+        quiet = state != "known" or ctx.stale
+        if not ctx.compact:
+            label = "Smelt: " if q["r"]["skill"] == CR_SMELT else "Make: "
+            lines.append((label + cr_mats(w, q, shift=ctx.shift), None))
+            cols.append(("muted", None))
+        ln, c = cr_total_line(q, quiet)
+        lines.append(ln)
+        cols.append(c)
+    # a mat: the best recipe you know that uses it (per unit of this mat; never a thin one)
+    best = None
+    for sp in T["byMat"].get(iid, []):
+        r = cr_recipe(sp)
+        if r["product"] == iid or r["bop"] or r["unsure"] or r["suffix"] or not cr_visible(ctx, sp):
+            continue
+        s = cr_state(ctx, sp)
+        if not s:
+            continue
+        q = cr_q(w, sp, ctx)
+        if q["verdict"] not in RANK_V:
+            continue
+        n = dict(r["mats"])[iid]
+        each = (q["shown"] if q["shown"] is not None else q["profit"]["lo"]) / n
+        k = (1 if s == "known" else 0, RANK_V[q["verdict"]], each, -sp)
+        if best is None or k > best[0]:
+            best = (k, q, s, each)
+    if best:
+        _, q, s, each = best
+        quiet = s != "known" or ctx.stale
+        if not (ctx.compact and (quiet or q["verdict"] != "profit")):
+            r = q["r"]
+            e = math.floor(each) if each >= 0 else -math.floor(-each)
+            if q["verdict"] == "profit":
+                right, key = "+" + money_icons(cr_round(e)) + " each", "pos"
+            elif q["verdict"] == "loss":
+                right, key = money_icons(cr_round(e)) + " each", "neg"
+            else:
+                right, key = "about even", "muted"
+            lines.append((("Smelt to " if r["skill"] == CR_SMELT else "Make ") + cr_name(w, r["product"]), right))
+            cols.append(("muted" if quiet else "text", "muted" if quiet else key))
+    return lines, cols
+
+
+def cr_show(w, how, iid, arg=None):
+    g, M = w.g, w.M
+    tt = g.ItemRefTooltip if how == "link" else g.GameTooltip
+    tt.SetOwner(tt, g.UIParent, "ANCHOR_NONE")
+    if how == "byid":
+        tt.SetItemByID(tt, iid)
+    elif how == "link":
+        tt.SetHyperlink(tt, M.ItemLink(iid))
+    elif how == "bag":
+        bag_put(w, 0, 1, iid, arg or 1)
+        tt.SetBagItem(tt, 0, 1)
+    elif how == "result":
+        M.recipeResult[arg] = iid
+        tt.SetRecipeResultItem(tt, arg)
+    elif how == "reagent":
+        sp, slot = arg
+        lst = w.lua.table()
+        for i, (mid, _) in enumerate(cr_recipe(sp)["mats"]):
+            lst[i + 1] = mid
+        M.recipeReagents[sp] = lst
+        tt.SetRecipeReagentItem(tt, sp, slot)
+    else:
+        raise AssertionError(how)
+    return tt
+
+
+def cr_tip(w, how, iid, arg=None):
+    """(the lines Crafts.lua adds, their colours, the tooltip): the addon's lines with craft tips on,
+    less the ones it shows with them off (which stay the same, before ours)."""
+    S = w.ns.settings
+    was = S.crafts
+    S.crafts = False
+    tt = cr_show(w, how, iid, arg)
+    base = w.lines(tt)
+    S.crafts = was
+    tt = cr_show(w, how, iid, arg)
+    got = w.lines(tt)
+    if got[:len(base)] != base:
+        return [("(the other lines changed)", None)], [], tt
+    first = int(tt._blz or 0) + len(base)
+    cols = []
+    for i in range(first + 1, len(tt._lines) + 1):
+        ln = tt._lines[i]
+        lc = rgb_name(ln.lr, ln.lg, ln.lb)
+        rc = rgb_name(ln.rr, ln.rg, ln.rb) if ln.right is not None else None
+        cols.append((lc, rc))
+    return got[len(base):], cols, tt
+
+
+def cr_tip_ok(sc, w, how, iid, ctx, label, arg=None):
+    got, cols, tt = cr_tip(w, how, iid, arg)
+    want, wcols = cr_expect(w, iid, ctx, result_recipe=arg if how == "result" else None)
+    sc.eq(got, want, "%s: lines" % label)
+    sc.eq(cols, wcols, "%s: colours" % label)
+    return got
+
+
+def cr_know(w, ctx, ids):
+    """The spell book says these recipes are known."""
+    for sp in ids:
+        w.M.knownSpells[sp] = True
+        ctx.known.add(sp)
+    w.ns.Crafts.Invalidate()
+
+
+def cr_open(w, skill, ids, learned, rank=300, child=None, filt=None, select=None, ctx=None):
+    """The Professions window opens on a profession (the scan runs on its events)."""
+    M = w.M
+    M.LoadProfessionsUI()
+    ts = M.ts
+    ts.open, ts.skill, ts.rank, ts.child = True, skill, rank, child
+    ts.ids = w.to_lua(list(ids))
+    st = w.lua.table()
+    for x in ids:
+        st[x] = True
+    ts.idset = st
+    lt = w.lua.table()
+    for x in learned:
+        lt[x] = True
+    ts.learned = lt
+    ts.filter = None
+    if filt is not None:
+        ft = w.lua.table()
+        for x in filt:
+            ft[x] = True
+        ts.filter = ft
+    w.g.ProfessionsFrame.Show(w.g.ProfessionsFrame)
+    M.fire("TRADE_SKILL_SHOW")
+    M.fire("TRADE_SKILL_LIST_UPDATE")
+    w.settle(1.2)
+    if ctx is not None and not ts.linked and not ts.changing and not ts.notReady and not ts.guild and not ts.npc:
+        # what the scan learns: every learned recipe the window or the table names for this profession
+        # (a window that says nothing is learned has not loaded: it is not counted as read)
+        got = {sp for sp in learned if sp in _CR["R"]}
+        ctx.known |= got
+        if got:
+            ctx.scanned.add(skill)
+    if select:
+        cr_select(w, select)
+
+
+def cr_select(w, sp):
+    form = w.g.ProfessionsFrame.CraftingPage.SchematicForm
+    lst = w.lua.table()
+    if sp in _CR["R"]:
+        for i, (mid, _) in enumerate(cr_recipe(sp)["mats"]):
+            lst[i + 1] = mid
+    w.M.recipeReagents[sp] = lst
+    form.Init(form, w.to_lua({"recipeID": sp}))
+
+
+def cr_close(w):
+    w.M.ts.open = False
+    w.g.ProfessionsFrame.Hide(w.g.ProfessionsFrame)
+    w.M.fire("TRADE_SKILL_CLOSE")
+    w.settle(0.2)
+
+
+def cr_line(w):
+    fs = w.ns.Crafts.PW.fs
+    if fs is None or not fs.IsShown(fs):
+        return None
+    return fs.GetText(fs)
+
+
+def cr_pw_want(w, q, ctx=None):
+    """The Professions window line. ctx: grey for old prices or a recipe the player could not make."""
+    r = q["r"]
+    quiet = ctx is not None and (ctx.stale or not cr_can_make(ctx, r["id"]))
+    parts = ["Mats " + cr_total(q, icons=False)]
+    if r["bop"]:
+        parts.append("bind on pickup")
+    elif q["suffix"]:
+        parts.append("price varies by version")
+    elif q["sells"] is not None:
+        parts.append("sells " + money_text(cr_round(q["sells"])))
+        p = q["shown"]
+        if q["verdict"] == "profit":
+            parts.append("|c%s+%s after AH cut|r" % (lua_hex(TT_RGB["muted" if quiet else "pos"]), money_text(cr_round(p))))
+        elif q["verdict"] == "loss":
+            parts.append("|c%sloses %s after AH cut|r" % (lua_hex(TT_RGB["muted" if quiet else "neg"]), money_text(cr_round(-p))))
+        elif q["verdict"] == "even":
+            parts.append("|c%sabout even after AH cut|r" % lua_hex(TT_RGB["muted"]))
+        elif q["verdict"] == "thin":
+            parts.append("|c%s%s|r" % (lua_hex(TT_RGB["muted"]), cr_unsure(q)))
+    else:
+        parts.append("no AH price")
+    return " - ".join(parts)
+
+
+def cr_layout_ok(sc, w, label, best_shown=False):
+    """The Professions window line: inside the schematic form, clear of every Blizzard control on it
+    and on the page's bar (two lines tall, when it wraps), never over a reagent slot."""
+    g, C = w.g, w.ns.Crafts
+    fs = C.PW.fs
+    page = g.ProfessionsFrame.CraftingPage
+    form = page.SchematicForm
+    r = w.rect(fs)
+    sc.check(r is not None, "%s: the line has a place" % label)
+    if r is None:
+        return
+    sc.check(inside(r, w.rect(form)), "%s: inside the schematic form (%s in %s)" % (label, r, w.rect(form)))
+    es = w.M.eff(fs)
+    sc.check((r[2] - r[0]) / es >= 150, "%s: room for the words (%.0f wide)" % (label, (r[2] - r[0]) / es))
+    others = [("Track Recipe box", form.TrackRecipeCheckbox), ("its label", form.TrackRecipeCheckbox.Text),
+              ("the output icon", form.OutputIcon), ("the description", form.Description),
+              ("Create", page.CreateButton), ("Create All", page.CreateAllButton), ("the count box", page.CreateMultipleInputBox)]
+    if best_shown:
+        others += [("use best quality box", form.AllocateBestQualityCheckbox), ("its label", form.AllocateBestQualityCheckbox.Text)]
+    slots = form.reagentSlots
+    for i in range(1, len(slots) + 1):
+        s = slots[i]
+        if s.IsShown(s):
+            others.append(("reagent slot %d" % i, s))
+    tall = (r[0], r[1], r[2], r[1] + (2 * 12 + 2) * es)
+    for name, o in others:
+        ro = w.rect(o)
+        if ro is None:
+            continue
+        sc.check(not overlaps(tall, ro), "%s: clear of %s (%s vs %s)" % (label, name, tall, ro))
+
+
+def sc_crafts_data(sc, ref, items):
+    """The shipped recipe table: the research's fixes applied, and Crafts.lua reads it as Python does."""
+    T = cr_table()
+    R, V, RI, N = T["R"], T["V"], T["RI"], T["N"]
+    sc.check(len(R) > 1500, "data: %d recipes" % len(R))
+    junk = re.compile(r"\bNYI\b|DEPRECATED|Deprecated|\bOLD\b|UNUSED|\[PH\]|\bDNT\b")
+    sc.eq([n for n in N.values() if junk.search(n)], [], "data: no test or retired names (NYI, DEPRECATED, OLD ...)")
+    sc.check(1266939 not in R and 30021 not in R, "data: Gnomish Weather Machine NYI and the DEPRECATED bandage are out")
+    sc.check(16667 in R and cr_recipe(16667)["spec"] == 9788, "data: Demon Forged Breastplate kept (seen on the AH), needs Armorsmith")
+    sc.check(1293088 in R, "data: 9-60 Battery Pack kept (its product is on the AH, no ItemSparse row)")
+    sc.eq(cr_recipe(16729)["spec"], 9788, "data: Lionheart Helm needs Armorsmith")
+    sc.eq(cr_recipe(16993)["spec"], 17040, "data: Masterwork Stormhammer needs Master Hammersmith")
+    sc.check(all(cr_recipe(sp)["items"] or (cr_recipe(sp)["trainer"] and cr_recipe(sp)["spec"] in (10656, 10658, 10660, 20219, 20222))
+                 for sp in R if cr_recipe(sp)["spec"]), "data: a spec comes from a recipe item, or a specialization's trainer")
+    sc.check(not any(cr_recipe(sp)["trainer"] and cr_recipe(sp)["items"] for sp in R), "data: a recipe from a plan is never a trainer one")
+    sc.eq(cr_recipe(CR_OFFICER)["flags"], "B", "data: Officer's Boots binds on pickup, from a plan")
+    sc.eq(RI.get(251398), "B", "data: Plans: Officer's Boots binds on pickup")
+    sc.eq((cr_recipe(CR_CLOUDY)["side"], cr_recipe(CR_CLOUDY)["rep"]), ("H", "2787:4"), "data: Cloudy Skyforged Helm: Earthen Ring, Horde only")
+    sc.eq((cr_recipe(1229504)["side"], cr_recipe(1263425)["side"]), ("H", "A"), "data: the two faction banners are split by side")
+    sc.check(cr_recipe(CR_GEMMED)["suffix"], "data: Gemmed Copper Gauntlets has random suffixes")
+    sc.check(cr_recipe(9980)["rank"] == 245 and "E" in cr_recipe(9980)["flags"], "data: Ornate Mithril Helm: Era's rank 245, marked")
+    sc.eq(cr_recipe(CR_SPURS)["rank"], 210, "data: Plans: Mithril Spurs need Blacksmithing 210 (Forever's own)")
+    sc.eq(V.get(3857), 500, "data: Coal from an Alliance vendor at 5s")
+    sc.check(2880 in V and 3466 in V, "data: Weak and Strong Flux are vendor mats")
+    smelts = sorted(sp for sp in R if cr_recipe(sp)["skill"] == CR_SMELT)
+    sc.check(all(sp in smelts for sp in (2657, 2658, 2659, 3304, 3307, 3308, 3569, 10097, 10098, 14891, 16153)),
+             "data: the classic smelts are all there (%s)" % smelts)
+    sc.check(cr_recipe(CR_COPPER)["starts"] and cr_recipe(CR_IRON)["trainer"], "data: Smelt Copper comes with Mining, Smelt Iron from a trainer")
+    sc.eq((cr_recipe(CR_BRONZE)["cmin"], cr_recipe(CR_BRONZE)["cmax"]), (2, 2), "data: Smelt Bronze makes 2")
+    # every recipe a recipe item teaches is in, every name is ASCII-escaped plain text
+    # a few Forever-new plans have no row in either ItemSparse export: the game names those
+    unnamed = sorted({ri for sp in R for ri in cr_recipe(sp)["items"] if not N.get(ri)})
+    sc.check(len(unnamed) < 25, "data: nearly every recipe item has a name (%d without: %s)" % (len(unnamed), unnamed[:5]))
+    # The addon reads the same table: every recipe, field by field, and the lists by product, mat and recipe item.
+    w = World(ref, items)
+    C = w.ns.Crafts
+    bad = []
+    for sp in sorted(R):
+        a, r = C.Recipe(sp), cr_recipe(sp)
+        mats = [(a.mats[i].id, a.mats[i].n) for i in range(1, len(a.mats) + 1)]
+        got = (a.skill, a.product, a.cmin, a.cmax, mats, a.rank, a.spec, a.rep, a.bop, a.suffix, a.starts, a.trainer, a.side,
+               [a["items"][i] for i in range(1, len(a["items"]) + 1)], a.yellow)
+        want = (r["skill"], r["product"], r["cmin"], r["cmax"], r["mats"], r["rank"], r["spec"], r["rep"], r["bop"], r["suffix"],
+                r["starts"], r["trainer"], r["side"], r["items"], r["yellow"])
+        if got != want:
+            bad.append((sp, got, want))
+    sc.eq(bad[:3], [], "data: Crafts.lua reads every recipe as Python does")
+    # a few rows as the game has them (written out here, not read from the table)
+    game = {14891: (186, 11371, 1, 1, [(11370, 8)]), 3569: (186, 3859, 1, 1, [(3575, 1), (3857, 1)]),
+            2659: (186, 2841, 2, 2, [(2840, 1), (3576, 1)]), 16153: (186, 12359, 1, 1, [(10620, 1)]),
+            9964: (164, 7969, 1, 1, [(3860, 4), (7966, 3)]), 3337: (164, 3486, 1, 1, [(2838, 3)]),
+            3931: (202, 4365, 1, 3, [(4364, 3), (2589, 1)]), 3946: (202, 4378, 1, 5, [(4377, 2), (2592, 1)]),
+            17187: (171, 12360, 1, 1, [(12359, 1), (12363, 1)]), 18560: (197, 14342, 1, 1, [(14256, 2)])}
+    for sp, want in sorted(game.items()):
+        a = C.Recipe(sp)
+        got = (a.skill, a.product, a.cmin, a.cmax, [(a.mats[i].id, a.mats[i].n) for i in range(1, len(a.mats) + 1)])
+        sc.eq(got, want, "data: recipe %d as the game has it" % sp)
+    sc.eq([C.Recipe(sp).cd for sp in (17187, 17563, 18560, 11479, 16153)], [47, 23, 95, 1, None],
+          "data: cooldowns (Arcanite 47h, a transmute 23h, Mooncloth 95h, Iron to Gold 1h, Smelt Thorium none)")
+    sc.eq([(C.Recipe(sp).spec, C.Recipe(sp).rep) for sp in (23632, 23633, 16660, 23705)],
+          [(None, "529:5"), (None, "529:6"), (9788, "529:6"), (None, "529:5")],
+          "data: the Dawn plans keep their Argent Dawn and Armorsmith gates (their duplicate plan has no row)")
+    sc.eq([C.Recipe(sp).spec for sp in (10619, 10650, 24654, 24655, 12715, 12895)], [10656, 10656, 10656, 10656, 20222, 20219],
+          "data: Dragonscale, Goblin and Gnomish trainer recipes need their specialization")
+    sc.eq((C.Recipe(14891).trainer, C.Recipe(22813).trainer), (False, False), "data: quest recipes (Smelt Dark Iron, Gordok Ogre Suit) are not a trainer's")
+    sc.eq([V.get(i) for i in (765, 785, 2449, 2453, 3355, 3357)], [None] * 6, "data: no herb from a vendor (they sell a few at a time)")
+    idx = C.Index()
+    for key in ("byProduct", "byMat", "byItem", "bySkill"):
+        t = idx[key]
+        for k in (2772, 3575, 12359, 3486, 251398, 7989, 250546, 186, 164):
+            l = t[k]
+            got = [l[i] for i in range(1, len(l) + 1)] if l is not None else []
+            sc.eq(got, T[key].get(k, []), "data: %s[%d]" % (key, k))
+    sc.clean(w)
+
+
+def sc_crafts_recipe_items(sc, ref, items):
+    """A recipe item's tooltip, for everyone: what it makes and sells for, the mats, the profit. A
+    bind-on-pickup item: the mats only. At most 3 lines; one in compact mode; none from the other side."""
+    w = cr_world(ref, items)
+    ctx = CrCtx()
+    for how in ("byid", "link", "bag"):
+        got = cr_tip_ok(sc, w, how, 7989, ctx, "recipe item: Plans: Mithril Spurs (%s), not a blacksmith" % how)
+    q = cr_q(w, CR_SPURS, ctx)
+    sc.eq(q["verdict"], "loss", "recipe item: Mithril Spurs loses at every price (model)")
+    sc.check(len(got) == 3 and got[0][0] == "Makes: Mithril Spurs" and (got[2][1] or "").startswith("Profit: -"),
+             "recipe item: 3 lines, a red loss (%s)" % got)
+    # Plans: Officer's Boots (never on the AH, no price data): a bind-on-pickup item, the mats only.
+    got = cr_tip_ok(sc, w, "byid", 251398, ctx, "recipe item: Plans: Officer's Boots")
+    sc.eq(got, [("Makes a bind-on-pickup item", None), ("4 Steel Bar 31s, 4 Heavy Grinding Stone 55s 96c, 4 Jade 31s", None),
+                ("Mats: " + money_icons(11800), None)], "recipe item: Officer's Boots: the words")
+    # a blacksmith sees the same on a plan (and nothing more: it is not a mat or a product)
+    en_skills(w, {CR_BS: 300})
+    cr_tip_ok(sc, w, "byid", 7989, ctx.copy(ranks={CR_BS: 300}), "recipe item: Plans: Mithril Spurs, a blacksmith")
+    en_skills(w, {})
+    # compact mode: one line
+    w.slash("/gl compact")
+    got = cr_tip_ok(sc, w, "byid", 7989, ctx.copy(compact=True), "recipe item: compact")
+    sc.eq(len(got), 1, "recipe item: compact mode, one line")
+    w.slash("/gl compact")
+    # the other side's plans: nothing for an Alliance player
+    sc.eq(cr_tip(w, "byid", 276976)[0], [], "recipe item: Plans: Cloudy Skyforged Helm (Horde only): nothing for the Alliance")
+    # a comparison tooltip and a quiet row: nothing
+    tt = w.g.ShoppingTooltip1
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_NONE")
+    tt.SetItemByID(tt, 7989)
+    sc.check(not any((l or "").startswith("Makes") for l, _ in w.lines(tt)), "recipe item: not on comparison tooltips")
+    w.ns.tipQuiet = True
+    sc.eq(cr_tip(w, "byid", 7989)[0], [], "recipe item: not while a row of ours sets the tooltip")
+    w.ns.tipQuiet = False
+    owner = w.g.CreateFrame("Frame", None, w.g.UIParent)
+    owner.glNoEnchants = True
+    tt = w.g.GameTooltip
+    tt.SetOwner(tt, owner, "ANCHOR_NONE")
+    tt.SetItemByID(tt, 7989)
+    sc.check(len(w.lines(tt)) > 0 and not any((l or "").startswith("Makes") for l, _ in w.lines(tt)),
+             "recipe item: not on a tooltip a row of ours owns (built again later)")
+    # tooltips off: nothing (Core's own switch)
+    w.slash("/gl tooltip")
+    tt = cr_show(w, "byid", 7989)
+    sc.eq(w.lines(tt), [], "recipe item: /gl tooltip off: nothing")
+    w.slash("/gl tooltip")
+    sc.clean(w)
+    # old prices: no green or red
+    w = cr_world(ref, items, now=ref.updated + 7 * 3600)
+    cr_tip_ok(sc, w, "byid", 7989, CrCtx(stale=True), "recipe item: prices 7h old: grey")
+    sc.clean(w)
+    # the older tooltip hook (OnTooltipSetItem) gets them too
+    w = cr_world(ref, items, client="legacy")
+    tt = cr_show(w, "byid", 7989)
+    got = w.lines(tt)
+    want, _ = cr_expect(w, 7989, CrCtx())
+    sc.eq(got[-len(want):], want, "recipe item: the legacy tooltip hook")
+    sc.clean(w)
+
+
+def sc_crafts_products(sc, ref, items):
+    """A crafted item's tooltip: for a recipe you know (or may know: grey), the mats and the profit."""
+    w = cr_world(ref, items)
+    ctx = CrCtx()
+    sc.eq(cr_tip(w, "byid", 12359)[0], [], "product: Thorium Bar, no Mining: nothing")
+    # A miner whose Mining window was never opened: Smelt Thorium (trainer, 250) may be known: grey.
+    en_skills(w, {CR_SMELT: 260})
+    ctx.ranks = {CR_SMELT: 260}
+    got = cr_tip_ok(sc, w, "byid", 12359, ctx, "product: Thorium Bar, Mining 260, maybe known (grey)")
+    sc.check(len(got) == 2 and got[1][0].startswith("Mats: "), "product: two lines (%s)" % got)
+    en_skills(w, {CR_SMELT: 240})
+    sc.eq(cr_tip(w, "byid", 12359)[0], [], "product: Mining 240 (under Smelt Thorium's 250): nothing")
+    # The window opened: only what it says is learned counts.
+    en_skills(w, {CR_SMELT: 260})
+    cr_open(w, CR_SMELT, [CR_COPPER, CR_IRON, CR_THORIUM], [CR_COPPER, CR_IRON], ctx=ctx)
+    cr_close(w)
+    sc.eq(cr_tip(w, "byid", 12359)[0], [], "product: the window shows Smelt Thorium not learned: nothing")
+    cr_tip_ok(sc, w, "byid", 3575, ctx, "product: Iron Bar, Smelt Iron learned")
+    sc.eq(cr_q(w, CR_IRON, ctx)["verdict"], "even", "product: Smelt Iron is about even (model)")
+    cr_open(w, CR_SMELT, [CR_COPPER, CR_IRON, CR_THORIUM], [CR_COPPER, CR_IRON, CR_THORIUM], ctx=ctx)
+    cr_close(w)
+    got = cr_tip_ok(sc, w, "bag", 12359, ctx, "product: Thorium Bar in the bags, learned", 5)
+    sc.eq(cr_q(w, CR_THORIUM, ctx)["verdict"], "profit", "product: Smelt Thorium pays at every price (model)")
+    sc.eq(got[-1], ("Mats: " + money_icons(1625), "Profit: +" + money_icons(580)),
+          "product: Mats 16s 25c, Profit +5s 80c (the smallest of +7s 39c now, +6s 65c at AH value, +5s 80c at the 7-day averages)")
+    # In the Professions window: the output icon's tooltip (GameTooltip:SetRecipeResultItem).
+    en_skills(w, {CR_BS: 230, CR_SMELT: 260})
+    ctx.ranks = {CR_BS: 230, CR_SMELT: 260}
+    got = cr_tip_ok(sc, w, "result", 7969, ctx, "product: Mithril Spurs on the window's output icon, not known: grey", CR_SPURS)
+    sc.check(len(got) == 2, "product: the window's output icon shows them")
+    # the window draws the output icon's tooltip every frame: no quote and no spell book call again
+    C = w.ns.Crafts
+    idx = C.Index()
+    q0, s0 = C.quotes, w.M.spellCalls
+    for _ in range(60):
+        cr_show(w, "result", 7969, CR_SPURS)
+    sc.eq((C.quotes - q0, w.M.spellCalls - s0), (0, 0), "product: 60 frames of the output icon: no new quote or spell book call")
+    sc.check(w.same(C.Index(), idx), "product: the recipe index is built once")
+    w.settle(2.5)
+    q0 = C.quotes
+    cr_show(w, "result", 7969, CR_SPURS)
+    sc.check(1 <= C.quotes - q0 <= 6, "product: a hover after 2 seconds quotes again, a few at most (%d)" % (C.quotes - q0))
+    cr_know(w, ctx, [CR_SPURS])
+    cr_tip_ok(sc, w, "result", 7969, ctx, "product: Mithril Spurs, the spell book says it is known", CR_SPURS)
+    got = cr_tip_ok(sc, w, "byid", 7969, ctx, "product: Mithril Spurs anywhere else, known")
+    sc.check(not any("enchant" in (l or "").lower() for l, _ in got), "product: no enchant lines")
+    w.slash("/gl compact")
+    got = cr_tip_ok(sc, w, "byid", 7969, ctx.copy(compact=True), "product: compact mode")
+    sc.eq(len(got), 1, "product: compact mode, one line")
+    w.slash("/gl compact")
+    # A random-suffix item: no profit claim.
+    cr_know(w, ctx, [CR_GEMMED])
+    got = cr_tip_ok(sc, w, "byid", 3474, ctx, "product: Gemmed Copper Gauntlets (versions)")
+    sc.eq(got[-1][1], None, "product: versions: no profit claim")
+    # Officer's Boots (bind on pickup) for a blacksmith who knows it: the mats only
+    cr_know(w, ctx, [CR_OFFICER])
+    got = cr_tip_ok(sc, w, "byid", 250546, ctx, "product: Officer's Boots, known")
+    sc.eq(got[-1][1], None, "product: bind on pickup: no profit claim")
+    sc.clean(w)
+    # ... even when the price data has a row for it (a stray one), selling far over the mats
+    w = cr_world(ref, items, ranks={CR_BS: 300}, fix={250546: ("Officer's Boots", 500000, 500000, 1, 3, 500000, 0)})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, ctx, [CR_OFFICER])
+    sc.eq(cr_q(w, CR_OFFICER, ctx)["verdict"], None, "product: a bind-on-pickup item with prices: no claim (model)")
+    got = cr_tip_ok(sc, w, "byid", 250546, ctx, "product: Officer's Boots with a price row")
+    sc.eq(got[-1][1], None, "product: bind on pickup with prices: still no profit claim")
+    got = cr_tip_ok(sc, w, "byid", 251398, ctx, "product: Plans: Officer's Boots with the item priced")
+    sc.eq(got[0], ("Makes a bind-on-pickup item", None), "product: the plan still says bind on pickup")
+    sc.clean(w)
+
+
+def sc_crafts_reagents(sc, ref, items):
+    """A mat's tooltip: the best recipe you know that uses it. Ore needs Mining: a blacksmith sees nothing."""
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    for iid in (2772, 10620, 2775, 3858):
+        sc.eq(cr_tip(w, "byid", iid)[0], [], "reagent: %s for a blacksmith without Mining: nothing" % cr_name(w, iid))
+    en_skills(w, {CR_BS: 300, CR_SMELT: 260})
+    ctx.ranks = {CR_BS: 300, CR_SMELT: 260}
+    for iid, sp, verdict in ((10620, CR_THORIUM, "profit"), (2772, CR_IRON, "even"), (2775, CR_SILVER, "loss")):
+        sc.eq(cr_q(w, sp, ctx)["verdict"], verdict, "reagent: %s (model)" % cr_name(w, iid))
+        cr_tip_ok(sc, w, "byid", iid, ctx, "reagent: %s, Mining 260, maybe known (grey)" % cr_name(w, iid))
+    # learned in the window: in colour
+    cr_open(w, CR_SMELT, [CR_COPPER, CR_IRON, CR_THORIUM, CR_SILVER], [CR_COPPER, CR_IRON, CR_THORIUM, CR_SILVER], ctx=ctx)
+    cr_close(w)
+    for iid in (10620, 2772, 2775, 2838, 3575, 12359, 3860):
+        cr_tip_ok(sc, w, "byid", iid, ctx, "reagent: %s, learned" % cr_name(w, iid))
+    sc.eq(cr_tip(w, "byid", 10620)[0], [("Smelt to Thorium Bar", "+" + money_icons(580) + " each")], "reagent: Smelt to Thorium Bar: +5s 80c each")
+    sc.eq(cr_tip(w, "byid", 2775)[0], [("Smelt to Silver Bar", money_icons(-214) + " each")], "reagent: Smelt to Silver Bar: -2s 14c each")
+    sc.eq(cr_tip(w, "byid", 2772)[0], [("Smelt to Iron Bar", "about even")], "reagent: Smelt to Iron Bar: about even")
+    # compact mode: only a known one that pays
+    w.slash("/gl compact")
+    for iid in (10620, 2772, 2775):
+        cr_tip_ok(sc, w, "byid", iid, ctx.copy(compact=True), "reagent: compact, %s" % cr_name(w, iid))
+    sc.eq(cr_tip(w, "byid", 2772)[0], [], "reagent: compact, about even: quiet")
+    w.slash("/gl compact")
+    # the window's reagent slot (GameTooltip:SetRecipeReagentItem)
+    cr_tip_ok(sc, w, "reagent", 2772, ctx, "reagent: Iron Ore in the window's reagent slot", (CR_IRON, 1))
+    sc.clean(w)
+    # The Mortar: Reloaded (13240) takes a Goblin Mortar to make one: never "Make Goblin Mortar" on a Goblin Mortar
+    fix = {10577: ("Goblin Mortar", 30000, 30000, 50, 20, 30000, 2000), 10505: ("Solid Blasting Powder", 300, 300, 500, 100, 300, 50)}
+    w = cr_world(ref, items, ranks={202: 300}, fix=fix)
+    ctx = CrCtx(ranks={202: 300})
+    cr_know(w, ctx, [13240])
+    sc.check(cr_q(w, 13240, ctx)["verdict"] is not None, "reagent: The Mortar: Reloaded has a verdict (model)")
+    got = cr_tip_ok(sc, w, "byid", 10577, ctx, "reagent: Goblin Mortar (13240 uses one)")
+    sc.check(not any((l or "").startswith("Make Goblin Mortar") for l, _ in got), "reagent: no 'Make Goblin Mortar' on itself (%s)" % got)
+    got = cr_tip_ok(sc, w, "byid", 3860, ctx, "reagent: Mithril Bar for that engineer")
+    sc.check(any((l or "").startswith("Make Goblin Mortar") for l, _ in got), "reagent: its other mats do say it (%s)" % got)
+    sc.clean(w)
+
+
+def sc_crafts_known(sc, ref, items):
+    """Which recipes the character knows: the Professions window (C_TradeSkillUI) tells, per character in
+    the saved settings, NEW_RECIPE_LEARNED adds one, the spell book may say so; never someone else's."""
+    w = cr_world(ref, items, ranks={CR_BS: 300, CR_SMELT: 260})
+    C, M = w.ns.Crafts, w.M
+    ctx = CrCtx(ranks={CR_BS: 300, CR_SMELT: 260})
+    K = lambda sp: C.KnownState(sp)
+    probe = (CR_COPPER, CR_IRON, CR_THORIUM, CR_HGS, CR_SPURS, CR_DEMON, CR_OFFICER, 2660)
+
+    def states_ok(label):
+        sc.eq([K(sp) for sp in probe], [cr_state(ctx, sp) for sp in probe], "known: %s" % label)
+    states_ok("before any window")
+    sc.eq((K(CR_COPPER), K(CR_IRON), K(CR_SPURS)), ("known", "maybe", None), "known: Smelt Copper comes with Mining, Smelt Iron may be known, plans not")
+    # someone else's window (linked), a data source still changing: nothing kept
+    M.ts.linked = True
+    cr_open(w, CR_BS, [CR_HGS, CR_SPURS], [CR_HGS, CR_SPURS], ctx=ctx)
+    states_ok("a linked window is not yours")
+    M.ts.linked = False
+    cr_close(w)
+    M.ts.changing = True
+    cr_open(w, CR_BS, [CR_HGS, CR_SPURS], [CR_HGS, CR_SPURS], ctx=ctx)
+    states_ok("skipped while the data source changes")
+    M.ts.changing = False
+    cr_close(w)
+    # a search narrows the list: the open profession's recipes in the table are asked all the same
+    # (GetAllRecipeIDs is not documented: without it only the filtered list comes from the window)
+    all_ids = w.g.C_TradeSkillUI.GetAllRecipeIDs
+    w.g.C_TradeSkillUI.GetAllRecipeIDs = None
+    cr_open(w, CR_BS, [CR_HGS, CR_SPURS, CR_DEMON], [CR_SPURS, CR_DEMON], filt=[CR_SPURS], ctx=ctx)
+    w.g.C_TradeSkillUI.GetAllRecipeIDs = all_ids
+    n_info = M.ts.infoCalls
+    M.fire("TRADE_SKILL_LIST_UPDATE")
+    w.settle(1.2)
+    sc.check(M.ts.infoCalls - n_info <= 3, "known: the table's recipes are asked once a session, not on every update (%d)"
+             % (M.ts.infoCalls - n_info))
+    states_ok("learned ones kept though a search hid one")
+    sc.eq((K(CR_SPURS), K(CR_DEMON), K(CR_HGS), K(CR_IRON)), ("known", "known", None, "maybe"),
+          "known: Heavy Grinding Stone not learned: no longer maybe; Mining's window not opened yet")
+    cr_close(w)
+    # Forever's child line (2938 under Blacksmithing) counts as Blacksmithing
+    cr_open(w, CR_BS, [CR_HGS], [CR_HGS], child=2938, ctx=ctx)
+    cr_close(w)
+    sc.eq(K(CR_HGS), "known", "known: the child line 2938 is Blacksmithing")
+    # NEW_RECIPE_LEARNED, LEARNED_SPELL_IN_SKILL_LINE
+    M.fire("NEW_RECIPE_LEARNED", CR_GEMMED, 1, CR_GEMMED)
+    sc.eq(K(CR_GEMMED), "known", "known: NEW_RECIPE_LEARNED adds one")
+    M.fire("LEARNED_SPELL_IN_SKILL_LINE", 9920, 1, False)
+    sc.eq(K(9920), "known", "known: LEARNED_SPELL_IN_SKILL_LINE adds one")
+    # kept per character in the saved settings, by GUID, never the name
+    S = w.g.ForeverAH_Settings
+    st = S.craftChars[M.guid]
+    sc.check(st is not None and st.known[CR_SPURS] is True and st.scanned[CR_BS] is not None, "known: saved under the character's GUID")
+    sc.check(S.craftChars["Player"] is None, "known: never under the name")
+    saved = lua_to_py(S)
+    sc.clean(w)
+    w = cr_world(ref, items, ranks={CR_BS: 300, CR_SMELT: 260}, saved=saved)
+    C = w.ns.Crafts
+    sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_HGS), C.KnownState(CR_IRON), C.KnownState(CR_GEMMED)),
+          ("known", "known", "maybe", "known"), "known: after a logout the saved list is back")
+    w.M.guid = "Player-1-0FFFFFFF"
+    C.Invalidate()
+    sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_IRON)), (None, "maybe"), "known: another character has its own")
+    w.M.guid = "Player-1-0000ABCD"
+    C.Invalidate()
+    # the profession dropped: its recipes go
+    en_skills(w, {CR_SMELT: 260})
+    w.settle(1)
+    sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_IRON)), (None, "maybe"), "known: Blacksmithing unlearned: its recipes are forgotten")
+    sc.check(w.g.ForeverAH_Settings.craftChars[w.M.guid].known[CR_SPURS] is None, "known: and gone from the saved list")
+    # a skill list that cannot be read never drops anything
+    en_skills(w, {CR_SMELT: 260, CR_BS: 300})
+    w.settle(1)
+    cr_open(w, CR_BS, [CR_SPURS], [CR_SPURS])
+    cr_close(w)
+    en_skills(w, {CR_SMELT: 260, CR_BS: 300}, mode="none")
+    w.settle(1)
+    sc.check(w.g.ForeverAH_Settings.craftChars[w.M.guid].known[CR_SPURS] is True, "known: unreadable skills: nothing forgotten")
+    en_skills(w, {CR_BS: 300, CR_SMELT: 260})
+    w.settle(1)
+    # the spell book: a yes counts, an error or a missing API never breaks anything
+    w.M.knownSpells[CR_DEMON] = True
+    C.Invalidate()
+    sc.eq(C.KnownState(CR_DEMON), "known", "known: C_SpellBook says yes")
+    w.M.spellMode = "errors"
+    C.Invalidate()
+    sc.eq(C.KnownState(CR_DEMON), None, "known: C_SpellBook errors: not known, no error")
+    cr_tip(w, "byid", 12359)
+    w.M.spellMode = "works"
+    w.g.C_SpellBook = None
+    C.Invalidate()
+    sc.eq(C.KnownState(CR_IRON), "maybe", "known: no C_SpellBook at all: still works")
+    w.g.C_TradeSkillUI = None
+    M.fire("TRADE_SKILL_SHOW")
+    w.settle(1.2)
+    sc.clean(w)
+    # a scan is at most once a second, the second one a moment later
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    C = w.ns.Crafts
+    cr_open(w, CR_BS, [CR_SPURS], [CR_SPURS])
+    n = C.scans
+    for _ in range(5):
+        w.M.fire("TRADE_SKILL_LIST_UPDATE")
+    sc.check(C.scans - n <= 1, "known: five list updates at once: at most one scan now (%d)" % (C.scans - n))
+    w.settle(1.5)
+    sc.check(C.scans - n <= 2, "known: and one more after a second (%d)" % (C.scans - n))
+    sc.clean(w)
+    # the older client: no C_TradeSkillUI events or API; nothing breaks
+    w = World(ref, items, client="legacy")
+    sc.eq(w.load_errors, [], "known: the legacy client loads")
+    sc.clean(w)
+
+
+def sc_crafts_spec(sc, ref, items):
+    """Recipes that need a specialization or a reputation are never 'maybe known'; one learned counts."""
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={CR_BS: 300})
+    specs = [sp for sp in sorted(_CR["R"]) if cr_recipe(sp)["skill"] == CR_BS and cr_recipe(sp)["spec"]]
+    sc.check(len(specs) > 20, "spec: %d Blacksmithing recipes need a spec" % len(specs))
+    sc.eq([sp for sp in specs if C.KnownState(sp) is not None], [], "spec: none of them may be known before the window")
+    reps = [sp for sp in sorted(_CR["R"]) if cr_recipe(sp)["skill"] == CR_BS and cr_recipe(sp)["rep"]]
+    sc.eq([sp for sp in reps if C.KnownState(sp) is not None], [], "spec: nor the reputation recipes")
+    # (none of them is a trainer recipe in today's table; one would still never be "maybe")
+    C.R[990001] = "164|7969|1|1|3860:4|T||9788|||100"
+    C.R[990002] = "164|7969|1|1|3860:4|T|||529:5||100"
+    C.R[990003] = "164|7969|1|1|3860:4|T|||||100"
+    sc.eq((C.KnownState(990001), C.KnownState(990002), C.KnownState(990003)), (None, None, "maybe"),
+          "spec: a trainer recipe with a spec or a reputation is not maybe known (a plain one is)")
+    for k in (990001, 990002, 990003):
+        C.R[k] = None
+    # every Blacksmithing recipe's state, as the model says
+    bs = [sp for sp in sorted(_CR["R"]) if cr_recipe(sp)["skill"] == CR_BS]
+    sc.eq([sp for sp in bs if C.KnownState(sp) != cr_state(ctx, sp)], [], "spec: every Blacksmithing recipe's state")
+    # Thorium Bar for a blacksmith: Demon Forged Breastplate (Armorsmith) never picked until learned
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "spec: Thorium Bar for a blacksmith 300")
+    cr_open(w, CR_BS, [CR_DEMON, CR_HGS], [CR_DEMON], ctx=ctx)
+    cr_close(w)
+    sc.eq(C.KnownState(CR_DEMON), "known", "spec: learned in the window: known")
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "spec: Thorium Bar once the Armorsmith recipe is learned")
+    sc.clean(w)
+
+
+def sc_crafts_faction(sc, ref, items):
+    """Horde-only recipes are hidden from an Alliance player; a Horde player on Horde prices sees them."""
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, ctx, [CR_CLOUDY])
+    sc.eq(cr_tip(w, "byid", 276976)[0], [], "faction: Plans: Cloudy Skyforged Helm: nothing for the Alliance")
+    sc.eq(cr_tip(w, "byid", 277040)[0], [], "faction: Cloudy Skyforged Helm: nothing for the Alliance")
+    cr_tip_ok(sc, w, "byid", 3575, ctx, "faction: Iron Bar for an Alliance blacksmith (no Horde recipe)")
+    pick = C.ReagentPick(3575)
+    sc.check(pick is None or pick.r.id != CR_CLOUDY, "faction: Iron Bar's best use is never a Horde recipe")
+    sc.eq(C.EmptySearch("cloudy skyforged helm"), None, "faction: an empty search for it: nothing")
+    sc.check(C.EmptySearch("plans cloudy skyforged chainmail") is not None, "faction: the shared Cloudy plans (not Horde only) are found")
+    sc.check(C.Visible(C.Recipe(1263425)) and not C.Visible(C.Recipe(1229504)), "faction: the Alliance banner shows, the Horde one not")
+    sc.clean(w)
+    w = cr_world(ref, items, ranks={CR_BS: 300}, faction="Horde", header={"houseName": '"Horde Auction House"'})
+    ctx = CrCtx(ranks={CR_BS: 300}, side="H")
+    cr_know(w, ctx, [CR_CLOUDY])
+    cr_tip_ok(sc, w, "byid", 276976, ctx, "faction: a Horde player on Horde prices sees the plans")
+    cr_tip_ok(sc, w, "byid", 7989, ctx, "faction: and the shared ones")
+    sc.check(w.ns.Crafts.Visible(w.ns.Crafts.Recipe(1229504)) and not w.ns.Crafts.Visible(w.ns.Crafts.Recipe(1263425)),
+             "faction: the Horde banner shows for the Horde, the Alliance one not")
+    sc.clean(w)
+    # A Horde player on the Alliance prices: no craft lines at all (the market is another one).
+    w = cr_world(ref, items, ranks={CR_BS: 300}, faction="Horde")
+    sc.eq(cr_tip(w, "byid", 7989)[0], [], "faction: Alliance prices for a Horde player: no craft lines")
+    sc.clean(w)
+
+
+def sc_crafts_robust(sc, ref, items):
+    """A profit is green only when it pays at the cheapest prices, at AH value and at the 7-day averages,
+    beats 10% of the mats, and the item sells. One cheap listing never makes it green."""
+    w = cr_world(ref, items, ranks={CR_SMELT: 300})
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_MITHRIL, CR_THORIUM, CR_COPPER, CR_BRONZE])
+    q = cr_q(w, CR_MITHRIL, ctx)
+    sc.check(q["profit"]["lo"] > 0.10 * q["cost"]["lo"] and q["profit"]["mkt"] < 0,
+             "robust: Mithril Ore has one listing at 3s (model: %s)" % q["profit"])
+    got = cr_tip_ok(sc, w, "byid", 3858, ctx, "robust: Mithril Ore")
+    sc.eq(got, [("Smelt to Mithril Bar", "about even")], "robust: a cheap one-off ore listing is not a green profit")
+    got = cr_tip_ok(sc, w, "byid", 10620, ctx, "robust: Thorium Ore")
+    sc.eq(got, [("Smelt to Thorium Bar", "+" + money_icons(580) + " each")], "robust: Thorium pays at every price: green, the smallest")
+    # two made at a time (Smelt Bronze): the sums use the count
+    cr_tip_ok(sc, w, "byid", 2841, ctx, "robust: Bronze Bar (2 a craft)")
+    sc.eq(cr_q(w, CR_BRONZE, ctx)["net"]["lo"], math.floor(399 * 2 * 95 / 100), "robust: 2 bars sold, after the cut (model)")
+    sc.clean(w)
+    cases = (("not selling", {12359: ("Thorium Bar", 2490, 2490, 2495, 0, 2400, 600)}, {12359: ([2490] * 24, [0] * 24, 0, None)}),
+             ("under 10% of the mats", {12359: ("Thorium Bar", 1800, 1850, 2495, 121, 1850, 600)}, None),
+             ("losing at the 7-day average", {12359: ("Thorium Bar", 2490, 2490, 2495, 121, 1500, 600)}, None),
+             ("losing at AH value", {10620: ("Thorium Ore", 1625, 2700, 2418, 121, 1700, 250)}, None),
+             ("under 10% at the 7-day average", {12359: ("Thorium Bar", 2490, 2490, 2495, 121, 1810, 600)}, None),
+             ("losing at every price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)}, None))
+    for label, fix, series in cases:
+        w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix=fix, series=series)
+        ctx = CrCtx(ranks={CR_SMELT: 300})
+        cr_know(w, ctx, [CR_THORIUM])
+        q = cr_q(w, CR_THORIUM, ctx)
+        want = {"losing at every price": "loss", "not selling": "thin"}.get(label, "even")
+        sc.eq(q["verdict"], want, "robust: %s (model: %s)" % (label, q["profit"]))
+        cr_tip_ok(sc, w, "byid", 10620, ctx, "robust: Thorium Ore, %s" % label)
+        cr_tip_ok(sc, w, "byid", 12359, ctx, "robust: Thorium Bar, %s" % label)
+        sc.clean(w)
+
+
+def sc_crafts_subcraft(sc, ref, items):
+    """A mat you make cheaper than you can buy it (one level): used, and the mats line says so."""
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_open(w, CR_BS, [CR_OFFICER, CR_HGS], [CR_OFFICER, CR_HGS], ctx=ctx)
+    cr_close(w)
+    q = cr_q(w, CR_OFFICER, ctx)
+    sc.check(q["mats"][1]["sub"] is not None, "subcraft: Heavy Grinding Stone is made from Heavy Stone (model)")
+    got = cr_tip_ok(sc, w, "byid", 251398, ctx, "subcraft: Plans: Officer's Boots")
+    sc.eq(got[1][0], "4 Steel Bar 31s, 4 Heavy Grinding Stone 45s 60c (from 12 Heavy Stone), 4 Jade 31s",
+          "subcraft: the mats line names it")
+    sc.eq(got[2][0], "Mats: " + money_icons(10800), "subcraft: Mats: 1g 8s (bought, 1g 18s)")
+    cr_tip_ok(sc, w, "byid", 250546, ctx, "subcraft: Officer's Boots")
+    C = w.ns.Crafts
+    sc.check(C.Quote(CR_HGS).mats[1].sub is None, "subcraft: Heavy Stone itself is bought")
+    sc.clean(w)
+    # Heavy Grinding Stone dearer to make than to buy: bought
+    w = cr_world(ref, items, ranks={CR_BS: 300}, fix={2838: ("Heavy Stone", 600, 610, 3230, 300, 600, 60)})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, ctx, [CR_OFFICER, CR_HGS])
+    got = cr_tip_ok(sc, w, "byid", 251398, ctx, "subcraft: Heavy Stone dear")
+    sc.check("(from" not in got[1][0], "subcraft: dearer to make: bought (%s)" % got[1][0])
+    sc.clean(w)
+    # a vendor mat: Coal at the vendor's 5s when the AH asks more
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={3857: ("Coal", 900, 950, 471, 100, 990, 125)})
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_STEEL])
+    got = cr_tip_ok(sc, w, "byid", 3859, ctx, "subcraft: Steel Bar, Coal at the vendor")
+    sc.check("1 Coal 5s (vendor)" in got[0][0], "subcraft: the mats line says vendor (%s)" % got[0][0])
+    sc.clean(w)
+    # Earth to Life never makes its Essence of Earth from Living Essence (Life to Earth): that is its own product
+    fix = {7076: ("Essence of Earth", 5000, 5000, 100, 50, 5000, 100), 12803: ("Living Essence", 1000, 1000, 100, 50, 1000, 100)}
+    w = cr_world(ref, items, ranks={171: 300}, fix=fix)
+    ctx = CrCtx(ranks={171: 300})
+    cr_know(w, ctx, [17566, 17565])
+    sc.check(w.ns.Crafts.Quote(17566).mats[1].sub is None, "subcraft: a mat is never made from the recipe's own product")
+    cr_tip_ok(sc, w, "byid", 12803, ctx, "subcraft: Living Essence (Earth to Life, Life to Earth known)")
+    cr_tip_ok(sc, w, "byid", 7076, ctx, "subcraft: Essence of Earth (Earth to Life, Life to Earth known)")
+    sc.clean(w)
+
+
+def sc_crafts_live(sc, ref, items):
+    """Live prices: ns.LivePrice when the AH code gives it, else the open AH's own listings, else Data.lua."""
+    w = cr_world(ref, items, ranks={CR_SMELT: 300})
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_THORIUM])
+    ah_live = w.ns.LivePrice   # AH.lua's
+    mk = w.lua.eval("function(t) return function(id) return t[id] end end")
+    for live in ({10620: 2000}, {10620: 2000, 12359: 2100}, {12359: 3000}):
+        w.ns.LivePrice = mk(w.to_lua(live))
+        w.ns.Crafts.Invalidate()
+        c = ctx.copy(live=live)
+        cr_tip_ok(sc, w, "byid", 12359, c, "live: ns.LivePrice %s" % live)
+        cr_tip_ok(sc, w, "byid", 10620, c, "live: the ore, ns.LivePrice %s" % live)
+    sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={10620: 2000, 12359: 2100}))["sell"]["lo"], 2099,
+          "live: sells at 1c under the live listing (model)")
+    # the AH value the tooltip shows is then the live listing ("AH value (live)"): 1c under it, as
+    # Sell now (live) says, not the data's 24s 90c; at most 25% over the day's sales (31s 12c)
+    sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={12359: 3000}))["sell"]["lo"], 2999,
+          "live: above the data's AH value, 1c under the live listing (model)")
+    sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={12359: 4000}))["sell"]["lo"], 3112,
+          "live: never 25% over what it sold for in the last day (model)")
+    sc.eq(cr_q(w, CR_SPURS, ctx)["sell"]["lo"], 3480, "no live listing: never above the data's AH value (34s 80c, cheapest 35s) (model)")
+    t = w.to_lua({10620: 2000})
+    w.ns.LivePrice = mk(t)
+    w.settle(1)   # nothing else pending that would make it quote again
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx.copy(live={10620: 2000}), "live: the ore at 20s")
+    t[10620] = 1500
+    w.settle(2.5)
+    cr_tip_ok(sc, w, "byid", 12359, ctx.copy(live={10620: 1500}), "live: the AH shows 15s, nothing else says so: the tip has it 2s later")
+    # no ns.LivePrice: the open AH's listings (ns.LiveCheapest)
+    w.ns.LivePrice = None
+    w.open_ah_modern()
+    w.set_commodity_results(10620, [(1900, 50, False), (1950, 100, False)])
+    w.M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", 10620)
+    w.settle(0.3)
+    sc.eq(w.live(10620), 1900, "live: the AH showed Thorium Ore at 19s")
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx.copy(live={10620: 1900}), "live: no ns.LivePrice: the open AH's cheapest")
+    # AH.lua's own ns.LivePrice (price, own, "listings"): the craft lines come after Core's AH value
+    # (live) and Sell now (live), and the bar sells at that Sell now (25s 99c, above the data's 24s
+    # 90c): 25s 99c after the cut less 19s of ore is the +5s 69c shown
+    w.ns.LivePrice = ah_live
+    for own, now, profit in ((False, 2599, 569), (True, 2600, 570)):
+        w.set_commodity_results(12359, [(2600, 50, own), (2700, 100, False)])
+        w.M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", 12359)
+        w.settle(0.3)
+        w.ns.Crafts.Invalidate()
+        label = "live: AH.lua's LivePrice, %s cheapest bar" % ("your own" if own else "another's")
+        sc.eq(tuple(lua_list(w.lua.eval("function(f) return { f(12359) } end")(ah_live))), (2600, own, "listings"),
+              "%s: ns.LivePrice answers price, own, source" % label)
+        cr_tip_ok(sc, w, "byid", 12359, ctx.copy(live={10620: 1900, 12359: 2600}, own={12359} if own else ()), label)
+        L = w.lines(cr_show(w, "byid", 12359))
+        left = [l for l, _ in L]
+        sc.eq([r for l, r in L if l == "Sell now (live)"], [money_icons(now)], "%s: Core's Sell now (live)" % label)
+        sc.eq(w.ns.Crafts.Quote(CR_THORIUM).sellUnit.lo, now, "%s: the bar sells at that Sell now" % label)
+        sc.check("Sell now (live)" in left and left.index("Sell now (live)") < len(left) - 2 and left[-2] == "Smelt: 1 Thorium Ore 19s",
+                 "%s: the craft lines after Core's (%s)" % (label, left))
+        sc.eq(L[-1][1], "Profit: +" + money_icons(profit), "%s: the profit" % label)
+    w.ns.LivePrice = None
+    # ns.LivePrice answers for itself: its nil (another market, say) is not asked again of the open
+    # AH's own listings
+    w.ns.LivePrice = w.lua.eval("function(id) return nil end")
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "live: ns.LivePrice says none (the open AH has 19s): Data.lua")
+    sc.eq(w.ns.Crafts.Quote(CR_THORIUM).mats[1].cost.lo, 1625, "live: ns.LivePrice says none: the ore at the data's 16s 25c")
+    w.ns.LivePrice = None
+    w.close_ah_modern()
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "live: the AH closed: back to Data.lua")
+    # a LivePrice that errors or answers rubbish is never used
+    w.ns.LivePrice = w.lua.eval("function(id) error('boom') end")
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "live: a LivePrice that errors: Data.lua")
+    w.ns.LivePrice = w.lua.eval("function(id) return 'x' end")
+    w.ns.Crafts.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "live: a LivePrice that is not a number: Data.lua")
+    w.ns.LivePrice = None
+    sc.clean(w)
+
+
+def sc_crafts_window(sc, ref, items, elvui=False):
+    """The Professions window: one line in the schematic form for the recipe picked, updated when the
+    pick changes, never over Blizzard's controls."""
+    label = "window (ElvUI)" if elvui else "window"
+    kw = {}
+    if elvui:
+        kw["before_addon"] = lambda w: w.M.InstallElvUIAddon(w.to_lua({}))
+        kw["screen"] = (768 * 16 / 9, 768, 0.62)
+    w = cr_world(ref, items, ranks={CR_BS: 300, CR_SMELT: 300}, **kw)
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={CR_BS: 300, CR_SMELT: 300})
+    sc.check(not C.attached, "%s: nothing made before the window loads" % label)
+    cr_open(w, CR_BS, [CR_SPURS, CR_OFFICER, CR_HGS], [CR_SPURS, CR_OFFICER, CR_HGS], select=CR_SPURS, ctx=ctx)
+    sc.check(C.attached, "%s: attached when Blizzard_Professions loads" % label)
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_SPURS, ctx), ctx), "%s: Mithril Spurs" % label)
+    sc.eq(strip_codes(cr_line(w)), "Mats 79s 64c - sells 34s 80c - loses 46s 58c after AH cut", "%s: the words" % label)
+    cr_layout_ok(sc, w, "%s: Mithril Spurs (2 reagents)" % label)
+    cr_select(w, CR_OFFICER)
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_OFFICER, ctx), ctx), "%s: picks Officer's Boots: updated" % label)
+    sc.check((cr_line(w) or "").endswith("bind on pickup"), "%s: bind on pickup: no sell price" % label)
+    cr_layout_ok(sc, w, "%s: Officer's Boots (3 reagents)" % label)
+    cr_select(w, 9980)
+    cr_layout_ok(sc, w, "%s: Ornate Mithril Helm (4 reagents)" % label)
+    cr_select(w, 123456)
+    sc.eq(cr_line(w), None, "%s: a recipe the table does not know: hidden" % label)
+    cr_select(w, CR_CLOUDY)
+    sc.eq(cr_line(w), None, "%s: a Horde-only recipe for an Alliance player: hidden" % label)
+    # the Mining window, a smelt that pays
+    cr_close(w)
+    cr_open(w, CR_SMELT, [CR_THORIUM, CR_IRON], [CR_THORIUM, CR_IRON], select=CR_THORIUM, ctx=ctx)
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_THORIUM, ctx), ctx), "%s: Smelt Thorium" % label)
+    sc.eq(strip_codes(cr_line(w)), "Mats 16s 25c - sells 24s 89c - +5s 80c after AH cut", "%s: the smelt's words" % label)
+    cr_layout_ok(sc, w, "%s: Smelt Thorium" % label)
+    # the "use best quality" box showing: the line goes above it
+    form = w.g.ProfessionsFrame.CraftingPage.SchematicForm
+    best = form.AllocateBestQualityCheckbox
+    best.Show(best)
+    cr_select(w, CR_IRON)
+    cr_layout_ok(sc, w, "%s: with the best quality box" % label, best_shown=True)
+    best.Hide(best)
+    # off: hidden; on: back; a live price changes it
+    w.slash("/gl crafts off")
+    sc.eq(cr_line(w), None, "%s: /gl crafts off hides it" % label)
+    w.slash("/gl crafts on")
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_IRON, ctx), ctx), "%s: /gl crafts on brings it back" % label)
+    sc.eq(w.M.ts.infoCalls > 0, True, "%s: the window was read" % label)
+    sc.clean(w)
+    # prices 7 hours old: the profit is grey
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, now=ref.updated + 7 * 3600, **kw)
+    ctx = CrCtx(ranks={CR_SMELT: 300}, stale=True)
+    cr_open(w, CR_SMELT, [CR_THORIUM], [CR_THORIUM], select=CR_THORIUM, ctx=ctx)
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_THORIUM, ctx), ctx), "%s: old prices" % label)
+    sc.check(lua_hex(TT_RGB["muted"]) + "+" in (cr_line(w) or ""), "%s: old prices: the profit is grey (%s)" % (label, cr_line(w)))
+    sc.clean(w)
+
+
+def sc_crafts_window_elvui(sc, ref, items):
+    sc_crafts_window(sc, ref, items, elvui=True)
+
+
+def cr_ideas_ref(w, ctx, gold):
+    """Crafts.lua's craft flip ideas, in Python: known recipes that pay at every price, sized to gold."""
+    out = []
+    for sk in sorted(ctx.ranks):
+        if ctx.ranks[sk] <= 0:
+            continue
+        for sp in _CR["bySkill"].get(sk, []):
+            r = cr_recipe(sp)
+            if r["bop"] or r["unsure"] or r["suffix"] or not cr_visible(ctx, sp) or cr_state(ctx, sp) != "known":
+                continue
+            q = cr_q(w, sp, ctx)
+            per_day = math.floor(24 / r["cd"]) if r["cd"] else None   # a cooldown: so many a day, none over a day
+            if q["verdict"] != "profit" or not q["sold"] or q["cost"]["lo"] <= 0 or (per_day is not None and per_day < 1):
+                continue
+            rate = 0.5 * q["sold"]
+            want = max(1, min(200, math.floor(rate + 0.5)))
+            crafts = max(1, math.ceil(want / r["count"]))
+            if per_day is not None:
+                crafts = min(crafts, per_day)
+
+            def listed(iid):
+                row = w.prices.get(iid)
+                return row[3] if row else 0
+            for e in q["mats"]:
+                if e["sub"]:   # a mat you make: by what its own mats' listings hold
+                    for m in cr_q(w, e["sub"]["id"], ctx, depth=1)["mats"]:
+                        if not m["vendor"]:
+                            crafts = min(crafts, math.floor(listed(m["id"]) / (e["n"] / e["sub"]["count"] * m["n"])))
+                elif not e["vendor"]:
+                    crafts = min(crafts, math.floor(listed(e["id"]) / e["n"]))
+            unit = max(q["cost"]["lo"], q["cost"]["mkt"] or 0)   # many crafts' mats: at AH value when dearer
+            fit_crafts, limited = crafts, False
+            if gold is not None:
+                can = gold // unit
+                if can < crafts:
+                    fit_crafts, limited = can, True
+            if crafts < 1 or fit_crafts < 1:
+                continue
+            whole = max(1, math.floor(crafts * r["count"]))
+            n = max(1, math.floor(fit_crafts * r["count"]))
+            f = {"id": r["product"], "kind": "craft", "buyMax": math.ceil(unit / r["count"]), "units": n,
+                 "cost": fit_crafts * unit, "relist": q["sell"]["lo"], "usual": 0}
+            fit = {"units": n, "cost": fit_crafts * unit, "profit": fit_crafts * q["shown"]}
+            dv, _ = day_value(w.cr_ref, f, fit)
+            if dv and dv["dayProfit"] > 0:
+                out.append({"id": r["product"], "recipe": sp, "crafts": fit_crafts, "units": n, "cost": fit["cost"],
+                            "dayProfit": dv["dayProfit"], "countAt": dv["countAt"], "rate": dv["rate"], "limited": limited})
+    out.sort(key=lambda x: (-x["dayProfit"], x["recipe"]))
+    seen, res = set(), []
+    for x in out:
+        if x["id"] not in seen:
+            seen.add(x["id"])
+            res.append(x)
+    return res
+
+
+def cr_merge_ref(base, crafts, limit):
+    """Where the craft ideas go in the sidebar's list (Crafts.lua's ns.FlipIdeas)."""
+    keep = max(1, limit // 5)
+    res = list(base)
+    seen = {x["id"] for x in base}
+    val = lambda x: x["value"]
+    added = 0
+    for c in crafts:
+        if added >= keep:
+            break
+        if c["id"] in seen:
+            continue
+        seen.add(c["id"])
+        added += 1
+        at = len(res)
+        for i, x in enumerate(res):
+            if not x.get("craft") and val(x) < c["dayProfit"]:
+                at = i
+                break
+        res.insert(at, {"id": c["id"], "craft": True, "value": c["dayProfit"]})
+    while len(res) > limit:
+        drop = None
+        for i in range(len(res) - 1, -1, -1):
+            if not res[i].get("craft") and not res[i].get("solid"):
+                drop = i
+                break
+        if drop is None:
+            for i in range(len(res) - 1, -1, -1):
+                if not res[i].get("craft"):
+                    drop = i
+                    break
+        res.pop(drop if drop is not None else len(res) - 1)
+    return [x["id"] for x in res]
+
+
+def cr_idea_value(x):
+    if x.dayProfit is not None:
+        return x.dayProfit
+    if x.fit is not None and x.fit.profit is not None:
+        return x.fit.profit
+    return x.profit or 0
+
+
+def sc_crafts_sidebar(sc, ref, items):
+    """The sidebar's flip ideas: one from your own recipes (two in /gl flips), sized to your gold."""
+    w = cr_world(ref, items, ranks={CR_SMELT: 300})
+    ns, C = w.ns, w.ns.Crafts
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    sc.check(not any(x.kind == "craft" for x in lua_ideas(w, 5, MOCK_GOLD)), "sidebar: no known recipe: no craft idea")
+    plain3 = lua_ideas(w, 3, MOCK_GOLD)
+    cr_know(w, ctx, [CR_THORIUM, CR_IRON, CR_COPPER, CR_SILVER, CR_MITHRIL])
+    want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+    got = lua_list(C.Ideas(MOCK_GOLD))
+    sc.eq([(x.id, x.recipe, x.crafts, x.units, x.cost, x.dayProfit) for x in got],
+          [(x["id"], x["recipe"], x["crafts"], x["units"], x["cost"], x["dayProfit"]) for x in want],
+          "sidebar: the craft ideas are the model's")
+    sc.eq([x["recipe"] for x in want], [CR_THORIUM], "sidebar: only Smelt Thorium pays at every price and sells (model)")
+    x = got[0]
+    n_ore = want[0]["crafts"]   # 61 on the simulated data: half a day's 121 sales
+    sc.eq(strip_codes(x.subText), "Smelt %d Thorium Ore" % n_ore, "sidebar: row: Smelt %d Thorium Ore" % n_ore)
+    sc.eq(strip_codes(x.sub2Text), "Sell 24s 89c each", "sidebar: row: what it sells at")
+    sc.eq(x.searchID, 10620, "sidebar: a click searches the ore you buy")
+    # in the list: one row of 5, two at most of /gl flips' 10, by what it makes in a day
+    S = ns.settings
+    for limit in (1, 2, 3, 5, 10):
+        S.crafts = False
+        base = [{"id": y.id, "value": cr_idea_value(y), "solid": y.solid is True} for y in lua_ideas(w, limit, MOCK_GOLD)]
+        S.crafts = None
+        got = [y.id for y in lua_ideas(w, limit, MOCK_GOLD)]
+        sc.eq(got, cr_merge_ref(base, want, limit), "sidebar: FlipIdeas(%d) with the craft idea in its place" % limit)
+        sc.check(len(got) <= limit, "sidebar: FlipIdeas(%d) gives at most %d (%d)" % (limit, limit, len(got)))
+        sc.eq(sum(1 for y in lua_ideas(w, limit, MOCK_GOLD) if y.kind == "craft"), 1, "sidebar: one craft idea of %d" % limit)
+    sc.check(len(lua_ideas(w, 3, MOCK_GOLD)) == 3 and len(plain3) == 3, "sidebar: (the test data fills 3 places, so one is given up)")
+    # the gold: a little buys less; too little, none
+    for gold in (20000, 100000, 1000):
+        ws = cr_ideas_ref(w, ctx, gold)
+        gs = lua_list(C.Ideas(gold))
+        sc.eq([(y.crafts, y.cost, y.dayProfit, y.fit.limited) for y in gs],
+              [(y["crafts"], y["cost"], y["dayProfit"], y["limited"]) for y in ws], "sidebar: sized to %s of gold" % money_text(gold))
+    sc.eq(len(lua_list(C.Ideas(1000))), 0, "sidebar: 10s of gold: no craft idea")
+    # the rows, the hover, the click, /gl flips, Not interested
+    w.open_ah_modern()
+    SB = ns.SidebarPanel
+    SB.flipsDirty = True
+    SB.RefreshFlips(SB)
+    rows = [r for r in lua_list(SB.flipRows) if r.idea is not None and r.idea.kind == "craft"]
+    sc.eq(len(rows), 1, "sidebar: one craft row shows")
+    if rows:
+        r = rows[0]
+        sc.eq(row_texts(r), ("Thorium Bar", "Smelt %d Thorium Ore" % n_ore, "Sell 24s 89c each", "+" + short_money(want[0]["dayProfit"]),
+                             "~%s/day" % count_text(want[0]["rate"])), "sidebar: the row's words")
+        w.M.enter(r)
+        tip = [strip_codes(a or "") for a, _ in w.all_lines(w.g.GameTooltip)]
+        w.M.leave(r)
+        sc.check("Craft idea from your recipes" in tip, "sidebar: the hover says it is from your recipes (%s)" % tip)
+        sc.check(not any(t.startswith("Smelt to ") for t in tip), "sidebar: no craft tip lines on the row's own item tooltip")
+        sc.check(any(t.startswith("Profit in a day, after the 5% cut") for t in tip), "sidebar: the hover's profit line")
+        w.M.click(r, "LeftButton")
+        w.settle(0.3)
+        sb = w.g.AuctionHouseFrame.SearchBar.SearchBox
+        sc.eq(sb.GetText(sb), "Thorium Ore", "sidebar: a click searches Thorium Ore (what you buy)")
+        out = [strip_codes(t) for t in w.slash("/gl flips")]
+        line = "Thorium Bar: smelt %d Thorium Ore, sell at 24s 89c, +%s in a day (your recipe)" % (n_ore, money_text(want[0]["dayProfit"]))
+        sc.check(any(t.endswith(line) for t in out), "sidebar: /gl flips has the craft line (%s)" % out)
+        ns.HideIdea(12359)
+        sc.check(not any(y.kind == "craft" for y in lua_ideas(w, 5, MOCK_GOLD)), "sidebar: Not interested hides it")
+    w.close_ah_modern()
+    sc.clean(w)
+
+
+# --- an empty AH search: Crafts.lua's lines under the AH code's own (C.EmptySearch) ---
+CR_RECIPE_WORDS = ("plans", "pattern", "recipe", "schematic", "formula", "blueprint", "manual")
+CR_SEARCH_SHOWN = 2
+
+
+class CrLuaLive(object):
+    """ctx.live and ctx.own as the addon's ns.LivePrice answers right now (the AH scenarios test it on
+    its own; without it ns.LiveCheapest): the price per unit in whole copper, and whether it is yours."""
+
+    def __init__(self, w):
+        self.w = w
+
+    def ask(self, iid):
+        f = self.w.ns.LivePrice
+        if f is None:
+            f = self.w.ns.LiveCheapest
+        if f is None:
+            return None, False
+        r = f(iid)
+        p, own = (tuple(r) + (None, None))[:2] if isinstance(r, tuple) else (r, None)
+        if isinstance(p, bool) or not isinstance(p, (int, float)) or p <= 0:
+            return None, False
+        return int(math.floor(p)), own is True
+
+    def get(self, iid, default=None):
+        p = self.ask(iid)[0]
+        return default if p is None else p
+
+    def __getitem__(self, iid):
+        return self.ask(iid)[0]
+
+    def __contains__(self, iid):
+        return self.ask(iid)[1]
+
+
+def cr_lua_ctx(w, base=None):
+    """A character context (base, else none of the professions) with the live prices the addon sees now."""
+    c = (base or CrCtx()).copy()
+    c.live = c.own = CrLuaLive(w)
+    return c
+
+
+def cr_model_world(w, ref=None):
+    """The prices the craft model reads: the data's (cr_world sets them with the test prices in)."""
+    if getattr(w, "prices", None) is None:
+        ref = ref or w.ref
+        w.prices = {iid: (it["name"], it["cheapest"], it["market"], it["listed"], it["sold24"], it["avg7"], it["vendor"])
+                    for iid, it in ref.items.items()}
+        w.cr_ref = ref
+    return w
+
+
+def cr_norm(s):
+    """Crafts.lua norm: lower case, no apostrophes, every run of other signs one space, trimmed."""
+    return re.sub(r"[^0-9a-z]+", " ", (s or "").lower().replace("'", "")).strip()
+
+
+def cr_search_names():
+    """Every recipe item and crafted item of the recipe table by name, shortest first (then by id)."""
+    T = cr_table()
+    if "searchNames" not in T:
+        lst = [{"id": i, "kind": "recipe", "key": cr_norm(T["N"][i])} for i in T["byItem"] if i in T["N"]]
+        lst += [{"id": i, "kind": "product", "key": cr_norm(T["N"][i])} for i in T["byProduct"]
+                if i not in T["byItem"] and i in T["N"]]
+        lst.sort(key=lambda e: (len(e["key"]), e["id"]))
+        T["searchNames"] = lst
+        T["searchByID"] = {e["id"]: e for e in lst}
+    return T["searchNames"]
+
+
+def cr_dearest(mats, priced_first=False):
+    """With 4 or more mats the 2 to name: the dearest, unpriced first (priced_first: last). None: all of them."""
+    if len(mats) <= 3:
+        return None
+    order = sorted(range(len(mats)), key=lambda i: (("lo" in mats[i]["cost"]) != priced_first,
+                                                     -mats[i]["cost"].get("lo", 0), i))
+    return set(order[:2])
+
+
+def cr_from(w, e):
+    """" (from 12 Heavy Stone)": a mat you make yourself."""
+    return " (from %s)" % " + ".join("%d %s" % (math.floor(e["n"] / e["sub"]["count"] * fn + 0.5), cr_name(w, fid))
+                                     for fid, fn in e["sub"]["mats"])
+
+
+def cr_search_mats(w, q):
+    """"Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s": 4 or more, the 2 dearest priced ones and
+    "+N others"; a mat you make "(from 1 Copper Ore)"; no costs each; some unpriced: the priced ones and how
+    many are left out ("= 777g + 1 with no price"); none priced: no total (never 0c)."""
+    mats, keep = q["mats"], cr_dearest(q["mats"], priced_first=True)
+    total = q["cost"]["lo"] if q["missing"] == 0 else q["partial"]
+    total = cr_round(total) if total else 0
+    parts = []
+    for i, e in enumerate(mats):
+        if keep is not None and i not in keep:
+            continue
+        parts.append("%d %s" % (e["n"], cr_name(w, e["id"])) + (cr_from(w, e) if e["sub"] else ""))
+    if keep is not None:
+        parts.append("+%d others" % (len(mats) - 2))
+    t = "Mats: " + ", ".join(parts)
+    if total > 0:
+        t += " = " + money_text(total)
+        if q["missing"]:
+            t += " + %d with no price" % q["missing"]
+    return t
+
+
+def cr_search_bop(e, r):
+    """The entry binds on pickup: a recipe item by its own flag, a crafted item by its recipe's."""
+    return _CR["RI"].get(e["id"]) == "B" if e["kind"] == "recipe" else bool(r["bop"])
+
+
+def cr_search_make(w, q):
+    """"make it (5 a craft). Mats: ..."."""
+    n = cr_prefix(q["r"])
+    return "make it" + (" (%sa craft)" % n if n else "") + ". " + cr_search_mats(w, q)
+
+
+def cr_search_about(w, e, sp, ctx, bop):
+    """The line for the item the AH code's lines are about: "Makes X. Mats: ..." / "You can make it. Mats: ...",
+    "Bind on pickup. " first when those lines could not say it (bop) and it does."""
+    q = cr_q(w, sp, ctx)
+    r = q["r"]
+    lead = "Bind on pickup. " if bop and cr_search_bop(e, r) else ""
+    if e["kind"] == "recipe":
+        return lead + "Makes " + cr_prefix(r) + cr_name(w, r["product"]) + ". " + cr_search_mats(w, q)
+    return lead + "You can " + cr_search_make(w, q)
+
+
+def cr_search_named(w, e, sp, ctx):
+    """Another match, by name: "Plans: Officer's Belt (bind on pickup) - Mats: ...", "Iron Bar - you can make it. ..."."""
+    q = cr_q(w, sp, ctx)
+    r = q["r"]
+    name = cr_name(w, e["id"])
+    tag = " (bind on pickup)" if cr_search_bop(e, r) else ""
+    if e["kind"] == "product":
+        return name + tag + " - you can " + cr_search_make(w, q)
+    prod, n = cr_name(w, r["product"]), cr_prefix(r)
+    makes = "makes %s%s. " % (n, prod) if n or not name.lower().endswith(prod.lower()) else ""
+    return name + tag + " - " + makes + cr_search_mats(w, q)
+
+
+def cr_search_lines(w, text, iid, ctx):
+    """Crafts.lua's lines for a search the auction house found nothing for: text, and the priced item
+    the AH code's lines are about (None: it found none; then the item the game knows by the text)."""
+    T = cr_table()
+    key = cr_norm(text)
+    if len(key) < 3:
+        return []
+    names = cr_search_names()
+    subject = iid
+    if subject is not None:
+        subject = w.cr_ref.base_of.get(subject, subject)
+    priced = known = subject is not None
+    if not priced:
+        subject, _ = es_game_item(w, text)
+        known = subject is not None
+    out, used, seen, count = [], set(), set(), [0]
+
+    def recipe_of(e):
+        if e["kind"] == "recipe":
+            return next((sp for sp in T["byItem"][e["id"]] if cr_visible(ctx, sp)), None)
+        return cr_product_pick(w, e["id"], ctx)[0]
+
+    def add(e, about):
+        sp = recipe_of(e)
+        if sp is None or sp in used:
+            return
+        # two items of one name making items of one name (an older version): the first only
+        same = (e["key"], cr_norm(cr_name(w, cr_recipe(sp)["product"])))
+        if same in seen:
+            return
+        used.add(sp)
+        seen.add(same)
+        count[0] += 1
+        if count[0] <= CR_SEARCH_SHOWN:
+            out.append(cr_search_about(w, e, sp, ctx, not known) if about else cr_search_named(w, e, sp, ctx))
+
+    e = T["searchByID"].get(subject) if subject is not None else None
+    exact = [x for x in names if x["key"] == key and x is not e]
+    named = e is not None and e["key"] == key
+    if named:
+        add(e, True)
+    for x in exact:
+        add(x, not priced and count[0] == 0)
+    # the AH code's item found by the words: only when the text names nothing with a line
+    if e is not None and not named and count[0] == 0:
+        add(e, True)
+    if count[0] == 0:
+        # a bind-on-pickup item the text names that you cannot make: the recipe items that make it
+        for x in ([e] if named else []) + exact:
+            if x["kind"] != "product":
+                continue
+            for sp in T["byProduct"].get(x["id"], []):
+                r = cr_recipe(sp)
+                if cr_visible(ctx, sp) and r["bop"]:
+                    for it in r["items"]:
+                        y = T["searchByID"].get(it)
+                        if y is not None and y["kind"] == "recipe":
+                            add(y, False)
+    if known or exact:
+        return out
+    # every word of the text starts a word of the name (Copper Ore is not Copper Claymore)
+    words = key.split()
+    for x in names:
+        if all(x["key"].startswith(wd) or (" " + wd) in x["key"] for wd in words):
+            add(x, False)
+    if count[0] > CR_SEARCH_SHOWN and any(len(wd) >= 4 and any(k.startswith(wd) for k in CR_RECIPE_WORDS) for wd in words):
+        out.append("%d more match: type more of the name." % (count[0] - CR_SEARCH_SHOWN))
+    return out
+
+
+def sc_crafts_search(sc, ref, items):
+    """An empty AH search, under the AH code's own lines (which say whether it is listed or binds on
+    pickup): what making it takes, only for a recipe item or something you can make that the search
+    names (the item those lines are about: no name, no "bind on pickup" again; what the text names
+    before the AH code's best match by its words), a bind-on-pickup item's plans for someone who
+    cannot make it, or, when nothing has that name, the recipe items (and items you can make) with a
+    word starting with each word of it (2 named, then how many more for a recipe search). 4 or more
+    mats: the 2 dearest and "+N others". Never a 0c total: with some mats unpriced "at least" the
+    priced ones, with none no total."""
+    w = cr_world(ref, items)
+    ctx = CrCtx()
+    L = w.ns.EmptySearchLines
+    sc.check(L is not None and len(L) >= 1, "search: ns.EmptySearchLines has our function")
+    fn = L[len(L)]
+
+    def got(text, iid=None):
+        return lua_list(fn(text, iid))
+
+    def model(text, iid=None, c=None):
+        return cr_search_lines(w, text, iid, c or ctx)
+
+    def untotal(lines):
+        # with real prices the total, and which 2 of 4 or more mats are the dearest, are the data's
+        return [re.sub(r"Mats: .* \+\d+ others", "Mats: ... others", re.sub(r" = [^=]*$", "", l)) for l in lines]
+
+    def same(text, iid, want, label, c=None, test_priced=True):
+        """The addon's lines, the model's, and the exact words they must be. test_priced=False: some
+        mats have no test price (their real data's price, or none, gives the total): with real data
+        the words before the total."""
+        g = got(text, iid)
+        sc.eq(g, model(text, iid, c), "search: %s: the model's lines" % label)
+        if test_priced or R.SIM:
+            sc.eq(g, want, "search: %s" % label)
+        else:
+            sc.eq(untotal(g), untotal(want), "search: %s (the words before the total)" % label)
+        return g
+
+    boots = "Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"
+    q = cr_q(w, CR_OFFICER, ctx)
+    sc.eq("Mats: " + cr_mats(w, q, cost=False) + " = " + cr_total(q, icons=False),
+          "Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s", "search: the model's mats for Officer's Boots")
+    # the plans by their name: the game knows it (the AH code said "Bind on pickup"), what it makes
+    same("plans: officer's boots", None, [boots], "Plans: Officer's Boots (the game knows it)")
+    same("Plans: Officer's Boots", None, [boots], "Plans: Officer's Boots, as the game writes it")
+    # typed without the apostrophe the game does not know it (the AH code only said "no prices"): say it binds
+    same("plans officers boots", None, ["Bind on pickup. " + boots], "typed without the apostrophe")
+    # the user's search: no item has that name, 8 plans have both words
+    officer = same("plans officer", None, model("plans officer"), "'plans officer'")
+    sc.eq(len(officer), 3, "search: 'plans officer': 2 named and how many more (%s)" % officer)
+    sc.eq(officer, ["Plans: Officer's Belt (bind on pickup) - Mats: 6 Iron Bar, 2 Heavy Grinding Stone, 2 Jade = 60s 88c",
+                    "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s",
+                    "6 more match: type more of the name."], "search: 'plans officer': the belt (shortest name), the boots, 6 more")
+    # every word in the names but no recipe word: 2 named, no "more" line
+    sc.eq(got("officer"), officer[:2], "search: 'officer': the same 2, no 'more match' line (not a recipe search)")
+    sc.eq(got("pla officer"), officer[:2], "search: 'pla officer': under 4 letters is no recipe word (no 'more match' line)")
+    sc.eq(got("plan officer"), officer, "search: 'plan officer': a recipe word (how many more)")
+    # a recipe search with many matches: 2 named, then how many more
+    # (with no priced item for the text: the AH code would name Plans: Mithril Spurs as its best match)
+    same("plans mithril", None, ["Plans: Mithril Spurs - Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c",
+                                 "Plans: Mithril Claws (bind on pickup) - Mats: 8 Mithril Bar, 1 Solid Grinding Stone, +2 others = 1g 7s + 1 with no price",
+                                 "28 more match: type more of the name."], "'plans mithril': 2 named and how many more",
+         test_priced=False)
+    # the claws' tooltip names the unpriced mat (the search line names the dearest priced ones)
+    tip = cr_tip_ok(sc, w, "byid", 251461, ctx, "search: the Plans: Mithril Claws tooltip")
+    if R.SIM:
+        sc.check(any((l or "").startswith("8 Mithril Bar ") and (l or "").endswith(", 2 Heavy Leather (no price), +2 others") for l, _ in tip),
+                 "search: the claws' tooltip: the dearest and the unpriced one (%s)" % tip)
+    sc.eq(got("pattern"), model("pattern"), "search: 'pattern' alone: the model's lines")
+    sc.check(got("pattern")[-1].endswith(" more match: type more of the name."), "search: 'pattern' alone: how many more")
+    # a plan that is listed (the AH code's lines are about it): what it makes, nothing about listings
+    spurs = "Makes Mithril Spurs. Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c"
+    same("Plans: Mithril Spurs", 7989, [spurs], "a plan the AH code found (priced)")
+    same("mithril spur", 7989, [spurs], "a plan the AH code found by part of its name")
+    # an item you can make, not listed: nothing without the profession
+    same("mithril spurs", 7969, [], "Mithril Spurs, not a blacksmith (it does not bind: no plans line either)")
+    same("mithril spurs", None, [], "Mithril Spurs not in the data, not a blacksmith")
+    # a mat that is simply not listed: nothing (not Bolt of Linen Cloth, not every name with its words)
+    same(N(R.LINEN), R.LINEN, [], "Linen Cloth, not listed")
+    same(N(R.LINEN).lower(), R.LINEN, [], "linen cloth, not listed")
+    for iid, name in ((2770, "Copper Ore"), (2772, "Iron Ore"), (3858, "Mithril Ore")):
+        same(name, iid, [], "%s, not listed" % name)
+    # Iron Bar: not a miner, nothing; a miner, one short line (no Dark Iron Bar, no "more")
+    same("Iron Bar", 3575, [], "Iron Bar, not a miner")
+    en_skills(w, {CR_SMELT: 100})
+    same("Iron Bar", 3575, [], "Iron Bar, a miner under its rank", c=CrCtx(ranks={CR_SMELT: 100}))
+    en_skills(w, {CR_SMELT: 300})
+    miner = CrCtx(ranks={CR_SMELT: 300})
+    same("Iron Bar", 3575, ["You can make it. Mats: 1 Iron Ore = 2s 69c"], "Iron Bar, a miner", c=miner)
+    same("Steel Bar", 3859, ["You can make it. Mats: 1 Iron Bar, 1 Coal = 7s 37c"], "Steel Bar, a miner", c=miner)
+    same("Bronze Bar", 2841, ["You can make it (2 a craft). Mats: 1 Copper Bar, 1 Tin Bar = 2s 58c"], "Bronze Bar, a miner: 2 a craft", c=miner)
+    # the AH code found a version of it (a version's id): the item it is a version of
+    base = w.ns.BaseItemID
+    w.ns.BaseItemID = w.lua.eval("function(base) return function(id) if id == 3575001 then return 3575 end return base(id) end end")(base)
+    sc.eq(got("Iron Bar", 3575001), ["You can make it. Mats: 1 Iron Ore = 2s 69c"], "search: a version's id: the item it is a version of")
+    w.ns.BaseItemID = base
+    # a blacksmith who knows the spurs: one line, not the plans' and the spurs' twice
+    en_skills(w, {CR_BS: 300})
+    bs = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, bs, [CR_SPURS])
+    same("mithril spurs", 7969, ["You can make it. Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c"], "Mithril Spurs, known", c=bs)
+    # found as its plans by the words: the spurs the text names, by name, and not the plans' line again
+    same("mithril spurs", 7989, ["Mithril Spurs - you can make it. Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c"],
+         "Mithril Spurs found as its plans: one line for the one recipe, the spurs by name", c=bs)
+    # the game has not loaded the name and the data has no price for it: names with a word starting
+    # with each word of the text, not only holding it (Copper Ore is not Copper Claymore)
+    w.M.infoByName = False
+    same("copper ore", None, [], "Copper Ore unknown to the game, a blacksmith: not Copper Claymore", c=bs)
+    # the claymore by name: 4 mats, the 2 dearest priced; Rough Grinding Stone and Light Leather have no
+    # test price: the priced ones, and 2 with no price
+    same("copper clay", None, ["Copper Claymore - you can make it. Mats: 10 Copper Bar, 2 Weak Flux, +2 others = 18s 50c + 2 with no price"],
+         "'copper clay', a blacksmith", c=bs, test_priced=False)
+    en_skills(w, {})
+    same("copper clay", None, [], "'copper clay', not a blacksmith")
+    # a bind-on-pickup item you can make, by its name the game has not loaded: the AH code could not
+    # say it binds, so the line does; by part of its name, the name says it
+    en_skills(w, {333: 300})
+    ench = CrCtx(ranks={333: 300})
+    same("Runed Copper Rod", None, ["Bind on pickup. You can make it. Mats: 1 Copper Rod, 1 Mote of Magic = 1s 34c"],
+         "Runed Copper Rod, an enchanter, unknown to the game", c=ench, test_priced=False)
+    same("runed copper rod enchanter", None, [], "a word no name has: nothing", c=ench)
+    # the rod (bind on pickup, the name says it) and the breastplate's plans (for everyone), no "more" line
+    same("runed copper r", None, ["Runed Copper Rod (bind on pickup) - you can make it. Mats: 1 Copper Rod, 1 Mote of Magic = 1s 34c",
+                                  "Plans: Runed Copper Breastplate - Mats: 12 Copper Bar, 1 Shadowgem, 2 Rough Grinding Stone = 19s 80c + 2 with no price"],
+         "'runed copper r', an enchanter", c=ench, test_priced=False)
+    w.M.infoByName = None
+    en_skills(w, {})
+    # a recipe item whose name is not what it makes: it says so; what a craft makes more than 1 of: the count
+    same("recipe transmute arc", None, ["Recipe: Transmute Arcanite - makes Arcanite Bar. Mats: 1 Thorium Bar, 1 Arcane Crystal = 190g"],
+         "'recipe transmute arc': what it makes", test_priced=False)
+    dye = "Makes 2 Ghost Dye. Mats: 2 Ghost Mushroom, 1 Purple Dye, 1 Crystal Vial"
+    g = same("Recipe: Ghost Dye", None, model("Recipe: Ghost Dye"), "Recipe: Ghost Dye")
+    sc.check(len(g) == 1 and g[0].startswith("Bind on pickup. " + dye), "search: Recipe: Ghost Dye: makes 2 (%s)" % g)
+    g = same("recipe ghost d", None, model("recipe ghost d"), "'recipe ghost d'")
+    sc.check(len(g) == 1 and g[0].startswith("Recipe: Ghost Dye (bind on pickup) - makes 2 Ghost Dye. Mats: "),
+             "search: 'recipe ghost d': by name, makes 2 (%s)" % g)
+    # the text names a pattern, the AH code found another one by the words: the one typed, by name, only
+    whelp, slippers = 252761, 254008
+    g = same("pattern: black slippers", whelp, model("pattern: black slippers", whelp), "a pattern, the AH code's best match another")
+    sc.check(len(g) == 1 and g[0].startswith("Pattern: Black Slippers - Mats: 8 Bolt of Mageweave, ") and " others" in g[0],
+             "search: 'pattern: black slippers': its own line only, 2 of its 5 mats named (%s)" % g)
+    sc.eq(got("pattern: black slippers", slippers), [l.replace("Pattern: Black Slippers - Mats: ", "Makes Black Slippers. Mats: ") for l in g],
+          "search: the pattern the AH code found by its name: what it makes")
+    sc.eq(got("pattern: black whelp", whelp), [x for x in model("pattern: black whelp", whelp)], "search: 'pattern: black whelp': the model")
+    sc.check(got("pattern: black whelp", whelp)[0].startswith("Makes Black Whelp Slippers. "),
+             "search: no item named by the text: what the AH code's best match makes")
+    # two recipe items of one name making items of one name (an older version): one line, the AH code's or the first
+    elixir = "Recipe: Lesser Arcane Elixir"
+    g = same(elixir, None, model(elixir), "two items of one name")
+    sc.check(len(g) == 1 and g[0].startswith("Bind on pickup. Makes Lesser Arcane Elixir. Mats: 1 Kingsblood, 1 Goldthorn, 1 Crystal Vial"),
+             "search: two items of one name: the first one's line only (%s)" % g)
+    g = same(elixir, 250378, model(elixir, 250378), "two items of one name, the AH code found the second")
+    sc.check(len(g) == 1 and g[0].startswith("Makes Lesser Arcane Elixir. Mats: 4 Kingsblood, 1 Leaded Vial"),
+             "search: two items of one name, the AH code's: its line only (%s)" % g)
+    # a bind-on-pickup item you cannot make (never on the AH): its plans, by name
+    plans = "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"
+    same("officer's boots", None, [plans], "Officer's Boots (the game knows it), not a blacksmith: its plans")
+    same("officers boots", None, [plans], "officers boots (the game does not know it): its plans")
+    en_skills(w, {CR_BS: 300})
+    same("officer's boots", None, [plans], "Officer's Boots, a blacksmith who does not know it: its plans", c=bs)
+    cr_know(w, bs, [CR_OFFICER])
+    same("officer's boots", None, ["You can make it. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"],
+         "Officer's Boots, a blacksmith who knows it: no plans", c=bs)
+    w.M.knownSpells[CR_OFFICER] = None
+    bs.known.discard(CR_OFFICER)
+    w.ns.Crafts.Invalidate()
+    en_skills(w, {})
+    sc.eq(fn("zzqx"), None, "search: nothing it knows: nil")
+    sc.eq(fn("ab"), None, "search: under 3 letters: nil")
+    w.slash("/gl crafts off")
+    sc.eq(fn("plans officer"), None, "search: off: nil")
+    w.slash("/gl crafts on")
+    # through the auction house: the AH code's line, then ours
+    w.open_ah_modern()
+    cref = w.cr_ref
+    es_search(w, "plans officer")
+    want, _ = es_lines_ok(sc, w, cref, "plans officer", "search: AH 'plans officer'")
+    sc.eq(want, ["No AH prices for that name."] + officer, "search: AH 'plans officer': the lines")
+    # a recipe search the AH code finds a priced best match for: only what that one makes
+    es_search(w, "plans mithril")
+    want, _ = es_lines_ok(sc, w, cref, "plans mithril", "search: AH 'plans mithril'")
+    sc.check(len(want) == 4 and want[0].startswith("Best match: Plans: ") and want[-1].startswith("Makes ")
+             and not any(" more match: " in l for l in want),
+             "search: AH 'plans mithril': the AH code's 3 lines, then what its best match makes (%s)" % want)
+    if R.SIM:
+        sc.eq((want[0], want[-1]), ("Best match: Plans: Mithril Spurs - try its full name", spurs),
+              "search: AH 'plans mithril': the spurs' plans (simulated data)")
+    es_search(w, "plans: officer's boots")
+    want, _ = es_lines_ok(sc, w, cref, "plans: officer's boots", "search: AH Plans: Officer's Boots")
+    sc.eq(want, ["Bind on pickup: never on the AH.", boots], "search: AH Plans: Officer's Boots: the lines")
+    # the boots themselves (never on the AH, you cannot make them): their plans
+    es_search(w, "officer's boots")
+    want, _ = es_lines_ok(sc, w, cref, "officer's boots", "search: AH Officer's Boots")
+    sc.eq(want, ["Bind on pickup: never on the AH.", "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"],
+          "search: AH Officer's Boots: the AH code's line, then the plans")
+    es_search(w, N(R.LINEN).lower())
+    want, _ = es_lines_ok(sc, w, cref, N(R.LINEN).lower(), "search: AH Linen Cloth")
+    sc.check(len(want) == 2 and want[0].startswith("Not listed now. "), "search: AH Linen Cloth: the AH code's 2 lines only (%s)" % want)
+    iron = ["Not listed now. None listed yet.", "About 500 sold a day."]
+    es_search(w, "iron bar")
+    want, _ = es_lines_ok(sc, w, cref, "iron bar", "search: AH Iron Bar, not a miner")
+    sc.check(len(want) == 2 and want[0].startswith("Not listed now. "), "search: AH Iron Bar, not a miner: the AH code's 2 lines only (%s)" % want)
+    if R.SIM:
+        sc.eq(want, iron, "search: AH Iron Bar, not a miner: the lines (simulated data)")
+    en_skills(w, {CR_SMELT: 300})
+    es_search(w, "iron bar")
+    want, _ = es_lines_ok(sc, w, cref, "iron bar", "search: AH Iron Bar, a miner", ctx=miner)
+    sc.eq(want[-1], "You can make it. Mats: 1 Iron Ore = 2s 69c", "search: AH Iron Bar, a miner: last line")
+    sc.check(len(want) == 3 and want[0].startswith("Not listed now. "), "search: AH Iron Bar, a miner: the AH code's 2 lines first (%s)" % want)
+    if R.SIM:
+        sc.eq(want, iron + ["You can make it. Mats: 1 Iron Ore = 2s 69c"], "search: AH Iron Bar, a miner: the lines (simulated data)")
+    en_skills(w, {})
+    w.close_ah_modern()
+    # another market (the goblin auction house): its prices are not these, no craft lines
+    w.M.npc, w.M.subzone = w.to_lua({}), "Booty Bay"
+    w.open_ah_modern()
+    sc.check(bool(w.ns.AHState.otherHouse), "search: Booty Bay is another market")
+    sc.eq(fn("plans officer"), None, "search: another market: nil")
+    es_search(w, "plans officer")
+    sc.eq(es_shown(w), ["No AH prices for that name."], "search: another market: only the AH code's line")
+    w.close_ah_modern()
+    w.M.npc, w.M.subzone = None, None
+    sc.clean(w)
+    # mats without a price: no total ("Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade"), never 0c; the
+    # tooltip says "price unknown"; one priced: the search leaves the total out, the tooltip has it and "+ 2 more"
+    none = {3859: ("Steel Bar", 0, 0, 0, 0, 0, 60), 3486: ("Heavy Grinding Stone", 0, 0, 0, 0, 0, 100),
+            1529: ("Jade", 0, 0, 0, 0, 0, 700)}
+    w = cr_world(ref, items, fix=none)
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade"],
+          "search: no mat priced: no total")
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), cr_search_lines(w, "Plans: Officer's Boots", None, ctx), "search: no mat priced: the model")
+    tip = cr_tip_ok(sc, w, "byid", 251398, ctx, "search: no mat priced: the plans' tooltip")
+    sc.eq(tip[-1][0] if tip else None, "Mats: price unknown", "search: no mat priced: the tooltip says price unknown, not 0c")
+    sc.eq(w.ns.Crafts.ProfessionsText(CR_OFFICER), "Mats price unknown - bind on pickup",
+          "search: no mat priced: the Professions window line")
+    sc.clean(w)
+    w = cr_world(ref, items, fix={k: v for k, v in none.items() if k != 3859})
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 31s + 2 with no price"],
+          "search: one mat priced: that part and how many have no price (never 0c)")
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), cr_search_lines(w, "Plans: Officer's Boots", None, ctx), "search: one mat priced: the model")
+    tip = cr_tip_ok(sc, w, "byid", 251398, ctx, "search: one mat priced: the plans' tooltip")
+    sc.eq(tip[-1][0] if tip else None, "Mats: %s + 2 more" % money_icons(4 * 775), "search: one mat priced: the tooltip's part and + 2 more")
+    sc.clean(w)
+    w = cr_world(ref, items, fix={1529: none[1529]})
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    sc.eq(lua_list(fn("Plans: Officer's Boots")),
+          ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = %s + 1 with no price" % money_text(cr_round(4 * 775 + 4 * 1399))],
+          "search: one mat unpriced: the others' total and 1 with no price")
+    sc.clean(w)
+    # a miner with ore under the bar's price: the bar smelted from it, as the total counts it (not the AH's bar)
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={2770: ("Copper Ore", 100, 105, 6833, 400, 100, 5)})
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    miner = CrCtx(ranks={CR_SMELT: 300})
+    sc.eq(lua_list(fn("Bronze Bar", 2841)), ["You can make it (2 a craft). Mats: 1 Copper Bar (from 1 Copper Ore), 1 Tin Bar = 1s 93c"],
+          "search: Bronze Bar, a miner: the Copper Bar it smelts")
+    sc.eq(lua_list(fn("Bronze Bar", 2841)), cr_search_lines(w, "Bronze Bar", 2841, miner), "search: Bronze Bar, the bar it smelts: the model")
+    sc.clean(w)
+    # through the auction house: a pattern by its name, its best match another pattern by the words
+    # (Pattern: Black Whelp Slippers has a price, Pattern: Black Slippers none): the one typed, only
+    w = cr_world(ref, items, fix={252761: ("Pattern: Black Whelp Slippers", 900, 950, 300, 12, 900, 100)})
+    w.open_ah_modern()
+    es_search(w, "pattern: black slippers")
+    want, _ = es_lines_ok(sc, w, w.cr_ref, "pattern: black slippers", "search: AH 'pattern: black slippers'")
+    if want and want[0] == "Best match: Pattern: Black Whelp Slippers - try its full name":
+        sc.check(len(want) == 4 and want[-1].startswith("Pattern: Black Slippers - Mats: ") and not any("Whelp" in l for l in want[1:]),
+                 "search: AH 'pattern: black slippers': the AH code's 3 lines, then the pattern typed only (%s)" % want)
+    else:
+        sc.check(not R.SIM, "search: AH 'pattern: black slippers': the whelp pattern is the best match (%s)" % want)
+    w.close_ah_modern()
+    sc.clean(w)
+    # The AH code may make the table first (AH.lua loads before Crafts.lua): ours is added to it.
+    w = cr_world(ref, items, ns_setup="local ns = ...; ns.EmptySearchLines = { function() return { 'other' } end }")
+    L = w.ns.EmptySearchLines
+    sc.eq(len(L), 2, "search: a table made before us keeps its function and gets ours")
+    sc.eq(lua_list(L[1]("x")), ["other"], "search: theirs still answers")
+    sc.check(lua_list(L[2]("plans officer")) != [], "search: ours answers")
+    sc.clean(w)
+
+
+def sc_crafts_slash(sc, ref, items):
+    """/gl crafts on, off, status; /gl help names it in one line; off turns every surface off."""
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    bs = [sp for sp in _CR["bySkill"][CR_BS] if cr_visible(ctx, sp)]
+    known = sum(1 for sp in bs if cr_state(ctx, sp) == "known")
+    maybe = sum(1 for sp in bs if cr_state(ctx, sp) == "maybe")
+    out = [strip_codes(t) for t in w.slash("/gl crafts status")]
+    sc.eq(out, ["Goblin Ledger: craft tips are on (/gl crafts off turns them off).",
+                "Goblin Ledger:   Blacksmithing 300: %d known recipes, %d more it may know (open its window once to be sure)" % (known, maybe),
+                "Goblin Ledger:   Smelting is Mining: ore tips need Mining (Blacksmithing alone does not smelt)."],
+          "slash: /gl crafts status")
+    sc.eq([strip_codes(t) for t in w.slash("/gl crafts")], out, "slash: /gl crafts alone: the status")
+    out = [strip_codes(t) for t in w.slash("/gl crafts off")]
+    sc.check(any("craft tips are off" in t for t in out), "slash: off")
+    sc.eq(w.ns.settings.crafts, False, "slash: S.crafts == false")
+    tt = cr_show(w, "byid", 7989)
+    sc.check(not any((l or "").startswith("Makes") for l, _ in w.lines(tt)), "slash: off: nothing on the tooltip")
+    cr_know(w, ctx, [CR_THORIUM])
+    sc.eq(len(lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))), 0, "slash: off: no craft ideas")
+    w.slash("/gl crafts on")
+    sc.check(w.ns.settings.crafts is None, "slash: on: back to the default")
+    out = [strip_codes(t) for t in w.slash("/gl crafts bogus")]
+    sc.check(any("unknown choice" in t for t in out), "slash: a bad choice says so")
+    out = [strip_codes(t) for t in w.slash("/gl help")]
+    sc.eq([t for t in out if "/gl crafts" in t], ["Goblin Ledger: " + w.ns.Crafts.HELP], "slash: /gl help names it in one line")
+    sc.check(sum(1 for t in out if "/gl consumes" in t) == 1 and sum(1 for t in out if "/gl enchants" in t) == 1,
+             "slash: /gl help still lists the others once")
+    # a miner: the status lists Mining, and no Mining note
+    en_skills(w, {CR_BS: 300, CR_SMELT: 250})
+    out = [strip_codes(t) for t in w.slash("/gl crafts status")]
+    sc.check(any("Mining 250:" in t for t in out) and not any("Smelting is Mining" in t for t in out), "slash: a miner (%s)" % out)
+    en_skills(w, {})
+    out = [strip_codes(t) for t in w.slash("/gl crafts status")]
+    sc.check(any("no crafting professions found" in t for t in out), "slash: no professions")
+    # saved: off stays off after a logout
+    w.slash("/gl crafts off")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.clean(w)
+    w = cr_world(ref, items, saved=saved)
+    sc.eq(w.ns.settings.crafts, False, "slash: off is saved")
+    sc.eq(cr_tip(w, "byid", 7989)[0], [], "slash: off after a logout: nothing")
+    sc.clean(w)
+
+
+def sc_crafts_thin(sc, ref, items):
+    """A made item behind 1 or 2 listings, or selling under 3 a day: no green profit ("unsure") on the
+    tooltips, in the window, on its mats or in the ideas. A sale counts at most 25% over what it sold
+    for in the last day."""
+    cases = (("1 listing at 50g", {7969: ("Mithril Spurs", 500000, 500000, 1, 1, 500000, 250, 1)}, "listings", "unsure, 1 listing"),
+             ("2 listings", {7969: ("Mithril Spurs", 500000, 500000, 2, 200, 500000, 250, 2)}, "listings", "unsure, 2 listings"),
+             # none sold in the measured hours (any sold scales up to a day, 6 from 1 in 4 hours)
+             ("none sold, 30 listings", {7969: ("Mithril Spurs", 500000, 500000, 40, 0, 500000, 250, 30)}, "sales", "unsure, few sales"))
+    for label, fix, thin, words in cases:
+        w = cr_world(ref, items, ranks={CR_BS: 300}, fix=fix)
+        C = w.ns.Crafts
+        ctx = CrCtx(ranks={CR_BS: 300})
+        cr_know(w, ctx, [CR_SPURS])
+        q = cr_q(w, CR_SPURS, ctx)
+        sc.eq((q["verdict"], q["thin"]), ("thin", thin), "thin: %s (model)" % label)
+        lq = C.Quote(CR_SPURS)
+        sc.eq((lq.verdict, lq.thin), ("thin", thin), "thin: %s: Crafts.lua says unsure" % label)
+        got = cr_tip_ok(sc, w, "byid", 7989, ctx, "thin: Plans: Mithril Spurs, %s" % label)
+        sc.eq(got[-1][1], "Profit: " + words, "thin: %s: 'Profit: %s'" % (label, words))
+        cr_tip_ok(sc, w, "byid", 7969, ctx, "thin: Mithril Spurs, %s" % label)
+        got = cr_tip_ok(sc, w, "byid", 3860, ctx, "thin: Mithril Bar, %s" % label)
+        sc.check(not any((l or "").startswith("Make Mithril Spurs") for l, _ in got),
+                 "thin: %s: Mithril Bar never says Make Mithril Spurs (%s)" % (label, got))
+        cr_open(w, CR_BS, [CR_SPURS], [CR_SPURS], select=CR_SPURS, ctx=ctx)
+        sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_SPURS, ctx), ctx), "thin: %s: the window line" % label)
+        sc.check(strip_codes(cr_line(w) or "").endswith(" - " + words), "thin: %s: the window says %s (%s)"
+                 % (label, words, strip_codes(cr_line(w) or "")))
+        cr_close(w)
+        sc.check(not any(x.recipe == CR_SPURS for x in lua_list(C.Ideas(MOCK_GOLD))), "thin: %s: never a craft idea" % label)
+        sc.clean(w)
+    # Thorium Bar sold at 24s 90c all day, listed at 40s now: it counts at 31s 12c (1.25 x 24s 90c)
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={12359: ("Thorium Bar", 4000, 4000, 2495, 121, 4000, 600)})
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_THORIUM])
+    q = cr_q(w, CR_THORIUM, ctx)
+    sc.eq((q["sell"]["lo"], q["sell"]["mkt"], q["sell"]["avg"]), (3112, 3112, 4000),
+          "thin: counted at 31s 12c now and at AH value, the 7-day average as it is (model)")
+    lq = w.ns.Crafts.Quote(CR_THORIUM)
+    sc.eq((lq.sellUnit.lo, lq.sellUnit.mkt, lq.sellUnit.avg), (3112, 3112, 4000), "thin: Crafts.lua counts it at 31s 12c")
+    cr_tip_ok(sc, w, "byid", 10620, ctx, "thin: Thorium Ore, the bar listed over what it sold for")
+    cr_tip_ok(sc, w, "byid", 12359, ctx, "thin: Thorium Bar, listed over what it sold for")
+    sc.clean(w)
+
+
+def sc_crafts_canmake(sc, ref, items):
+    """A recipe item's profit is grey for someone who could not make it (no profession, under its rank,
+    without its specialization or its reputation), in colour for someone who could; the window too."""
+    fix = {12628: ("Demon Forged Breastplate", 100000, 100000, 20, 10, 100000, 5000),
+           12662: ("Demonic Rune", 2000, 2000, 100, 20, 2000, 500), 12361: ("Blue Sapphire", 5000, 5000, 100, 20, 5000, 500),
+           7910: ("Star Ruby", 3000, 3000, 100, 20, 3000, 500), 19051: ("Girdle of the Dawn", 30000, 30000, 20, 10, 30000, 1000),
+           6037: ("Truesilver Bar", 5000, 5000, 100, 20, 5000, 500), 12811: ("Righteous Orb", 10000, 10000, 100, 20, 10000, 500)}
+    w = cr_world(ref, items, fix=fix)
+    if w.M["items"][19203] is None:
+        bag_add_item(w, 19203, "Plans: Girdle of the Dawn", 2, 0, bind=1)
+    C, M = w.ns.Crafts, w.M
+    ctx = CrCtx()
+
+    def last_cols(iid, label, c, want):
+        cr_tip_ok(sc, w, "byid", iid, c, "can make: %s" % label)
+        cols = cr_tip(w, "byid", iid)[1]
+        sc.eq(cols[-1] if cols else None, want, "can make: %s: %s" % (label, want))
+    for sp in (CR_SPURS, CR_DEMON, 23632):
+        sc.eq(cr_q(w, sp, ctx)["verdict"], "loss", "can make: recipe %d loses at every price (model)" % sp)
+    last_cols(7989, "Plans: Mithril Spurs, no Blacksmithing: grey", ctx, ("muted", "muted"))
+    en_skills(w, {CR_BS: 200})
+    last_cols(7989, "Plans: Mithril Spurs, Blacksmithing 200 (it needs 210): grey", ctx.copy(ranks={CR_BS: 200}), ("muted", "muted"))
+    en_skills(w, {CR_BS: 300})
+    ctx = ctx.copy(ranks={CR_BS: 300})
+    last_cols(7989, "Plans: Mithril Spurs, Blacksmithing 300: red", ctx, ("text", "neg"))
+    sc.eq(C.CanMake(CR_SPURS), True, "can make: Crafts.lua: a blacksmith 300 can make Mithril Spurs")
+    last_cols(12696, "Plans: Demon Forged Breastplate, not an Armorsmith: grey", ctx, ("muted", "muted"))
+    M.knownSpells[9788] = True
+    C.Invalidate()
+    ctx = ctx.copy(specs={9788})
+    last_cols(12696, "Plans: Demon Forged Breastplate, an Armorsmith: red", ctx, ("text", "neg"))
+    last_cols(19203, "Plans: Girdle of the Dawn, no Argent Dawn standing: grey", ctx, ("muted", "muted"))
+    M.reps[529] = 5
+    ctx = ctx.copy(reps={529: 5})
+    last_cols(19203, "Plans: Girdle of the Dawn, Argent Dawn Friendly (it needs Honored): grey", ctx, ("muted", "muted"))
+    M.reps[529] = 6
+    ctx = ctx.copy(reps={529: 6})
+    last_cols(19203, "Plans: Girdle of the Dawn, Argent Dawn Honored: red", ctx, ("text", "neg"))
+    # the window: a recipe you have not learned, in someone's window (linked): grey
+    M.knownSpells[9788] = None
+    C.Invalidate()
+    ctx = ctx.copy(specs=set())
+    M.ts.linked = True
+    cr_open(w, CR_BS, [CR_DEMON], [CR_DEMON], select=CR_DEMON, ctx=ctx)
+    sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_DEMON, ctx), ctx), "can make: the window, a linked Armorsmith recipe")
+    sc.check(lua_hex(TT_RGB["muted"]) + "loses" in (cr_line(w) or ""), "can make: ... its loss is grey (%s)" % cr_line(w))
+    M.ts.linked = False
+    sc.clean(w)
+
+
+def sc_crafts_per_mat(sc, ref, items):
+    """A mat's 'each' is per unit of that mat: 8 Dark Iron Ore make one Dark Iron Bar."""
+    fix = {11370: ("Dark Iron Ore", 1000, 1000, 500, 300, 1000, 100), 11371: ("Dark Iron Bar", 12000, 12000, 500, 300, 12000, 600)}
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix=fix)
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    sc.eq(w.ns.Crafts.KnownState(14891), None, "per mat: Smelt Dark Iron (a quest's) is never 'may know'")
+    cr_know(w, ctx, [14891])
+    q = cr_q(w, 14891, ctx)
+    sc.eq((q["verdict"], q["shown"]), ("profit", 3399), "per mat: +33s 99c a bar (model)")
+    got = cr_tip_ok(sc, w, "byid", 11370, ctx, "per mat: Dark Iron Ore")
+    sc.eq(got, [("Smelt to Dark Iron Bar", "+" + money_icons(424) + " each")], "per mat: +4s 24c an ore (a bar takes 8)")
+    sc.clean(w)
+
+
+def sc_crafts_lean(sc, ref, items):
+    """Lean tooltips: 4 or more mats name the 2 dearest and '+N others' (all of them with Shift); a
+    crafted item's mats line says Smelt: or Make:; a mat you make names every input."""
+    fix = {7937: ("Ornate Mithril Helm", 60000, 60000, 20, 10, 60000, 3000), 6037: ("Truesilver Bar", 5000, 5000, 100, 20, 5000, 500),
+           7971: ("Black Pearl", 1500, 1500, 100, 20, 1500, 500)}
+    w = cr_world(ref, items, ranks={CR_BS: 300, CR_SMELT: 300}, fix=fix)
+    if w.M["items"][7987] is None:
+        bag_add_item(w, 7987, "Plans: Ornate Mithril Helm", 2, 0, bind=0)
+    ctx = CrCtx(ranks={CR_BS: 300, CR_SMELT: 300})
+    got = cr_tip_ok(sc, w, "byid", 7987, ctx, "lean: Plans: Ornate Mithril Helm (4 mats)")
+    sc.eq(got[1][0] if len(got) > 1 else None,
+          "16 Mithril Bar %s, 2 Truesilver Bar %s, +2 others" % (money_text(cr_round(16 * 1094)), money_text(10000)),
+          "lean: the 2 dearest mats and +2 others")
+    w.M.shift = True
+    got = cr_tip_ok(sc, w, "byid", 7987, ctx.copy(shift=True), "lean: Plans: Ornate Mithril Helm, Shift held")
+    sc.eq(got[1][0].count(", ") if len(got) > 1 else None, 3, "lean: Shift: all 4 mats (%s)" % got[1:2])
+    w.M.shift = False
+    got = cr_tip_ok(sc, w, "byid", 3575, ctx, "lean: Iron Bar (Smelt Iron may be known)")
+    sc.check(bool(got) and got[0][0].startswith("Smelt: 1 Iron Ore "), "lean: a smelted bar's mats line says Smelt: (%s)" % got[:1])
+    cr_know(w, ctx, [CR_SPURS, CR_BRONZE, 2668])
+    got = cr_tip_ok(sc, w, "byid", 7969, ctx, "lean: Mithril Spurs, known")
+    sc.check(bool(got) and got[0][0].startswith("Make: 4 Mithril Bar "), "lean: a made item's mats line says Make: (%s)" % got[:1])
+    if w.M["items"][2865] is None:
+        bag_add_item(w, 2865, "Rough Bronze Leggings", 2, 0, bind=2)
+    got = cr_tip_ok(sc, w, "byid", 2865, ctx, "lean: Rough Bronze Leggings (Bronze Bar smelted)")
+    sc.check(bool(got) and "(from 3 Copper Bar + 3 Tin Bar)" in got[0][0], "lean: a smelted mat names both inputs (%s)" % got[:1])
+    sc.clean(w)
+
+
+def sc_crafts_own(sc, ref, items):
+    """Your own cheapest listing: a mat's is not one to buy (the data's cheapest), a made item's is
+    matched, not undercut."""
+    w = cr_world(ref, items, ranks={CR_SMELT: 300})
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_THORIUM])
+    mk = w.lua.eval("function(t, own) return function(id) return t[id], own[id] == true end end")
+    for live, own in (({12359: 2450}, {12359}), ({10620: 1500}, {10620}), ({10620: 1500, 12359: 2450}, set())):
+        w.ns.LivePrice = mk(w.to_lua(live), w.to_lua({k: True for k in own}))
+        C.Invalidate()
+        c = ctx.copy(live=live, own=own)
+        cr_tip_ok(sc, w, "byid", 12359, c, "own: Thorium Bar, live %s, yours %s" % (live, sorted(own)))
+        cr_tip_ok(sc, w, "byid", 10620, c, "own: Thorium Ore, live %s, yours %s" % (live, sorted(own)))
+        lq = C.Quote(CR_THORIUM)
+        if 12359 in live:
+            sc.eq(lq.sellUnit.lo, 2450 if 12359 in own else 2449,
+                  "own: the bar at %s" % ("your 24s 50c, matched" if 12359 in own else "1c under 24s 50c"))
+        if 10620 in live:
+            sc.eq(lq.mats[1].cost.lo, 1625 if 10620 in own else 1500,
+                  "own: the ore at %s" % ("the data's 16s 25c (yours is not one to buy)" if 10620 in own else "the live 15s"))
+    w.ns.LivePrice = None
+    # the open AH's own listings (ns.LiveCheapest says which is yours)
+    w.open_ah_modern()
+    w.set_commodity_results(12359, [(2450, 20, True), (2460, 100, False)])
+    w.M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", 12359)
+    w.settle(0.3)
+    C.Invalidate()
+    cr_tip_ok(sc, w, "byid", 12359, ctx.copy(live={12359: 2450}, own={12359}), "own: the open AH shows your Thorium Bar cheapest")
+    sc.eq(C.Quote(CR_THORIUM).sellUnit.lo, 2450, "own: the open AH: your listing is matched")
+    w.close_ah_modern()
+    sc.clean(w)
+
+
+def sc_crafts_cooldown(sc, ref, items):
+    """A recipe with a cooldown is no bigger an idea than it allows: Arcanite (47h) none, a 23h
+    transmute one a day, Iron to Gold (1h) at most 24."""
+    fix = {12360: ("Arcanite Bar", 70000, 70000, 500, 300, 70000, 1000), 12363: ("Arcane Crystal", 20000, 20000, 500, 300, 20000, 1000),
+           12808: ("Essence of Undeath", 500, 500, 500, 300, 500, 100), 7080: ("Essence of Water", 5000, 5000, 500, 300, 5000, 100),
+           3577: ("Gold Bar", 3000, 3000, 500, 300, 3000, 100)}
+    series = {12360: steady_series(70000), 7080: steady_series(5000), 3577: steady_series(3000)}
+    w = cr_world(ref, items, ranks={171: 300}, fix=fix, series=series)
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={171: 300})
+    sc.eq((C.Recipe(17187).cd, C.Recipe(17563).cd, C.Recipe(11479).cd, C.Recipe(18560).cd), (47, 23, 1, 95),
+          "cooldown: Arcanite 47h, Undeath to Water 23h, Iron to Gold 1h, Mooncloth 95h")
+    cr_know(w, ctx, [17187, 17563, 11479])
+    for sp in (17187, 17563, 11479):
+        sc.eq(cr_q(w, sp, ctx)["verdict"], "profit", "cooldown: recipe %d pays (model)" % sp)
+    want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+    got = lua_list(C.Ideas(MOCK_GOLD))
+    sc.eq([(x.recipe, x.crafts, x.dayProfit) for x in got], [(x["recipe"], x["crafts"], x["dayProfit"]) for x in want],
+          "cooldown: the ideas are the model's")
+    sc.eq(sorted((x.recipe, x.crafts) for x in got), [(11479, 24), (17563, 1)],
+          "cooldown: Iron to Gold 24 a day, Undeath to Water 1, no Arcanite (once in 2 days)")
+    sc.clean(w)
+
+
+def sc_crafts_ideas_limits(sc, ref, items):
+    """A craft idea is no bigger than the listings hold: a mat bought (20 Thorium Ore listed: 20 smelts)
+    and a mat you make, by its own mats (Solid Grinding Stone from 40 Solid Stone listed: 3 Spurs)."""
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={10620: ("Thorium Ore", 1625, 1700, 20, 121, 1700, 250)})
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_THORIUM])
+    got = lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))
+    want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+    sc.eq([(x.recipe, x.crafts, x.dayProfit) for x in got], [(x["recipe"], x["crafts"], x["dayProfit"]) for x in want],
+          "limits: Thorium, the model's")
+    sc.eq([(x.recipe, x.crafts) for x in got], [(CR_THORIUM, 20)], "limits: 20 Thorium Ore listed: 20 smelts")
+    sc.eq([x.cost for x in got], [20 * 1700], "limits: the mats of many smelts at AH value (17s), not all at the cheapest (16s 25c)")
+    sc.clean(w)
+    fix = {7969: ("Mithril Spurs", 20000, 20000, 200, 100, 20000, 250), 7912: ("Solid Stone", 100, 100, 40, 100, 100, 10)}
+    w = cr_world(ref, items, ranks={CR_BS: 300}, fix=fix, series={7969: steady_series(20000)})
+    ctx = CrCtx(ranks={CR_BS: 300})
+    cr_know(w, ctx, [CR_SPURS, 9920])
+    q = cr_q(w, CR_SPURS, ctx)
+    sc.check(q["mats"][1]["sub"] is not None and q["verdict"] == "profit", "limits: Solid Grinding Stone made from Solid Stone (model)")
+    got = lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))
+    want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+    sc.eq([(x.recipe, x.crafts, x.dayProfit) for x in got], [(x["recipe"], x["crafts"], x["dayProfit"]) for x in want],
+          "limits: Spurs, the model's")
+    sc.eq([x.crafts for x in got if x.recipe == CR_SPURS], [3], "limits: 40 Solid Stone listed make 10 stones: 3 Spurs (9 stones)")
+    sc.clean(w)
+
+
+def sc_crafts_scan(sc, ref, items):
+    """Only your own window, once it has loaded, says what you know: not a guild's or an NPC's, nothing
+    while its recipes have not loaded, and a window that says nothing is learned is not counted."""
+    w = cr_world(ref, items, ranks={CR_BS: 300, CR_SMELT: 260})
+    C, M = w.ns.Crafts, w.M
+    ctx = CrCtx(ranks={CR_BS: 300, CR_SMELT: 260})
+    for flagname in ("guild", "npc", "notReady"):
+        M.ts[flagname] = True
+        n = C.scans
+        cr_open(w, CR_BS, [CR_HGS, CR_SPURS], [CR_HGS, CR_SPURS], ctx=ctx)
+        sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_HGS)), (None, "maybe"), "scan: %s window: nothing kept" % flagname)
+        if flagname == "notReady":
+            sc.eq(C.scans, n, "scan: recipes not loaded yet: not read")
+        M.ts[flagname] = False
+        cr_close(w)
+    # a search shows only Mithril Spurs (GetAllRecipeIDs missing: the table's recipes are asked too)
+    all_ids = w.g.C_TradeSkillUI.GetAllRecipeIDs
+    w.g.C_TradeSkillUI.GetAllRecipeIDs = None
+    cr_open(w, CR_BS, [CR_HGS, CR_SPURS], [], filt=[CR_SPURS], ctx=ctx)
+    sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_HGS)), (None, "maybe"),
+          "scan: a window that says nothing is learned (not loaded yet): Heavy Grinding Stone may still be known")
+    cr_close(w)
+    cr_open(w, CR_BS, [CR_HGS, CR_SPURS], [CR_HGS, CR_SPURS], filt=[CR_SPURS], ctx=ctx)
+    w.g.C_TradeSkillUI.GetAllRecipeIDs = all_ids
+    sc.eq((C.KnownState(CR_SPURS), C.KnownState(CR_HGS)), ("known", "known"),
+          "scan: once it has loaded: read, the recipe the search hides too (the table is asked again)")
+    cr_close(w)
+    cr_open(w, CR_SMELT, [CR_COPPER, CR_IRON, CR_THORIUM], [CR_COPPER], ctx=ctx)
+    sc.eq((C.KnownState(CR_IRON), C.KnownState(CR_THORIUM)), (None, None), "scan: Mining read: only what it says is learned")
+    cr_close(w)
+    sc.clean(w)
+    # learned before the saved settings loaded: kept, and saved under the GUID
+    w = cr_world(ref, items, ranks={CR_BS: 300})
+    w.ns.settingsLoaded = False
+    w.M.fire("NEW_RECIPE_LEARNED", CR_SPURS)
+    w.ns.settingsLoaded = True
+    sc.eq(w.ns.Crafts.KnownState(CR_SPURS), "known", "scan: learned before the settings loaded: kept")
+    sc.check(w.g.ForeverAH_Settings.craftChars[w.M.guid].known[CR_SPURS] is True, "scan: and saved under the GUID")
+    sc.clean(w)
+
+
+def sc_crafts_yield(sc, ref, items):
+    """A recipe that makes 1-3 counts the average, 2: Coarse Dynamite."""
+    fix = {4365: ("Coarse Dynamite", 500, 500, 500, 300, 500, 30), 4364: ("Coarse Blasting Powder", 40, 40, 500, 300, 40, 5)}
+    w = cr_world(ref, items, ranks={202: 300}, fix=fix)
+    C = w.ns.Crafts
+    ctx = CrCtx(ranks={202: 300})
+    cr_know(w, ctx, [3931])
+    lq = C.Quote(3931)
+    sc.eq((lq.net.lo, lq.sells), (math.floor(499 * 2 * 95 / 100), 998), "yield: 2 on average (1-3), after the cut")
+    cr_tip_ok(sc, w, "byid", 4365, ctx, "yield: Coarse Dynamite, known")
+    cr_tip_ok(sc, w, "byid", 4364, ctx, "yield: Coarse Blasting Powder")
+    if w.M["items"][6716] is None:
+        bag_add_item(w, 6716, "Schematic: EZ-Thro Dynamite", 2, 0, bind=0)
+    got = cr_tip_ok(sc, w, "byid", 6716, ctx, "yield: Schematic: EZ-Thro Dynamite")
+    sc.check(bool(got) and got[0][0].startswith("Makes: 1-3 "), "yield: the schematic says it makes 1-3 (%s)" % got[:1])
+    sc.clean(w)
+
 
 SCENARIOS = [
     ("static-source", sc_static),
@@ -26609,6 +29244,30 @@ SCENARIOS = [
     ("boats-trust", sc_boats_trust),
     ("boats-layout", sc_boats_layout),
     ("boats-x", sc_boats_x),
+    ("crafts-data", sc_crafts_data),
+    ("crafts-recipe-items", sc_crafts_recipe_items),
+    ("crafts-products", sc_crafts_products),
+    ("crafts-reagents", sc_crafts_reagents),
+    ("crafts-known", sc_crafts_known),
+    ("crafts-spec", sc_crafts_spec),
+    ("crafts-faction", sc_crafts_faction),
+    ("crafts-robust", sc_crafts_robust),
+    ("crafts-subcraft", sc_crafts_subcraft),
+    ("crafts-live", sc_crafts_live),
+    ("crafts-window", sc_crafts_window),
+    ("crafts-window-elvui", sc_crafts_window_elvui),
+    ("crafts-sidebar", sc_crafts_sidebar),
+    ("crafts-search", sc_crafts_search),
+    ("crafts-slash", sc_crafts_slash),
+    ("crafts-thin", sc_crafts_thin),
+    ("crafts-canmake", sc_crafts_canmake),
+    ("crafts-per-mat", sc_crafts_per_mat),
+    ("crafts-lean", sc_crafts_lean),
+    ("crafts-own", sc_crafts_own),
+    ("crafts-cooldown", sc_crafts_cooldown),
+    ("crafts-ideas-limits", sc_crafts_ideas_limits),
+    ("crafts-scan", sc_crafts_scan),
+    ("crafts-yield", sc_crafts_yield),
 ]
 
 
@@ -26676,6 +29335,7 @@ def main(argv):
         return 2
     ref = RefData(DATA_FILE)
     items = load_items(ITEMS_FILE, ref)
+    CR_ITEMS_JSON.update(items)
     pick_roles(ref, items, simulated)
     fmt = "new" if ref.salesHours is not None else "older (no salesHours, no listings count)"
     print("Data: %d items, updated %d, %s data file format, %s" % (

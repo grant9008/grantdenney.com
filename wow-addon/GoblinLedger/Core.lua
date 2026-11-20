@@ -1843,6 +1843,8 @@ local function onTooltipData(tt, data)
   ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not priced and type(ns.QuestItemLine) == "function" then ns.QuestItemLine(tt, id) end
+  -- A recipe, a crafted item or a mat: what making it costs and brings (Crafts.lua).
+  if type(ns.CraftLines) == "function" then ns.CraftLines(tt, id, info) end
   -- Gear you could enchant: the best enchants for your role (Enchants.lua), after our other lines.
   if type(ns.EnchantLines) == "function" then ns.EnchantLines(tt, id, link, info) end
 end
@@ -1864,6 +1866,8 @@ local function onTooltipSetItem(tt)
   local added = ns.AddTooltipLines(tt, pid, 1, opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not hasData and type(ns.QuestItemLine) == "function" and ns.QuestItemLine(tt, id) then added = true end
+  -- A recipe, a crafted item or a mat (Crafts.lua).
+  if type(ns.CraftLines) == "function" and ns.CraftLines(tt, id, nil) then added = true end
   -- Gear you could enchant (Enchants.lua). This path does not say where the item is.
   if type(ns.EnchantLines) == "function" and ns.EnchantLines(tt, id, link, nil) then added = true end
   -- Show lays the tooltip out again, the bigger lines included.

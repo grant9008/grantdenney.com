@@ -844,7 +844,7 @@ local function EmptyLines(text)
     elseif bind == 4 then
       add("Quest item: never on the AH.")
     else
-      add("Goblin Ledger has no prices for that name.")
+      add("No AH prices for that name.")
     end
     chartID = gid
   end
