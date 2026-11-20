@@ -782,12 +782,33 @@ function M.eff(o)
   return s
 end
 
+-- M.fontSizes (the boat timers' worlds): a font string is as big as its Font (its size / 12
+-- times the 12-point one: 6 a letter, 12 high); else every font string is 12-point.
+function M.fontScale(o)
+  if not M.fontSizes then return 1 end
+  local f = rawget(o, "_font")
+  if type(f) == "string" then f = _G[f] end
+  local s = type(f) == "table" and rawget(f, "_isFont") and rawget(f, "_size")
+  return finite(s) and s > 0 and s / 12 or 1
+end
+-- How many letters wide a text is (colour codes take no room); M.narrowOne (a boat test): a
+-- font whose "1" is half as wide as its other digits.
+function M.letters(text)
+  local s = (text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  local n = #s
+  if M.narrowOne then
+    local _, ones = s:gsub("1", "")
+    n = n - ones / 2
+  end
+  return n
+end
 local function baseSize(o)
   local w, h = o._w, o._h
   if o._otype == "FontString" then
     -- As wide as its words (6 a letter, like GetStringWidth): colour codes take no room.
-    if w == 0 then w = #((o._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) * 6 end
-    if h == 0 then h = 12 end
+    local k = M.fontScale(o)
+    if w == 0 then w = M.letters(o._text) * 6 * k end
+    if h == 0 then h = 12 * k end
   end
   return w, h
 end
@@ -1034,8 +1055,8 @@ end
 function FontString:SetShadowColor() end
 function FontString:SetShadowOffset() end
 function FontString:SetSpacing() end
-function FontString:GetStringWidth() local s = (self._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""); return #s * 6 end
-function FontString:GetStringHeight() return 12 end
+function FontString:GetStringWidth() return M.letters(self._text) * 6 * M.fontScale(self) end
+function FontString:GetStringHeight() return 12 * M.fontScale(self) end
 function FontString:SetDrawLayer(layer, sub) if not LAYERS[layer] then apiError("bad layer") end end
 
 -- Frames -------------------------------------------------------------------------
@@ -3591,6 +3612,8 @@ class World:
         if guid_of is not None and guid_of("player") != M.guid:
             raise RuntimeError("UnitGUID('player') is %r, not M.guid %r: set M.guid, never a second UnitGUID"
                                % (guid_of("player"), M.guid))
+        if lua51.lua_type(M.taxi) != "table":   # the flight master's map; UnitOnTaxi reads M.onTaxi
+            raise RuntimeError("M.taxi is %r, not the flight mock's table: set M.onTaxi for UnitOnTaxi, never M.taxi" % (M.taxi,))
         if auctionator:   # loads before GoblinLedger (alphabetical), its ADDON_LOADED fires before ours
             self.loader(ATR_LUA, "@Interface/AddOns/Auctionator/Mock.lua")
             M.loaded["Auctionator"] = True
@@ -4557,7 +4580,7 @@ def partial_term(ref, name):
 # ===========================================================================
 # Scenarios
 # ===========================================================================
-MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime")
+MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime", "UnitAffectingCombat")
 
 
 def mock_defs():
@@ -4577,7 +4600,7 @@ def mock_defs():
 def sc_static(sc, ref, items):
     """Source checks for text and calls the scenarios cannot reach."""
     # one mock per API: no game function or table is defined twice in the Lua mocks, and the
-    # player's GUID, spell book, position, taxi and server time are defined once in all of this file
+    # player's GUID, spell book, position, taxi, server time and combat are defined once in all of this file
     twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1)
     sc.eq(twice, {}, "mocks: each game API defined once in the Lua mocks")
     me = open(os.path.abspath(__file__), "rb").read().decode("utf-8")
@@ -26814,9 +26837,12 @@ BOAT_GEN = os.path.join(ROOT, "tools", "wow", "boats")
 # at its ObjectiveFrameMover, TOPRIGHT -163, -325).
 BOAT_MOCK_LUA = r'''
 local M = MOCK
+M.fontSizes = true   -- (font strings as big as their Font: the big timer's sizes count)
 M.pos = nil
 -- (UnitPosition, UnitOnTaxi with M.onTaxi, and GetServerTime from M.sbase are the main mock's.)
 M.speed, M.falling, M.moving, M.inInstance = 0, false, false, false
+M.combat = false
+function UnitAffectingCombat(unit) return unit == "player" and M.combat == true end
 M.guild, M.party, M.raid = false, false, false
 M.addonSent, M.prefixes, M.sendResult, M.sendCalls, M.prefixResult = {}, {}, 0, 0, 0
 M.realm, M.resetIn = "TestRealm", 3 * 86400
@@ -26906,6 +26932,86 @@ function M.InstallMinimap(o)
     if ObjectiveTrackerFrame then ObjectiveTrackerFrame:Hide() end
   end
 end
+-- The game's messages at the top centre, as Forever 1.60.1 places them (wow-ui-source, branch
+-- forever): Blizzard_UIErrorsFrame/Mainline/UIErrorsFrame.xml (512x60 at TOP -122, ErrorFont
+-- 16); Blizzard_RaidWarning/RaidWarning.xml (RaidWarningFrame 800x100 at TOP -182, hidden until
+-- a warning, PrivateRaidBossEmoteFrameAnchor 800x80 on its top); Blizzard_FrameXML/Mainline/
+-- ZoneText.xml (ZoneTextFrame 128x128 at TOP -128, ZoneTextString 512 wide in ZoneTextFont 32 at
+-- its centre, PVPInfoTextString 22 under it; SubZoneTextFrame 128x128 at BOTTOM +512, its
+-- SubZoneTextString 26 under ZoneTextString, or under PVPInfoTextString while that has words
+-- (ZoneText.lua's SetZoneText), PVPArenaTextString 22 under it; both fade out and hide; here
+-- all four have words, deeper than the game ever stacks them: to 278);
+-- Blizzard_EventToastManager (EventToastManagerFrame at TOP -190, 418 wide, 72 high at least);
+-- Blizzard_UIWidgets (UIWidgetTopCenterContainerFrame 10x10 at TOP -15, UIWidgetSubZoneText-
+-- ContainerFrame 10x10 on SubZoneTextFrame's top); Blizzard_MirrorTimer (three 206x32 timers
+-- stacked from MirrorTimerContainer, TOP -100: M.ShowMirrorTimers(n)).
+function M.InstallTopFrames()
+  local function font(size)
+    local f = CreateFont(nil)
+    f:SetFont("Fonts\\FRIZQT__.TTF", size, "THICKOUTLINE")
+    return f
+  end
+  local function text(name, parent, size, txt)
+    local fs = parent:CreateFontString(name, "ARTWORK")
+    fs:SetFontObject(font(size))
+    fs:SetWidth(512)
+    fs:SetText(txt)
+    return fs
+  end
+  local e = CreateFrame("Frame", "UIErrorsFrame", UIParent)
+  e:SetSize(512, 60)
+  e:SetPoint("TOP", UIParent, "TOP", 0, -122)
+  e:SetFrameStrata("DIALOG")
+  local rw = CreateFrame("Frame", "RaidWarningFrame", UIParent)
+  rw:SetSize(800, 100)
+  rw:SetPoint("TOP", UIParent, "TOP", 0, -182)
+  rw:SetFrameStrata("HIGH")
+  rw:Hide()
+  local pb = CreateFrame("Frame", "PrivateRaidBossEmoteFrameAnchor", UIParent)
+  pb:SetSize(800, 80)
+  pb:SetPoint("TOP", rw, "TOP", 0, 0)
+  local zf = CreateFrame("Frame", "ZoneTextFrame", UIParent)
+  zf:SetSize(128, 128)
+  zf:SetPoint("TOP", UIParent, "TOP", 0, -128)
+  local zs = text("ZoneTextString", zf, 32, "Theramore Isle")
+  zs:SetPoint("CENTER", zf, "CENTER", 0, 0)
+  local pv = text("PVPInfoTextString", zf, 22, "(Alliance Territory)")
+  pv:SetPoint("TOP", zs, "BOTTOM", 0, 0)
+  local sf = CreateFrame("Frame", "SubZoneTextFrame", UIParent)
+  sf:SetSize(128, 128)
+  sf:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 512)
+  local ss = text("SubZoneTextString", sf, 26, "Theramore Docks")
+  ss:SetPoint("TOP", pv, "BOTTOM", 0, 0)
+  local pa = text("PVPArenaTextString", sf, 22, "Sanctuary")
+  pa:SetPoint("TOP", ss, "BOTTOM", 0, 0)
+  zf:Hide()
+  sf:Hide()
+  local et = CreateFrame("Frame", "EventToastManagerFrame", UIParent)
+  et:SetSize(418, 72)
+  et:SetPoint("TOP", UIParent, "TOP", 0, -190)
+  et:Hide()
+  local tc = CreateFrame("Frame", "UIWidgetTopCenterContainerFrame", UIParent)
+  tc:SetSize(10, 10)
+  tc:SetPoint("TOP", UIParent, "TOP", 0, -15)
+  local sw = CreateFrame("Frame", "UIWidgetSubZoneTextContainerFrame", UIParent)
+  sw:SetSize(10, 10)
+  sw:SetPoint("BOTTOM", sf, "TOP", 0, 0)
+end
+function M.ShowMirrorTimers(n)
+  local c = MirrorTimerContainer
+  M.mirrorTimers = M.mirrorTimers or {}
+  for i = 1, 3 do
+    local t = M.mirrorTimers[i]
+    if not t then
+      t = CreateFrame("Frame", "GoblinTestMirrorTimer" .. i, c)
+      t:SetSize(206, 32)
+      t:SetPoint("TOP", c, "TOP", 0, -(i - 1) * 32)
+      M.mirrorTimers[i] = t
+    end
+    if i <= n then t:Show() else t:Hide() end
+  end
+  if n > 0 then c:Show() else c:Hide() end
+end
 function M.InstallElvUIMinimap()
   local holder = CreateFrame("Frame", "ElvUI_MinimapHolder", UIParent)
   holder:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -3, -3)
@@ -26944,18 +27050,41 @@ def boat_data():
     return _BOAT_DATA["routes"], _BOAT_DATA["gen"]
 
 
+# The style the older scenarios run in: "small" (the lines under the minimap); bt_in_big runs
+# one with the big timer (the default) instead.
+BT_STYLE = ["small"]
+
+
+def bt_in_big(fn):
+    """Scenario fn with the big timer: its words have to be the same."""
+    def run(sc, ref, items):
+        BT_STYLE[0] = "big"
+        try:
+            fn(sc, ref, items)
+        finally:
+            BT_STYLE[0] = "small"
+    return run
+
+
 def boat_world(ref, items, elvui=False, tracker=True, coords=False, saved=None, screen=None, faction="Alliance",
-               questie=False, login=(True, False), prefix_result=0, elvui_addon=False):
+               questie=False, login=(True, False), prefix_result=0, elvui_addon=False, style=""):
+    """style: "small" (the lines under the minimap), "big" (no setting: the default, the big
+    timer), "" (BT_STYLE's); a saved boatStyle wins over it."""
+    style = style or BT_STYLE[0]
     def setup(w):
         w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
         w.M.prefixResult = prefix_result
+        w.M.InstallTopFrames()
         w.M.InstallMinimap(w.to_lua({"tracker": tracker, "coords": coords, "questie": questie}))
         if elvui:
             w.M.InstallElvUIMinimap()
         if elvui_addon:   # ElvUI itself too (its skins: its own close X)
             w.M.InstallBlizzardBags()
             w.M.InstallElvUIAddon(w.to_lua({}))
-    return World(ref, items, before_addon=setup, saved=saved, screen=screen, faction=faction, login=login)
+    w = World(ref, items, before_addon=setup, saved=saved, screen=screen, faction=faction, login=login)
+    if style == "small" and not (saved and "boatStyle" in saved):
+        w.ns.settings.boatStyle = "small"
+    return w
 
 
 def bt_now(w):
@@ -26975,9 +27104,50 @@ def bt_stop(key, j=0):
     return s["world"]["x"], s["world"]["y"], s["world"]["mapID"]
 
 
+def bt_big_lines(w):
+    """What the big timer shows, line by line, in the words B.Lines uses ("route: countdown",
+    the hint after the unknown line it is under); [] while it is hidden."""
+    G = w.ns.Boats.ui.big
+    h = G.holder
+    if h is None or not h.IsVisible(h):
+        return []
+    head, val, hint = G.fs[1], G.value, G.hint
+    first = strip_codes(head.GetText(head) or "")
+    if val.IsShown(val):   # ("Boat to Menethil" "1:42"; "Boat to Menethil: docked, leaves in" "0:35")
+        first += (" " if ": " in first else ": ") + strip_codes(val.GetText(val) or "")
+    if hint.IsShown(hint):
+        first += " - " + strip_codes(hint.GetText(hint) or "")
+    out = [first]
+    for i in (2, 3):
+        b = G.btn[i]
+        if b.IsShown(b):
+            out.append(strip_codes(G.fs[i].GetText(G.fs[i]) or ""))
+    return out
+
+
 def bt_lines(w):
-    L = w.ns.Boats.Lines()
-    return [L[i] for i in range(1, len(L) + 1)]
+    """What the boat lines say (B.Lines). With the big timer up, what its font strings show,
+    which has to be the same words (else a line saying how they differ, so the check fails)."""
+    B = w.ns.Boats
+    L = B.Lines()
+    got = [L[i] for i in range(1, len(L) + 1)]
+    small = B.ui.holder is not None and B.ui.holder.IsVisible(B.ui.holder)
+    big = B.ui.big.holder is not None and B.ui.big.holder.IsVisible(B.ui.big.holder)
+    if small and big:
+        return ["(the big timer and the small lines both show: %r)" % (got,)]
+    if B.ui.style == "big" and B.ui.shown:
+        vis = bt_big_lines(w)
+        if vis != got:
+            return ["(the big timer shows %r, its lines say %r)" % (vis, got)]
+    elif B.ui.shown and not small:
+        return ["(nothing shows, the lines say %r)" % (got,)]
+    return got
+
+
+def bt_period(key):
+    """How often route key's boat comes, as the unknown line says it ("5:29": its round trip)."""
+    P = boat_data()[0][key]["cycle_s"]
+    return bt_clock(math.floor(P + 0.5))
 
 
 def bt_anchor(w, path):
@@ -27021,8 +27191,9 @@ def bt_want(key, j, rec, now, hint=True, reset_penalty=False):
     st = r["stops"][j]
     to = gen.dest_label(r["stops"], j)
     head = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}[r["type"]] + " to " + to + ": "
+    unknown = head + "unknown, every " + bt_period(key) + (" - /gl boat now when it docks" if hint else "")
     if rec is None:
-        return head + "unknown" + (" - /gl boat now when it docks" if hint else "")
+        return unknown
     err = lambda i: 0 if i == 0 else gen.STOP_SIGMA.get(key, 0.5)
     sg = rec["s"] + (abs(now - rec["seen"]) / P + 1) * sP
     if rec["obs"] != j + 1:
@@ -27035,7 +27206,7 @@ def bt_want(key, j, rec, now, hint=True, reset_penalty=False):
     docked = d < st["wait_s"]
     sec = st["wait_s"] - d if docked else P - d
     if sg > 30:
-        return head + "unknown" + (" - /gl boat now when it docks" if hint else "")
+        return unknown
     if sg <= 5:
         return head + ("docked, leaves in " + bt_clock(sec) if docked else bt_clock(sec))
     if docked or sec <= sg:
@@ -27162,7 +27333,7 @@ def sc_boats_dock(sc, ref, items):
     sc.eq(bt_lines(w), [], "dock: 100 yd away: no line")
     bt_at(w, x + 20, y - 10, inst, zone=False)
     w.settle(1.1)
-    sc.eq(bt_lines(w), ["Boat to Menethil: unknown - /gl boat now when it docks"], "dock: on the pier, unknown")
+    sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "dock: on the pier, unknown")
     sc.check(w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "dock: the line shows")
     sc.eq(B.ui.mode, "stacked", "dock: under the minimap")
     r = bt_rect_ok(sc, w, "dock", bt_minimap_parts(w))
@@ -27170,7 +27341,10 @@ def sc_boats_dock(sc, ref, items):
     mm = w.rect(w.g.Minimap)
     if r and cl and mm:
         sc.check(abs(r[3] - (cl[1] - 2)) < 0.6, "dock: 2 px under the minimap cluster (%s, %s)" % (r[3], cl[1]))
-        sc.check(r[0] >= mm[0] - 200 and r[2] <= w.M.screenW, "dock: under the map, on screen")
+        # (Centred under the map; the unknown line with its round trip and hint is longer than
+        # the map is wide, so it is kept 4 px inside the screen's right edge.)
+        sc.check(abs((r[0] + r[2]) / 2 - (mm[0] + mm[2]) / 2) < 0.6 or abs(r[2] - (w.M.screenW - 4)) < 0.6,
+                 "dock: under the map, on screen (%s, map %s)" % ([round(v) for v in r], [round(v) for v in mm]))
     # It updates once a second while shown, and not faster.
     n = B.stats.renders
     w.settle(5)
@@ -27341,8 +27515,9 @@ def sc_boats_manual(sc, ref, items):
         bt_at(w, ax + 5, ay - 5, ainst)
         bt_slash(w, "/gl boat now")
         sc.check(bt_anchor(w, path) is not None and bt_anchor(w, path)["obs"] == j + 1, "manual: Auberdine, %s's pier" % key)
-    # Clicks: a click on the line sets it; a good timer far from docking needs a second click.
-    w3 = boat_world(ref, items)
+    # Clicks (the small line's; the big timer takes none): a click on the line sets it; a good
+    # timer far from docking needs a second click.
+    w3 = boat_world(ref, items, style="small")
     B3 = w3.ns.Boats
     bt_at(w3, x, y, inst)
     w3.settle(2.5)
@@ -27374,7 +27549,7 @@ def sc_boats_manual(sc, ref, items):
     # Hover: one short tooltip line.
     w3.M.enter(btn)
     tt = w3.g.GameTooltip
-    sc.check(tt.IsShown(tt) and "Click when this boat docks" in str(w3.all_lines(tt)), "manual: the tooltip says what a click does")
+    sc.check(tt.IsShown(tt) and "Click when this boat docks" in str(w3.all_lines(tt)), "manual: the tooltip says what a click does (%s)" % w3.all_lines(tt))
     w3.M.leave(btn)
     sc.clean(w, "manual")
     sc.clean(w3, "manual clicks")
@@ -27789,7 +27964,7 @@ def sc_boats_expiry(sc, ref, items):
     bt_at(w3, x, y, inst)
     w3.settle(1.1)
     sc.eq(bt_anchor(w3, 292), None, "expiry: 31 days old: dropped")
-    sc.eq(bt_lines(w3), ["Boat to Menethil: unknown - /gl boat now when it docks"], "expiry: and unknown")
+    sc.eq(bt_lines(w3), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "expiry: and unknown")
     # Learned with other route data (a new version changed the round trip, or moved or
     # reordered the stops with the same round trip): dropped.
     for what, changed in (("round trip", dict(saved_rec, p0=329.4)), ("stops", dict(saved_rec, v="0badc0")),
@@ -27894,8 +28069,9 @@ def sc_boats_harbors(sc, ref, items):
     w = boat_world(ref, items, tracker=False)
     bt_at(w, ax + 4, ay + 4, ainst)
     w.settle(1.1)
-    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown - /gl boat now when it docks", "Boat to Menethil, Southshore: unknown",
-                        "Boat to Rut'theran: unknown"], "harbors: Auberdine, at the Stormwind pier: three boats")
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks",
+                        "Boat to Menethil, Southshore: unknown, every 8:06", "Boat to Rut'theran: unknown, every 5:16"],
+          "harbors: Auberdine, at the Stormwind pier: three boats")
     sc.eq(w.ns.Boats.ui.mode, "stacked", "harbors: no tracker: stacked")
     bt_rect_ok(sc, w, "harbors stacked", bt_minimap_parts(w))
     B = w.ns.Boats
@@ -27909,7 +28085,7 @@ def sc_boats_harbors(sc, ref, items):
     w.settle(1.1)
     sc.eq([l.split(":")[0] for l in bt_lines(w)], ["Boat to Rut'theran", "Boat to Stormwind", "Boat to Menethil, Southshore"],
           "harbors: at the Rut'theran pier it comes first")
-    sc.eq(bt_lines(w)[1], "Boat to Stormwind: unknown - /gl boat now when it docks", "harbors: the hint on the first unknown line")
+    sc.eq(bt_lines(w)[1], "Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks", "harbors: the hint on the first unknown line")
     # Clicking the second line sets that boat.
     w.M.click(B.ui.btn[2])
     sc.check(bt_anchor(w, 11616) is not None and bt_anchor(w, 11616)["obs"] == 2, "harbors: a click on a line sets that boat")
@@ -27918,7 +28094,8 @@ def sc_boats_harbors(sc, ref, items):
     bt_at(w2, ax + 4, ay + 4, ainst)
     w2.settle(1.1)
     sc.eq(w2.ns.Boats.ui.mode, "joined", "harbors: the tracker is in the way: one line")
-    sc.eq(bt_lines(w2), ["Boats: Stormwind unknown; Menethil, Southshore unknown; Rut'theran unknown"], "harbors: the one line")
+    sc.eq(bt_lines(w2), ["Boats: Stormwind unknown (every 4:07); Menethil, Southshore unknown (every 8:06); Rut'theran unknown "
+                         "(every 5:16)"], "harbors: the one line")
     bt_rect_ok(sc, w2, "harbors joined", bt_minimap_parts(w2))
     # Menethil: two boats; one line fits above the tracker, two do not.
     mx, my, minst = bt_stop("menethil_theramore", 0)
@@ -28010,7 +28187,7 @@ def sc_boats_switch(sc, ref, items):
     sc.eq(len(bt_lines(w)), 1, "switch: on: the line is back")
     for cmd in ("/gl boats", "/gl boat", "/gl boats status"):
         out = bt_slash(w, cmd)
-        want = ["Goblin Ledger: boat timers are on. /gl boats all lists every route.",
+        want = [BT_ON_STATUS,
                 "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. " + bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now())]
         sc.eq(out, want, "switch: %s: two lines, the nearest dock and its boat" % cmd)
     out = bt_slash(w, "/gl boats all")
@@ -28028,13 +28205,14 @@ def sc_boats_switch(sc, ref, items):
     # At a harbor with three boats the nearest-dock line names them all.
     ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
     bt_at(w, ax + 30, ay, ainst)
-    sc.eq(bt_slash(w, "/gl boats")[1:], ["Goblin Ledger: nearest dock: Auberdine, 30 yd. Stormwind unknown; Menethil, Southshore unknown; "
-                                         "Rut'theran unknown"], "switch: the nearest dock at Auberdine")
+    sc.eq(bt_slash(w, "/gl boats")[1:], ["Goblin Ledger: nearest dock: Auberdine, 30 yd. Stormwind unknown (every 4:07); Menethil, "
+                                         "Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"],
+          "switch: the nearest dock at Auberdine")
     bt_at(w, x, y, inst)
-    sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, /gl boats off or /gl boats all."],
+    sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, off, big, small or all."],
           "switch: a wrong choice")
     help_ = bt_slash(w, "/gl help")
-    sc.eq([l for l in help_ if "boat" in l], ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, all); "
+    sc.eq([l for l in help_ if "boat" in l], ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); "
                                                "/gl boat now as a boat docks sets its timer"], "switch: one help line")
     bt_slash(w, "/gl boats off")
     sc.eq(bt_slash(w, "/gl boats"), ["Goblin Ledger: boat timers are off. /gl boats on turns them on."], "switch: off: one line")
@@ -28534,8 +28712,12 @@ def sc_boats_layout(sc, ref, items):
 
 BT_X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
 BT_X_SAID = "Goblin Ledger: boat timers hidden until you leave this dock. /gl boats on brings them back."
-BT_HIDDEN_STATUS = "Goblin Ledger: boat timers are on, hidden at this dock until you leave it (/gl boats on shows them)."
-BT_ON_STATUS = "Goblin Ledger: boat timers are on. /gl boats all lists every route."
+BT_HIDDEN_STATUS = "Goblin Ledger: boat timers are on (small), hidden at this dock until you leave it (/gl boats on shows them)."
+BT_HIDDEN_BIG = "Goblin Ledger: boat timers are on (big), hidden at this dock until you leave it (/gl boats on shows them)."
+BT_ON_STATUS = ("Goblin Ledger: boat timers are on: small, under the minimap (/gl boats big: in the middle of the screen). "
+                "/gl boats all lists every route.")
+BT_ON_BIG = ("Goblin Ledger: boat timers are on: big, in the middle of the screen (/gl boats small: under the minimap). "
+             "/gl boats all lists every route.")
 
 
 def bt_hit(w, o):
@@ -28854,6 +29036,686 @@ def sc_boats_x(sc, ref, items):
     sc.check(a is not None and a["src"] == "A" and abs(a["t0"] - t) < 0.1, "x dm: the call teaches while hidden (%s)" % a)
     sc.eq(bt_lines(w7), [], "x dm: and the lines stay hidden")
     sc.clean(w7, "x dm")
+
+
+# --- boats: the big timer in the upper middle of the screen (the default) ---
+# The screens: the game's units are the same for every 16:9 screen (768 high at effective scale
+# 1 whatever its pixels, UIParent 768 / UI scale), so 1920x1080, 2560x1440 and 1280x720 lay out
+# alike; 3440x1440 is wider. ElvUI sets the UI scale to the screen's pixels (768 / height).
+BT_SCREENS = (("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440), ("1280x720", 1280, 720), ("3440x1440", 3440, 1440))
+BT_SCALES = (1.0, 0.8, 0.62)
+BT_BIG = {"value": 32, "head": 16, "med": 20, "hint": 13, "sub": 15, "x": 14}
+BT_SMALL_GAME_FONT = 10   # the small line's font in the game: GameFontHighlightSmall (SystemFont_Shadow_Small, 10)
+BT_CHAR_TOP = 0.46        # the character: under 46% of the screen height (the camera looks at its head, at the centre)
+BT_ON_BIG_ALL = "Goblin Ledger: boat timers are on: at a dock, a big timer in the middle of the screen says when the boat comes."
+BT_HINT = "/gl boat now when it docks"
+
+
+def bt_screen(px_w, px_h, scale):
+    return (768.0 * px_w / px_h, 768.0, scale)
+
+
+def bt_top_parts(w):
+    """The game's messages at the top centre (shown or not: they come and go) and the spots the
+    big timer leaves free: the timer bars (three 206x32 from TOP -100) and the flight bar on it."""
+    g, M = w.g, w.M
+    es = g.UIParent.GetEffectiveScale(g.UIParent)
+    W, H = M.screenW, M.screenH
+    cx = W / 2
+    out = [(n, w.rect(g[n])) for n in ("UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame",
+                                        "ZoneTextString", "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString")]
+    out.append(("the timer bars' spot", (cx - 103 * es, H - 196 * es, cx + 103 * es, H - 100 * es)))
+    out.append(("the flight bar's spot", (cx - 90 * es, H - 116 * es, cx + 90 * es, H - 100 * es)))
+    return out
+
+
+def bt_character(w):
+    """Where the character is: the middle fifth of the screen's width, from 46% of its height down."""
+    W, H = w.M.screenW, w.M.screenH
+    return (W * 0.40, H * 0.10, W * 0.60, H * (1 - BT_CHAR_TOP))
+
+
+def bt_font(fs):
+    f = fs.GetFont(fs)
+    return (f[0], f[1], f[2])
+
+
+def bt_big_parts(w):
+    """The big timer's visible pieces: (name, screen rectangle)."""
+    G = w.ns.Boats.ui.big
+    out = []
+    for i in (1, 2, 3):
+        b = G.btn[i]
+        if b.IsVisible(b):
+            out.append(("line %d's area" % i, w.rect(b)))
+            out.append(("line %d's words" % i, w.rect(G.fs[i])))
+    for name, o in (("the countdown", G.value), ("the hint", G.hint)):
+        if o.IsVisible(o):
+            out.append((name, w.rect(o)))
+    return out
+
+
+def bt_big_ok(sc, w, label, where="middle", extra=()):
+    """The big timer shows (the small lines do not), where the addon worked out, centred, on
+    screen, at its place: "middle" (its top 290 below the screen's top or 30% down, under the top
+    messages, above the character) or "top" (above the timer bars); it covers none of the top
+    messages, the timer bars' and flight bar's spot, the character, nor extra; its words inside
+    it; the X (14 px) just after line 1, at its top, clear of all of them; nothing of it but the X
+    takes the mouse. Returns its rectangle."""
+    B = w.ns.Boats
+    G = B.ui.big
+    h = G.holder
+    if not sc.check(h is not None and h.IsVisible(h) and B.ui.style == "big", "%s: the big timer shows (%s)" % (label, B.ui.style)):
+        return None
+    sm = B.ui.holder
+    sc.check(sm is None or not sm.IsVisible(sm), "%s: the small lines do not show" % label)
+    r, want = w.rect(h), G.rect
+    sc.check(want is not None and all(abs(r[i] - want[i + 1]) < 0.6 for i in range(4)),
+             "%s: where the addon worked out (%s vs %s)" % (label, [round(v, 1) for v in r],
+                                                           [round(want[i], 1) for i in range(1, 5)] if want else None))
+    W, H = w.M.screenW, w.M.screenH
+    es = w.g.UIParent.GetEffectiveScale(w.g.UIParent)
+    sc.check(abs((r[0] + r[2]) / 2 - W / 2) < 0.6, "%s: centred (%.1f, the screen's middle %.1f)" % (label, (r[0] + r[2]) / 2, W / 2))
+    sc.check(r[0] >= -0.5 and r[2] <= W + 0.5 and r[1] >= -0.5 and r[3] <= H + 0.5, "%s: on screen (%s)" % (label, [round(v) for v in r]))
+    sc.eq((G.mode or "").split(" ")[0], where, "%s: the place (%s)" % (label, G.mode))
+    if where == "middle":
+        sc.check(abs(r[3] - (H - max(290 * es, 0.3 * H))) < 0.6,
+                 "%s: its top 290 below the screen's top, or 30%% down (%.1f of %.1f)" % (label, H - r[3], H))
+        sc.check(r[3] <= H - 286 * es + 0.6 and r[1] >= H * (1 - BT_CHAR_TOP) - 0.6,
+                 "%s: in the upper middle: under the top messages (282) and above the character (%.1f to %.1f from the top, "
+                 "the character from %.1f)" % (label, H - r[3], H - r[1], H * BT_CHAR_TOP))
+    else:
+        sc.check(r[3] <= H - 15 * es + 0.6 and r[1] >= H - 100 * es + 0.5,
+                 "%s: above the timer bars (%.1f to %.1f from the top)" % (label, (H - r[3]) / es, (H - r[1]) / es))
+    others = bt_top_parts(w) + [("the character", bt_character(w))] + list(extra)
+    for name, q in others:
+        if q is not None:
+            sc.check(not bt_overlap(r, q), "%s: does not cover %s (%s vs %s)" % (label, name, [round(v) for v in r], [round(v) for v in q]))
+    parts = bt_big_parts(w)
+    for name, q in parts:
+        sc.check(q is not None and q[0] >= r[0] - 0.5 and q[2] <= r[2] + 0.5 and q[1] >= r[1] - 0.5 and q[3] <= r[3] + 0.5,
+                 "%s: %s inside the timer (%s in %s)" % (label, name, [round(v) for v in q] if q else None, [round(v) for v in r]))
+    x = G.x
+    if sc.check(x is not None and x.IsVisible(x), "%s: the X shows" % label):
+        xr, hit = w.rect(x), bt_hit(w, x)
+        sc.check(abs(xr[2] - xr[0] - BT_BIG["x"] * es) < 0.01 and abs(xr[3] - xr[1] - BT_BIG["x"] * es) < 0.01, "%s: the X is 14 px" % label)
+        l1 = w.rect(G.btn[1])
+        sc.check(l1 is not None and abs(xr[0] - (l1[2] + 6 * es)) < 0.6 and abs(xr[3] - r[3]) < 0.6 and xr[2] <= r[2] + 0.5,
+                 "%s: the X just after line 1, at its top (%s, line 1 %s)" % (label, [round(v) for v in xr], [round(v) for v in l1] if l1 else None))
+        sc.check(hit[0] >= -0.5 and hit[2] <= W + 0.5 and hit[1] >= -0.5 and hit[3] <= H + 0.5, "%s: the X on screen" % label)
+        for name, q in parts:
+            sc.check(q is not None and not bt_overlap(hit, q), "%s: the X is clear of %s (%s vs %s)" % (
+                label, name, [round(v, 1) for v in hit], [round(v, 1) for v in q] if q else None))
+        for name, q in others:
+            if q is not None:
+                sc.check(not bt_overlap(hit, q), "%s: the X does not cover %s" % (label, name))
+    takers = [n for n, o in [("the timer", h)] + [("line %d" % i, G.btn[i]) for i in (1, 2, 3)] if o.IsMouseEnabled(o)]
+    sc.eq((takers, x is None or (x._otype == "Button" and x.GetScript(x, "OnClick") is not None)), ([], True),
+          "%s: only the X takes the mouse (a button)" % label)
+    return r
+
+
+def bt_big_words(w):
+    """Every word the big timer shows (colour codes off), for the hint count."""
+    return [strip_codes(t) for _, t in bt_big_texts(w)]
+
+
+def bt_big_texts(w):
+    """(piece, raw text) of the big timer's visible font strings."""
+    G = w.ns.Boats.ui.big
+    out = []
+    if G.holder is None or not G.holder.IsVisible(G.holder):
+        return out
+    for name, o in (("line 1", G.fs[1]), ("countdown", G.value), ("hint", G.hint), ("line 2", G.fs[2]), ("line 3", G.fs[3])):
+        if o.IsVisible(o):
+            out.append((name, o.GetText(o) or ""))
+    return out
+
+
+def sc_boats_big_place(sc, ref, items):
+    """The big timer's place and size: centred, its top 290 below the top of the screen (or 30%
+    down where that is lower), under every message the game shows at the top centre (errors, raid
+    warnings, the zone name: shown or not) and the timer bars' and flight bar's spot, above the
+    character, at 1920x1080, 2560x1440, 1280x720 and 3440x1440, UI scales 1.0, 0.8 and 0.62 and
+    ElvUI's pixel scales, with the game's minimap and ElvUI's (and its X); one boat (unknown and
+    known), two and three (one line for the other two where three lines do not fit); with the
+    breath and fatigue bars up. The countdown 32, outlined, in the game's font (3.2 times the small
+    line's 10), the route 16 before it. A UI scale over 1, or the raid warnings moved over it:
+    above the timer bars (under the top widgets); no room anywhere: the small line."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)    # Theramore: one boat
+    mx, my, minst = bt_stop("menethil_theramore", 0)    # Menethil: two
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)   # Auberdine: three
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    runs = [(sname, pw, ph, s, elv) for sname, pw, ph in BT_SCREENS for s in BT_SCALES for elv in (False, True)]
+    runs += [("1920x1080", 1920, 1080, 768 / 1080.0, True), ("2560x1440", 2560, 1440, 768 / 1440.0, True)]
+    for sname, pw, ph, s, elv in runs:
+        lab = "big %s %.2f%s" % (sname, s, " elvui" if elv else "")
+        w = boat_world(ref, items, elvui=elv, elvui_addon=elv, screen=bt_screen(pw, ph, s), style="big")
+        B = w.ns.Boats
+        bt_at(w, tx, ty, tinst)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab + " Theramore unknown")
+        bt_set(w, 292, B.Now() - 200 - arr2, s=1.0, src="R", obs=2)
+        B.Step()
+        bt_big_ok(sc, w, lab + " Theramore")
+        if elv:
+            x = B.ui.big.x
+            sc.eq((x.glLook, x.GetWidth(x)), ("elvui", BT_BIG["x"]), "%s: ElvUI's own X" % lab)
+        bt_at(w, mx, my, minst)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab + " Menethil")
+        sc.eq((len(bt_lines(w)), B.ui.big.mode), (2, "middle"), "%s: Menethil: two lines" % lab)
+        bt_at(w, ax + 4, ay + 4, ainst)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab + " Auberdine")
+        # Three lines fit under the messages at UI scales under 1; at 1.0 the other two join.
+        sc.eq(B.ui.big.mode, "middle joined" if s >= 1 else "middle", "%s: Auberdine's three boats" % lab)
+        sc.eq(len(bt_lines(w)), 2 if s >= 1 else 3, "%s: Auberdine's lines" % lab)
+        w.M.ShowMirrorTimers(3)   # breath, fatigue, feign death all up
+        bt_big_ok(sc, w, lab + " timer bars", extra=[("timer bar %d" % i, w.rect(w.M.mirrorTimers[i])) for i in (1, 2, 3)])
+        sc.clean(w, lab)
+    # The sizes, at 1920x1080 and UI scale 1.0 and 0.62.
+    for s in (1.0, 0.62):
+        lab = "big size %.2f" % s
+        w = boat_world(ref, items, screen=bt_screen(1920, 1080, s), style="big")
+        B = w.ns.Boats
+        G = B.ui.big
+        bt_at(w, tx, ty, tinst)
+        w.settle(1.1)
+        sc.eq((bt_font(G.fs[1]), bt_font(G.hint)), (("Fonts\\FRIZQT__.TTF", BT_BIG["med"], "OUTLINE"), ("Fonts\\FRIZQT__.TTF", BT_BIG["hint"], "OUTLINE")),
+              "%s: unknown: the line 20, the hint 13, the game's font, outlined" % lab)
+        bt_set(w, 292, B.Now() - 200 - arr2, s=1.0, src="R", obs=2)
+        B.Step()
+        sc.eq((bt_font(G.value), bt_font(G.fs[1])), (("Fonts\\FRIZQT__.TTF", BT_BIG["value"], "OUTLINE"), ("Fonts\\FRIZQT__.TTF", BT_BIG["head"], "OUTLINE")),
+              "%s: the countdown 32, the route 16, the game's font, outlined" % lab)
+        es = w.g.UIParent.GetEffectiveScale(w.g.UIParent)
+        vr, sr = w.rect(G.value), None
+        px = (vr[3] - vr[1]) * 1080 / 768.0
+        sc.check(abs(px - BT_BIG["value"] * s * 1080 / 768.0) < 0.01, "%s: the countdown %.1f px high on a 1080 screen" % (lab, px))
+        sc.check(BT_BIG["value"] / float(BT_SMALL_GAME_FONT) >= 3, "%s: about three times the small line's 10" % lab)
+        # (The small line, the same countdown, for comparison: the game's small font.)
+        bt_slash(w, "/gl boats small")
+        sr = w.rect(B.ui.fs[1])
+        sc.check(sr is not None and w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "%s: the small line for comparison" % lab)
+        print("      [big timer] UI scale %.2f: countdown %.1f px high at 1920x1080 (%.1f at 2560x1440), the route %.1f px; "
+              "its top %.0f UI units below the screen's top" % (s, px, px * 1440 / 1080.0, BT_BIG["head"] * s * 1080 / 768.0,
+                                                               max(290, 0.3 * 768 / s)))
+        sc.clean(w, lab)
+    # A UI scale over 1 (1.15, the game's largest): no room under the messages: above the timer bars.
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 1.15), style="big")
+    B = w.ns.Boats
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big 1.15 Theramore", where="top")
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big 1.15 Auberdine", where="top")
+    sc.eq((B.ui.big.mode, len(bt_lines(w))), ("top", 3), "big 1.15: Auberdine: three lines above the timer bars")
+    # A capture bar in the top widgets: under it.
+    tc = w.g.UIWidgetTopCenterContainerFrame
+    tc.SetSize(tc, 400, 40)
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big 1.15 capture bar", where="top", extra=[("the top widgets", w.rect(tc))])
+    sc.clean(w, "big 1.15")
+    # Edit Mode moved the raid warnings down over the timer's place: above the timer bars.
+    w = boat_world(ref, items, style="big")
+    rw = w.g.RaidWarningFrame
+    rw.ClearAllPoints(rw)
+    rw.SetPoint(rw, "TOP", w.g.UIParent, "TOP", 0, -300)
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big raid warnings moved", where="top")
+    sc.clean(w, "big raid warnings moved")
+    # The zone text as deep as it stacks (here all four lines have words: to 278 below the top);
+    # a toast (a level up) counts while it shows: a tall one moves the timer above the timer bars.
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 1.0), style="big")
+    es = w.g.UIParent.GetEffectiveScale(w.g.UIParent)
+    pa = w.rect(w.g.PVPArenaTextString)
+    sc.check(pa is not None and abs(pa[1] - (w.M.screenH - 278 * es)) < 0.6,
+             "big zone text: four lines deep, to 278 below the top (%s)" % ((w.M.screenH - pa[1]) / es if pa else None))
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big zone text deep")
+    et = w.g.EventToastManagerFrame
+    et.Show(et)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big toast", extra=[("the toast", w.rect(et))])
+    et.SetSize(et, 418, 140)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big tall toast", where="top", extra=[("the toast", w.rect(et))])
+    et.Hide(et)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big toast gone")
+    sc.clean(w, "big toast")
+    # Above the timer bars (UI scale 1.15) the top corners count too: a target frame at the top
+    # left (shown or not: a target comes and goes), ElvUI's buffs while they show; in the way: the
+    # small line.
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 1.15), style="big")
+    B = w.ns.Boats
+    g = w.g
+    tf = g.CreateFrame("Frame", "TargetFrame", g.UIParent)
+    tf.SetSize(tf, 232, 100)
+    tf.SetPoint(tf, "TOPLEFT", g.UIParent, "TOPLEFT", 250, -4)
+    tf.Hide(tf)
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.check(B.ui.style == "small" and not B.ui.big.holder.IsVisible(B.ui.big.holder),
+             "big top: the target frame at the top left: the small line (%s, %s)" % (B.ui.style, B.ui.big.mode))
+    bt_rect_ok(sc, w, "big top target", bt_minimap_parts(w))
+    tf.ClearAllPoints(tf)
+    tf.SetPoint(tf, "BOTTOMLEFT", g.UIParent, "BOTTOMLEFT", 300, 250)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big top target low", where="top", extra=[("the target frame", w.rect(tf))])
+    bf = g.CreateFrame("Frame", "ElvUIPlayerBuffs", g.UIParent)
+    bf.SetSize(bf, 400, 40)
+    bf.SetPoint(bf, "TOPRIGHT", g.UIParent, "TOPRIGHT", -170, -4)
+    w.settle(1.1)
+    sc.check(B.ui.style == "small", "big top: ElvUI's buffs in the way: the small line (%s)" % B.ui.style)
+    bf.Hide(bf)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big top buffs hidden", where="top")
+    sc.clean(w, "big top corners")
+    # No room anywhere (widgets over the whole top half): the small line under the minimap.
+    w = boat_world(ref, items, style="big")
+    tc = w.g.UIWidgetTopCenterContainerFrame
+    tc.SetSize(tc, 1300, 560)
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    B = w.ns.Boats
+    sc.check(B.ui.style == "small" and not B.ui.big.holder.IsVisible(B.ui.big.holder), "big no room: the small line instead (%s)" % B.ui.style)
+    bt_rect_ok(sc, w, "big no room", bt_minimap_parts(w))
+    sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "big no room: its words")
+    tc.SetSize(tc, 10, 10)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "big no room, then room")
+    sc.clean(w, "big no room")
+
+
+def sc_boats_big_states(sc, ref, items):
+    """What the big timer and the small line say at Theramore (the boat to Menethil), state by
+    state: the countdown (good to 5 s), docked, about (good to 30 s), about now, and unknown with
+    how often it comes (no timer, too old to trust, from before a weekly reset that moved the
+    boats, with a round trip learned from your rides; the Dalaran skyship's measured 5:53); each
+    one's fonts and colours. At harbors: the nearest pier's boat big, the others 15 under it, the
+    hint once under the big line when it is unknown, none on the others' lines nor a joined line;
+    the joined forms "Theramore unknown (every 5:29)"."""
+    routes, _ = boat_data()
+    P = routes["menethil_theramore"]["cycle_s"]
+    arr2 = routes["menethil_theramore"]["stops"][1]["arrive_s"]
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    gold = "|cffffd100"
+    cases = (
+        ("unknown", None, ("Boat to Menethil: unknown, every 5:29", None, BT_HINT),
+         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"),
+        ("countdown", lambda n: dict(t0=n - arr2 - (P - 101.5), s=1.0), ("Boat to Menethil", "1:42", None), "Boat to Menethil: 1:42"),
+        ("docked", lambda n: dict(t0=n - arr2 - 25.5, s=1.0), ("Boat to Menethil: docked, leaves in", "0:35", None),
+         "Boat to Menethil: docked, leaves in 0:35"),
+        ("about", lambda n: dict(t0=n - arr2 - (P - 120), s=10.0), ("Boat to Menethil: about", "2 min", None), "Boat to Menethil: about 2 min"),
+        ("about now", lambda n: dict(t0=n - arr2 - (P - 8), s=10.0), ("Boat to Menethil: about", "now", None), "Boat to Menethil: about now"),
+        ("too old", lambda n: dict(t0=n - arr2 - 40, s=1.0, seen=n - 12 * 86400), ("Boat to Menethil: unknown, every 5:29", None, BT_HINT),
+         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"),
+    )
+    for style in ("big", "small"):
+        w = boat_world(ref, items, tracker=False, style=style, screen=bt_screen(1920, 1080, 0.8))
+        B = w.ns.Boats
+        G = B.ui.big
+        bt_at(w, tx, ty, tinst)
+        w.settle(2.5)
+        for name, mk, big, small in cases:
+            lab = "states %s %s" % (style, name)
+            B.Store()[292] = None
+            if mk:
+                bt_set(w, 292, obs=2, src="R", **mk(B.Now()))
+            B.Step()
+            sc.eq(bt_lines(w), [small], "%s: the words" % lab)
+            if style != "big":
+                sc.check(w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats) and B.ui.style == "small", "%s: the small line shows" % lab)
+                continue
+            head, value, hint = big
+            sc.eq((strip_codes(G.fs[1].GetText(G.fs[1])), G.value.IsShown(G.value) and strip_codes(G.value.GetText(G.value)) or None,
+                   G.hint.IsShown(G.hint) and G.hint.GetText(G.hint) or None), (head, value, hint), "%s: the big timer" % lab)
+            if value:
+                sc.eq((G.value.GetText(G.value), G.fs[1].GetText(G.fs[1]), bt_font(G.value)[1], bt_font(G.fs[1])[1]),
+                      (gold + value + "|r", head, BT_BIG["value"], BT_BIG["head"]), "%s: only the number 32 and gold, the words 16 and white" % lab)
+            else:
+                sc.eq((G.fs[1].GetText(G.fs[1]), bt_font(G.fs[1])[1], bt_font(G.hint)[1]),
+                      ("Boat to Menethil: " + gold + "unknown, every 5:29|r", BT_BIG["med"], BT_BIG["hint"]),
+                      "%s: unknown: one line 20 (the state gold), the hint 13 under it" % lab)
+            bt_big_ok(sc, w, lab)
+        # After a weekly reset that moved the boats: a timer from before it is unknown.
+        n = B.Now()
+        bt_set(w, 292, n - arr2 - 40, s=1.0, src="R", obs=2, seen=n - 5 * 86400)
+        B.Store().resetKeeps = False
+        B.Step()
+        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "states %s: after a weekly reset" % style)
+        B.Store().resetKeeps = None
+        # A round trip learned from your own rides (it may be off the game data's by 0.5%).
+        B.Store()[292] = None
+        B.Store().periods[292] = w.to_lua({"P": 329.9, "sP": 0.003, "p0": P})
+        B.Step()
+        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:30 - /gl boat now when it docks"], "states %s: a learned round trip" % style)
+        B.Store().periods[292] = None
+        # The Dalaran skyship (its round trip measured from the dockmasters' calls).
+        dx, dy, dinst = bt_stop("dalaran_zephras", 0)
+        bt_at(w, dx, dy, dinst)
+        w.settle(1.1)
+        sc.eq(bt_lines(w), ["Skyship to Zephras Isle: unknown, every 5:53 - /gl boat now when it docks"], "states %s: the skyship" % style)
+        sc.clean(w, "states " + style)
+    # Harbors with the big timer: three boats at Auberdine (UI scale 0.8: three lines).
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 0.8), style="big")
+    B = w.ns.Boats
+    G = B.ui.big
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks", "Boat to Menethil, Southshore: unknown, every 8:06",
+                        "Boat to Rut'theran: unknown, every 5:16"], "harbors big: Auberdine, three boats, the nearest pier's big")
+    sc.eq((bt_font(G.fs[1])[1], bt_font(G.fs[2])[1], bt_font(G.fs[3])[1]), (BT_BIG["med"], BT_BIG["sub"], BT_BIG["sub"]),
+          "harbors big: the others 15")
+    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 1, "harbors big: the hint once (%s)" % bt_big_words(w))
+    sc.eq(G.hint.IsShown(G.hint), True, "harbors big: under the big line")
+    bt_big_ok(sc, w, "harbors big three")
+    bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
+    B.Step()
+    lines = bt_lines(w)
+    sc.eq(lines[1:], ["Boat to Menethil, Southshore: unknown, every 8:06", "Boat to Rut'theran: unknown, every 5:16"],
+          "harbors big: the big line known: no hint on the other boats' lines (/gl boat now sets the big one)")
+    sc.eq((sum(t.count("/gl boat now") for t in bt_big_words(w)), G.hint.IsShown(G.hint)), (0, False), "harbors big: no hint")
+    sc.check(lines[0].startswith("Boat to Stormwind: docked, leaves in 0:"), "harbors big: the big line (%s)" % lines[0])
+    bt_big_ok(sc, w, "harbors big known")
+    sc.clean(w, "harbors big")
+    # UI scale 1.0: the other two on one line, no hint on it.
+    w = boat_world(ref, items, style="big")
+    B = w.ns.Boats
+    G = B.ui.big
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks",
+                        "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"], "harbors big joined: the other two on one line")
+    sc.eq(G.fs[2].GetText(G.fs[2]), "Menethil, Southshore " + gold + "unknown (every 8:06)|r; Rut'theran " + gold + "unknown (every 5:16)|r",
+          "harbors big joined: the states gold")
+    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 1, "harbors big joined: the hint once")
+    bt_big_ok(sc, w, "harbors big joined")
+    bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
+    B.Step()
+    sc.eq(bt_lines(w)[1], "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)", "harbors big joined: known big line")
+    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 0, "harbors big joined: no hint on a joined line")
+    sc.clean(w, "harbors big joined")
+    # The small lines' joined form at Menethil (the tracker under the minimap).
+    mx, my, minst = bt_stop("menethil_theramore", 0)
+    w = boat_world(ref, items)
+    bt_at(w, mx, my, minst)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boats: Theramore unknown (every 5:29); Southshore, Auberdine unknown (every 8:06)"], "small joined: how often each comes")
+    bt_rect_ok(sc, w, "small joined", bt_minimap_parts(w))
+    bt_set(w, 292, w.ns.Boats.Now() - 101.5 - (P - 0), s=1.0, src="R", obs=1)
+    w.ns.Boats.Step()
+    sc.check(bt_lines(w)[0].startswith("Boats: Theramore ") and "Theramore unknown" not in bt_lines(w)[0], "small joined: known (%s)" % bt_lines(w))
+    sc.clean(w, "small joined")
+
+
+def sc_boats_big_setting(sc, ref, items):
+    """/gl boats big (the default) and /gl boats small: saved, kept over a /reload and the next
+    login, the timer switching at once; /gl boats (status) says which; /gl boats on and all say
+    where they show; off and a style: one line saying they are off; one help line."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = boat_world(ref, items, style="big")
+    B, S = w.ns.Boats, w.ns.settings
+    sc.eq(S.boatStyle, None, "setting: nothing saved: big")
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "setting default")
+    nearest = "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. Boat to Menethil: unknown, every 5:29"
+    sc.eq(bt_slash(w, "/gl boats status"), [BT_ON_BIG, nearest], "setting: status says big")
+    sc.eq(bt_slash(w, "/gl boats small"), ["Goblin Ledger: boat timers are small now: a line under the minimap. /gl boats big makes them big again."],
+          "setting: small")
+    sc.eq(S.boatStyle, "small", "setting: small saved")
+    sc.check(B.ui.style == "small" and w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats) and not B.ui.big.holder.IsVisible(B.ui.big.holder),
+             "setting: the small line at once, the big timer gone")
+    bt_rect_ok(sc, w, "setting small", bt_minimap_parts(w))
+    sc.eq(bt_slash(w, "/gl boats")[0], BT_ON_STATUS, "setting: status says small")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    w2 = boat_world(ref, items, saved=saved, login=(False, True), style="big")
+    w2.M.sbase = B.Now() - w2.M.t + 3
+    bt_at(w2, tx, ty, tinst)
+    w2.settle(1.1)
+    sc.check(w2.ns.Boats.ui.style == "small" and w2.ns.settings.boatStyle == "small", "setting: small after a /reload")
+    sc.eq(bt_lines(w2), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "setting: small after a /reload: the line")
+    sc.eq(bt_slash(w2, "/gl boats big"), ["Goblin Ledger: boat timers are big now: in the middle of the screen. /gl boats small puts them under "
+                                          "the minimap."], "setting: big")
+    sc.eq(w2.ns.settings.boatStyle, None, "setting: big saved (the default)")
+    bt_big_ok(sc, w2, "setting big again")
+    sc.clean(w2, "setting reload")
+    w3 = boat_world(ref, items, saved=lua_to_py(w2.g.ForeverAH_Settings), style="big")
+    bt_at(w3, tx, ty, tinst)
+    w3.settle(1.1)
+    bt_big_ok(sc, w3, "setting next login")
+    sc.clean(w3, "setting next login")
+    w4 = boat_world(ref, items, saved=saved, style="big")   # (small saved, the next login)
+    bt_at(w4, tx, ty, tinst)
+    w4.settle(1.1)
+    sc.check(w4.ns.Boats.ui.style == "small", "setting: small at the next login")
+    sc.clean(w4, "setting next login small")
+    # The other lines that say where they show.
+    sc.eq(bt_slash(w, "/gl boats big"), ["Goblin Ledger: boat timers are big now: in the middle of the screen. /gl boats small puts them under "
+                                         "the minimap."], "setting: big again")
+    sc.eq(bt_slash(w, "/gl boats all")[0], BT_ON_BIG_ALL, "setting: all says where")
+    bt_slash(w, "/gl boats off")
+    sc.eq(bt_slash(w, "/gl boats small"), ["Goblin Ledger: boat timers are small now: a line under the minimap. /gl boats big makes them big again. "
+                                           "They are off: /gl boats on turns them on."], "setting: off: small says they are off")
+    sc.eq(bt_lines(w), [], "setting: off: nothing shows")
+    sc.eq(bt_slash(w, "/gl boats on"), ["Goblin Ledger: boat timers are on: at a dock, a line under the minimap says when the boat comes."],
+          "setting: on says where (small)")
+    w.settle(1.1)
+    sc.eq(B.ui.style, "small", "setting: on: small")
+    bt_slash(w, "/gl boats big")
+    sc.eq(bt_slash(w, "/gl boats on"), ["Goblin Ledger: boat timers are on: at a dock, a big timer in the middle of the screen says when the "
+                                        "boat comes."], "setting: on says where (big)")
+    help_ = [l for l in bt_slash(w, "/gl help") if "boat" in l]
+    sc.eq(help_, ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer"],
+          "setting: one help line")
+    sc.clean(w, "setting")
+
+
+def sc_boats_big_x(sc, ref, items):
+    """The big timer's X and the mouse: its hover says what it does; a click hides the timer until
+    you leave that dock (one chat line says how to undo it), a /reload there keeps it hidden,
+    leaving and coming back shows it, /gl boats says it is hidden. Its lines take no clicks and no
+    hover (in the middle of the screen the mouse is for the world: a stray click must not set and
+    share a wrong timer, a camera drag must not stop on it): /gl boat now sets the timer."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
+    w = boat_world(ref, items, style="big")
+    B, M, S = w.ns.Boats, w.M, w.ns.settings
+    G = B.ui.big
+    tt = w.g.GameTooltip
+    bt_at(w, tx, ty, tinst)
+    w.settle(2.5)
+    bt_big_ok(sc, w, "big x")
+    x = G.x
+    sc.eq((x.glLook, x.GetWidth(x), w.same(x.GetParent(x), G.holder), x.GetHitRectInsets(x)), ("game", 14, True, (-2, -2, -2, -2)),
+          "big x: the game's X, 14 px, on the timer")
+    for i in (1, 2, 3):
+        b = G.btn[i]
+        sc.check(b._otype == "Frame" and not b.IsMouseEnabled(b) and b.GetScript(b, "OnEnter") is None,
+                 "big x: line %d takes no clicks and no hover" % i)
+    sc.check(not G.holder.IsMouseEnabled(G.holder), "big x: nor the timer itself")
+    sc.eq(bt_anchor(w, 292), None, "big x: nothing set")
+    sc.eq(bt_slash(w, "/gl boat now"), ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "big x: /gl boat now sets it")
+    sc.check(G.value.IsShown(G.value) and strip_codes(G.fs[1].GetText(G.fs[1])) == "Boat to Menethil: docked, leaves in"
+             and strip_codes(G.value.GetText(G.value)) in ("1:00", "0:59"), "big x: and it shows (%s)" % bt_lines(w))
+    bt_big_ok(sc, w, "big x set")
+    # The X.
+    M.enter(x)
+    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, [BT_X_TIP], "big x: the X's hover")
+    mark = w.chat_mark()
+    M.click(x)
+    sc.eq(bt_lines(w), [], "big x: the X hides it")
+    sc.check(not G.holder.IsVisible(G.holder) and not tt.IsShown(tt), "big x: the timer and the tooltip gone")
+    sc.eq([strip_codes(c) for c in w.chat(mark)], [BT_X_SAID], "big x: one chat line")
+    sc.eq(lua_to_py(S.boatHide), {"inst": tinst, "ses": B.session, "piers": {1: "292:2"}}, "big x: saved: this dock, this login")
+    w.settle(10)
+    sc.eq(bt_lines(w), [], "big x: stays hidden")
+    sc.eq(bt_slash(w, "/gl boats")[0], BT_HIDDEN_BIG, "big x: /gl boats says it is hidden")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    w2 = boat_world(ref, items, saved=saved, login=(False, True), style="big")
+    w2.M.sbase = B.Now() - w2.M.t + 3
+    bt_at(w2, tx + 5, ty - 5, tinst)
+    w2.settle(2.5)
+    sc.check(bt_lines(w2) == [] and (w2.ns.Boats.ui.big.holder is None or not w2.ns.Boats.ui.big.holder.IsVisible(w2.ns.Boats.ui.big.holder)),
+             "big x: a /reload at the dock: still hidden")
+    sc.clean(w2, "big x reload")
+    bt_at(w, tx + 300, ty, tinst, zone=False)
+    w.settle(3.5)
+    bt_at(w, tx, ty, tinst, zone=False)
+    w.settle(3.5)
+    sc.eq(len(bt_lines(w)), 1, "big x: leaving and coming back shows it")
+    bt_big_ok(sc, w, "big x back")
+    M.click(x)
+    bt_slash(w, "/gl boats on")
+    sc.eq(len(bt_lines(w)), 1, "big x: /gl boats on shows it again")
+    sc.clean(w, "big x")
+    # Auberdine (UI scale 0.8: three lines): one X for all.
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 0.8), style="big")
+    B, M = w.ns.Boats, w.M
+    G = B.ui.big
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(B.ui.big.mode, "middle", "big x three: three lines")
+    bt_big_ok(sc, w, "big x three")
+    mark = w.chat_mark()
+    M.click(G.x)
+    sc.eq(([strip_codes(c) for c in w.chat(mark)], bt_lines(w)), ([BT_X_SAID], []), "big x three: one X for all, one chat line")
+    sc.clean(w, "big x three")
+    # UI scale 1.0: the other two joined; a click on that line: the nearer of them.
+    w = boat_world(ref, items, style="big")
+    B, M = w.ns.Boats, w.M
+    G = B.ui.big
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(B.ui.big.mode, "middle joined", "big x joined: joined")
+    bt_big_ok(sc, w, "big x joined")
+    sc.check(not G.btn[3].IsShown(G.btn[3]), "big x joined: no third line")
+    sc.clean(w, "big x joined")
+
+
+def sc_boats_big_far(sc, ref, items):
+    """The big timer shows only at a dock: nothing far away, 100 yd away, after walking off the
+    pier, in an instance, nor with boat timers off."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = boat_world(ref, items, style="big")
+    B, M = w.ns.Boats, w.M
+    def big_shown():
+        h = B.ui.big.holder
+        return h is not None and h.IsVisible(h)
+    bt_at(w, tx, ty + 3000, tinst)
+    w.settle(3)
+    sc.check(B.ui.big.holder is None and not big_shown(), "far: 3000 yd away: nothing made")
+    bt_at(w, tx + 100, ty, tinst)
+    w.settle(3.1)
+    sc.check(not big_shown() and bt_lines(w) == [], "far: 100 yd away: nothing")
+    bt_at(w, tx + 10, ty, tinst, zone=False)
+    w.settle(1.1)
+    sc.check(big_shown(), "far: on the pier: the big timer")
+    bt_at(w, tx + 90, ty, tinst, zone=False)
+    w.settle(1.1)
+    sc.check(not big_shown() and bt_lines(w) == [], "far: walked off the pier: gone")
+    bt_at(w, tx + 4000, ty, tinst)
+    w.settle(3)
+    sc.check(not big_shown(), "far: a hearthstone away: gone")
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.check(big_shown(), "far: back at the dock")
+    M.inInstance = True
+    M.fire("ZONE_CHANGED_NEW_AREA")
+    w.settle(1.2)
+    sc.check(not big_shown(), "far: in an instance: gone")
+    M.inInstance = False
+    M.fire("ZONE_CHANGED_NEW_AREA")
+    w.settle(1.2)
+    sc.check(big_shown(), "far: out again at the dock")
+    bt_slash(w, "/gl boats off")
+    sc.check(not big_shown(), "far: off: gone")
+    for other in ("orgrimmar_undercity", "bootybay_ratchet"):
+        px, py, pinst = bt_stop(other, 0)
+        bt_at(w, px + 500, py, pinst)
+        w.settle(1.5)
+        sc.check(not big_shown(), "far: off, 500 yd from %s: nothing" % other)
+    sc.clean(w, "far")
+
+
+def sc_boats_big_steady(sc, ref, items):
+    """The big timer holds still as the seconds tick: with a font whose "1" is narrower than its
+    other digits, the words and the number keep their place (the number has the room of its
+    widest digits), counting down and docked. It updates once a second and looks for room at most
+    four times an update."""
+    routes, _ = boat_data()
+    P = routes["menethil_theramore"]["cycle_s"]
+    arr2 = routes["menethil_theramore"]["stops"][1]["arrive_s"]
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = boat_world(ref, items, style="big", screen=bt_screen(1920, 1080, 0.62))
+    B, M = w.ns.Boats, w.M
+    G = B.ui.big
+    M.narrowOne = True
+    bt_at(w, tx, ty, tinst)
+    w.settle(2.5)
+    for name, ago in (("counting down", P - 81.5), ("docked", 25.5)):
+        bt_set(w, 292, B.Now() - arr2 - ago, s=1.0, src="R", obs=2)
+        B.Step()
+        seen = []
+        for k in range(16):
+            w.settle(1.0)
+            seen.append((strip_codes(G.value.GetText(G.value)), w.rect(G.fs[1]), w.rect(G.value), w.rect(G.btn[1])))
+        nums = [t for t, _, _, _ in seen]
+        widths = set(round(v[2] - v[0], 2) for _, _, v, _ in seen)
+        sc.check(len(set(nums)) >= 12 and any("1" in t for t in nums) and len(widths) > 1,
+                 "steady %s: the seconds tick, the narrow 1 changes the number's width (%s, %s)" % (name, nums, sorted(widths)))
+        sc.eq(len(set(round(hr[0], 2) for _, hr, _, _ in seen)), 1, "steady %s: the words keep their place" % name)
+        sc.eq(len(set(round(v[0], 2) for _, _, v, _ in seen)), 1, "steady %s: the number starts at one place" % name)
+        sc.eq(len(set((round(b[0], 2), round(b[2], 2)) for _, _, _, b in seen)), 1, "steady %s: line 1 keeps its size" % name)
+        sc.check(all(v[2] <= b[2] + 0.5 for _, _, v, b in seen), "steady %s: the number inside its room" % name)
+        bt_big_ok(sc, w, "steady " + name)
+    n, l = B.stats.renders, B.stats.bigLooks
+    w.settle(5)
+    dn, dl = B.stats.renders - n, B.stats.bigLooks - l
+    sc.check(4 <= dn <= 6 and dn <= dl <= 4 * dn, "steady: one update a second (%d in 5 s), room looked for %d times" % (dn, dl))
+    # Auberdine at UI scale 1.0 (three lines do not fit: joined): still at most four looks.
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w2 = boat_world(ref, items, style="big")
+    B2 = w2.ns.Boats
+    bt_at(w2, ax + 4, ay + 4, ainst)
+    w2.settle(1.1)
+    n, l = B2.stats.renders, B2.stats.bigLooks
+    w2.settle(5)
+    dn, dl = B2.stats.renders - n, B2.stats.bigLooks - l
+    sc.check(B2.ui.big.mode == "middle joined" and 4 <= dn <= 6 and dl <= 4 * dn,
+             "steady Auberdine: one update a second (%d in 5 s), room looked for %d times (%s)" % (dn, dl, B2.ui.big.mode))
+    sc.clean(w, "steady")
+    sc.clean(w2, "steady Auberdine")
+
+
+def sc_boats_big_busy(sc, ref, items):
+    """In a fight or on a flight the middle of the screen is for that: the small line under the
+    minimap instead; the big timer again a second after."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = boat_world(ref, items, style="big")
+    B, M = w.ns.Boats, w.M
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_big_ok(sc, w, "busy: before")
+    for what, attr in (("in a fight", "combat"), ("on a flight", "onTaxi")):   # (the main mock's UnitOnTaxi: M.onTaxi)
+        setattr(M, attr, True)
+        w.settle(1.1)
+        sc.check(B.ui.style == "small" and w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats)
+                 and not B.ui.big.holder.IsVisible(B.ui.big.holder), "busy: %s: the small line (%s)" % (what, B.ui.style))
+        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "busy: %s: its words" % what)
+        bt_rect_ok(sc, w, "busy " + what, bt_minimap_parts(w))
+        setattr(M, attr, False)
+        w.settle(1.1)
+        bt_big_ok(sc, w, "busy: after %s" % what)
+    sc.clean(w, "busy")
 
 
 # --- boats: end ---
@@ -31839,6 +32701,21 @@ SCENARIOS = [
     ("boats-trust", sc_boats_trust),
     ("boats-layout", sc_boats_layout),
     ("boats-x", sc_boats_x),
+    ("boats-big-place", sc_boats_big_place),
+    ("boats-big-states", sc_boats_big_states),
+    ("boats-big-setting", sc_boats_big_setting),
+    ("boats-big-x", sc_boats_big_x),
+    ("boats-big-far", sc_boats_big_far),
+    ("boats-big-steady", sc_boats_big_steady),
+    ("boats-big-busy", sc_boats_big_busy),
+    ("boats-big-countdown", bt_in_big(sc_boats_countdown)),
+    ("boats-big-manual", bt_in_big(sc_boats_manual)),
+    ("boats-big-ride", bt_in_big(sc_boats_ride)),
+    ("boats-big-ride-all", bt_in_big(sc_boats_ride_all)),
+    ("boats-big-ride-end", bt_in_big(sc_boats_ride_end)),
+    ("boats-big-share", bt_in_big(sc_boats_share)),
+    ("boats-big-expiry", bt_in_big(sc_boats_expiry)),
+    ("boats-big-trust", bt_in_big(sc_boats_trust)),
     ("crafts-data", sc_crafts_data),
     ("crafts-recipe-items", sc_crafts_recipe_items),
     ("crafts-products", sc_crafts_products),
