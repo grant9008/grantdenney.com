@@ -5,20 +5,21 @@ local ADDON_NAME, ns = ...
 --   "Boat to Theramore: docked, leaves in 0:35"
 --   "Boat to Theramore: about 2 min"                 (it may be off by up to 30 s)
 --   "Boat to Theramore: unknown, every 5:29 - /gl boat now when it docks"
--- Big, the route is small before the countdown, which is about three times the small line's
--- size; an unknown boat is a size smaller, with the hint under it. A dock that several boats
+-- Big, the words are small and only the number (1:42, 0:35, 2 min) is about three times the
+-- small line's size; an unknown boat is a size smaller, with the hint under it. It takes no
+-- clicks (in a fight or on a flight the small line shows instead). A dock that several boats
 -- use (Menethil, Auberdine, the zeppelin towers) gets one line per boat, nearest pier first (3
 -- at most), the others smaller; when they would run into something they become one line.
--- Zeppelins and skyships say Zeppelin and Skyship. A small X at the top right hides them until
--- you leave that dock (250 yd from its piers; a /reload there keeps them hidden, the next visit
--- shows them again) and says in one chat line that /gl boats on brings them back.
+-- Zeppelins and skyships say Zeppelin and Skyship. A small X after the first line hides them
+-- until you leave that dock (250 yd from its piers; a /reload there keeps them hidden, the next
+-- visit shows them again) and says in one chat line that /gl boats on brings them back.
 --
 -- Each boat runs a fixed loop (the table below, from the game's own data). Where in its loop
 -- a boat is right now is in no game data, so the addon learns it, best first:
 --   - while you ride: the moment the docked boat starts moving with you on it, the moment it
 --     stops at the next dock, a loading screen on the way, or where you are on its track;
 --   - the skyship dockmasters' "has just arrived" lines (Dalaran, Zephras Isle);
---   - /gl boat now (or a click on the line) when the boat docks;
+--   - /gl boat now (or a click on the small line) when the boat docks;
 --   - guild and group members with this addon (addon messages, prefix GLBoat).
 -- What it learns is kept with the server time in the saved settings, per realm. The timer's
 -- possible error grows with every round trip (and by 10 s after a weekly reset until sharp
@@ -39,7 +40,7 @@ local floor, abs, sqrt, min, max = math.floor, math.abs, math.sqrt, math.min, ma
 local smatch, sformat, slower, sgmatch, sfind = string.match, string.format, string.lower, string.gmatch, string.find
 local tconcat, tsort = table.concat, table.sort
 
-local B = { lastError = nil, stats = { samples = 0, sent = 0, got = 0, dropped = 0, renders = 0, steps = 0, rideEnds = 0 } }
+local B = { lastError = nil, stats = { samples = 0, sent = 0, got = 0, dropped = 0, renders = 0, steps = 0, rideEnds = 0, bigLooks = 0 } }
 ns.Boats = B
 
 -- BEGIN DATA
@@ -997,7 +998,7 @@ end
 -- UI.style: "big" or "small", what shows now; UI.big: the big timer's frames (BG below).
 local UI = { holder = nil, btn = {}, fs = {}, x = nil, list = nil, mode = nil, shown = false, confirm = nil, style = nil }
 B.ui = UI
-local BG = { holder = nil, btn = {}, fs = {}, value = nil, hint = nil, x = nil, fonts = {}, mode = nil, rect = nil, joined = nil }
+local BG = { holder = nil, btn = {}, fs = {}, value = nil, hint = nil, x = nil, fonts = {}, digit = {}, mode = nil, rect = nil, joined = nil }
 UI.big = BG
 local hideHere
 
@@ -1009,24 +1010,26 @@ end
 
 -- "Boat to Theramore", "1:42" / "docked, leaves in 0:35" / "about 2 min" / "about now" /
 -- "unknown, every 5:29" (no timer, one too old to trust, or one from before a weekly reset that
--- moved the boats: how often it comes, its round trip), its state, and the value as one boat of
--- a joined line says it ("? (every 5:29)" when unknown).
+-- moved the boats: how often it comes, its round trip), its state, the value as one boat of a
+-- joined line says it ("unknown (every 5:29)"), and the value in two: the words before the
+-- number, the number ("docked, leaves in", "0:35"; nil, "1:42"; "about", "2 min"; "about", "now").
 local function lineParts(st, now)
   local head = st.rt.kind .. " to " .. st.to
   local kind, sec, sg = stopState(st.rt, st.i, now)
   if not kind or sg > ABOUT_S then
     local every = "every " .. clockText(floor(period(st.rt) + 0.5))
-    return head, "unknown, " .. every, "unknown", "? (" .. every .. ")"
+    return head, "unknown, " .. every, "unknown", "unknown (" .. every .. ")"
   end
-  local v, state
+  local lead, num, state
   if sg <= EXACT_S then
-    if kind == "docked" then v, state = "docked, leaves in " .. clockText(sec), "docked" else v, state = clockText(sec), "exact" end
+    if kind == "docked" then lead, num, state = "docked, leaves in", clockText(sec), "docked" else num, state = clockText(sec), "exact" end
   elseif kind == "docked" or sec <= sg then
-    v, state = "about now", "about"
+    lead, num, state = "about", "now", "about"
   else
-    v, state = "about " .. max(1, floor(sec / 60 + 0.5)) .. " min", "about"
+    lead, num, state = "about", max(1, floor(sec / 60 + 0.5)) .. " min", "about"
   end
-  return head, v, state, v
+  local v = lead and (lead .. " " .. num) or num
+  return head, v, state, v, lead, num
 end
 B.LineParts = lineParts
 
@@ -1110,13 +1113,11 @@ local function overlapsAny(rect)
 end
 B.OverlapsAny = overlapsAny
 
--- The boat a line is for: the small lines' own (one joined line: the nearest pier's); the big
--- timer's line i is boat i (its joined line of the other boats: the nearer of them).
+-- The boat a small line is for (one joined line: the nearest pier's). The big timer takes no
+-- clicks: in the middle of the screen they are for the world (targeting, the camera).
 local function lineEntry(self)
   local list = UI.list
-  if not list then return nil end
-  if self.big then return list[self.idx] end
-  return list[UI.mode == "stacked" and self.idx or 1]
+  return list and list[UI.mode == "stacked" and self.idx or 1]
 end
 
 local function onClick(self)
@@ -1134,9 +1135,8 @@ end
 local function lineTip(self)
   local tt, e = _G.GameTooltip, lineEntry(self)
   if type(tt) == "table" and e then
-    local k = slower(e.st.rt.kind)
-    pcall(tt.SetOwner, tt, self, self.big and "ANCHOR_BOTTOM" or "ANCHOR_BOTTOMLEFT")
-    pcall(tt.SetText, tt, "Click when " .. (self.big and ("the " .. k .. " to " .. e.st.to) or ("this " .. k)) .. " docks to set its timer.")
+    pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
+    pcall(tt.SetText, tt, "Click when this " .. slower(e.st.rt.kind) .. " docks to set its timer.")
     pcall(tt.Show, tt)
   end
 end
@@ -1292,26 +1292,24 @@ local function buildBig()
   h:SetFrameStrata("LOW")
   h:SetSize(10, 10)
   h:Hide()
+  -- Its lines let clicks and camera drags through (only the X takes the mouse).
   for i = 1, MAX_LINES do
-    local b = _G.CreateFrame("Button", nil, h)
-    b.idx, b.big = i, true
+    local b = _G.CreateFrame("Frame", nil, h)
     b:SetSize(10, 10)
-    b:EnableMouse(true)
-    b:RegisterForClicks("LeftButtonUp")
-    b:SetScript("OnClick", onClick)
-    b:SetScript("OnEnter", lineTip)
-    b:SetScript("OnLeave", tipHide)
+    b:EnableMouse(false)
     local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
     fs:SetJustifyH("CENTER")
     if i > 1 then fs:SetPoint("CENTER", b, "CENTER", 0, 0) end
     BG.btn[i], BG.fs[i] = b, fs
   end
-  -- The first line: its route (fs[1]) before the countdown (value), or one medium line.
+  -- The first line: its route (fs[1]) before the countdown (value), or one medium line; the X
+  -- just after its right end.
   BG.value = BG.btn[1]:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  BG.value:SetJustifyH("LEFT")
   BG.hint = h:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   local x = type(ns.CloseX) == "function" and ns.CloseX(h, function() hideHere() end, BIG.x) or nil
   if x then
-    x:SetPoint("TOPRIGHT", h, "TOPRIGHT", 0, 0)
+    x:SetPoint("TOPLEFT", BG.btn[1], "TOPRIGHT", BIG.xgap, 0)
     xTip(x)
   end
   BG.x = x
@@ -1319,10 +1317,33 @@ local function buildBig()
   return h
 end
 
--- Lays out the big timer: main = { head, value, state } (the nearest pier's boat), the hint
--- under it when that one is unknown, then others (one text per line, coloured). The lines are
--- centred in the holder, which is as wide again on both sides as the X and its gap (so the
--- words sit in the middle and the X at the top right). Returns its width and height.
+-- The countdown's width: as wide as its text with every digit the font's widest (a font's
+-- digits need not be one width), so the line does not shift as the seconds tick. Leaves fs
+-- showing text, in gold.
+local function numberW(fs, text)
+  local size = fs.glSize
+  local d = BG.digit[size]
+  if not d then
+    local bw = 0
+    for i = 0, 9 do
+      fs:SetText(tostring(i))
+      local w = tonumber(call(fs, "GetStringWidth"))
+      if finite(w) and not isSecret(w) and w > bw then d, bw = tostring(i), w end
+    end
+    BG.digit[size] = d   -- (none measured yet, a font still loading: tried again next time)
+  end
+  local tpl = (text:gsub("%d", d or "0"))
+  fs:SetText(tpl)
+  local w = textW(fs, tpl, size)
+  fs:SetText("|cffffd100" .. text .. "|r")
+  return max(w, textW(fs, text, size))
+end
+
+-- Lays out the big timer: main = { head, value, state, lead, num } (the nearest pier's boat),
+-- the hint under it when that one is unknown, then others (one text per line, coloured). Only
+-- the number is big: the words before it ("docked, leaves in", "about") go with the route. The
+-- lines are centred in the holder, which leaves room for the X after line 1 on both sides (so
+-- the words sit in the middle). Returns its width and height.
 local function bigApply(main, hint, others)
   local h, head, val, b1 = BG.holder, BG.fs[1], BG.value, BG.btn[1]
   local w1, h1
@@ -1337,14 +1358,15 @@ local function bigApply(main, hint, others)
   else
     setSize(head, BIG.head)
     setSize(val, BIG.value)
-    head:SetText(main.head)
-    val:SetText("|cffffd100" .. main.value .. "|r")
+    local words = main.lead and (main.head .. ": " .. main.lead) or main.head
+    head:SetText(words)
+    local hw = textW(head, words, BIG.head)
+    local nw = numberW(val, main.num)
     val:Show()
     head:SetPoint("BOTTOMLEFT", b1, "BOTTOMLEFT", 0, BIG.lift)   -- (on the countdown's baseline)
     val:ClearAllPoints()
-    val:SetPoint("BOTTOMRIGHT", b1, "BOTTOMRIGHT", 0, 0)
-    w1 = textW(head, main.head, BIG.head) + BIG.hgap + textW(val, main.value, BIG.value)
-    h1 = BIG.value
+    val:SetPoint("BOTTOMLEFT", b1, "BOTTOMLEFT", hw + BIG.hgap, 0)
+    w1, h1 = hw + BIG.hgap + nw, BIG.value
   end
   b1:SetSize(w1, h1)
   b1:ClearAllPoints()
@@ -1380,7 +1402,7 @@ local function bigApply(main, hint, others)
       b:Hide()
     end
   end
-  local hw = wide + (BG.x and 2 * (BIG.xgap + BIG.x) or 0)
+  local hw = max(wide, w1 + (BG.x and 2 * (BIG.xgap + BIG.x) or 0))
   h:SetSize(hw, y)
   return hw, y
 end
@@ -1388,22 +1410,35 @@ end
 -- What the big timer must never cover: the game's messages at the top centre, shown or not
 -- (they come and go: an error, a raid warning, the zone's name as you arrive; SubZoneTextFrame's
 -- own box holds nothing, its words hang under the zone name), the spot of the timer bars
--- (breath, fatigue: three at most) and of the flight bar on it, and widgets at the top centre
--- or over the subzone name while they show.
+-- (breath, fatigue: three at most) and of the flight bar on it, and while they show a toast (a
+-- level up) and widgets at the top centre or over the subzone name.
 local TOP_MSGS = { "UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame", "ZoneTextString",
                    "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString", "GoblinLedgerFlightBar" }
--- A widget container that shows something (empty, they are 10 x 10).
+-- (While they show: a toast is as tall as its words, the widgets as what they hold.)
+local TOP_WHILE = { "EventToastManagerFrame", "UIWidgetTopCenterContainerFrame", "UIWidgetSubZoneTextContainerFrame" }
+-- Above the timer bars the top corners hold more: the unit frames (shown or not: a target comes
+-- and goes) and, while they show, ElvUI's buffs (the game's are with what the small line avoids).
+local TOP_UNITS = { "PlayerFrame", "TargetFrame", "FocusFrame" }
+local TOP_SHOWN = { "ElvUIPlayerBuffs", "ElvUIPlayerDebuffs" }
+-- A widget container or the toasts' frame that shows something (empty, they are 10 x 10).
 local function widgetsIn(o)
   if not shown(o) then return false end
   local w, h = tonumber(call(o, "GetWidth")), tonumber(call(o, "GetHeight"))
   return finite(w) and finite(h) and not isSecret(w) and not isSecret(h) and w > 12 and h > 12
 end
-local function bigObstacles()
+local function bigObstacles(top)
+  B.stats.bigLooks = B.stats.bigLooks + 1
   local out = {}
   local function add(l, b, r, t)
     if l and r - l > 0.5 and t - b > 0.5 then out[#out + 1] = { l, b, r, t } end
   end
   for _, n in ipairs(TOP_MSGS) do add(rectOf(_G[n])) end
+  if top then
+    for _, n in ipairs(TOP_UNITS) do add(rectOf(_G[n])) end
+    for _, n in ipairs(TOP_SHOWN) do
+      if shown(_G[n]) then add(rectOf(_G[n])) end
+    end
+  end
   local mt = _G.MirrorTimerContainer
   local l, _, r, t = rectOf(mt)
   local s = call(mt, "GetEffectiveScale")
@@ -1416,7 +1451,7 @@ local function bigObstacles()
     local cx = (l + r) / 2
     add(cx - BIG.timerW / 2 * s, t - BIG.timerH * s, cx + BIG.timerW / 2 * s, t)
   end
-  for _, n in ipairs({ "UIWidgetTopCenterContainerFrame", "UIWidgetSubZoneTextContainerFrame" }) do
+  for _, n in ipairs(TOP_WHILE) do
     local o = _G[n]
     if widgetsIn(o) then add(rectOf(o)) end
   end
@@ -1448,25 +1483,28 @@ local function bigPlace(hw, hh, where)
 end
 
 -- On screen, above the character (the camera looks at its head at the screen centre) and
--- clear of everything bigObstacles lists.
-local function bigFits(rect)
+-- clear of everything bigObstacles lists; at the top also of what the small line avoids (the
+-- minimap, the quest tracker, the buffs).
+local function bigFits(rect, top)
   local sl, sb, sr, st = rectOf(_G.UIParent)
   if not sl then return true end
   if rect[1] < sl - 0.5 or rect[3] > sr + 0.5 or rect[2] < st - BIG.char * (st - sb) then return false end
-  for _, q in ipairs(bigObstacles()) do
+  if top and overlapsAny(rect) then return false end
+  for _, q in ipairs(bigObstacles(top)) do
     if rect[1] < q[3] - 0.5 and rect[3] > q[1] + 0.5 and rect[2] < q[4] - 0.5 and rect[4] > q[2] + 0.5 then return false end
   end
   return true
 end
 
 -- The big timer for the boats of list (r: their words, see render); false when it fits nowhere.
+-- The other boats' lines carry no hint (/gl boat now sets the nearest pier's boat: the big one).
 local function renderBig(list, r)
   buildBig()
-  local main = { head = r.heads[1], value = r.values[1], state = r.states[1] }
+  local main = { head = r.heads[1], value = r.values[1], state = r.states[1], lead = r.leads[1], num = r.nums[1] }
   local hint = main.state == "unknown"
   local others, colJoined = {}, {}
   for i = 2, #list do
-    others[#others + 1] = r.texts[i]
+    others[#others + 1] = r.heads[i] .. ": |cffffd100" .. r.values[i] .. "|r"
     colJoined[#colJoined + 1] = list[i].st.to .. " |cffffd100" .. r.shorts[i] .. "|r"
   end
   BG.joined = #list > 2 and tconcat(r.parts, "; ", 2, #list) or nil
@@ -1475,7 +1513,7 @@ local function renderBig(list, r)
     if not tr[2] or #others > 1 then
       local hw, hh = bigApply(main, hint, tr[2] and { tconcat(colJoined, "; ") } or others)
       local rect = bigPlace(hw, hh, tr[1])
-      if not rect or bigFits(rect) then
+      if not rect or bigFits(rect, tr[1] == "top") then
         BG.mode, BG.rect = tr[1] .. (tr[2] and " joined" or ""), rect
         BG.holder:Show()
         return true
@@ -1550,27 +1588,34 @@ hideHere = function()
 end
 B.HideHere = hideHere
 
--- The words for the boats of list (the first unknown one gets the hint), then the big timer,
--- or the small line(s) under the minimap (/gl boats small, or no room for the big one).
+-- In a fight or on a flight the middle of the screen is for that: the small line instead.
+local function busy()
+  return callG("UnitAffectingCombat", "player") == true or callG("UnitOnTaxi", "player") == true
+end
+
+-- The words for the boats of list (the first unknown one gets the hint; the big timer's only
+-- under its big line), then the big timer, or the small line(s) under the minimap (/gl boats
+-- small, a fight or a flight, or no room for the big one).
 local function render(list, now)
-  local r = { heads = {}, values = {}, states = {}, shorts = {}, texts = {}, parts = {} }
-  local plain, hinted = {}, false
+  local r = { heads = {}, values = {}, states = {}, shorts = {}, leads = {}, nums = {}, texts = {}, parts = {} }
+  local plain, plainBig, hinted = {}, {}, false
   for i, e in ipairs(list) do
-    local head, value, state, short = lineParts(e.st, now)
+    local head, value, state, short, lead, num = lineParts(e.st, now)
     local shownValue = value
     if state == "unknown" and not hinted then
       shownValue, hinted = value .. HINT, true
     end
-    r.heads[i], r.values[i], r.states[i], r.shorts[i] = head, value, state, short
+    r.heads[i], r.values[i], r.states[i], r.shorts[i], r.leads[i], r.nums[i] = head, value, state, short, lead, num
     plain[i] = head .. ": " .. shownValue
+    plainBig[i] = head .. ": " .. (i == 1 and shownValue or value)
     r.texts[i] = head .. ": |cffffd100" .. shownValue .. "|r"
     r.parts[i] = e.st.to .. " " .. short
   end
   local joinedPlain = #list > 1 and ("Boats: " .. tconcat(r.parts, "; ")) or plain[1]
   UI.list, UI.texts, UI.joined, UI.at = list, plain, joinedPlain, now
-  if bigStyle() and renderBig(list, r) then
+  if bigStyle() and not busy() and renderBig(list, r) then
     if UI.holder then UI.holder:Hide() end
-    UI.style = "big"
+    UI.style, UI.texts = "big", plainBig
   else
     if BG.holder then BG.holder:Hide() end
     buildUI()
@@ -1584,7 +1629,7 @@ end
 
 -- What the line(s) say now, without colour codes (for /gl boats status and the tests); the
 -- big timer's lines say it in the same words (its route and countdown as "route: countdown",
--- the hint after the unknown one).
+-- the hint after its big line when that one is unknown).
 function B.Lines()
   if not UI.shown then return {} end
   local out = {}
@@ -1854,8 +1899,8 @@ local function nearestText(now)
   local list = docksHere(st.x, st.y, st.inst, 0)
   local parts = {}
   for i, e in ipairs(list) do
-    local head, value = lineParts(e.st, now)
-    parts[i] = #list > 1 and (e.st.to .. " " .. value) or (head .. ": " .. value)
+    local head, value, _, short = lineParts(e.st, now)
+    parts[i] = #list > 1 and (e.st.to .. " " .. short) or (head .. ": " .. value)
   end
   return sformat("nearest dock: %s, %d yd. %s", st.place, floor(d + 0.5), tconcat(parts, "; "))
 end
