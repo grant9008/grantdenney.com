@@ -932,7 +932,7 @@ def test_tooltip(G, ns):
     eq(got[0], ("Goblin Ledger", "7h ago"), "stale header age (no /reload: the game read them already this old)")
     # (this test's clock started before the data's time, so the game read them already old: the installer)
     eq(got[-1], ("Prices are 7h old: run Install-Goblin-Ledger.bat again, then /reload",), "stale line: the installer")
-    eq([x[1] for x in got if x[0] == "AH value"], ["~47c, 7h old  " + up2], "stale: the AH value with ~ and its age")
+    eq([x[1] for x in got if x[0] == "AH value"], ["~47c  " + up2], "stale: the AH value with ~ (the age only in the header and the last line)")
     eq(got[1], ("Auction it", "3.2x vendor"), "stale: the verdict stays")
     M.now = UPDATED + 2 * 3600 + 100
 
@@ -2314,10 +2314,9 @@ def test_verdict_cases():
                          ROW("Sell now (live)", now), ROW("This stack (20), after AH cut", stk)], True,
            "TC21 live %d %s" % (live, own), count=20)
     ns.LiveCheapest = None
-    # TC22 prices 3 hours old or more: the verdict stays, at its size; the prices from the file marked "~"
-    # (the AH value with its age); the stale line last says what to do (the game read them already that
-    # old: the installer)
-    stale_silk = [(("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("~2s, 7h old", "0%"), ROW("Usual price", "~2s"),
+    # TC22 prices 3 hours old or more: the verdict stays, at its size; the prices from the file marked "~";
+    # the stale line last says how old and what to do (the game read them already that old: the installer)
+    stale_silk = [(("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("~2s", "0%"), ROW("Usual price", "~2s"),
                   ROW("Sell now", "~1s 99c")]
     L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
     tc(G2, G2.GameTooltip, 4306, [H("7h ago", old=True)] + stale_silk +

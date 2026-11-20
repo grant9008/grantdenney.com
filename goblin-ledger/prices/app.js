@@ -6791,10 +6791,11 @@ function renderRatingGauge(item, mountEl, opts = {}) {
          "100 Steal Buy" paired with the other side's "Wait for Peak" is an
          act-now Strong Buy, not "not yet". */
       const patient = /^Wait/.test((b >= s) ? vB : vS);
-      /* WoW: the same words as the addon's chart call. Its backtest (next
-         24 hours after each call, 18-19 Nov): after a high call prices fell
-         8-16%, after a low call they fell too (1-11%). So the low side makes
-         no buy claim and carries no buy colour, and there is no "Strong". */
+      /* WoW: the words of the addon's chart call, but this page's own
+         scoring (not the addon's, and not backtested), so no numbers are
+         quoted here. The addon's backtest found low prices kept falling, so
+         the low side makes no buy claim and carries no buy colour, and there
+         is no "Strong". */
       if (patient) {
         signed = dir * Math.min(mag, 0.55); strong = false;
         label = 'Hold'; hue = 'var(--text-muted)'; liveIdx = dir > 0 ? 3 : 1;
@@ -6839,9 +6840,9 @@ function renderRatingGauge(item, mountEl, opts = {}) {
      buy) therefore lands at 0%, signed=-1 at 100%. */
   const needleX = (1 - signed) / 2 * 100, aria = Math.round(signed * 100);
   const segCls = i => 'rg-seg ' + ['rg-ss', 'rg-s', 'rg-n', 'rg-b', 'rg-sb'][i] + (i === liveIdx ? ' is-live' : '');
-  const tip = ('Chart signal: where the price sits in the ' + tf + ' price range, with the same words as the ' +
-    'Goblin Ledger chart in game. High now: after a high, prices usually fell back. Low now: after a low, they ' +
-    'usually kept falling, so it is not a reason to buy. Tap for the full glossary.').replace(/"/g, '&quot;');
+  const tip = ('Chart signal: where the price sits in the ' + tf + ' price range, scored by this page its own ' +
+    'way (it can differ from the Goblin Ledger chart in game). High now: high prices tended to come down. Low now: ' +
+    'low prices often kept falling, so it is not a reason to buy. Tap for the full glossary.').replace(/"/g, '&quot;');
   mountEl.hidden = false;
   const collapsed = ratingCollapsed();
   mountEl.innerHTML =

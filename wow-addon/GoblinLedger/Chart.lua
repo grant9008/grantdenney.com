@@ -383,7 +383,7 @@ local function ChartLine()
 end
 
 local BOX_HELP = {
-  buy = { "Target Buy", "A good price to buy at: most of the cheapest prices in this timeframe were above it.",
+  buy = { "Target Buy", "Most of the cheapest prices in this timeframe were above it. Not a buy signal: low prices often kept falling.",
           "gold Target Buy line" },
   sell = { "Sell at", "The price to sell at, the same as the tooltip and the sell buttons: 1 copper under the cheapest listing (Sell now). When that is under 70% of the usual price (the middle of the last 24 hourly prices) someone is selling cheap, and this is the usual price instead. The timeframe does not change it.",
            "blue Sell at line" },
@@ -717,9 +717,12 @@ function Chart:Build()
   local meter = CreateFrame("Frame", nil, F)
   meter:SetSize(100, 8)
   meter:SetPoint("LEFT", self.verdict, "RIGHT", 8, 0)
-  local neg, mut, pos = Col("neg"), Col("muted"), Col("pos")
+  -- High in its range on the left, in the call's blue (prices usually fell
+  -- back after); grey from the middle to the low end: a low price is no buy
+  -- signal (it usually kept falling), so no green there.
+  local hi, mut = Col("sell"), Col("muted")
   local function mix(a, b, t) return { a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t, a[3] + (b[3] - a[3]) * t } end
-  local segColors = { neg, mix(neg, mut, 0.5), mut, mix(mut, pos, 0.5), pos }
+  local segColors = { hi, mix(hi, mut, 0.5), mut, mut, mut }
   meter.segs = {}
   for i = 1, 5 do
     local s = NewTex(meter, "ARTWORK", 0)
@@ -927,7 +930,27 @@ function Chart:Layout(W, H)
   self.msg:SetWidth(self.plotW - 40)
   -- A narrow panel (docked right of the AH) leaves out the change and the
   -- volume, so the header and the footer do not run into each other.
-  if self.narrow then self.change:Hide(); self.volume:Hide() else self.change:Show(); self.volume:Show() end
+  if self.narrow then self.change:Hide() else self.change:Show() end
+  self.layoutW = W
+  self:FitFooter()
+end
+
+-- The volume text only where the footer's first line has room for it after
+-- the call, the meter and the margin ("High now: usually falls back" is long),
+-- never on a narrow panel.
+function Chart:FitFooter()
+  local vol = self.volume
+  if not vol then return end
+  local show = not self.narrow
+  if show and type(vol.GetStringWidth) == "function" then
+    local function sw(fs)
+      local ok, w = pcall(fs.GetStringWidth, fs)
+      return ok and Num(w) or 0
+    end
+    local W = Num(self.layoutW) or Num(self.frame and self.frame:GetWidth()) or DEFAULT_W
+    show = PAD + sw(self.verdict) + 8 + 100 + 12 + sw(self.margin) + 14 + sw(vol) + PAD <= W
+  end
+  if show then vol:Show() else vol:Hide() end
 end
 
 function Chart:UpdateTFButtons(tf)
@@ -1075,6 +1098,7 @@ function Chart:SetFooter(item, rec, extraNote)
   else
     self.volume:SetText("")
   end
+  self:FitFooter()
   if item and type(ns.ItemNotes) == "function" then
     local ok, extra = pcall(ns.ItemNotes, item.id or self.itemID)
     if ok and type(extra) == "table" then

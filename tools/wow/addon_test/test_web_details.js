@@ -736,6 +736,24 @@ function expectedFlipIds() {
       "' Analyst Rating details'", "label = 'Strong Buy'", "label = 'Buy the Dip'"];
     const left = claims.filter(c => APP_SRC.includes(c));
     check(left.length === 0, 'no buy or sell orders left in the page text (' + left.join(' | ') + ')');
+    /* the gauge is this page's own scoring: it quotes none of the addon's backtest numbers and says
+       it can differ from the chart in game; its low half carries no buy colour; Target Sell is a
+       patient price, not "the price to list at" */
+    const page = fs.readFileSync(path.join(WOW, 'index.html'), 'utf8');
+    const gcss = fs.readFileSync(path.join(WOW, 'app.css'), 'utf8');
+    const el = env.doc.createElement('div');
+    env.ctx.renderRatingGauge(linen, el, { gBuy: g(60, 'OK Buy', 'buy'), gSell: g(55, 'OK Sell', 'sell'), timeframe: '1D' });
+    const gh = deepHtml(el);
+    const nums = ['8-16%', '1-11%', '11-16%', '1-7%'].filter(n => page.includes(n) || gh.includes(n) || APP_SRC.includes(n));
+    check(nums.length === 0, 'the page quotes no backtest numbers for its own gauge (' + nums.join(' | ') + ')');
+    check(/scored by this page its own way \(it can differ from the Goblin Ledger chart in game\)/.test(gh),
+      "the gauge tip says it is the page's own scoring");
+    check(/This page scores it its own way, so it can differ from the Goblin Ledger chart in game/.test(page),
+      "the glossary says the gauge is the page's own scoring");
+    check(!/the price to list at/.test(page) && /Target Sell<\/span><span>On the 1D timeframe: a patient price/.test(page),
+      'the glossary calls Target Sell a patient price');
+    check(!/\.rg-(?:b|sb)\s*\{[^}]*--buy-rgb/.test(gcss) && /\.rg-end-buy \{ color:var\(--text-muted\); \}/.test(gcss),
+      "app.css: the gauge's low half and its Low label are grey, not buy-gold");
   }
 
   /* house rules: plain ASCII in what the new code writes and in the code itself, no long dashes */

@@ -317,6 +317,7 @@ SLOW_HOURS = 4      # none sold in this many measured hours or more: a slow sell
 EDGE_PCT = 5        # "Auction it": the expected result beats vendoring by 5% of B ...
 TRIP_MIN = 100      # ... and the stack gains at least 1 silver if it sells
 SELL_P = {2: (70, 26, 13), 8: (86, 49, 26), 24: (92, 73, 39)}   # sold within the listing time, by speed band
+DUMP_P = {2: (10, 7, 3), 8: (23, 15, 6), 24: (36, 49, 18)}      # the same at the usual price while someone dumps
 DEPOSIT_PM = (50, 200, 600)     # deposit per mille of the vendor price, by listing time 1..3
 DEPOSIT_HOURS = (2, 8, 24)
 DEPOSIT_MIN = 100               # the least per listing (copper)
@@ -377,9 +378,10 @@ def speed_band(sold24, sales_hours=None):
     return 3 if sales_hours_of(sales_hours) >= SLOW_HOURS else 2
 
 
-def sell_chances(hours):
-    best = min(SELL_P, key=lambda h: (abs(h - hours), h))
-    return SELL_P[best]
+def sell_chances(hours, dump=False):
+    T = DUMP_P if dump else SELL_P
+    best = min(T, key=lambda h: (abs(h - hours), h))
+    return T[best]
 
 
 def sell_verdict(item, sp, rec, sales_hours=None, count=None, deposit=None):
@@ -407,7 +409,7 @@ def sell_verdict(item, sp, rec, sales_hours=None, count=None, deposit=None):
         return {"kind": "vendor", "unit": u, "left": "Vendor it",
                 "right": better_text(b, a, "AH") if b > a else "same as AH", "lc": "neg", "rc": "neg"}
     hours, pm, least = deposit_model(deposit)
-    p = sell_chances(hours)[speed_band(item["sold24"], sales_hours) - 1]
+    p = sell_chances(hours, sp.get("under") is not None)[speed_band(item["sold24"], sales_hours) - 1]
     dep = pm * v // 10
     if q is not None:
         dep = max(dep, (least * 100 + q - 1) // q)

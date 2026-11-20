@@ -3690,12 +3690,13 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
 .rg-seg { flex:1; transition:filter .2s ease, opacity .2s ease; }
 .rg-ss { background:rgba(var(--sell-rgb),.34); } .rg-s { background:rgba(var(--sell-rgb),.17); }
 .rg-n  { background:rgba(120,123,134,.16); }
-.rg-b  { background:rgba(var(--buy-rgb),.17); } .rg-sb { background:rgba(var(--buy-rgb),.34); }
+/* WoW: the low half is grey, not buy-gold: after a low reading prices usually kept falling. */
+.rg-b  { background:rgba(120,123,134,.16); } .rg-sb { background:rgba(120,123,134,.16); }
 .rg-seg.is-live { filter:brightness(1.9) saturate(1.3); box-shadow:inset 0 0 0 1px rgba(255,255,255,.28); }
 /* Dim the inactive segments so the gauge reads as a SCALE with one live
    position (needle + lit segment), not a progress bar filling toward the
-   other side. The colored halves stay: gold = buy half, teal = sell half,
-   mirroring the Target Buy / Target Sell boxes. */
+   other side. Only the high (sell) half is coloured, teal like the Target
+   Sell box; the low half stays grey (no buy signal). */
 .rg-meter:not(.is-muted) .rg-seg:not(.is-live) { opacity: 0.55; }
 .rg-meter.is-muted .rg-seg { opacity:.4; filter:grayscale(.5); }
 .rg-needle { position:absolute; top:-2px; width:3px; height:13px; border-radius:2px; background:var(--rg-hue,var(--text-muted));
@@ -3704,7 +3705,7 @@ body.app-only .about-section, body.app-only .site-footer { display: none; }
   border-left:4px solid transparent; border-right:4px solid transparent; border-top:5px solid var(--rg-hue,var(--text-muted)); }
 .rg-meter.is-muted .rg-needle { opacity:.55; box-shadow:none; }
 .rg-scale { display:flex; align-items:baseline; justify-content:space-between; gap:8px; margin-top:4px; font-size:9px; font-weight:700; letter-spacing:.3px; }
-.rg-end { text-transform:uppercase; opacity:.75; } .rg-end-sell { color:var(--sell-color); } .rg-end-buy { color:var(--buy-color); }
+.rg-end { text-transform:uppercase; opacity:.75; } .rg-end-sell { color:var(--sell-color); } .rg-end-buy { color:var(--text-muted); }
 .rg-sub { flex:1; text-align:center; font-size:9.5px; font-weight:600; color:var(--text-muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 /* Score breakdown — expanded only. Deliberately plain: rows of
    name / plain-English reason / points, so it reads as the arithmetic

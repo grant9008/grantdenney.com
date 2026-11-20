@@ -1518,12 +1518,11 @@ local function countOf(id)
   return ok and plainNumber(n) or 0
 end
 
--- Prices older than Core's limit (3 hours, ns.STALE_SECONDS) are grey, as on the enchant tips.
+-- Stale prices (Core's one rule, ns.AgeState: 3 hours old or more) are grey, as on the enchant tips.
 local function stalePrices()
-  local f, most = ns.DataAge, ns.STALE_SECONDS
-  if type(f) ~= "function" or type(most) ~= "number" then return false end
-  local ok, age = pcall(f)
-  return ok and type(age) == "number" and age > most or false
+  if type(ns.AgeState) ~= "function" then return false end
+  local ok, st = pcall(ns.AgeState)
+  return ok and st == "stale"
 end
 
 local function ahOpen()

@@ -317,9 +317,9 @@ local function gameName(id)
 end
 ns.GameItemName = gameName
 
--- Prices this old are stale (ns.AgeState): by 3 hours, a Sell now from the
--- file was off by 10% or more 18-35% of the time (backtest), while the
--- Auction it / Vendor it call stayed the same 87-93% of the time.
+-- Prices this old are stale (ns.AgeState): by 3 hours, the price to sell at
+-- from the file was off by 10% or more 17-32% of the time (backtest), while
+-- the Auction it / Vendor it call stayed the same 92-96% of the time.
 ns.STALE_SECONDS = 3 * 3600
 ns.AH_CUT = 0.95
 ns.stats = { items = 0, series = 0 }   -- how many items/series were unpacked (for tests)
@@ -1475,7 +1475,7 @@ end
 -- rounded toward 0 so it never says more than it is). Neither good nor bad
 -- news by itself (dear to buy, good to sell), so no green or red: grey, and
 -- from 40% either way yellow with a word: "+88% vs usual: spike" (backtest:
--- the next day it fell back a median 32-42%) or "-45% vs usual: dropped"
+-- the next day it fell back 22-41%, 32-41% for items selling 5+ a day) or "-45% vs usual: dropped"
 -- (stacks mostly stayed down; gear came back part way). A grey "0% vs usual"
 -- under 1%.
 -- nil with no usual price to compare with.
@@ -1501,14 +1501,15 @@ ns.VsUsual = vsUsual
 --   price to sell at (ns.SellPrices): "Usual price" and "Sell now", or, when
 --   Sell now is under 70% of the usual price, a yellow "Sell now (38% under
 --   usual)" and "Sell at" the usual price (nothing listed: "Sell at" alone);
---   a sell price is red when it nets no more than a vendor pays. Then for a
+--   a sell price is red when it nets no more than a vendor pays (Sell now
+--   too when it is yellow, then only its price). Then for a
 --   stack what it brings at the verdict's price after the AH cut (only under
 --   Auction it or Close call). "Auction it" and the AH value are bigger, and
 --   "Vendor it" gets a "Vendor pays" line right under it (what a vendor pays
 --   each, or for the stack with Shift), both bigger (enlargeLine). Prices 3
 --   hours old or more (ns.AgeState "stale") keep the verdict as it is, but
---   each price from the file is marked "~" (the AH value also with its age,
---   "~23s 45c, 3h old") and a last line says what to do (ns.StaleText).
+--   each price from the file is marked "~" and a last line says how old they
+--   are and what to do (ns.StaleText).
 --   Compact mode is one line: the verdict and the AH value, or the AH value
 --   alone (and, over 80 minutes old, a grey "(2h old - /reload)").
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
@@ -1561,11 +1562,10 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   local shown = livep or item.market
   local usual = type(ns.UsualPrice) == "function" and ns.UsualPrice(item.id) or nil
   local vs = vsUsual(shown, usual)
-  -- The AH value's money: "~23s 45c, 3h old" from a stale file.
+  -- The AH value's money: "~23s 45c" from a stale file (the header and the
+  -- last line say how old).
   local function ahMoney()
-    local m = money(shown, not livep)
-    if m and stale and not livep then m = m .. ", " .. floor(age / 3600) .. "h old" end
-    return m
+    return money(shown, not livep)
   end
   -- "AH value", "AH value (x20)", "AH value (live)", "AH value (live, x20)"
   local function ahLabel(base)
@@ -1643,8 +1643,9 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
       local label = (P.live and "Sell now (live)" or "Sell now")
       local c = P.nowVendor and ng or wh
       if under then
-        label = label .. " (" .. under .. "% under usual)"
-        c = wa
+        -- "Sell now (38% under usual)", "Sell now (live, 38% under usual)"; still red when a vendor pays more.
+        label = (P.live and "Sell now (live, " or "Sell now (") .. under .. "% under usual)"
+        if not P.nowVendor then c = wa end
       end
       tt:AddDoubleLine(label .. tag, money(P.now, not P.live), under and wa[1] or tx[1], under and wa[2] or tx[2],
         under and wa[3] or tx[3], c[1], c[2], c[3])
@@ -1869,6 +1870,11 @@ local function printStatus()
   end
   if ns.AgeState(age) == "stale" then
     P(ns.StaleText(age) .. ". Until then flip ideas are off and prices show with a ~.")
+    -- Older install notes said the unzipped folder could go: say where to get it again.
+    local la = ns.LoadedAge()
+    if not la or la >= ns.STALE_SECONDS then
+      P("Deleted that folder? Download Goblin Ledger again from grantdenney.com/goblin-ledger and run its Install-Goblin-Ledger.bat.")
+    end
   end
   local faction = playerFaction()
   if faction and faction ~= "Alliance" then

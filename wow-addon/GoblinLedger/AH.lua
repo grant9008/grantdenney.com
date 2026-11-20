@@ -385,10 +385,20 @@ end
 ---------------------------------------------------------------------------
 -- Prices for the sell buttons
 ---------------------------------------------------------------------------
+-- True when a vendor pays at least as much as price p nets after the 5% cut.
+-- Judged at the price a button fills: gear rounded down to whole silver can
+-- fall under what a vendor pays while the tooltip's price did not.
+local function VendorPaysMore(id, p)
+  local it = p and type(ns.GetItem) == "function" and ns.GetItem(id) or nil
+  local v = it and Num(it.vendor) or 0
+  return v > 0 and floor(p * 0.95) <= v
+end
+
 -- Returns the Sell now and Sell at prices to fill (already rounded for the
 -- frame, nil when that button hides; Sell at only when it differs from Sell
--- now) and what they are based on, or nil, nil and a reason ("market",
--- "suffix", "stale", "unreliable", "none").
+-- now) and what they are based on (nowVendor / atVendor: a vendor pays at
+-- least as much as that filled price nets), or nil, nil and a reason
+-- ("market", "suffix", "stale", "unreliable", "none").
 -- ver is VersionInfo for the item (nil: a plain item).
 local function SellAdvice(id, isCommodity, ver)
   if not id or type(ns.SellPrices) ~= "function" then return nil, nil, "none" end
@@ -404,7 +414,8 @@ local function SellAdvice(id, isCommodity, ver)
     if not p or p <= 1 then return nil, nil, "suffix" end
     local now = PriceForFrame(r.own and p or (p - 1), isCommodity)
     if not now then return nil, nil, "suffix" end
-    return now, nil, { live = p, matched = r.own == true, age = age, mode = "unknown", ver = ver }
+    return now, nil, { live = p, matched = r.own == true, age = age, mode = "unknown", ver = ver,
+                       nowVendor = VendorPaysMore(id, now) }
   end
   local pid = ver.vid or id
   local lp, own = ns.LiveCheapest(pid)
@@ -430,7 +441,8 @@ local function SellAdvice(id, isCommodity, ver)
     return nil, nil, (P.nowWhy == "unreliable" and "unreliable") or "none"
   end
   return now, at, { live = lp, matched = P.own == true, age = age, P = P, rec = P.rec, mode = ver.mode, ver = ver,
-                    noLive = noLive, under = (not noLive) and P.under or nil, usual = P.usual }
+                    noLive = noLive, under = (not noLive) and P.under or nil, usual = P.usual,
+                    nowVendor = VendorPaysMore(pid, now), atVendor = VendorPaysMore(pid, at) }
 end
 AH.SellAdvice = SellAdvice
 
@@ -463,7 +475,6 @@ local function NowText(info, postWord)
   local lines = { "Fills the price box with 1 copper under the cheapest listing, so yours is the cheapest." }
   lines[#lines + 1] = BasisText(info)
   lines[#lines + 1] = VersionText(info)
-  local P = info and info.P
   local rec = info and info.rec
   if type(rec) == "table" and rec.far then
     lines[#lines + 1] = "The cheapest listing is far above recent prices, so it may not sell soon."
@@ -477,7 +488,7 @@ local function NowText(info, postWord)
   if type(rec) == "table" and (rec.thinListings or rec.vendorFar) then
     lines[#lines + 1] = "Only a few are listed, so this price may not be reliable."
   end
-  if type(P) == "table" and P.nowVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
+  if info and info.nowVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
@@ -493,8 +504,7 @@ local function BestText(info, postWord)
     lines[#lines + 1] = "Nothing is listed right now to undercut."
   end
   lines[#lines + 1] = VersionText(info)
-  local P = info and info.P
-  if type(P) == "table" and P.atVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
+  if info and info.atVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
@@ -582,13 +592,23 @@ local function PlaceUnder(pair, anchor, both, dy)
   end
 end
 
+-- "|cff...text|r" in ns.COLORS[key], or text as it is.
+local function Paint(text, key)
+  local C = ns.COLORS
+  if type(ns.Hex) ~= "function" or type(C) ~= "table" or not C[key] then return text end
+  return "|c" .. ns.Hex(C[key]) .. text .. "|r"
+end
+
 local function SetPairPrices(pair, now, best, info, postWord)
   pair.now.price, pair.best.price = now, best
   if now then
-    -- Yellow when it is far under the usual price (the Sell at button shows that one).
+    -- Red when a vendor pays at least as much as it nets (as in the tooltip),
+    -- else yellow when it is far under the usual price (the Sell at button shows that one).
     local txt = "Sell now: " .. MoneyI(now)
-    if best and info and info.under and type(ns.Hex) == "function" and type(ns.COLORS) == "table" and ns.COLORS.warn then
-      txt = "|c" .. ns.Hex(ns.COLORS.warn) .. txt .. "|r"
+    if info and info.nowVendor then
+      txt = Paint(txt, "neg")
+    elseif best and info and info.under then
+      txt = Paint(txt, "warn")
     end
     pair.now:SetText(txt)
     pair.now.tipBody = NowText(info, postWord)
@@ -597,7 +617,8 @@ local function SetPairPrices(pair, now, best, info, postWord)
     pair.now:Hide()
   end
   if best then
-    pair.best:SetText("Sell at: " .. MoneyI(best))
+    local txt = "Sell at: " .. MoneyI(best)
+    pair.best:SetText((info and info.atVendor) and Paint(txt, "neg") or txt)
     pair.best.tipBody = BestText(info, postWord)
     pair.best:Show()
   else

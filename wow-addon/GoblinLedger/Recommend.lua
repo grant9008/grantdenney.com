@@ -68,8 +68,8 @@ end
 ns.Percentile = percentile
 
 -- The chart's call. Backtest of the next 24 hours' middle market price after
--- each call (19 Nov data): after a high call it fell 8 to 16%; after a low
--- call it fell too (1 to 11%), so a low price is no reason to buy. Hold
+-- each call (19 Nov data): after a high call it fell 11 to 16%; after a low
+-- call it fell too (1 to 7%), so a low price is no reason to buy. Hold
 -- stayed about flat.
 local CALL_LOW, CALL_HIGH = "Low now: still falling", "High now: usually falls back"
 ns.CALL_LOW, ns.CALL_HIGH = CALL_LOW, CALL_HIGH
@@ -472,6 +472,12 @@ local TRIP_MIN = 100     -- ... and the stack gains at least 1 silver if it sell
 -- many sell a day (10 or more, 1 to 9, under 1), near each one's break-even
 -- (backtest of 18-19 Nov, percent). Keyed by the listing hours.
 local SELL_P = { [2] = { 70, 26, 13 }, [8] = { 86, 49, 26 }, [24] = { 92, 73, 39 } }
+-- Someone dumping (Sell now under 70% of the usual price): the call judges
+-- the usual price, and while the cheap ones were up a listing there sold far
+-- less often. Measured the same way on just those item-hours: with these, no
+-- price group of them called Auction it lost money on average (with the
+-- chances above 4 to 9 groups did, the worst 15% under vendoring).
+local DUMP_P = { [2] = { 10, 7, 3 }, [8] = { 23, 15, 6 }, [24] = { 36, 49, 18 } }
 
 -- The deposit: per mille of the vendor price for each unit, by listing
 -- time (Forever's sell tab: 2, 8 or 24 hours), and the least it takes per
@@ -507,7 +513,9 @@ end
 -- picked (1 to 3); hours[d]: the hours the game names for d (optional).
 -- The rate comes only from a deposit of 2 silver or more (a per-listing
 -- minimum cannot hide it there); a deposit for 1 above that rate is the
--- minimum, one at the rate says the minimum is no higher.
+-- minimum, one at the rate only says the minimum is no higher (it can lower
+-- the 1 silver assumed, never raise it: a 5g gear piece's 25s deposit at 2
+-- hours is its rate, not a minimum).
 function ns.NoteDeposit(vendor, n, deps, dur, hours)
   local S = ns.settings
   if type(S) ~= "table" then return end
@@ -525,7 +533,7 @@ function ns.NoteDeposit(vendor, n, deps, dur, hours)
       local atRate = pm * vendor / 1000
       if one > atRate + 1 then
         D.min = one
-      elseif not D.min or one < D.min then
+      elseif one < (D.min or DEPOSIT_MIN) then
         D.min = floor(one)
       end
     end
@@ -577,14 +585,16 @@ local function speedBand(item)
   return hours >= SLOW_HOURS and 3 or 2
 end
 
--- The sell chances for a listing time: the nearest measured one.
-local function sellChances(hours)
+-- The sell chances for a listing time: the nearest measured one (dump: the
+-- usual price while someone is dumping).
+local function sellChances(hours, dump)
+  local T = dump and DUMP_P or SELL_P
   local best, bestD
-  for h, p in pairs(SELL_P) do
+  for h in pairs(T) do
     local d = math.abs(h - hours)
     if not bestD or d < bestD or (d == bestD and h < best) then best, bestD = h, d end
   end
-  return SELL_P[best]
+  return T[best]
 end
 
 -- ns.SellVerdict(item, P [, count]): the tooltip's call for a stack of count
@@ -601,7 +611,9 @@ end
 -- price: p x (A - B) - (1 - p) x deposit >= 5% of B, p from SELL_P for the
 -- item's sales speed, d the deposit over B. So A must be at least
 -- 1 + (d(1 - p) + 5%) / p times B: about 1.11 / 1.29 / 2.07 at 24 hours,
--- 1.09 / 1.31 / 1.76 at 8 hours and 1.09 / 1.33 / 1.72 at 2 hours.
+-- 1.09 / 1.31 / 1.76 at 8 hours and 1.09 / 1.33 / 1.72 at 2 hours. While
+-- someone is dumping (P.under) the usual price is judged with DUMP_P: about
+-- 2.21 / 1.73 / 4.01 at 24 hours, 1.89 / 2.47 / 4.97 at 8, 1.95 / 2.38 / 4.28 at 2.
 -- unit is the price judged (ns.SellVerdictPrice); "maybe" has none. Shift
 -- never changes it; a stack in the bags only through the deposit's
 -- per-listing minimum and the 1 silver trip (both left out without a count).
@@ -625,7 +637,7 @@ function ns.SellVerdict(item, P, count)
              lc = "neg", rc = "neg" }
   end
   local hours, pm, least = ns.DepositModel()
-  local p = sellChances(hours)[speedBand(item)]
+  local p = sellChances(hours, P.under ~= nil)[speedBand(item)]
   -- The deposit for one of them, in 1/100 copper: the rate, or the
   -- per-listing minimum shared by the stack.
   local dep = floor(pm * V / 10)
