@@ -16,7 +16,8 @@ local ADDON_NAME, ns = ...
 --   - the auction house sidebar: one flip idea from your own recipes;
 --   - an empty auction house search for a recipe item, or for something you
 --     can make: what it makes and its mats with their cost, under the AH
---     code's own lines (ns.EmptySearchLines; they say whether it is listed).
+--     code's own lines (ns.EmptySearchLines; they say whether it is listed);
+--     for a bind-on-pickup item you cannot make, the plans that make it.
 -- Prices: the mats at the cheapest listing (the live one while the auction
 -- house shows it, not your own, or a vendor's when that is cheaper), the item
 -- at 1c under its cheapest listing (yours: matched) but never above its AH
@@ -6836,23 +6837,38 @@ local function shiftDown()
   return ok and not isSecret(r) and r and true or false   -- older clients answer 1
 end
 
+-- With 4 or more mats, the 2 dearest to name: { [i] = true }, else nil (all). Unpriced ones first
+-- (they say "(no price)"), or with pricedFirst last.
+local function dearest(list, pricedFirst)
+  if #list <= MATS_SHOWN + 1 then return nil end
+  local order = {}
+  for i = 1, #list do order[i] = i end
+  tsort(order, function(a, b)
+    local ca, cb = list[a].cost.lo, list[b].cost.lo
+    if (ca == nil) ~= (cb == nil) then return (ca == nil) ~= (pricedFirst == true) end
+    if ca and ca ~= cb then return ca > cb end
+    return a < b
+  end)
+  local keep = {}
+  for i = 1, MATS_SHOWN do keep[order[i]] = true end
+  return keep
+end
+
+-- " (from 12 Heavy Stone)": a mat you make yourself, priced as its own mats.
+local function fromText(e)
+  local from = {}
+  for _, m in ipairs(e.sub.mats) do
+    from[#from + 1] = floor(e.n / e.sub.count * m.n + 0.5) .. " " .. nameOf(m.id)
+  end
+  return #from > 0 and (" (from " .. tconcat(from, " + ") .. ")") or ""
+end
+
 -- "4 Heavy Grinding Stone 59s (from 12 Heavy Stone), 4 Coal 20s (vendor), 2 Black Pearl (no price)".
 -- With the costs and 4 or more mats, only the 2 dearest (unpriced ones first) unless `all` or
 -- Shift: "12 Arcanite Bar 552g, 10 Blue Sapphire 53g, +3 others".
 local function matsText(q, withCost, all)
   local list, keep = q.mats, nil
-  if withCost and not all and #list > MATS_SHOWN + 1 and not shiftDown() then
-    local order = {}
-    for i = 1, #list do order[i] = i end
-    tsort(order, function(a, b)
-      local ca, cb = list[a].cost.lo, list[b].cost.lo
-      if (ca == nil) ~= (cb == nil) then return ca == nil end
-      if ca and ca ~= cb then return ca > cb end
-      return a < b
-    end)
-    keep = {}
-    for i = 1, MATS_SHOWN do keep[order[i]] = true end
-  end
+  if withCost and not all and #list > MATS_SHOWN + 1 and not shiftDown() then keep = dearest(list) end
   local parts = {}
   for i, e in ipairs(list) do
     if not keep or keep[i] then
@@ -6860,11 +6876,7 @@ local function matsText(q, withCost, all)
       if withCost then
         if e.cost.lo then s = s .. " " .. moneyText(roundCopper(e.cost.lo)) else s = s .. " (no price)" end
         if e.sub then
-          local from = {}
-          for _, m in ipairs(e.sub.mats) do
-            from[#from + 1] = floor(e.n / e.sub.count * m.n + 0.5) .. " " .. nameOf(m.id)
-          end
-          if #from > 0 then s = s .. " (from " .. tconcat(from, " + ") .. ")" end
+          s = s .. fromText(e)
         elseif e.vendor then
           s = s .. " (vendor)"
         end
@@ -7634,11 +7646,27 @@ local function entryRecipe(e)
   return (productRecipe(e.id, nil))
 end
 
--- "Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"; no total while a mat has no
--- price (a part of the cost is not the cost, and never "0c").
+-- "Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s": with 4 or more, the 2 dearest
+-- priced ones and "+4 others"; a mat you make yourself "(from 1 Copper Ore)" (the total counts
+-- it so). Some mats unpriced: the priced ones and how many are left out, "= 777g + 1 with no
+-- price" (not "at least 40c" for a vial when the herbs have no price); none priced: no total
+-- (never "0c").
 local function searchMats(q)
-  local t = "Mats: " .. matsText(q, false)
-  if q.missing == 0 and q.cost.lo then t = t .. " = " .. moneyText(roundCopper(q.cost.lo)) end
+  local list, keep = q.mats, dearest(q.mats, true)
+  local total = q.missing == 0 and q.cost.lo or q.partial
+  total = total and roundCopper(total) or 0
+  local parts = {}
+  for i, e in ipairs(list) do
+    if not keep or keep[i] then
+      parts[#parts + 1] = e.n .. " " .. nameOf(e.id) .. (e.sub and fromText(e) or "")
+    end
+  end
+  if keep then parts[#parts + 1] = "+" .. (#list - MATS_SHOWN) .. " others" end
+  local t = "Mats: " .. tconcat(parts, ", ")
+  if total > 0 then
+    t = t .. " = " .. moneyText(total)
+    if q.missing > 0 then t = t .. " + " .. q.missing .. " with no price" end
+  end
   return t
 end
 
@@ -7709,13 +7737,19 @@ end
 -- The lines under the AH code's own for a search that found nothing (itemID: the priced item
 -- its lines are about, or nil when it found none), 2 entries at most, one per recipe:
 --   - that item, or else the one the game knows by the text, when it is a recipe item or
---     something you can make (aboutLine);
+--     something you can make (aboutLine), first when its name is the text;
 --   - a recipe item or a crafted item you can make that the text names exactly: by name
 --     (namedLine), or as above when the AH code's lines are about the text and none came first;
+--   - the AH code's item when its name is not the text (it found it by the words), only when
+--     the text names nothing with a line ("pattern: black slippers" is not its best match,
+--     Pattern: Black Whelp Slippers);
+--   - a bind-on-pickup item the text names that you cannot make (never on the AH): the recipe
+--     items that make it, by name ("officer's boots": Plans: Officer's Boots);
 --   - only when the AH code found no priced item, the game knows no item by the text and no
 --     name is the text: the recipe items and the items you can make with a word starting with
 --     each word of it, by name, and for a recipe search ("plans officer") "6 more match: type
 --     more of the name."
+-- Two items of one name that make items of one name (an older version of it): the first only.
 -- Nothing for an item that is not listed and is neither (Linen Cloth, Iron Ore), nor for
 -- other items that only share its words. Not at another market (its prices are not these).
 local SEARCH_SHOWN = 2
@@ -7729,22 +7763,41 @@ local function emptySearch(text, itemID)
   if subject and type(ns.BaseItemID) == "function" then subject = ns.BaseItemID(subject) or subject end
   local priced, known = subject ~= nil, subject ~= nil
   if not priced then known, subject = gameKnows(text) end
-  local out, used, count = {}, {}, 0
+  local out, used, seen, count = {}, {}, {}, 0
   local function add(e, about)
     local r = entryRecipe(e)
     if not r or used[r.id] then return end
-    used[r.id] = true
+    local same = e.key .. "|" .. norm(nameOf(r.product))
+    if seen[same] then return end
+    used[r.id], seen[same] = true, true
     count = count + 1
     if count <= SEARCH_SHOWN then out[#out + 1] = about and aboutLine(e, r, not known) or namedLine(e, r) end
   end
   local e = subject and nameByID[subject]
-  if e then add(e, true) end
   local exact = {}
   for _, x in ipairs(nameIndex) do
     if #x.key > #key then break end
     if x.key == key and x ~= e then exact[#exact + 1] = x end
   end
+  local named = e and e.key == key
+  if named then add(e, true) end
   for _, x in ipairs(exact) do add(x, not priced and count == 0) end
+  if e and not named and count == 0 then add(e, true) end
+  if count == 0 then
+    -- a bind-on-pickup item you cannot make: its recipe items
+    for i = named and 0 or 1, #exact do
+      local x = i == 0 and e or exact[i]
+      for _, sp in ipairs(x.kind == "product" and getIndex().byProduct[x.id] or {}) do
+        local r = getRecipe(sp)
+        if visible(r) and r.bop then
+          for _, it in ipairs(r.items) do
+            local y = nameByID[it]
+            if y and y.kind == "recipe" then add(y, false) end
+          end
+        end
+      end
+    end
+  end
   if known or #exact > 0 then return #out > 0 and out or nil end
   -- Every word of the text starts a word of the name ("plans officer": Plans: Officer's
   -- Boots), not only inside one (Copper Ore is not Copper Claymore).

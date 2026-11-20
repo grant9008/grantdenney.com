@@ -21557,7 +21557,7 @@ def ref_empty_lines(w, ref, text, extra=(), filtered=False, exact=False, ctx=Non
     else:
         gid, bind = es_game_item(w, text)
         out.append({1: "Bind on pickup: never on the AH.", 4: "Quest item: never on the AH."}.get(
-            bind, "Goblin Ledger has no prices for that name."))
+            bind, "No AH prices for that name."))
         chart = gid
         iid = None
     cr_model_world(w, ref)
@@ -21710,11 +21710,11 @@ def sc_empty_search(sc, ref, items):
              "bind on pickup: the chart says no recent listings (%s)" % C.msg._text)
     es_search(w, "Sealed Quillorders")
     sc.eq(es_shown(w), ["Quest item: never on the AH."], "quest item by name")
-    NOPRICE = "Goblin Ledger has no prices for that name."
+    NOPRICE = "No AH prices for that name."
     es_search(w, "plans officer")
-    # the user's search: no item has that name; the 8 Officer's plans have both words: 2 named, mats
-    # without a total while one has no price, and how many more
-    OFFICER = ["Plans: Officer's Belt (bind on pickup) - Mats: 6 Iron Bar, 2 Heavy Grinding Stone, 2 Jade",
+    # the user's search: no item has that name; the 8 Officer's plans have both words: 2 named, the
+    # priced mats and how many have no price, no total while none has one, and how many more
+    OFFICER = ["Plans: Officer's Belt (bind on pickup) - Mats: 6 Iron Bar, 2 Heavy Grinding Stone, 2 Jade = 30s + 2 with no price",
                "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade",
                "6 more match: type more of the name."]
     want, _ = es_lines_ok(sc, w, r2, "plans officer", "plans officer")
@@ -24102,11 +24102,40 @@ def cr_search_names():
     return T["searchNames"]
 
 
+def cr_dearest(mats, priced_first=False):
+    """With 4 or more mats the 2 to name: the dearest, unpriced first (priced_first: last). None: all of them."""
+    if len(mats) <= 3:
+        return None
+    order = sorted(range(len(mats)), key=lambda i: (("lo" in mats[i]["cost"]) != priced_first,
+                                                     -mats[i]["cost"].get("lo", 0), i))
+    return set(order[:2])
+
+
+def cr_from(w, e):
+    """" (from 12 Heavy Stone)": a mat you make yourself."""
+    return " (from %s)" % " + ".join("%d %s" % (math.floor(e["n"] / e["sub"]["count"] * fn + 0.5), cr_name(w, fid))
+                                     for fid, fn in e["sub"]["mats"])
+
+
 def cr_search_mats(w, q):
-    """"Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s", the total only when every mat has a price."""
-    t = "Mats: " + cr_mats(w, q, cost=False)
-    if q["missing"] == 0 and q["cost"]["lo"] is not None:
-        t += " = " + money_text(cr_round(q["cost"]["lo"]))
+    """"Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s": 4 or more, the 2 dearest priced ones and
+    "+N others"; a mat you make "(from 1 Copper Ore)"; no costs each; some unpriced: the priced ones and how
+    many are left out ("= 777g + 1 with no price"); none priced: no total (never 0c)."""
+    mats, keep = q["mats"], cr_dearest(q["mats"], priced_first=True)
+    total = q["cost"]["lo"] if q["missing"] == 0 else q["partial"]
+    total = cr_round(total) if total else 0
+    parts = []
+    for i, e in enumerate(mats):
+        if keep is not None and i not in keep:
+            continue
+        parts.append("%d %s" % (e["n"], cr_name(w, e["id"])) + (cr_from(w, e) if e["sub"] else ""))
+    if keep is not None:
+        parts.append("+%d others" % (len(mats) - 2))
+    t = "Mats: " + ", ".join(parts)
+    if total > 0:
+        t += " = " + money_text(total)
+        if q["missing"]:
+            t += " + %d with no price" % q["missing"]
     return t
 
 
@@ -24160,7 +24189,7 @@ def cr_search_lines(w, text, iid, ctx):
     if not priced:
         subject, _ = es_game_item(w, text)
         known = subject is not None
-    out, used, count = [], set(), [0]
+    out, used, seen, count = [], set(), set(), [0]
 
     def recipe_of(e):
         if e["kind"] == "recipe":
@@ -24171,17 +24200,38 @@ def cr_search_lines(w, text, iid, ctx):
         sp = recipe_of(e)
         if sp is None or sp in used:
             return
+        # two items of one name making items of one name (an older version): the first only
+        same = (e["key"], cr_norm(cr_name(w, cr_recipe(sp)["product"])))
+        if same in seen:
+            return
         used.add(sp)
+        seen.add(same)
         count[0] += 1
         if count[0] <= CR_SEARCH_SHOWN:
             out.append(cr_search_about(w, e, sp, ctx, not known) if about else cr_search_named(w, e, sp, ctx))
 
     e = T["searchByID"].get(subject) if subject is not None else None
-    if e:
-        add(e, True)
     exact = [x for x in names if x["key"] == key and x is not e]
+    named = e is not None and e["key"] == key
+    if named:
+        add(e, True)
     for x in exact:
         add(x, not priced and count[0] == 0)
+    # the AH code's item found by the words: only when the text names nothing with a line
+    if e is not None and not named and count[0] == 0:
+        add(e, True)
+    if count[0] == 0:
+        # a bind-on-pickup item the text names that you cannot make: the recipe items that make it
+        for x in ([e] if named else []) + exact:
+            if x["kind"] != "product":
+                continue
+            for sp in T["byProduct"].get(x["id"], []):
+                r = cr_recipe(sp)
+                if cr_visible(ctx, sp) and r["bop"]:
+                    for it in r["items"]:
+                        y = T["searchByID"].get(it)
+                        if y is not None and y["kind"] == "recipe":
+                            add(y, False)
     if known or exact:
         return out
     # every word of the text starts a word of the name (Copper Ore is not Copper Claymore)
@@ -24197,10 +24247,12 @@ def cr_search_lines(w, text, iid, ctx):
 def sc_crafts_search(sc, ref, items):
     """An empty AH search, under the AH code's own lines (which say whether it is listed or binds on
     pickup): what making it takes, only for a recipe item or something you can make that the search
-    names (the item those lines are about: no name, no "bind on pickup" again), or, when nothing has
-    that name, the recipe items (and items you can make) with a word starting with each word of it
-    (2 named, then how many more for a recipe search). Never a 0c total: with a mat unpriced the
-    total is left out."""
+    names (the item those lines are about: no name, no "bind on pickup" again; what the text names
+    before the AH code's best match by its words), a bind-on-pickup item's plans for someone who
+    cannot make it, or, when nothing has that name, the recipe items (and items you can make) with a
+    word starting with each word of it (2 named, then how many more for a recipe search). 4 or more
+    mats: the 2 dearest and "+N others". Never a 0c total: with some mats unpriced "at least" the
+    priced ones, with none no total."""
     w = cr_world(ref, items)
     ctx = CrCtx()
     L = w.ns.EmptySearchLines
@@ -24214,7 +24266,8 @@ def sc_crafts_search(sc, ref, items):
         return cr_search_lines(w, text, iid, c or ctx)
 
     def untotal(lines):
-        return [re.sub(r" = [^=]*$", "", l) for l in lines]
+        # with real prices the total, and which 2 of 4 or more mats are the dearest, are the data's
+        return [re.sub(r"Mats: .* \+\d+ others", "Mats: ... others", re.sub(r" = [^=]*$", "", l)) for l in lines]
 
     def same(text, iid, want, label, c=None, test_priced=True):
         """The addon's lines, the model's, and the exact words they must be. test_priced=False: some
@@ -24245,12 +24298,19 @@ def sc_crafts_search(sc, ref, items):
                     "6 more match: type more of the name."], "search: 'plans officer': the belt (shortest name), the boots, 6 more")
     # every word in the names but no recipe word: 2 named, no "more" line
     sc.eq(got("officer"), officer[:2], "search: 'officer': the same 2, no 'more match' line (not a recipe search)")
+    sc.eq(got("pla officer"), officer[:2], "search: 'pla officer': under 4 letters is no recipe word (no 'more match' line)")
+    sc.eq(got("plan officer"), officer, "search: 'plan officer': a recipe word (how many more)")
     # a recipe search with many matches: 2 named, then how many more
     # (with no priced item for the text: the AH code would name Plans: Mithril Spurs as its best match)
     same("plans mithril", None, ["Plans: Mithril Spurs - Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c",
-                                 "Plans: Mithril Claws (bind on pickup) - Mats: 8 Mithril Bar, 1 Jade, 1 Solid Grinding Stone, 2 Heavy Leather",
+                                 "Plans: Mithril Claws (bind on pickup) - Mats: 8 Mithril Bar, 1 Solid Grinding Stone, +2 others = 1g 7s + 1 with no price",
                                  "28 more match: type more of the name."], "'plans mithril': 2 named and how many more",
          test_priced=False)
+    # the claws' tooltip names the unpriced mat (the search line names the dearest priced ones)
+    tip = cr_tip_ok(sc, w, "byid", 251461, ctx, "search: the Plans: Mithril Claws tooltip")
+    if R.SIM:
+        sc.check(any((l or "").startswith("8 Mithril Bar ") and (l or "").endswith(", 2 Heavy Leather (no price), +2 others") for l, _ in tip),
+                 "search: the claws' tooltip: the dearest and the unpriced one (%s)" % tip)
     sc.eq(got("pattern"), model("pattern"), "search: 'pattern' alone: the model's lines")
     sc.check(got("pattern")[-1].endswith(" more match: type more of the name."), "search: 'pattern' alone: how many more")
     # a plan that is listed (the AH code's lines are about it): what it makes, nothing about listings
@@ -24258,7 +24318,7 @@ def sc_crafts_search(sc, ref, items):
     same("Plans: Mithril Spurs", 7989, [spurs], "a plan the AH code found (priced)")
     same("mithril spur", 7989, [spurs], "a plan the AH code found by part of its name")
     # an item you can make, not listed: nothing without the profession
-    same("mithril spurs", 7969, [], "Mithril Spurs, not a blacksmith")
+    same("mithril spurs", 7969, [], "Mithril Spurs, not a blacksmith (it does not bind: no plans line either)")
     same("mithril spurs", None, [], "Mithril Spurs not in the data, not a blacksmith")
     # a mat that is simply not listed: nothing (not Bolt of Linen Cloth, not every name with its words)
     same(N(R.LINEN), R.LINEN, [], "Linen Cloth, not listed")
@@ -24273,6 +24333,7 @@ def sc_crafts_search(sc, ref, items):
     miner = CrCtx(ranks={CR_SMELT: 300})
     same("Iron Bar", 3575, ["You can make it. Mats: 1 Iron Ore = 2s 69c"], "Iron Bar, a miner", c=miner)
     same("Steel Bar", 3859, ["You can make it. Mats: 1 Iron Bar, 1 Coal = 7s 37c"], "Steel Bar, a miner", c=miner)
+    same("Bronze Bar", 2841, ["You can make it (2 a craft). Mats: 1 Copper Bar, 1 Tin Bar = 2s 58c"], "Bronze Bar, a miner: 2 a craft", c=miner)
     # the AH code found a version of it (a version's id): the item it is a version of
     base = w.ns.BaseItemID
     w.ns.BaseItemID = w.lua.eval("function(base) return function(id) if id == 3575001 then return 3575 end return base(id) end end")(base)
@@ -24283,13 +24344,16 @@ def sc_crafts_search(sc, ref, items):
     bs = CrCtx(ranks={CR_BS: 300})
     cr_know(w, bs, [CR_SPURS])
     same("mithril spurs", 7969, ["You can make it. Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c"], "Mithril Spurs, known", c=bs)
-    same("mithril spurs", 7989, [spurs], "Mithril Spurs found as its plans: one line for the one recipe", c=bs)
+    # found as its plans by the words: the spurs the text names, by name, and not the plans' line again
+    same("mithril spurs", 7989, ["Mithril Spurs - you can make it. Mats: 4 Mithril Bar, 3 Solid Grinding Stone = 79s 64c"],
+         "Mithril Spurs found as its plans: one line for the one recipe, the spurs by name", c=bs)
     # the game has not loaded the name and the data has no price for it: names with a word starting
     # with each word of the text, not only holding it (Copper Ore is not Copper Claymore)
     w.M.infoByName = False
     same("copper ore", None, [], "Copper Ore unknown to the game, a blacksmith: not Copper Claymore", c=bs)
-    # the claymore by name; Weak Flux, Rough Grinding Stone and Light Leather have no test price: no total
-    same("copper clay", None, ["Copper Claymore - you can make it. Mats: 10 Copper Bar, 2 Weak Flux, 1 Rough Grinding Stone, 1 Light Leather"],
+    # the claymore by name: 4 mats, the 2 dearest priced; Rough Grinding Stone and Light Leather have no
+    # test price: the priced ones, and 2 with no price
+    same("copper clay", None, ["Copper Claymore - you can make it. Mats: 10 Copper Bar, 2 Weak Flux, +2 others = 18s 50c + 2 with no price"],
          "'copper clay', a blacksmith", c=bs, test_priced=False)
     en_skills(w, {})
     same("copper clay", None, [], "'copper clay', not a blacksmith")
@@ -24302,9 +24366,49 @@ def sc_crafts_search(sc, ref, items):
     same("runed copper rod enchanter", None, [], "a word no name has: nothing", c=ench)
     # the rod (bind on pickup, the name says it) and the breastplate's plans (for everyone), no "more" line
     same("runed copper r", None, ["Runed Copper Rod (bind on pickup) - you can make it. Mats: 1 Copper Rod, 1 Mote of Magic = 1s 34c",
-                                  "Plans: Runed Copper Breastplate - Mats: 12 Copper Bar, 1 Shadowgem, 2 Rough Grinding Stone"],
+                                  "Plans: Runed Copper Breastplate - Mats: 12 Copper Bar, 1 Shadowgem, 2 Rough Grinding Stone = 19s 80c + 2 with no price"],
          "'runed copper r', an enchanter", c=ench, test_priced=False)
     w.M.infoByName = None
+    en_skills(w, {})
+    # a recipe item whose name is not what it makes: it says so; what a craft makes more than 1 of: the count
+    same("recipe transmute arc", None, ["Recipe: Transmute Arcanite - makes Arcanite Bar. Mats: 1 Thorium Bar, 1 Arcane Crystal = 190g"],
+         "'recipe transmute arc': what it makes", test_priced=False)
+    dye = "Makes 2 Ghost Dye. Mats: 2 Ghost Mushroom, 1 Purple Dye, 1 Crystal Vial"
+    g = same("Recipe: Ghost Dye", None, model("Recipe: Ghost Dye"), "Recipe: Ghost Dye")
+    sc.check(len(g) == 1 and g[0].startswith("Bind on pickup. " + dye), "search: Recipe: Ghost Dye: makes 2 (%s)" % g)
+    g = same("recipe ghost d", None, model("recipe ghost d"), "'recipe ghost d'")
+    sc.check(len(g) == 1 and g[0].startswith("Recipe: Ghost Dye (bind on pickup) - makes 2 Ghost Dye. Mats: "),
+             "search: 'recipe ghost d': by name, makes 2 (%s)" % g)
+    # the text names a pattern, the AH code found another one by the words: the one typed, by name, only
+    whelp, slippers = 252761, 254008
+    g = same("pattern: black slippers", whelp, model("pattern: black slippers", whelp), "a pattern, the AH code's best match another")
+    sc.check(len(g) == 1 and g[0].startswith("Pattern: Black Slippers - Mats: 8 Bolt of Mageweave, ") and " others" in g[0],
+             "search: 'pattern: black slippers': its own line only, 2 of its 5 mats named (%s)" % g)
+    sc.eq(got("pattern: black slippers", slippers), [l.replace("Pattern: Black Slippers - Mats: ", "Makes Black Slippers. Mats: ") for l in g],
+          "search: the pattern the AH code found by its name: what it makes")
+    sc.eq(got("pattern: black whelp", whelp), [x for x in model("pattern: black whelp", whelp)], "search: 'pattern: black whelp': the model")
+    sc.check(got("pattern: black whelp", whelp)[0].startswith("Makes Black Whelp Slippers. "),
+             "search: no item named by the text: what the AH code's best match makes")
+    # two recipe items of one name making items of one name (an older version): one line, the AH code's or the first
+    elixir = "Recipe: Lesser Arcane Elixir"
+    g = same(elixir, None, model(elixir), "two items of one name")
+    sc.check(len(g) == 1 and g[0].startswith("Bind on pickup. Makes Lesser Arcane Elixir. Mats: 1 Kingsblood, 1 Goldthorn, 1 Crystal Vial"),
+             "search: two items of one name: the first one's line only (%s)" % g)
+    g = same(elixir, 250378, model(elixir, 250378), "two items of one name, the AH code found the second")
+    sc.check(len(g) == 1 and g[0].startswith("Makes Lesser Arcane Elixir. Mats: 4 Kingsblood, 1 Leaded Vial"),
+             "search: two items of one name, the AH code's: its line only (%s)" % g)
+    # a bind-on-pickup item you cannot make (never on the AH): its plans, by name
+    plans = "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"
+    same("officer's boots", None, [plans], "Officer's Boots (the game knows it), not a blacksmith: its plans")
+    same("officers boots", None, [plans], "officers boots (the game does not know it): its plans")
+    en_skills(w, {CR_BS: 300})
+    same("officer's boots", None, [plans], "Officer's Boots, a blacksmith who does not know it: its plans", c=bs)
+    cr_know(w, bs, [CR_OFFICER])
+    same("officer's boots", None, ["You can make it. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"],
+         "Officer's Boots, a blacksmith who knows it: no plans", c=bs)
+    w.M.knownSpells[CR_OFFICER] = None
+    bs.known.discard(CR_OFFICER)
+    w.ns.Crafts.Invalidate()
     en_skills(w, {})
     sc.eq(fn("zzqx"), None, "search: nothing it knows: nil")
     sc.eq(fn("ab"), None, "search: under 3 letters: nil")
@@ -24316,7 +24420,7 @@ def sc_crafts_search(sc, ref, items):
     cref = w.cr_ref
     es_search(w, "plans officer")
     want, _ = es_lines_ok(sc, w, cref, "plans officer", "search: AH 'plans officer'")
-    sc.eq(want, ["Goblin Ledger has no prices for that name."] + officer, "search: AH 'plans officer': the lines")
+    sc.eq(want, ["No AH prices for that name."] + officer, "search: AH 'plans officer': the lines")
     # a recipe search the AH code finds a priced best match for: only what that one makes
     es_search(w, "plans mithril")
     want, _ = es_lines_ok(sc, w, cref, "plans mithril", "search: AH 'plans mithril'")
@@ -24329,6 +24433,11 @@ def sc_crafts_search(sc, ref, items):
     es_search(w, "plans: officer's boots")
     want, _ = es_lines_ok(sc, w, cref, "plans: officer's boots", "search: AH Plans: Officer's Boots")
     sc.eq(want, ["Bind on pickup: never on the AH.", boots], "search: AH Plans: Officer's Boots: the lines")
+    # the boots themselves (never on the AH, you cannot make them): their plans
+    es_search(w, "officer's boots")
+    want, _ = es_lines_ok(sc, w, cref, "officer's boots", "search: AH Officer's Boots")
+    sc.eq(want, ["Bind on pickup: never on the AH.", "Plans: Officer's Boots (bind on pickup) - Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"],
+          "search: AH Officer's Boots: the AH code's line, then the plans")
     es_search(w, N(R.LINEN).lower())
     want, _ = es_lines_ok(sc, w, cref, N(R.LINEN).lower(), "search: AH Linen Cloth")
     sc.check(len(want) == 2 and want[0].startswith("Not listed now. "), "search: AH Linen Cloth: the AH code's 2 lines only (%s)" % want)
@@ -24353,7 +24462,7 @@ def sc_crafts_search(sc, ref, items):
     sc.check(bool(w.ns.AHState.otherHouse), "search: Booty Bay is another market")
     sc.eq(fn("plans officer"), None, "search: another market: nil")
     es_search(w, "plans officer")
-    sc.eq(es_shown(w), ["Goblin Ledger has no prices for that name."], "search: another market: only the AH code's line")
+    sc.eq(es_shown(w), ["No AH prices for that name."], "search: another market: only the AH code's line")
     w.close_ah_modern()
     w.M.npc, w.M.subzone = None, None
     sc.clean(w)
@@ -24373,10 +24482,38 @@ def sc_crafts_search(sc, ref, items):
     sc.clean(w)
     w = cr_world(ref, items, fix={k: v for k, v in none.items() if k != 3859})
     fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
-    sc.eq(lua_list(fn("Plans: Officer's Boots")), ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade"],
-          "search: one mat priced: no total (a part is not the cost)")
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 31s + 2 with no price"],
+          "search: one mat priced: that part and how many have no price (never 0c)")
+    sc.eq(lua_list(fn("Plans: Officer's Boots")), cr_search_lines(w, "Plans: Officer's Boots", None, ctx), "search: one mat priced: the model")
     tip = cr_tip_ok(sc, w, "byid", 251398, ctx, "search: one mat priced: the plans' tooltip")
     sc.eq(tip[-1][0] if tip else None, "Mats: %s + 2 more" % money_icons(4 * 775), "search: one mat priced: the tooltip's part and + 2 more")
+    sc.clean(w)
+    w = cr_world(ref, items, fix={1529: none[1529]})
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    sc.eq(lua_list(fn("Plans: Officer's Boots")),
+          ["Makes Officer's Boots. Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = %s + 1 with no price" % money_text(cr_round(4 * 775 + 4 * 1399))],
+          "search: one mat unpriced: the others' total and 1 with no price")
+    sc.clean(w)
+    # a miner with ore under the bar's price: the bar smelted from it, as the total counts it (not the AH's bar)
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={2770: ("Copper Ore", 100, 105, 6833, 400, 100, 5)})
+    fn = w.ns.EmptySearchLines[len(w.ns.EmptySearchLines)]
+    miner = CrCtx(ranks={CR_SMELT: 300})
+    sc.eq(lua_list(fn("Bronze Bar", 2841)), ["You can make it (2 a craft). Mats: 1 Copper Bar (from 1 Copper Ore), 1 Tin Bar = 1s 93c"],
+          "search: Bronze Bar, a miner: the Copper Bar it smelts")
+    sc.eq(lua_list(fn("Bronze Bar", 2841)), cr_search_lines(w, "Bronze Bar", 2841, miner), "search: Bronze Bar, the bar it smelts: the model")
+    sc.clean(w)
+    # through the auction house: a pattern by its name, its best match another pattern by the words
+    # (Pattern: Black Whelp Slippers has a price, Pattern: Black Slippers none): the one typed, only
+    w = cr_world(ref, items, fix={252761: ("Pattern: Black Whelp Slippers", 900, 950, 300, 12, 900, 100)})
+    w.open_ah_modern()
+    es_search(w, "pattern: black slippers")
+    want, _ = es_lines_ok(sc, w, w.cr_ref, "pattern: black slippers", "search: AH 'pattern: black slippers'")
+    if want and want[0] == "Best match: Pattern: Black Whelp Slippers - try its full name":
+        sc.check(len(want) == 4 and want[-1].startswith("Pattern: Black Slippers - Mats: ") and not any("Whelp" in l for l in want[1:]),
+                 "search: AH 'pattern: black slippers': the AH code's 3 lines, then the pattern typed only (%s)" % want)
+    else:
+        sc.check(not R.SIM, "search: AH 'pattern: black slippers': the whelp pattern is the best match (%s)" % want)
+    w.close_ah_modern()
     sc.clean(w)
     # The AH code may make the table first (AH.lua loads before Crafts.lua): ours is added to it.
     w = cr_world(ref, items, ns_setup="local ns = ...; ns.EmptySearchLines = { function() return { 'other' } end }")
