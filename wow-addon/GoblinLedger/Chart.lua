@@ -3,7 +3,9 @@ local ADDON_NAME, ns = ...
 -- Goblin Ledger: the price chart panel.
 -- A PocketGE-style panel built from plain frames, textures and font strings:
 --   header   : icon, name, market price, change over the timeframe, 1D 5D 1W 1M 1Y
---   boxes    : Target Buy (gold) and List At (blue). Each is a toggle: click
+--   boxes    : Target Buy (gold) and Sell at (blue: the one price to sell
+--              at, the same as the tooltip and the sell buttons, whatever the
+--              timeframe; ns.SellPrices). Each is a toggle: click
 --              one to light it up and show its dashed line on the chart,
 --              click the other to switch, click the lit one to hide the line.
 --              No line by default (ns.settings.chartLine = "buy", "sell" or nil).
@@ -12,7 +14,9 @@ local ADDON_NAME, ns = ...
 --              targets ("Depends on the version"): its prices mix them.
 --   chart    : cheapest dots (gold), market dots (blue), white trend line,
 --              the chosen dashed target line, period high/low rings, est. sold bars
---   footer   : analyst verdict and meter, margin, volume, notes, data age
+--   footer   : the call ("High now: usually falls back", "Hold" or "Low now:
+--              still falling") and meter, the margin between the two boxes,
+--              volume, notes, data age
 -- Every texture is pooled. The chart is redrawn only when the item, the
 -- timeframe or the panel size changes. Hovering only moves a crosshair.
 
@@ -27,7 +31,7 @@ local TF_VALID = { ["1D"] = true, ["5D"] = true, ["1W"] = true, ["1M"] = true, [
 local TF_LABEL_STEP = { ["1D"] = 4, ["5D"] = 24, ["1W"] = 24, ["1M"] = 5, ["1Y"] = 61 }
 
 local PANEL_H = 260
-local COMPACT_H = 230   -- below this height the Target Buy / List At boxes become one-line chips
+local COMPACT_H = 230   -- below this height the Target Buy / Sell at boxes become one-line chips
 local MIN_H = 150       -- shortest panel that still fits under the AH
 local NARROW_W = 650    -- below this width the change and volume texts are left out
 local DEFAULT_W = 800
@@ -59,8 +63,11 @@ local FALLBACK_COLORS = {
 local TREND = { 0.85, 0.83, 0.78 }
 local CASING = { 0.03, 0.04, 0.055, 0.55 }
 
+-- The call's colour: blue when high (it usually fell back after), plain
+-- otherwise. A low price is no buy signal (it usually kept falling), so it
+-- gets no buy colour, and green and red stay for money won or lost.
 local VERDICT_COLOR = {
-  ["Strong Buy"] = "pos", ["Buy"] = "pos", ["Hold"] = "text", ["Sell"] = "neg", ["Strong Sell"] = "neg",
+  ["High now: usually falls back"] = "sell", ["Hold"] = "text", ["Low now: still falling"] = "text",
 }
 
 ---------------------------------------------------------------------------
@@ -368,7 +375,7 @@ local function SimpleTooltip(owner, title, body)
 end
 
 -- Which dashed target line the chart shows: "buy" (gold Target Buy), "sell"
--- (blue List At) or nil (none, the default).
+-- (blue Sell at) or nil (none, the default).
 local function ChartLine()
   local v = type(ns.settings) == "table" and ns.settings.chartLine or nil
   if v == "buy" or v == "sell" then return v end
@@ -378,11 +385,11 @@ end
 local BOX_HELP = {
   buy = { "Target Buy", "A good price to buy at: most of the cheapest prices in this timeframe were above it.",
           "gold Target Buy line" },
-  sell = { "List At", "What to post at right now: 1 copper under the cheapest listing when that still pays after the 5% cut, otherwise the price it usually sells for. On 1D, 5D and 1W, if the price fell and stayed down for a quarter of the timeframe (6 hours at least), the highest price since.",
-           "blue List At line" },
+  sell = { "Sell at", "The price to sell at, the same as the tooltip and the sell buttons: 1 copper under the cheapest listing (Sell now). When that is under 70% of the usual price (the middle of the last 24 hourly prices) someone is selling cheap, and this is the usual price instead. The timeframe does not change it.",
+           "blue Sell at line" },
 }
 
--- The Target Buy and List At boxes are buttons: a click shows that price as a
+-- The Target Buy and Sell at boxes are buttons: a click shows that price as a
 -- dashed line on the chart (and lights the box up), a click on the other box
 -- switches lines, a click on the lit box hides the line again.
 function Chart:MakeBox(title, color, which)
@@ -608,9 +615,9 @@ function Chart:Build()
     prev = b
   end
 
-  -- Target Buy / List At boxes
+  -- Target Buy / Sell at boxes
   self.buyBox = self:MakeBox("Target Buy", Col("buy"), "buy")
-  self.listBox = self:MakeBox("List At", Col("sell"), "sell")
+  self.listBox = self:MakeBox("Sell at", Col("sell"), "sell")
 
   -- Plot
   local plot = CreateFrame("Frame", nil, F)
@@ -986,13 +993,27 @@ function Chart:SetBoxes(item, rec)
   local why = NoAdviceText(rec)
   local valueColor = why and Col("muted") or { 1, 1, 1 }
   SetFSColor(self.buyBox.value, valueColor)
-  SetFSColor(self.listBox.value, valueColor)
   self.buyBox.value:SetText(why or (rec and money(rec.buy)) or "-")
-  self.listBox.value:SetText(why or (rec and money(rec.listAt)) or "-")
+  -- Sell at: the tooltip's and the buttons' price, shown whenever they show
+  -- one (mixed versions say it depends, a few listed far above what a vendor
+  -- pays that it is not reliable).
+  local at = rec and Num(rec.sellAt) or 0
+  local atWhy = rec and ((rec.mixed and NoAdviceText(rec)) or (at <= 0 and rec.vendorFar and "Price not reliable")) or nil
+  SetFSColor(self.listBox.value, (atWhy or at <= 0) and Col("muted") or { 1, 1, 1 })
+  self.listBox.value:SetText(atWhy or (at > 0 and money(at)) or "-")
   if item then
     local liveTag = (rec and rec.live) and " (live)" or ""
     self.buyBox.sub:SetText("Cheapest: " .. (((Num(cheapNow) or 0) > 0) and (MoneyI(cheapNow) .. liveTag) or "none listed"))
-    self.listBox.sub:SetText("Market: " .. (((Num(mktNow) or 0) > 0) and MoneyI(mktNow) or "none listed"))
+    -- Under Sell at: the usual price, or how far under it Sell now is.
+    local under = rec and Num(rec.sellUnder)
+    local usual = rec and Num(rec.usual) or 0
+    if under and not atWhy then
+      local t = "Sell now " .. under .. "% under usual"
+      if type(ns.Hex) == "function" then t = "|c" .. ns.Hex(Col("warn")) .. t .. "|r" end
+      self.listBox.sub:SetText(t)
+    else
+      self.listBox.sub:SetText("Usual: " .. ((usual > 0) and MoneyI(usual) or "not known yet"))
+    end
   else
     self.buyBox.sub:SetText("")
     self.listBox.sub:SetText("")
@@ -1026,12 +1047,20 @@ function Chart:SetFooter(item, rec, extraNote)
     self.meter.needle:ClearAllPoints()
     self.meter.needle:SetPoint("CENTER", self.meter, "LEFT", (score + 100) / 200 * 99, 0)
     self.meter:Show()
-    local margin = Num(rec.margin) or 0
-    local pctText = ""
-    local pct = Num(rec.marginPct)
-    if pct then pctText = sformat(" (%+.1f%%)", pct * 100) end
-    self.margin:SetText("Margin after 5% cut: " .. (margin >= 0 and "+" or "") .. MoneyT(margin) .. pctText)
-    SetFSColor(self.margin, margin > 0 and Col("pos") or Col("neg"))
+    -- The margin between the two boxes: Sell at after the 5% cut, less
+    -- Target Buy. The % only while a listing is within 5% of Target Buy (else
+    -- nothing can be bought at it right now).
+    local buy, at = Num(rec.buy) or 0, Num(rec.sellAt) or 0
+    if buy > 0 and at > 0 then
+      local margin = floor(at * 0.95) - buy
+      local pctText = ""
+      local cheap = Num(rec.cheapestNow) or 0
+      if cheap > 0 and cheap * 100 <= buy * 105 then pctText = sformat(" (%+.1f%%)", margin * 100 / buy) end
+      self.margin:SetText("Margin after 5% cut: " .. (margin >= 0 and "+" or "") .. MoneyT(margin) .. pctText)
+      SetFSColor(self.margin, margin > 0 and Col("pos") or Col("neg"))
+    else
+      self.margin:SetText("")
+    end
     if type(rec.notes) == "table" then
       for _, n in ipairs(rec.notes) do notes[#notes + 1] = tostring(n) end
     end
@@ -1060,8 +1089,10 @@ function Chart:SetFooter(item, rec, extraNote)
     -- Over 80 minutes old: a newer file is most likely installed, waiting for a
     -- /reload (said as short as the tooltip says it: the notes left of it do not wrap).
     local a = AgeText(age)
-    if type(ns.ReloadHint) == "function" and ns.ReloadHint(age) and type(ns.Hex) == "function" then
-      a = "|c" .. ns.Hex(Col("warn")) .. a .. " - /reload|r"
+    local hint = type(ns.ReloadHint) == "function" and ns.ReloadHint(age)
+    local stale = type(ns.AgeState) == "function" and ns.AgeState(age) == "stale"
+    if (hint or stale) and type(ns.Hex) == "function" then
+      a = "|c" .. ns.Hex(Col("warn")) .. a .. (hint and " - /reload" or "") .. "|r"
     end
     self.age:SetText("Data: " .. a .. DOT .. house)
   else
@@ -1190,7 +1221,7 @@ function Chart:DrawPlot(s, rec, tf)
   -- short panel too: its chips switch it the same way.
   local line = ChartLine()
   local buyT = (line == "buy") and rec and Num(rec.buy) or nil
-  local listT = (line == "sell") and rec and Num(rec.listAt) or nil
+  local listT = (line == "sell") and rec and Num(rec.sellAt) or nil
   if buyT and buyT <= 0 then buyT = nil end
   if listT and listT <= 0 then listT = nil end
   for _, v in ipairs({ buyT or vmin, listT or vmin }) do
@@ -1278,7 +1309,7 @@ function Chart:DrawPlot(s, rec, tf)
     local yb, yl = buyT and Y(buyT), listT and Y(listT)
     local listAbove = true
     if yb and yl and yl < yb then listAbove = false end
-    if listT then self:Dashed(yl, sellC, "List At " .. MoneyT(listT), listAbove) end
+    if listT then self:Dashed(yl, sellC, "Sell at " .. MoneyT(listT), listAbove) end
     if buyT then self:Dashed(yb, buyC, "Target Buy " .. MoneyT(buyT), not listAbove) end
   end
 
@@ -1378,14 +1409,22 @@ function Chart:Draw(tf)
   end
   local s = type(ns.GetSeries) == "function" and ns.GetSeries(id, tf) or nil
   -- The live cheapest listing (when the open AH has loaded it) beats the hourly data.
-  local live = type(ns.LiveCheapest) == "function" and ns.LiveCheapest(id) or nil
+  local live, own
+  if type(ns.LiveCheapest) == "function" then live, own = ns.LiveCheapest(id) end
   local rec = type(ns.Recommend) == "function" and ns.Recommend(id, tf, live) or nil
+  -- Sell at: the same price as the tooltip and the sell buttons (your own
+  -- live listing is matched there, not undercut), in every timeframe.
+  local P = type(rec) == "table" and type(ns.SellPrices) == "function" and ns.SellPrices(id, nil, live, own) or nil
+  if type(rec) == "table" then
+    rec.sellAt = P and P.at or 0
+    rec.sellUnder = P and P.now and P.under or nil
+  end
   -- Gear whose versions sell for different prices, shown as the whole item:
   -- its targets would mix them, so the boxes say it depends on the version.
   if type(rec) == "table" and type(ns.PricesMixVersions) == "function" and ns.PricesMixVersions(id) then
     local r = {}
     for k, v in pairs(rec) do r[k] = v end
-    r.mixed, r.buy, r.listAt, r.sell, r.margin = true, 0, 0, 0, 0
+    r.mixed, r.buy, r.listAt, r.sell, r.margin, r.sellAt, r.sellUnder = true, 0, 0, 0, 0, 0, nil
     rec = r
   end
   self:SetHeader(id, DisplayName(id, item), item, s, tf)
@@ -1597,13 +1636,11 @@ function ns.SetChartTF(tf)
       Chart:UpdateTFButtons(tf)
     end
   end
-  -- The Suggested price buttons follow the chart's timeframe: keep their label
-  -- (and the price they fill) in step with the chart's advice.
-  if type(ns.AH_RefreshButtons) == "function" then pcall(ns.AH_RefreshButtons) end
+  -- (The sell buttons and the tooltip never follow the timeframe: one price everywhere.)
 end
 
 -- Which target line the chart shows ("buy", "sell" or nil), and setting it
--- (what clicking the Target Buy and List At boxes does).
+-- (what clicking the Target Buy and Sell at boxes does).
 function ns.ChartLine()
   return ChartLine()
 end

@@ -317,7 +317,10 @@ local function gameName(id)
 end
 ns.GameItemName = gameName
 
-ns.STALE_SECONDS = 6 * 3600
+-- Prices this old are stale (ns.AgeState): by 3 hours, a Sell now from the
+-- file was off by 10% or more 18-35% of the time (backtest), while the
+-- Auction it / Vendor it call stayed the same 87-93% of the time.
+ns.STALE_SECONDS = 3 * 3600
 ns.AH_CUT = 0.95
 ns.stats = { items = 0, series = 0 }   -- how many items/series were unpacked (for tests)
 
@@ -1035,10 +1038,53 @@ end
 -- The game reads Data.lua only at login or /reload, and the updater on the
 -- same PC installs a newer file every 30 minutes (Blizzard's snapshot is
 -- hourly). Prices over 80 minutes old nearly always mean a newer file is
--- already there: the age turns yellow and says "/reload".
+-- already there: the age turns yellow and says "/reload". Not when they
+-- were already 3 hours old when the game read them: a /reload reads the same
+-- file then (ns.StaleText says what helps).
 ns.RELOAD_SECONDS = 80 * 60
 function ns.ReloadHint(age)
-  return type(age) == "number" and age > ns.RELOAD_SECONDS
+  if type(age) ~= "number" or age <= ns.RELOAD_SECONDS then return false end
+  local la = ns.LoadedAge()
+  if age >= ns.STALE_SECONDS and (not la or la >= ns.STALE_SECONDS) then return false end
+  return true
+end
+
+-- One rule for old prices, on every surface: "fresh" (up to 80 minutes),
+-- "old" (up to 3 hours: the age turns yellow and says /reload) or "stale"
+-- (3 hours or more: prices are marked "~" with their age, flip ideas and
+-- deals are left out, the sell buttons need a live listing; the Auction it /
+-- Vendor it call stays, it rarely changes). nil age: the data's age now.
+function ns.AgeState(age)
+  if age == nil then age = ns.DataAge() end
+  if type(age) ~= "number" then return "fresh" end
+  if age >= ns.STALE_SECONDS then return "stale" end
+  if age > ns.RELOAD_SECONDS then return "old" end
+  return "fresh"
+end
+
+-- When the game read Data.lua (this login or /reload), and how old the
+-- prices were then.
+local loadedAt = now()
+function ns.LoadedAge()
+  local u = tonumber(db.updated) or 0
+  if u <= 0 or loadedAt <= 0 then return nil end
+  return max(0, loadedAt - u)
+end
+
+-- What to do about stale prices, said once: "/reload" when they went stale
+-- while you played (the 30-minute updater has saved newer ones since, when
+-- it is on), else the installer, which fetches them right away (prices that
+-- were already this old when the game read them: the updater is off or has
+-- not run).
+function ns.StaleText(age)
+  if age == nil then age = ns.DataAge() end
+  if type(age) ~= "number" then return nil end
+  local h = floor(age / 3600)
+  local la = ns.LoadedAge()
+  if la and la < ns.STALE_SECONDS then
+    return sformat("Prices are %dh old: type /reload for newer ones", h)
+  end
+  return sformat("Prices are %dh old: run Install-Goblin-Ledger.bat again, then /reload", h)
 end
 
 ---------------------------------------------------------------------------
@@ -1320,10 +1366,10 @@ local function stackCount(tt, data)
       end
     end
   end
-  if count == nil or isSecret(count) then return 1 end
+  if count == nil or isSecret(count) then return 1, false end
   count = tonumber(count)
-  if not count or count < 1 then return 1 end
-  return floor(count)
+  if not count or count < 1 then return 1, false end
+  return floor(count), true
 end
 
 -- True when an item link carries a random suffix ("of the Monkey"). Those
@@ -1424,56 +1470,57 @@ local function livePriceFor(id)
   return nil
 end
 
--- How far a price sits from the average, said plainly: "+92% vs avg" or
--- "-44% vs avg" (whole percent, rounded toward 0 so it never says more than
--- it is). Neither good nor bad news by itself (dear to buy, good to sell), so
--- no green or red: yellow from 40% either way (about a quarter of traded
--- items), grey under that, a grey "0% vs avg" under 1%. nil with no average
--- to compare with.
+-- How far a price sits from the usual price (ns.UsualPrice, the middle of
+-- the last 24 hourly prices), said plainly: "+12% vs usual" (whole percent,
+-- rounded toward 0 so it never says more than it is). Neither good nor bad
+-- news by itself (dear to buy, good to sell), so no green or red: grey, and
+-- from 40% either way yellow with a word: "+88% vs usual: spike" (backtest:
+-- the next day it fell back a median 32-42%) or "-45% vs usual: dropped"
+-- (stacks mostly stayed down; gear came back part way). A grey "0% vs usual"
+-- under 1%.
+-- nil with no usual price to compare with.
 ns.VS_LOUD = 40
-local function vsAverage(value, avg)
-  value, avg = tonumber(value) or 0, tonumber(avg) or 0
-  if value <= 0 or avg <= 0 then return nil end
+local function vsUsual(value, usual)
+  value, usual = tonumber(value) or 0, tonumber(usual) or 0
+  if value <= 0 or usual <= 0 then return nil end
   local C = ns.COLORS
-  local p = floor(abs(value - avg) * 100 / avg)
-  local t = (p < 1 and "0%") or (value > avg and ("+" .. p .. "%")) or ("-" .. p .. "%")
-  return "|c" .. ns.Hex(p >= ns.VS_LOUD and C.warn or C.muted) .. t .. " vs avg|r"
+  local p = floor(abs(value - usual) * 100 / usual)
+  local t = (p < 1 and "0%") or (value > usual and ("+" .. p .. "%")) or ("-" .. p .. "%")
+  local word = (p >= ns.VS_LOUD) and ((value > usual) and ": spike" or ": dropped") or ""
+  return "|c" .. ns.Hex(p >= ns.VS_LOUD and C.warn or C.muted) .. t .. " vs usual" .. word .. "|r"
 end
-ns.VsAverage = vsAverage
-
--- "7-day average", or "3-day average" while the item has prices for fewer
--- than 7 days (the data's average is of the days it has, at most the last 7).
-local function averageLabel(id)
-  local days = type(ns.DailyPoints) == "function" and ns.DailyPoints(id) or 0
-  if days < 1 or days > 7 then days = 7 end
-  return days .. "-day average"
-end
-ns.AverageLabel = averageLabel
+ns.VsUsual = vsUsual
 
 -- Adds our lines. Returns true when anything was added. Kept short:
 --   the "Goblin Ledger" header (how old the prices are; yellow with "/reload"
---   over 80 minutes), then the sell verdict
---   (ns.SellVerdict: "Auction it", "Vendor it", "Close call" or "Maybe
---   auction", and by how much), AH value (today's market value; "AH value
---   (live)", the cheapest listing, while the open auction house shows one)
---   and how far it is from the average ("+92% vs avg"), the 7-day average,
---   Sell now and Suggested price
---   (the sell target from the price history; each in red when it nets no
---   more than a vendor pays), then for a stack what it brings at the
---   verdict's price after the AH cut (only when the AH pays more, or about
---   the same). While the prices are fresh, "Auction it" and the AH value
---   are bigger, and "Vendor it" gets a "Vendor pays" line right under it
---   (what a vendor pays each, or for the stack with Shift), both bigger
---   (enlargeLine). Compact mode is one line: the verdict and the AH value,
---   or the AH value alone (and, over 80 minutes old, a grey "(2h old - /reload)").
+--   over 80 minutes), then the sell verdict (ns.SellVerdict for the stack:
+--   "Auction it", "Vendor it", "Close call" or "Maybe auction", and by how
+--   much), AH value (today's market value; "AH value (live)", the cheapest
+--   listing, while the open auction house shows one) and how far it is from
+--   the usual price ("+12% vs usual", "+88% vs usual: spike"), then the one
+--   price to sell at (ns.SellPrices): "Usual price" and "Sell now", or, when
+--   Sell now is under 70% of the usual price, a yellow "Sell now (38% under
+--   usual)" and "Sell at" the usual price (nothing listed: "Sell at" alone);
+--   a sell price is red when it nets no more than a vendor pays. Then for a
+--   stack what it brings at the verdict's price after the AH cut (only under
+--   Auction it or Close call). "Auction it" and the AH value are bigger, and
+--   "Vendor it" gets a "Vendor pays" line right under it (what a vendor pays
+--   each, or for the stack with Shift), both bigger (enlargeLine). Prices 3
+--   hours old or more (ns.AgeState "stale") keep the verdict as it is, but
+--   each price from the file is marked "~" (the AH value also with its age,
+--   "~23s 45c, 3h old") and a last line says what to do (ns.StaleText).
+--   Compact mode is one line: the verdict and the AH value, or the AH value
+--   alone (and, over 80 minutes old, a grey "(2h old - /reload)").
 -- itemID may be a version's id (vid). opts (optional): noData = false hides
 -- the "no recent listings" line; bound = true (soulbound, bind on pickup or a
 -- quest item: it can never be on the auction house) leaves out the verdict and
 -- the stack line; version = "version" says the prices are for this version
 -- only, version = "all" (or suffix = true) that they cover every version of
--- the item. Then the AH value and the average still show (they are what the
--- data saw), but there is no verdict, Sell now, Suggested price or stack
--- line: a price for selling would come from other versions' listings.
+-- the item. Then the AH value and the usual price still show (they are what
+-- the data saw), but there is no verdict, sell price or stack line: a price
+-- for selling would come from other versions' listings. inBags = true: count
+-- is the stack in your bags, which the call judges (the deposit's per-listing
+-- minimum, the 1 silver trip); else it judges one item as part of a stack.
 -- There is no verdict either for a market these prices are not from
 -- (ns.MarketMismatch: Hardcore, the other faction, another auction house).
 function ns.AddTooltipLines(tt, itemID, count, opts)
@@ -1481,7 +1528,7 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   if not S.tooltip then return false end
   if (tonumber(db.updated) or 0) <= 0 then return false end
   local C = ns.COLORS
-  local mu, tx, se = C.muted, C.text, C.sell
+  local mu, tx, se, wa = C.muted, C.text, C.sell, C.warn
   opts = type(opts) == "table" and opts or {}
   local item = ns.GetItem(itemID)
   if not item then
@@ -1496,41 +1543,51 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     mult = count
     tag = " (x" .. count .. ")"
   end
-  local function money(v)
-    if not v or v <= 0 then return nil end
-    return ns.MoneyIcons(v * mult)
-  end
   local age = ns.DataAge() or 0
   -- Over 80 minutes old: a newer file is most likely waiting for a /reload.
   local reload = ns.ReloadHint(age)
+  -- 3 hours old or more: the prices from the file are marked "~".
+  local stale = ns.AgeState(age) == "stale"
+  -- money(v, fromFile): "~" in front of a price from a stale file.
+  local function money(v, fromFile)
+    if not v or v <= 0 then return nil end
+    return ((stale and fromFile ~= false) and "~" or "") .. ns.MoneyIcons(v * mult)
+  end
   local other = type(ns.MarketMismatch) == "function" and ns.MarketMismatch()
   -- The AH value: the live cheapest while the open auction house shows one
   -- (for this market), else today's market value from the data. The badge
-  -- says how far that is from the average.
+  -- says how far that is from the usual price.
   local livep = (not other) and livePriceFor(item.id) or nil
   local shown = livep or item.market
-  local vs = vsAverage(shown, item.avg7)
+  local usual = type(ns.UsualPrice) == "function" and ns.UsualPrice(item.id) or nil
+  local vs = vsUsual(shown, usual)
+  -- The AH value's money: "~23s 45c, 3h old" from a stale file.
+  local function ahMoney()
+    local m = money(shown, not livep)
+    if m and stale and not livep then m = m .. ", " .. floor(age / 3600) .. "h old" end
+    return m
+  end
   -- "AH value", "AH value (x20)", "AH value (live)", "AH value (live, x20)"
   local function ahLabel(base)
     if livep then return base .. " (live" .. (mult > 1 and (", x" .. mult) or "") .. ")" end
     return base .. tag
   end
-  -- Sell now: 1 copper under the cheapest listing (the live one when the
-  -- auction house showed it). Suggested price: the sell target from the
-  -- price history. Both, and the verdict, only for one exact item or version.
+  -- The price to sell at, only for one exact item or version: Sell now (the
+  -- live one when the auction house showed it), or the usual price when
+  -- Sell now is far under it.
   local mixed = opts.version == "all" or opts.suffix == true
   local live, own = liveFor(item.id)
-  local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, S.chartTF, live, own) or nil
+  local P = (not mixed) and type(ns.SellPrices) == "function" and ns.SellPrices(item.id, nil, live, own) or nil
   local V
   if P and opts.bound ~= true and type(ns.SellVerdict) == "function" and not other then
-    V = ns.SellVerdict(item, P)
+    V = ns.SellVerdict(item, P, opts.inBags and count or nil)
   end
   local vline, xline   -- the lines to enlarge (the verdict, the price that wins), once all our lines are in
   if S.compact then
-    local m = money(shown)
+    local m = ahMoney()
     -- Compact mode shows the age only when it is old: a short grey "(2h old - /reload)"
-    -- (not next to a live price: that one is from now).
-    local old = (reload and not livep)
+    -- (not next to a live price: that one is from now; stale prices say their age).
+    local old = (reload and not livep and not stale)
       and ("  |c" .. ns.Hex(mu) .. "(" .. (sgsub(ns.AgeText(age), " ago$", "")) .. " old - /reload)|r") or ""
     if V then
       local lc = C[V.lc]
@@ -1550,22 +1607,23 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
       tt:AddLine(line .. old, tx[1], tx[2], tx[3])
     end
   else
-    local ac = reload and C.warn or mu
+    local ac = (reload or stale) and C.warn or mu
     tt:AddDoubleLine("Goblin Ledger", ns.AgeText(age) .. (reload and " - /reload" or ""),
       se[1], se[2], se[3], ac[1], ac[2], ac[3])
-    local clearCut = V and (V.kind == "auction" or V.kind == "vendor") and age <= ns.STALE_SECONDS
+    -- Old prices keep the call and its size: it rarely changes in a few hours.
+    local clearCut = V and (V.kind == "auction" or V.kind == "vendor")
     if V then
       local lc, rc = C[V.lc], C[V.rc]
       tt:AddDoubleLine(V.left, V.right, lc[1], lc[2], lc[3], rc[1], rc[2], rc[3])
       if clearCut then vline = numLines(tt) end
     end
-    -- "Vendor it": what a vendor pays, bigger with the verdict.
-    local vp = clearCut and V.kind == "vendor" and money(item.vendor)
+    -- "Vendor it": what a vendor pays, bigger with the verdict (a vendor's price never gets old).
+    local vp = clearCut and V.kind == "vendor" and money(item.vendor, false)
     if vp then
       tt:AddDoubleLine("Vendor pays" .. tag, vp, tx[1], tx[2], tx[3], 1, 1, 1)
       xline = numLines(tt)
     end
-    local m = money(shown)
+    local m = ahMoney()
     if m then
       tt:AddDoubleLine(ahLabel("AH value"), vs and (m .. "  " .. vs) or m,
         tx[1], tx[2], tx[3], 1, 1, 1)
@@ -1574,30 +1632,38 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     else
       tt:AddDoubleLine("AH value", "none listed", tx[1], tx[2], tx[3], mu[1], mu[2], mu[3])
     end
-    local a = money(item.avg7)
-    if a then
-      tt:AddDoubleLine(averageLabel(item.id) .. tag, a, tx[1], tx[2], tx[3], 1, 1, 1)
-    end
-    -- In red when a vendor pays at least as much after the 5% cut (the flags
-    -- the sell buttons warn with).
+    -- The price to sell at. In red when a vendor pays at least as much after
+    -- the 5% cut (the flags the sell buttons warn with).
     local ng, wh = C.neg, { 1, 1, 1 }
+    local under = P and P.now and P.under
+    local atLine = P and P.at and (under or not P.now)
+    local u = not atLine and money(usual)
+    if u then tt:AddDoubleLine("Usual price" .. tag, u, tx[1], tx[2], tx[3], 1, 1, 1) end
     if P and P.now then
+      local label = (P.live and "Sell now (live)" or "Sell now")
       local c = P.nowVendor and ng or wh
-      tt:AddDoubleLine((P.live and "Sell now (live)" or "Sell now") .. tag, money(P.now), tx[1], tx[2], tx[3], c[1], c[2], c[3])
+      if under then
+        label = label .. " (" .. under .. "% under usual)"
+        c = wa
+      end
+      tt:AddDoubleLine(label .. tag, money(P.now, not P.live), under and wa[1] or tx[1], under and wa[2] or tx[2],
+        under and wa[3] or tx[3], c[1], c[2], c[3])
     end
-    if P and P.best then
-      local c = P.bestVendor and ng or wh
-      tt:AddDoubleLine("Suggested price" .. tag, money(P.best), tx[1], tx[2], tx[3], c[1], c[2], c[3])
+    if atLine then
+      local c = P.atVendor and ng or wh
+      tt:AddDoubleLine("Sell at" .. tag, money(P.at, not (P.live and P.at == P.now)), tx[1], tx[2], tx[3], c[1], c[2], c[3])
     end
-    -- One grey line says when a price is left out because it may be one
-    -- player's guess (not when the verdict already says "few listed").
-    if P and (P.nowWhy == "unreliable" or P.bestWhy == "unreliable") and not (V and V.right == "few listed") then
+    -- One grey line says when a price may be one player's guess (not when
+    -- the verdict already says "few listed").
+    local rec = P and P.rec
+    if rec and (rec.vendorFar or rec.thinListings) and not (V and V.right == "few listed") then
       tt:AddLine("Few listed: the price may not be reliable", mu[1], mu[2], mu[3])
     end
     -- The stack at the verdict's price, never multiplied by Shift.
     if V and V.unit and count > 1 and (V.kind == "auction" or V.kind == "close") then
-      tt:AddDoubleLine("This stack (" .. count .. "), after AH cut", ns.MoneyIcons(floor(V.unit * count * 95 / 100)),
-        tx[1], tx[2], tx[3], 1, 1, 1)
+      local fromFile = stale and not (P.live and V.unit == P.now)
+      tt:AddDoubleLine("This stack (" .. count .. "), after AH cut",
+        (fromFile and "~" or "") .. ns.MoneyIcons(floor(V.unit * count * 95 / 100)), tx[1], tx[2], tx[3], 1, 1, 1)
     end
   end
   if opts.version == "version" then
@@ -1605,8 +1671,9 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
   elseif opts.version == "all" or opts.suffix then
     tt:AddLine("Price covers all versions of this item", mu[1], mu[2], mu[3])
   end
-  if age > ns.STALE_SECONDS then
-    tt:AddLine(sformat("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload", floor(age / 3600)), mu[1], mu[2], mu[3])
+  if stale then
+    local st = ns.StaleText(age)
+    if st then tt:AddLine(st, mu[1], mu[2], mu[3]) end
   end
   -- Last: every line after ours exists now (see enlargeLine). Nothing from
   -- an earlier item stays bigger. The second line only with the verdict:
@@ -1651,7 +1718,9 @@ local function onTooltipData(tt, data)
     -- Prices, but no verdict, for an item that can never be on the auction house.
     opts.bound = not mightBeTradeable(tt, data, id)
   end
-  ns.AddTooltipLines(tt, pid, stackCount(tt, data), opts)
+  local n, inBags = stackCount(tt, data)
+  opts.inBags = inBags
+  ns.AddTooltipLines(tt, pid, n, opts)
   -- A quest item with no prices: Bags.lua says whether you can drop it.
   if not priced and type(ns.QuestItemLine) == "function" then ns.QuestItemLine(tt, id) end
   -- Gear you could enchant: the best enchants for your role (Enchants.lua), after our other lines.
@@ -1798,8 +1867,8 @@ local function printStatus()
   if versions > 0 then
     P(sformat("%s versions of gear (like \"of the Bear\") have their own prices.", ns.Num(versions)))
   end
-  if age > ns.STALE_SECONDS then
-    P(sformat("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload.", floor(age / 3600)))
+  if ns.AgeState(age) == "stale" then
+    P(ns.StaleText(age) .. ". Until then flip ideas are off and prices show with a ~.")
   end
   local faction = playerFaction()
   if faction and faction ~= "Alliance" then

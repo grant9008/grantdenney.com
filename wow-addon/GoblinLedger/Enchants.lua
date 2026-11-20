@@ -1198,7 +1198,7 @@ local function roundCopper(c)
 end
 E.RoundCopper = roundCopper
 
--- Prices older than Core's limit (6 hours): the costs are grey. Core's own age line is
+-- Prices older than Core's limit (3 hours, ns.STALE_SECONDS): the costs are grey. Core's own age line is
 -- not on gear with no price lines (most worn gear), so the grey is the hint there.
 local function stalePrices()
   local f, most = ns.DataAge, ns.STALE_SECONDS

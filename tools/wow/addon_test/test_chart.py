@@ -382,7 +382,8 @@ function M.MakeStubNS(opts)
       -- Recommend.lua's no-advice shape: no targets, a Hold, and a note saying why
       return { buy = 0, sell = 0, listAt = 0, margin = 0, marginPct = 0, verdict = "Hold", score = 0, pos = 0.5,
                lo = b, hi = b, cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24,
-               history = kind ~= "nohist", advice = false,
+               history = kind ~= "nohist", advice = false, usual = (kind == "thin") and it.market or nil,
+               thinListings = kind == "thin",
                notes = { kind == "nohist" and "Not enough price history yet" or "Only 2 listings: price may not be reliable" } }
     end
     local flat = kind == "flat"
@@ -390,30 +391,33 @@ function M.MakeStubNS(opts)
     local listAt = flat and b or (b + floor(b * 0.03) + 7) -- odd copper on purpose
     if kind == "tiny" then buy, listAt = b, b + 20 end
     local margin = floor(listAt * 0.95) - buy
+    -- Runecloth's usual price is 20s: its 12s listing is a dump (Sell now under 70% of it)
     return { buy = buy, sell = listAt, listAt = listAt, margin = margin, marginPct = buy > 0 and margin / buy or 0,
-             verdict = flat and "Hold" or "Buy", score = flat and 0 or 40, pos = 0.3, lo = b * 0.9, hi = b * 1.1,
+             verdict = flat and "Hold" or "Low now: still falling", score = flat and 0 or 40, pos = 0.3, lo = b * 0.9, hi = b * 1.1,
              cheapestNow = it.cheapest, marketNow = it.market, sold24 = it.sold24, history = true, advice = true,
+             usual = (id == 14047) and 2000 or it.market,
              notes = flat and { "Spread does not beat the 5% AH cut" } or {} }
   end
-  -- Recommend.lua's ns.SellPrices rules on the stub's advice: Sell now 1 copper
-  -- under the cheapest (live) listing, matched when it is yours; Best price the
-  -- sell target, never under a normal cheapest listing, only with advice.
+  -- Recommend.lua's ns.SellPrices rules on the stub's advice (never the
+  -- timeframe): Sell now 1 copper under the cheapest (live) listing, matched
+  -- when it is yours; at = Sell now, or the usual price when Sell now is under
+  -- 70% of it (under = how far), or with nothing listed.
   function ns.SellPrices(id, tf, live, own)
-    local rec = ns.Recommend(id, tf)
+    local rec = ns.Recommend(id, "1D")
     if not rec then return nil end
     local isLive = type(live) == "number" and live > 0
     local cheap = isLive and live or rec.cheapestNow
-    local out = { rec = rec, live = isLive, own = isLive and own == true }
-    if cheap > 1 then out.now = out.own and cheap or (cheap - 1) else out.nowWhy = "none" end
-    if rec.history == false then
-      out.bestWhy = "history"
-    elseif rec.advice == false then
-      out.bestWhy = "unreliable"
+    local out = { rec = rec, live = isLive, own = isLive and own == true, usual = rec.usual }
+    if cheap > 1 then
+      out.now = out.own and cheap or (cheap - 1)
+      if rec.usual and out.now * 100 < rec.usual * 70 then
+        out.at, out.under = rec.usual, floor((rec.usual - out.now) * 100 / rec.usual)
+      else
+        out.at = out.now
+      end
     else
-      local b = rec.sell
-      if cheap > 1 and b < cheap - 1 then b = cheap - 1 end
-      if out.own and b == cheap - 1 then b = cheap end
-      out.best = b
+      out.nowWhy = "none"
+      out.at = rec.usual
     end
     return out
   end
@@ -579,9 +583,10 @@ check(C.icon._tex == 100000 + 2589, "header icon")
 check(C.price:GetText() == ns.MoneyText(math.floor(45 * 1.04)), "header market price " .. tostring(C.price:GetText()))
 local rec = ns.Recommend(2589, "1D")
 check(C.buyBox.value:GetText() == ns.MoneyText(rec.buy), "Target Buy value " .. tostring(C.buyBox.value:GetText()))
-check(C.listBox.value:GetText() == ns.MoneyText(rec.listAt), "List At value")
+local spl = ns.SellPrices(2589)
+check(C.listBox.value:GetText() == ns.MoneyText(spl.at), "Sell at value: the sell price, " .. tostring(C.listBox.value:GetText()))
 check(C.buyBox.sub:GetText() == "Cheapest: " .. ns.MoneyText(45), "cheapest label " .. tostring(C.buyBox.sub:GetText()))
-check(C.listBox.sub:GetText() == "Market: " .. ns.MoneyText(46), "market label " .. tostring(C.listBox.sub:GetText()))
+check(C.listBox.sub:GetText() == "Usual: " .. ns.MoneyText(46), "usual label " .. tostring(C.listBox.sub:GetText()))
 local s = ns.GetSeries(2589, "1D")
 local nn = 0
 for i = 1, s.n do if s.cheap[i] then nn = nn + 1 end if s.market[i] then nn = nn + 1 end end
@@ -610,9 +615,9 @@ check(ttHas("Click to hide the gold Target Buy line."), "the tooltip now says a 
 M.fireScript(C.buyBox, "OnLeave")
 check(M.cursor == nil and not GameTooltip._shown, "cursor and tooltip back to normal on leave")
 M.fireScript(C.listBox, "OnClick")
-check(ns.settings.chartLine == "sell" and C.listBox.lit and not C.buyBox.lit, "List At click switches lines")
+check(ns.settings.chartLine == "sell" and C.listBox.lit and not C.buyBox.lit, "Sell at click switches lines")
 tags = M.Texts(C.pools.tag)
-check(#tags == 1 and tags[1]:find("^List At ") ~= nil, "only the List At line: " .. table.concat(tags, ", "))
+check(#tags == 1 and tags[1]:find("^Sell at ") ~= nil, "only the Sell at line: " .. table.concat(tags, ", "))
 check(C.pools.dash.items[1]._color[1] == ns.COLORS.sell[1], "blue dashes")
 check(not C.buyBox.edges[1]:IsShown() and C.listBox.edges[1]:IsShown(), "the border moved")
 M.fireScript(C.listBox, "OnClick")
@@ -627,12 +632,15 @@ check(C.pools.xlab.used >= 3, "x labels")
 check(C.pools.ylab.used >= 2, "y labels")
 local yl = M.Texts(C.pools.ylab)
 check(distinct(yl), "y labels differ: " .. table.concat(yl, ", "))
-check(C.verdict:GetText() == "Buy", "verdict word")
-check(C.verdict._color[1] == ns.COLORS.pos[1], "Buy is green")
+check(C.verdict:GetText() == "Low now: still falling", "verdict words: low, never a buy")
+check(C.verdict._color[1] == ns.COLORS.text[1], "a low call is plain, not a buy colour")
 check(C.meter:IsShown(), "meter shown")
 local _, _, _, nx = C.meter.needle:GetPoint(1)
 check(math.abs(nx - (140 / 200 * 99)) < 0.01, "needle at score")
-check((C.margin:GetText() or ""):find("Margin after 5% cut: +", 1, true) == 1, "margin text " .. tostring(C.margin:GetText()))
+-- the margin between the boxes: Sell at after the cut, less Target Buy (the % only near Target Buy)
+local mg = math.floor(spl.at * 0.95) - rec.buy
+check((C.margin:GetText() or ""):find("Margin after 5% cut: " .. (mg >= 0 and "+" or "") .. ns.MoneyText(mg), 1, true) == 1,
+  "margin text " .. tostring(C.margin:GetText()))
 check((C.volume:GetText() or ""):find("~120 sold/day", 1, true) == 1, "volume text " .. tostring(C.volume:GetText()))
 check((C.volume:GetText() or ""):find("900 listed", 1, true) ~= nil, "listed count")
 check(C.age:GetText():find("^Data: ") ~= nil and C.age:GetText():find("Alliance Auction House", 1, true) ~= nil, "data age " .. C.age:GetText())
@@ -723,9 +731,9 @@ ns.SetChartTF("1D")
 section("chart: not enough history")
 ns.ShowChart(9, "slash")
 check(C.lastError == nil, "no error: " .. tostring(C.lastError))
-check(C.buyBox.value:GetText() == "Needs more history" and C.listBox.value:GetText() == "Needs more history",
-  "boxes say Needs more history: " .. tostring(C.buyBox.value:GetText()))
-check(C.buyBox.value._color[1] == ns.COLORS.muted[1] and C.listBox.value._color[1] == ns.COLORS.muted[1], "in grey")
+check(C.buyBox.value:GetText() == "Needs more history" and C.listBox.value:GetText() == ns.MoneyText(699),
+  "Target Buy says Needs more history, Sell at the tooltip's Sell now: " .. tostring(C.listBox.value:GetText()))
+check(C.buyBox.value._color[1] == ns.COLORS.muted[1] and C.listBox.value._color[1] == 1, "Target Buy grey, Sell at white")
 check(C.verdict:GetText() == "No advice yet" and C.verdict._color[1] == ns.COLORS.muted[1], "grey verdict, no colour")
 check(not C.meter:IsShown(), "no verdict meter")
 check((C.margin:GetText() or "") == "", "no green margin")
@@ -738,7 +746,7 @@ check((C.notes:GetText() or ""):find("Only 2 listings", 1, true), "thin note")
 ns.ShowChart(2589, "slash")
 check(C.buyBox.value._color[1] == 1 and C.buyBox.value:GetText() == ns.MoneyText(ns.Recommend(2589, "1D").buy),
   "a normal item gets white targets again")
-check(C.meter:IsShown() and C.verdict:GetText() == "Buy", "and its verdict")
+check(C.meter:IsShown() and C.verdict:GetText() == "Low now: still falling", "and its verdict")
 
 section("chart: sales still being measured")
 ns.SoldPerDay = function(item) return nil, true end
@@ -1027,23 +1035,23 @@ check(ns.ChartItem() == 14047, "sell item shown")
 local rec = ns.Recommend(14047, ns.settings.chartTF)
 local sp = ns.SellPrices(14047, ns.settings.chartTF)
 check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(sp.now), "Sell now label " .. tostring(cUse:GetText()))
-check(cBest:IsShown() and cBest:GetText() == "Suggested: " .. ns.MoneyText(sp.best), "Suggested price label " .. tostring(cBest:GetText()))
-check(sp.now == 1199 and sp.best == rec.sell, "Sell now 1c under the cheapest, Best price the sell target")
+check(cBest:IsShown() and cBest:GetText() == "Sell at: " .. ns.MoneyText(sp.at), "Sell at label " .. tostring(cBest:GetText()))
+check(sp.now == 1199 and sp.at == 2000 and sp.under == 40, "Sell now 1c under the cheapest, 40% under the usual 20s: Sell at 20s")
 local posts = csf.posts or 0
 M.fireScript(cUse, "OnClick")
 check(csf.PriceInput.amount == sp.now, "commodity price is exact copper: " .. tostring(csf.PriceInput.amount) .. " vs " .. sp.now)
 check((csf.posts or 0) == posts + 1, "post state refreshed")
 M.fireScript(cBest, "OnClick")
-check(csf.PriceInput.amount == sp.best, "Best price fills its price: " .. tostring(csf.PriceInput.amount))
+check(csf.PriceInput.amount == sp.at, "Sell at fills its price: " .. tostring(csf.PriceInput.amount))
 ahf:SetPostItem({ itemID = 6, commodity = false })
 check(ns.ChartItem() == 6, "gear sell item shown")
-check(not cUse:IsShown() and not cBest:IsShown() and iUse:IsShown() and iBest:IsShown(), "only the active sell frame shows the buttons")
+check(not cUse:IsShown() and not cBest:IsShown() and iUse:IsShown() and not iBest:IsShown(),
+  "only the active sell frame shows a button, and one price: Sell now")
 local sp6 = ns.SellPrices(6, ns.settings.chartTF)
 M.fireScript(iUse, "OnClick")
 check(isf.PriceInput.amount == math.floor(sp6.now / 100) * 100, "gear price rounded down to whole silver: " .. tostring(isf.PriceInput.amount))
 check(iUse:GetText() == "Sell now: " .. ns.MoneyText(math.floor(sp6.now / 100) * 100), "gear label shows the rounded price")
-M.fireScript(iBest, "OnClick")
-check(isf.PriceInput.amount == math.floor(sp6.best / 100) * 100, "gear Best price rounded down too")
+check(sp6.at == sp6.now and sp6.under == nil, "gear at its usual price: no second price")
 M.copper = false
 ahf:SetPostItem({ itemID = 14047, commodity = true })
 M.fireScript(cUse, "OnClick")
@@ -1052,7 +1060,7 @@ M.copper = nil
 ns.SetChartTF("1W")
 ahf:SetPostItem({ itemID = 14047, commodity = true })
 M.fireScript(cBest, "OnClick")
-check(csf.PriceInput.amount == ns.SellPrices(14047, "1W").best, "Best price uses the chart's timeframe")
+check(csf.PriceInput.amount == sp.at and cBest:GetText() == "Sell at: " .. ns.MoneyText(sp.at), "the chart's timeframe never changes the price")
 ns.SetChartTF("1D")
 ahf:SetPostItem({ itemID = 999, commodity = true })
 check(not cUse:IsShown() and not cBest:IsShown(), "no buttons without price data")
@@ -1060,12 +1068,12 @@ check(ns.ChartItem() == 999 and (C.msg:GetText() or ""):find("No recent listings
 M.fireScript(cUse, "OnClick")
 check(csf.PriceInput.amount == 100, "clicking without advice leaves Blizzard's price alone")
 
-section("modern AH: no advice yet: Sell now only, no Best price")
+section("modern AH: no advice yet: Sell now only")
 ahf:SetPostItem({ itemID = 9, commodity = true })
 M.RunTimers()
 check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(699) and not cBest:IsShown(),
-  "too little history: Sell now from the price data, no Best price: " .. tostring(cUse:GetText()))
-check((cUse.tipBody or ""):find("not enough price history yet for a suggested price", 1, true) ~= nil, "tooltip says why: " .. tostring(cUse.tipBody))
+  "too little history: Sell now from the price data, one price: " .. tostring(cUse:GetText()))
+check((cUse.tipBody or ""):find("suggested", 1, true) == nil, "no suggested price mentioned: " .. tostring(cUse.tipBody))
 AHS.StoreLive(9, 650, false)
 M.RunTimers()
 check(cUse:IsShown() and cUse:GetText() == "Sell now: " .. ns.MoneyText(649), "1 copper under the live listing: " .. tostring(cUse:GetText()))
@@ -1138,10 +1146,10 @@ local fired = M.atrFired[#M.atrFired]
 check(fired and fired.event == "price_selected" and fired.args[1].buyout == sp.now and fired.args[2] == false,
   "fires PriceSelected with the Sell now copper")
 local aBest = M.FindChild(AuctionatorSellingFrame.SaleItemFrame, function(c) return c.kind == "best" end)
-check(aUse.kind == "now" and aBest and aBest:IsShown(), "Auctionator Best price button shown too")
+check(aUse.kind == "now" and aBest and aBest:IsShown(), "Auctionator Sell at button shown too (Runecloth is dumped)")
 M.fireScript(aBest, "OnClick")
 fired = M.atrFired[#M.atrFired]
-check(fired and fired.args[1].buyout == sp.best, "Best price through PriceSelected")
+check(fired and fired.args[1].buyout == sp.at, "Sell at through PriceSelected")
 AuctionatorSellingFrame:Hide()
 C_AuctionHouse.SendSellSearchQuery({ itemID = 2589, itemLevel = 0, itemSuffix = 0, battlePetSpeciesID = 0 }, {}, false)
 M.RunTimers()
@@ -1240,16 +1248,16 @@ M.Fire("NEW_AUCTION_UPDATE")
 check(ns.ChartItem() == 14047, "sell slot item")
 local lUse = M.FindChild(AuctionFrameAuctions, function(c) return c.kind == "now" end)
 local lBest = M.FindChild(AuctionFrameAuctions, function(c) return c.kind == "best" end)
-check(lUse and lUse:IsShown() and lBest and lBest:IsShown(), "legacy Sell now and Best price buttons shown")
+check(lUse and lUse:IsShown() and lBest and lBest:IsShown(), "legacy Sell now and Sell at buttons shown")
 local sp = ns.SellPrices(14047, "1D")
-check(lUse:GetText() == "Sell now: " .. ns.MoneyText(sp.now) and lBest:GetText() == "Suggested: " .. ns.MoneyText(sp.best), "legacy labels")
+check(lUse:GetText() == "Sell now: " .. ns.MoneyText(sp.now) and lBest:GetText() == "Sell at: " .. ns.MoneyText(sp.at), "legacy labels")
 M.fireScript(lUse, "OnClick")
 check(BuyoutPrice.copper == sp.now * 5 and StartPrice.copper == sp.now * 5, "per-stack price = Sell now x stack size: " .. tostring(BuyoutPrice.copper))
 AuctionFrameAuctions.priceType = 1
 M.fireScript(lUse, "OnClick")
 check(BuyoutPrice.copper == sp.now, "per-unit price")
 M.fireScript(lBest, "OnClick")
-check(BuyoutPrice.copper == sp.best, "per-unit Best price")
+check(BuyoutPrice.copper == sp.at, "per-unit Sell at")
 M.legacySell = { "Linen Cloth", "tex", 10, 1, true, 0, 0, 10, 10 }
 M.Fire("NEW_AUCTION_UPDATE")
 check(ns.ChartItem() == 2589, "sell item found by name when no itemID is returned")
@@ -1282,8 +1290,8 @@ for _, tf in ipairs({ "1D", "5D", "1W", "1M", "1Y" }) do
   local ok = true
   for i = 2, #yl do if yl[i] == yl[i - 1] then ok = false end end
   check(ok, "y labels differ " .. tf .. ": " .. table.concat(yl, ", "))
-  local rec = ns.Recommend(2589, tf)
-  check(rec and C.listBox.value:GetText() == ns.MoneyIcons(rec.listAt), "List At box matches Recommend " .. tf)
+  local spr = ns.SellPrices(2589, tf)
+  check(spr and C.listBox.value:GetText() == ns.MoneyIcons(spr.at), "Sell at box matches SellPrices on " .. tf)
 end
 ns.SetChartTF("1D")
 for id in pairs(ns.db.items) do

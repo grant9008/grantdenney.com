@@ -488,7 +488,10 @@ if ($InGame) {
     Say ' You can delete the zip now. Leave the files you unzipped into the'
     Say ' game folder where they are.'
 } else {
-    Say ' You can delete the zip and the unzipped folder now.'
+    # Not the folder: its Install-Goblin-Ledger.bat is the way to fresh prices
+    # right away, which is what the game asks for when they are 3 hours old.
+    Say ' You can delete the zip now. Keep the unzipped folder: running its'
+    Say ' Install-Goblin-Ledger.bat again gets fresh prices right away.'
 }
 Say '============================================================'
 exit 0

@@ -5,8 +5,11 @@ local ADDON_NAME, ns = ...
 -- item you search for, click on, or put in the sell slot. Adds two small
 -- buttons to the sell frame that fill in the price box:
 --   "Sell now: X"    1 copper under the cheapest listing
---   "Suggested: X"   the price it usually sells for (from the price history;
---                    after a drop that lasts, the highest price since)
+--   "Sell at: X"     only when Sell now is under 70% of the usual price (the
+--                    middle of the last 24 hourly prices): that usual price,
+--                    and Sell now turns yellow. Nothing listed: the usual
+--                    price alone. One rule for the tooltip, these buttons and
+--                    the chart (ns.SellPrices).
 -- A search that finds nothing ("No items found") gets a few lines under
 -- Blizzard's text: when the item was last listed, for how much, how many sold.
 --
@@ -59,7 +62,7 @@ ns.AHState = AH
 
 local sellIDs = setmetatable({}, { __mode = "k" })    -- Blizzard sell frame -> itemID
 local sellVer = setmetatable({}, { __mode = "k" })    -- Blizzard sell frame -> version info (VersionInfo)
-local useButtons = setmetatable({}, { __mode = "k" }) -- Blizzard sell frame -> { now = button, best = button }
+local useButtons = setmetatable({}, { __mode = "k" }) -- Blizzard sell frame -> { now = button, best = the Sell at button }
 local toggles = setmetatable({}, { __mode = "k" })    -- AH frame -> our Chart button
 
 ---------------------------------------------------------------------------
@@ -87,12 +90,6 @@ local function MoneyI(c)
   if type(ns.MoneyIcons) == "function" then return ns.MoneyIcons(c) end
   if type(ns.MoneyText) == "function" then return ns.MoneyText(c) end
   return tostring(c) .. "c"
-end
-
-local function TF()
-  local tf = ns.settings and ns.settings.chartTF
-  if type(tf) == "string" then return tf:upper() end
-  return "1D"
 end
 
 local function ChartWanted()
@@ -388,19 +385,20 @@ end
 ---------------------------------------------------------------------------
 -- Prices for the sell buttons
 ---------------------------------------------------------------------------
--- Returns the Sell now and Suggested price prices to fill (already rounded for the
--- frame, nil when that button hides) and what they are based on, or nil, nil
--- and a reason ("market", "suffix", "stale", "history", "unreliable", "none").
+-- Returns the Sell now and Sell at prices to fill (already rounded for the
+-- frame, nil when that button hides; Sell at only when it differs from Sell
+-- now) and what they are based on, or nil, nil and a reason ("market",
+-- "suffix", "stale", "unreliable", "none").
 -- ver is VersionInfo for the item (nil: a plain item).
 local function SellAdvice(id, isCommodity, ver)
   if not id or type(ns.SellPrices) ~= "function" then return nil, nil, "none" end
-  -- reasons also: "nolive" (no listing of this version is up and there is no Suggested price)
+  -- reasons also: "nolive" (no listing of this version is up and there is no usual price)
   if type(ns.MarketMismatch) == "function" and ns.MarketMismatch() then return nil, nil, "market" end
   ver = type(ver) == "table" and ver or { mode = "plain" }
   local age = type(ns.DataAge) == "function" and ns.DataAge() or nil
   if ver.mode == "unknown" then
     -- The data has no prices for this version: only its own live listing,
-    -- 1 copper under it (matched when it is yours). No Suggested price.
+    -- 1 copper under it (matched when it is yours). No usual price.
     local r = LiveVersion(id, ver.liveKey)
     local p = r and Num(r.price)
     if not p or p <= 1 then return nil, nil, "suffix" end
@@ -410,21 +408,29 @@ local function SellAdvice(id, isCommodity, ver)
   end
   local pid = ver.vid or id
   local lp, own = ns.LiveCheapest(pid)
-  if not lp and age and age > (ns.STALE_SECONDS or 21600) then return nil, nil, "stale" end
+  -- Stale prices (ns.AgeState): only a live listing gives a price to fill.
+  if not lp and type(ns.AgeState) == "function" and ns.AgeState(age) == "stale" then return nil, nil, "stale" end
   -- The item's listings have all loaded and none of them is this version: the
   -- cheapest one the price data saw is gone, so there is nothing to undercut.
-  -- Sell now hides; Suggested price (from the history) still works.
+  -- Sell now hides; Sell at the usual price still works.
   local noLive = ver.mode == "version" and not lp and AH.open and AH.liveLoaded[id] == true
-  local ok, P = pcall(ns.SellPrices, pid, TF(), lp, own)
+  local ok, P = pcall(ns.SellPrices, pid, nil, lp, own)
   if not ok or type(P) ~= "table" then return nil, nil, "none" end
   local now = (not noLive) and P.now and PriceForFrame(P.now, isCommodity) or nil
-  local best = P.best and PriceForFrame(P.best, isCommodity) or nil
-  if not now and not best then
-    if noLive then return nil, nil, "nolive" end
-    return nil, nil, (P.nowWhy == "unreliable" and "unreliable") or P.bestWhy or "none"
+  local atP
+  if noLive then
+    atP = P.usual
+  elseif P.at and (P.under or not P.now) then
+    atP = P.at
   end
-  return now, best, { live = lp, matched = P.own == true, age = age, P = P, rec = P.rec, mode = ver.mode, ver = ver,
-                      noLive = noLive }
+  local at = atP and PriceForFrame(atP, isCommodity) or nil
+  if at and now and at == now then at = nil end   -- rounded to whole silver they can meet
+  if not now and not at then
+    if noLive then return nil, nil, "nolive" end
+    return nil, nil, (P.nowWhy == "unreliable" and "unreliable") or "none"
+  end
+  return now, at, { live = lp, matched = P.own == true, age = age, P = P, rec = P.rec, mode = ver.mode, ver = ver,
+                    noLive = noLive, under = (not noLive) and P.under or nil, usual = P.usual }
 end
 AH.SellAdvice = SellAdvice
 
@@ -462,33 +468,33 @@ local function NowText(info, postWord)
   if type(rec) == "table" and rec.far then
     lines[#lines + 1] = "The cheapest listing is far above recent prices, so it may not sell soon."
   end
-  local mkt = type(rec) == "table" and Num(rec.marketNow) or nil
-  local nowP = type(P) == "table" and Num(P.now) or nil
-  if mkt and nowP and mkt > 0 and nowP < mkt * 0.9 then
-    lines[#lines + 1] = "Today's market price is higher (" .. MoneyI(mkt) .. "): waiting may get you more."
+  -- Far under the usual price: someone is dumping. Backtest (18-19 Nov): at the
+  -- usual price about 1 in 4 sold within a day (3 in 4 at Sell now), but kept more.
+  if info and info.under and Num(info.usual) then
+    lines[#lines + 1] = "This is " .. info.under .. "% under the usual price (" .. MoneyI(info.usual)
+      .. "). Sell at gets more if you can wait: about 1 in 4 sold within a day there, 3 in 4 at Sell now."
   end
-  if type(P) == "table" and P.bestWhy == "history" then
-    lines[#lines + 1] = "There is not enough price history yet for a suggested price."
-  elseif type(P) == "table" and P.bestWhy == "unreliable" then
-    lines[#lines + 1] = "This item's price may not be reliable (see the chart notes), so there is no suggested price."
+  if type(rec) == "table" and (rec.thinListings or rec.vendorFar) then
+    lines[#lines + 1] = "Only a few are listed, so this price may not be reliable."
   end
   if type(P) == "table" and P.nowVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
 
--- The tooltip of the Suggested (price) button.
+-- The tooltip of the Sell at button (the usual price).
 local function BestText(info, postWord)
-  local lines = { "Fills the price box with what this item usually sells for (from the price history), never under a normal cheapest listing. It can take longer to sell than Sell now." }
-  lines[#lines + 1] = BasisText(info)
+  local lines = { "Fills the price box with the usual price: the middle of its last 24 hourly prices." }
+  if info and info.under then
+    lines[#lines + 1] = "Sell now is " .. info.under .. "% under it: someone is selling cheap. Waiting at this price got more on average, but only about 1 in 4 sold within a day."
+  elseif info and info.noLive then
+    lines[#lines + 1] = BasisText(info)
+  else
+    lines[#lines + 1] = "Nothing is listed right now to undercut."
+  end
   lines[#lines + 1] = VersionText(info)
   local P = info and info.P
-  -- Only when the button shows that price (a live listing can lift it).
-  if type(P) == "table" and type(P.rec) == "table" and P.rec.settled and P.rec.settledHours
-    and P.best ~= nil and P.best == P.rec.sell then
-    lines[#lines + 1] = "The price fell and stayed down, so this is the highest price of the last " .. P.rec.settledHours .. " hours."
-  end
-  if type(P) == "table" and P.bestVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
+  if type(P) == "table" and P.atVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
   lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
   return table.concat(lines, " ")
 end
@@ -537,7 +543,7 @@ local function RaiseAbove(btn, ref, fallbackParent)
 end
 
 ---------------------------------------------------------------------------
--- The pair of price buttons: "Sell now: X" and "Suggested: X"
+-- The pair of price buttons: "Sell now: X" and "Sell at: X" (pair.best)
 ---------------------------------------------------------------------------
 local PAIR_W, PAIR_H, PAIR_GAP = 136, 20, 4
 
@@ -558,7 +564,7 @@ local function NewPair(parent, isCommodity, place, onClick)
     pair[kind] = b
   end
   AttachTooltip(pair.now, "Sell now", "Fills the price box with 1 copper under the cheapest listing. Nothing is posted: you still click Post.")
-  AttachTooltip(pair.best, "Suggested price", "Fills the price box with what this item usually sells for. Nothing is posted: you still click Post.")
+  AttachTooltip(pair.best, "Sell at", "Fills the price box with the usual price. Nothing is posted: you still click Post.")
   return pair
 end
 
@@ -579,14 +585,19 @@ end
 local function SetPairPrices(pair, now, best, info, postWord)
   pair.now.price, pair.best.price = now, best
   if now then
-    pair.now:SetText("Sell now: " .. MoneyI(now))
+    -- Yellow when it is far under the usual price (the Sell at button shows that one).
+    local txt = "Sell now: " .. MoneyI(now)
+    if best and info and info.under and type(ns.Hex) == "function" and type(ns.COLORS) == "table" and ns.COLORS.warn then
+      txt = "|c" .. ns.Hex(ns.COLORS.warn) .. txt .. "|r"
+    end
+    pair.now:SetText(txt)
     pair.now.tipBody = NowText(info, postWord)
     pair.now:Show()
   else
     pair.now:Hide()
   end
   if best then
-    pair.best:SetText("Suggested: " .. MoneyI(best))
+    pair.best:SetText("Sell at: " .. MoneyI(best))
     pair.best.tipBody = BestText(info, postWord)
     pair.best:Show()
   else
@@ -1168,7 +1179,7 @@ local function CreateToggleButton(parent, kind)
 end
 
 ---------------------------------------------------------------------------
--- Blizzard sell frames: track the item and offer the List At price
+-- Blizzard sell frames: track the item and offer the price to sell at
 ---------------------------------------------------------------------------
 -- Random-suffix gear ("of the Monkey") shares one item ID across very
 -- different values, and the price data cannot tell the versions apart.
@@ -1224,7 +1235,7 @@ local function UpdateUseButton(sf)
   SetPairPrices(pair, now, best, info, "Post")
 end
 
--- Fills the price box with the Sell now ("now") or Suggested price ("best") price.
+-- Fills the price box with the Sell now ("now") or Sell at ("best") price.
 local function ApplySellPrice(sf, kind)
   local pair = useButtons[sf]
   if not sellIDs[sf] and type(sf.GetItem) == "function" then
@@ -1278,11 +1289,51 @@ local function CreateUseButton(sf, isCommodity)
   useButtons[sf] = pair
 end
 
+-- The deposit the game asks for the item in a sell slot, at each listing
+-- time (the game works it out itself: nothing is sent), for 1 and for as
+-- many as one listing can hold, and the listing time picked: kept by
+-- ns.NoteDeposit for the tooltip's Auction it / Vendor it call.
+local function ReadDeposit(sf, id, loc)
+  local CAH = _G.C_AuctionHouse
+  local pair = useButtons[sf]
+  if not id or loc == nil or not pair or type(CAH) ~= "table" or type(ns.NoteDeposit) ~= "function" then return end
+  local it = type(ns.GetItem) == "function" and ns.GetItem(id) or nil
+  local vendor = it and Num(it.vendor) or 0
+  if vendor <= 0 then return end
+  local f = pair.isCommodity and CAH.CalculateCommodityDeposit or CAH.CalculateItemDeposit
+  if type(f) ~= "function" then return end
+  local what = pair.isCommodity and id or loc
+  local n = 1
+  if type(CAH.GetAvailablePostCount) == "function" then
+    local ok, c = pcall(CAH.GetAvailablePostCount, loc)
+    if ok and Num(c) and c > 1 then n = min(floor(c), 200) end
+  end
+  local deps, hours = {}, {}
+  for d = 1, 3 do
+    local ok1, one = pcall(f, what, d, 1)
+    local okN, many = pcall(f, what, d, n)
+    deps[d] = { one = ok1 and Num(one) or nil, many = okN and Num(many) or nil }
+    -- The game's own name for the listing time ("8 Hours"): its hours.
+    local name = _G[({ "AUCTION_DURATION_ONE", "AUCTION_DURATION_TWO", "AUCTION_DURATION_THREE" })[d]]
+    hours[d] = type(name) == "string" and not IsSecret(name) and tonumber(string.match(name, "(%d+)")) or nil
+  end
+  local dur
+  if type(sf.GetDuration) == "function" then
+    local ok, v = pcall(sf.GetDuration, sf)
+    if ok then dur = Num(v) end
+  end
+  pcall(ns.NoteDeposit, vendor, n, deps, dur, hours)
+end
+
 local function OnSellItem(sf, loc)
   local id = loc ~= nil and ItemIDFromLocation(loc) or nil
   sellIDs[sf] = id
   sellVer[sf] = id ~= nil and LocationVersion(id, loc) or nil
   NoteSuffix(id, sellVer[sf] and sellVer[sf].suffix)
+  if id then
+    local okD, errD = pcall(ReadDeposit, sf, id, loc)
+    if not okD then AH.lastError = errD end
+  end
   UpdateUseButton(sf)
   if id then SetItemNow((sellVer[sf] and sellVer[sf].vid) or id, true) end
 end
@@ -1531,7 +1582,7 @@ AH.AddSellArrows = AddSellArrows
 ---------------------------------------------------------------------------
 local atrListener = {}
 local atrSource = {}
-local atrPair   -- { now = button, best = button } in Auctionator's Selling tab
+local atrPair   -- { now = button, best = the Sell at button } in Auctionator's Selling tab
 
 local function AtrSellingVisible()
   local f = _G.AuctionatorSellingFrame
@@ -1614,7 +1665,7 @@ local function UpdateAtrUseButton()
   SetPairPrices(atrPair, now, best, info, "Post")
 end
 
--- Fills Auctionator's buyout box with the Sell now ("now") or Suggested price ("best") price.
+-- Fills Auctionator's buyout box with the Sell now ("now") or Sell at ("best") price.
 local function ApplyAuctionatorPrice(kind)
   local b = atrPair and atrPair[kind == "best" and "best" or "now"]
   if b and not b.price then UpdateAtrUseButton() end
@@ -1916,6 +1967,11 @@ local function HookModern()
       local okA, errA = pcall(AddSellArrows, sf)
       if not okA then AH.lastError = errA end
       SafeHook(sf, "SetItem", function(self, loc) OnSellItem(self, loc) end)
+      -- A new listing time: the tooltip's call uses its deposit.
+      SafeHook(sf, "OnDurationUpdated", function(self)
+        local ok, v = pcall(self.GetDuration, self)
+        if ok and Num(v) and type(ns.NoteDeposit) == "function" then pcall(ns.NoteDeposit, 1, 1, {}, v) end
+      end)
     end
   end
   if type(f.HookScript) == "function" then
@@ -1935,7 +1991,7 @@ end
 -- Legacy auction house (AuctionFrame, Blizzard_AuctionUI). Not expected on
 -- Forever, kept so the addon still works if the old UI is ever used.
 ---------------------------------------------------------------------------
-local legacyPair   -- { now = button, best = button } above Create Auction
+local legacyPair   -- { now = button, best = the Sell at button } above Create Auction
 
 local function LegacyItemIDAt(listType, index)
   if type(_G.GetAuctionItemLink) == "function" then
@@ -1969,7 +2025,7 @@ UpdateLegacyUseButton = function()
 end
 
 -- Fills the buyout and starting bid (per unit or per stack, as the old frame
--- is set) with the Sell now ("now") or Suggested price ("best") price.
+-- is set) with the Sell now ("now") or Sell at ("best") price.
 local function ApplyLegacyPrice(kind)
   local b = legacyPair and legacyPair[kind == "best" and "best" or "now"]
   if b and not b.price then UpdateLegacyUseButton() end
@@ -2040,8 +2096,8 @@ local function HookLegacy()
     RaiseAbove(legacyPair.best, nil, parent)
     AttachTooltip(legacyPair.now, "Sell now",
       "Fills the buyout and starting bid with 1 copper under the cheapest listing. Nothing is posted: you still click Create Auction.")
-    AttachTooltip(legacyPair.best, "Suggested price",
-      "Fills the buyout and starting bid with what this item usually sells for. Nothing is posted: you still click Create Auction.")
+    AttachTooltip(legacyPair.best, "Sell at",
+      "Fills the buyout and starting bid with the usual price. Nothing is posted: you still click Create Auction.")
   end
   -- Arrows on the starting bid and buyout boxes, written like the buttons do.
   for _, name in ipairs({ "StartPrice", "BuyoutPrice" }) do

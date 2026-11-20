@@ -20,7 +20,7 @@
   the photo):
 
     img/tooltip.png      item tooltip with the Goblin Ledger lines
-      <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, AH value, average, Sell now and Suggested price.">
+      <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, the AH value and the prices to sell at.">
     img/prices-site.png  the price website (goblin-ledger/prices/)
       <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
 
@@ -485,7 +485,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">examples</span></p>
         <p class="tip-row big t-pos"><span>Auction it</span><span>+26% vs vendor</span></p>
         <p class="tip-row big t-neg"><span>Vendor it</span><span>+5% vs AH</span></p>
-        <p class="tip-row t-mut"><span>Close call</span><span>AH +9%</span></p>
+        <p class="tip-row t-mut"><span>Close call</span><span>AH +9%, vendor is safer</span></p>
         <p class="tip-row"><span class="t-buy">Maybe auction</span><span class="t-mut">few listed</span></p>
       </div>
       <figcaption>Example calls from an item tooltip. Green means auction it, red means vendor it, and the number says by how much.</figcaption>
@@ -505,25 +505,23 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <h3>Prices in your tooltips</h3>
         <p>Hover an item and the tooltip shows:</p>
         <ul class="ticks">
-          <li><b>AH value</b>: what it goes for on the auction house now, and how far that is from its recent average, like "+2% vs avg". At the auction house it shows the cheapest listing live.</li>
-          <li><b>Average</b>: its average price over the last 7 days</li>
-          <li><b>Sell now</b>: 1 copper under the cheapest listing</li>
-          <li><b>Suggested price</b>: what it usually sells for, going by its price history</li>
+          <li><b>AH value</b>: what it goes for on the auction house now, and how far that is from its usual price, like "+2% vs usual" (from 40% the word "spike" or "dropped"). At the auction house it shows the cheapest listing live.</li>
+          <li><b>Usual price</b>: the middle of its last 24 hourly prices</li>
+          <li><b>Sell now</b>: 1 copper under the cheapest listing, the one price to sell at. When someone is selling far under the usual price, Sell now turns yellow ("38% under usual") and a <b>Sell at</b> line gives the usual price instead.</li>
           <li>A big green <b class="c-pos">Auction it</b> or red <b class="c-neg">Vendor it</b> that says how much better that choice is, like "Auction it +26% vs vendor". The price that wins is big too: the <b>AH value</b> under Auction it, or a <b>Vendor pays</b> line under Vendor it. When it is not clear-cut, it says <b>Close call</b> or <b>Maybe auction</b>.</li>
         </ul>
         <p class="note">Tip: hold Shift over a stack to see what the whole stack is worth.</p>
       </div>
       <figure class="mock">
-        <div class="mock-box gametip" role="img" aria-label="Drawing of an item tooltip for a stack of 20 Linen Cloth with the Goblin Ledger lines: Auction it, 3.4 times the vendor price, and the AH value, both in bigger text; AH value 44 copper, 2 percent over its average; 7-day average 43 copper; Sell now 41 copper; Suggested price 46 copper; this stack after the auction cut 8 silver 36 copper.">
+        <div class="mock-box gametip" role="img" aria-label="Drawing of an item tooltip for a stack of 20 Linen Cloth with the Goblin Ledger lines: Auction it, 3.4 times the vendor price, and the AH value, both in bigger text; AH value 44 copper, 2 percent over its usual price; usual price 43 copper; Sell now 41 copper; this stack after the auction cut 7 silver 79 copper.">
           <p class="mock-tag">Drawing, not a screenshot</p>
           <p class="tip-item">Linen Cloth</p>
           <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">25m ago</span></p>
           <p class="tip-row big t-pos"><span>Auction it</span><span>3.4x vendor</span></p>
-          <p class="tip-row big"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-mut">+2% vs avg</span></span></p>
-          <p class="tip-row"><span>7-day average</span><span class="m-c">43c</span></p>
+          <p class="tip-row big"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-mut">+2% vs usual</span></span></p>
+          <p class="tip-row"><span>Usual price</span><span class="m-c">43c</span></p>
           <p class="tip-row"><span>Sell now</span><span class="m-c">41c</span></p>
-          <p class="tip-row"><span>Suggested price</span><span class="m-c">46c</span></p>
-          <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">8s</span> <span class="m-c">36c</span></span></p>
+          <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">7s</span> <span class="m-c">79c</span></span></p>
         </div>
         <figcaption>What the lines look like, drawn here with example numbers. In the game they sit under the item's own tooltip text.</figcaption>
       </figure>
@@ -556,7 +554,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <ul class="ticks">
           <li>A <b>price chart</b> docks under the auction house window and follows the item you search for or click.</li>
           <li>Nothing listed? Under "No items found" it says when the item was last listed, for how much, and how many sold.</li>
-          <li><b>Sell now</b> and <b>Suggested</b> buttons fill in the price box. You still click Post yourself.</li>
+          <li>A <b>Sell now</b> button fills in the price box (and a <b>Sell at</b> button when someone is dumping far under the usual price). You still click Post yourself.</li>
           <li>Little <b>up and down arrows</b> in the gold, silver and copper boxes change the price by 1. Hold one to keep going.</li>
           <li>A <b>sidebar of flip ideas</b> sized to the gold on your character, ranked by the profit you can expect within a day. Click one to search for it.</li>
           <li>Your <b>watchlist</b>: a starter list of trade goods that you add to and trim.</li>
@@ -565,7 +563,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
       </div>
       <figure class="shot">
         <img src="img/auction-house.png" width="710" height="726" loading="lazy" decoding="async"
-             alt="Screenshot of the auction house selling a stack of Smooth Stone Chip: the Sell now and Suggested buttons under the price box, and the Goblin Ledger price chart docked underneath with Target Buy, List At and a note that a vendor pays more.">
+             alt="Screenshot of the auction house selling a stack of Smooth Stone Chip: the Goblin Ledger sell buttons under the price box, and the Goblin Ledger price chart docked underneath with its two price boxes and a note that a vendor pays more.">
       </figure>
     </div>
 
@@ -576,7 +574,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <ul class="ticks">
           <li><b>Browse</b> every item on the auction house</li>
           <li><b>Price history charts</b> for each item</li>
-          <li><b>Flip Finder</b> with deals on greens, blues and epics</li>
+          <li><b>Auto lists</b> of the greens, blues and epics that trade the most</li>
           <li><b>Favorites</b> lists for the items you care about</li>
         </ul>
         <p class="note">Prices come from Blizzard's auction house data for the Alliance auction house on the US PvP realms, refreshed about every hour.</p>
@@ -635,7 +633,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 
     <div class="card both">
       <p class="k">Use both if you like</p>
-      <p>The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab. Auctionator does the posting and buying, Goblin Ledger tells you what things are worth.</p>
+      <p>The price chart follows Auctionator's tabs, and the Sell now button sits under its price box in the Selling tab. Auctionator does the posting and buying, Goblin Ledger tells you what things are worth.</p>
     </div>
   </div>
 </section>
@@ -766,7 +764,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <p>Over a stack, the tooltip prices count the whole stack.</p>
       </div>
       <div class="card">
-        <p class="k">Sell now and Suggested</p>
+        <p class="k">Sell now and Sell at</p>
         <p>They only fill in the price box. Check the price, then click Post.</p>
       </div>
     </div>
@@ -818,7 +816,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 
       <div class="card">
         <h3>Is it safe?</h3>
-        <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Suggested buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
+        <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Sell at buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
         <p>The installer is plain text you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and, if you say yes, adds one Windows task that keeps that file fresh and installs new official versions of the addon. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
       </div>
 
@@ -831,7 +829,7 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
         <h3>Does it work with ElvUI, Auctionator and Questie?</h3>
         <ul class="ticks">
           <li><b>ElvUI</b>: yes. The Bag cleanup button shows up in ElvUI's bag window.</li>
-          <li><b>Auctionator</b>: yes. The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab.</li>
+          <li><b>Auctionator</b>: yes. The price chart follows Auctionator's tabs, and the Sell now button sits under its price box in the Selling tab.</li>
           <li><b>Questie</b>: yes, and it helps. Bag cleanup uses Questie's quest database to say which quest items you can drop ("Can drop: done with" and the quest). Without Questie it goes by your quest log.</li>
         </ul>
         <p>Another bag addon that hides the game's bags? Type <code>/gl bags</code> to get the cleanup list in chat.</p>
