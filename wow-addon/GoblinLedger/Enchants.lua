@@ -1,10 +1,10 @@
 local ADDON_NAME, ns = ...
 -- Goblin Ledger: the best enchants for the gear under the mouse.
 --
--- Gear in your bags, item links and gear you wear: the two best enchants for
--- your role (Top 2), or those and up to three budget options that cost less
--- than the best (Top 5), each with its mats and what they cost at today's AH
--- value. Upgrades you buy and use yourself are options too: Leatherworking
+-- Gear you wear (the character panel's slots; not bags or links): the two best enchants for
+-- your role and up to three budget options that cost less than both (Top 5, the
+-- default), or the two best only (Top 2), each with its mats and what they cost
+-- at today's AH value. Upgrades you buy and use yourself are options too: Leatherworking
 -- armor kits, Engineering scopes, and Blacksmithing spikes and counterweights
 -- for a blacksmith. Only upgrades show: an item with the 3rd best gets the best
 -- and the 2nd, one with the best gets nothing. A warrior's or rogue's gun, bow
@@ -418,7 +418,16 @@ local ENCHANTS = {
 -- Specialization), so a fast off-hand's weapon damage is worth what a 2.6 sec main hand's is.
 -- Crusader's rate decides it against Fiery Weapon: at the 1 a minute used here Fiery Weapon leads by
 -- about 19% on mobs of your level; from 1.2 a minute (or against raid bosses, who resist spells) the
--- two are level. Fiery Weapon stays first: as good or better, and its mats cost far less.
+-- two are level. Fiery Weapon stays first (without rage): as good or better, and its mats cost far less.
+-- Rage (warriors in every spec: the /WARRIOR lists; a bear: tank/DRUID and the 2H tank list): rage
+-- comes from the melee damage you deal (a point from about 23 damage at level 47, 31 at 60), and a
+-- point buys about 6 to 8 damage (Heroic Strike, Mortal Strike, Maul): melee damage is worth about a
+-- quarter more. Strength, Agility and weapon damage bring that rage, a proc's fire or shadow damage
+-- none, so there a proc counts 1 / 1.25: Fiery Weapon 43 AP, Lifestealing 32, Crusader 45 first
+-- (Superior Impact goes above Lifestealing on a 2H; a bear's Crusader above Lifestealing). Rogues and
+-- cats (energy), paladins, shamans and hunters (mana) do not get their resource from the damage they
+-- deal: their lists stay. A warrior's dagger gets the warrior's 1H list (class lists come first): a
+-- warrior holds it in the off hand, where the 1H list fits.
 -- The 2H tank list is mostly for bears (a druid's tank role on a staff): weapon damage counts 0 there.
 -- Enchant: Fiery Blaze (36, quest
 -- 706's reward) hits 15% of swings (its own table entry) for 9 to 13 fire: 0.47 a second on a 3.4 sec
@@ -433,13 +442,15 @@ local ENCHANTS = {
 local PICKS = {
   weapon = {
     ["melee"] = { "s13898", "s20034", "s20032", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 8, [2568] = 9 } },
+    ["melee/WARRIOR"] = { "s20034", "s13898", "s20032", "s23799", "s20031", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 8, [2568] = 9 } },
     ["agility"] = { "s13898", "s20032", "s20031", "s20034", "s23800", "s13943", "s13693", "s13503", "s7788", at = { [36] = 9, [2563] = 8 } },
     ["tank"] = { "s13898", "s20034", "s20032", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503", at = { [36] = 10 } },
+    ["tank/WARRIOR"] = { "s20034", "s13898", "s20032", "s23799", "s23800", "s20031", "s1248760", "s13943", "s13693", "s13503", at = { [36] = 11 } },
     ["melee/dagger"] = { "s13898", "s20034", "s20032", "s20031", "s13943", "s23799", "s13693", "s13503", "s7788", at = { [36] = 9, [2564] = 9, [2568] = 9 } },
     ["agility/dagger"] = { "s13898", "s20032", "s20031", "s13943", "s23800", "s13693", "s20034", "s13503", "s7788", at = { [36] = 9, [2563] = 8 } },
     ["tank/dagger"] = { "s13898", "s20034", "s20032", "s23799", "s20031", "s1248760", "s13943", "s23800", "s13693", "s13503", at = { [36] = 10 } },
     ["agility/DRUID"] = { "s13898", "s20034", "s20032", "s23799", "s23800", at = { [36] = 6 } },
-    ["tank/DRUID"] = { "s13898", "s20032", "s20034", "s23799", "s23800", at = { [36] = 6 } },
+    ["tank/DRUID"] = { "s13898", "s20034", "s20032", "s23799", "s23800", at = { [36] = 6 } },
     ["hunter"] = { "s23800" },
     ["caster"] = { "s23804", "s1248805", "s1248757", up = { 2504 } },
     ["caster/MAGE3"] = { "s23804", "s1248805", "s1248757", up = { 2504, 2443 } },
@@ -449,9 +460,11 @@ local PICKS = {
   },
   weapon2h = {
     ["melee"] = { "s13898", "s20034", "b6043", "s20032", "s20030", "s1248511", "s13937", "s13695", "s13529", "s7745", up = { 8215 }, at = { [36] = 11, [2564] = 11, [2646] = 9 } },
+    ["melee/WARRIOR"] = { "s20034", "s13898", "b6043", "s20030", "s20032", "s1248511", "s13937", "s13695", "s13529", "s7745", up = { 8215 }, at = { [36] = 11, [2564] = 11, [2646] = 9 } },
     ["agility"] = { "s13898", "s27837", "s20034", "s20032", "s1248511", "s1248510", at = { [36] = 7, [2564] = 6 } },
     ["hunter"] = { "s27837", "s1248510", at = { [2564] = 2, [2568] = 2 } },
     ["tank"] = { "s13898", "s20034", "s20032", "s27837", "s1248511", "s1248510", at = { [36] = 7, [2564] = 6, [7662] = 6, [8211] = 6 } },
+    ["tank/WARRIOR"] = { "s20034", "s13898", "s27837", "s20032", "s1248511", "s1248510", at = { [36] = 7, [2564] = 6, [7662] = 6, [8211] = 6 } },
     ["caster"] = { "s1219580", "s1248607", "s20036", "s7793", at = { [2568] = 3, [8212] = 3 } },
     ["healer"] = { "s1248636", "s1219580", "s20036", "s7793", "s20035", "s13380", at = { [2567] = 5, [2568] = 3, [8211] = 3 } },
   },
@@ -775,15 +788,38 @@ local function whereOf(info)
 end
 E.WhereOf = whereOf
 
--- The places that get the lines (the same number of options everywhere).
-local SHOW = { bag = true, link = true, script = true, equipped = true }
+-- The places that get the lines: your own worn gear only (not bags, the bank, links, the auction
+-- house or gear you inspect). The tests add places to it to run their checks on other tooltips.
+local SHOW = { equipped = true }
 E.SHOW = SHOW
 
--- Top 2 (the two best, the default) or Top 5 (the best, then cheaper budget options).
+-- The older path ("script") does not say where the item is: worn gear when the tooltip's owner
+-- is one of the character panel's slot buttons (CharacterHeadSlot...: its id is the slot) and
+-- that slot holds this item.
+local function scriptWhere(tt, itemID)
+  if type(tt.GetOwner) ~= "function" or type(_G.GetInventoryItemLink) ~= "function" then return "script" end
+  local ok, owner = pcall(tt.GetOwner, tt)
+  if not ok or type(owner) ~= "table" or type(owner.GetName) ~= "function" or type(owner.GetID) ~= "function" then
+    return "script"
+  end
+  local okN, name = pcall(owner.GetName, owner)
+  if not okN or type(name) ~= "string" or isSecret(name) or not smatch(name, "^Character%w+Slot$") then return "script" end
+  local okI, slot = pcall(owner.GetID, owner)
+  slot = okI and plainNumber(slot) or nil
+  if not slot or slot < 1 or slot > 19 then return "script" end
+  local okL, worn = pcall(_G.GetInventoryItemLink, "player", slot)
+  if okL and type(worn) == "string" and not isSecret(worn) and tonumber(smatch(worn, "item:(%d+)") or "") == itemID then
+    return "equipped"
+  end
+  return "script"
+end
+
+-- Top 5 (the best, then cheaper budget options: the default, since the tips are on the character
+-- panel only) or Top 2 (the two best).
 local TOPS = { [2] = true, [5] = true }
 local function topN()
   local n = settings().enchantsTop
-  return TOPS[n] and n or 2
+  return TOPS[n] and n or 5
 end
 E.TopN = topN
 
@@ -1158,7 +1194,7 @@ local function costOf(key)
   return c
 end
 
--- A budget option costs less than the best, with every mat on the AH (a full price).
+-- A budget option costs less than the limit, with every mat on the AH (a full price).
 local function cheaper(key, limit)
   local c = costOf(key)
   return c.copper > 0 and #c.missing == 0 and c.copper < limit
@@ -1166,6 +1202,9 @@ end
 
 -- The options to show, best first: the usable entries before the stop, at most `most`. Past the two
 -- best (Top 5) only budget options, while the best has an AH price; without prices, the next ones.
+-- A budget option costs less than both of the two best (the 2nd's full price, when lower, is the
+-- limit): one dearer than the 2nd is worth less and costs more, no budget pick (a warrior's Crusader
+-- ~33g, Fiery Weapon ~4g: not Lifestealing ~24g).
 local function pickKeys(rec, f, level, current, most)
   local stop = stopAt(rec, current)
   if stop == 0 then return nil end
@@ -1183,6 +1222,8 @@ local function pickKeys(rec, f, level, current, most)
           freshMemos()
           local c = costOf(key).copper
           limit = c > 0 and c or nil
+        elseif n == 1 and limit and cheaper(key, limit) then
+          limit = costOf(key).copper
         end
       end
     end
@@ -1332,6 +1373,8 @@ local function addLines(tt, itemID, link, info)
   if not where then return false end
   itemID = plainNumber(itemID)
   if not itemID then return false end
+  if where == "script" then where = scriptWhere(tt, itemID) end
+  if not SHOW[where] then return false end
   if type(link) ~= "string" or isSecret(link) then link = fallbackLink(info) end
   if not link then return false end   -- without the link the current enchant is unknown
   local keys, note = optionsFor(itemID, link, where)
@@ -1449,7 +1492,7 @@ local function showToggleTip(self)
   local r = role and sformat("Role: %s (%s).", role, ROLE_HOW[how] or "auto") or "Role: none for this class."
   tt:SetOwner(self, "ANCHOR_RIGHT")
   tt:SetText("Goblin Ledger: Enchant tips", 1, 1, 1)
-  tt:AddLine("The best enchants for your role, with their cost, on gear tooltips.", tx[1], tx[2], tx[3], true)
+  tt:AddLine("The best enchants for your role, with their cost, on the gear you wear.", tx[1], tx[2], tx[3], true)
   if tooltipsOff() then
     tt:AddLine("Goblin Ledger tooltips are off: /gl tooltip turns them on.", mu[1], mu[2], mu[3], true)
   else
@@ -1819,7 +1862,7 @@ function ns.HandleSlash(msg)
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "tooltip" or cmd == "tooltips" then pcall(refreshToggle) end   -- Core's /gl tooltip: the label greys or not
   if cmd == "help" or cmd == "?" then
-    say("/gl enchants : the best enchants on gear tooltips for your role: auto, melee, agility, tank, caster, healer, "
+    say("/gl enchants : the best enchants on the gear you wear, for your role: auto, melee, agility, tank, caster, healer, "
       .. "hunter or off (auto follows your talents); top2 shows the two best, top5 adds cheaper budget options")
     say("   the price is the mats at AH value (a kit, scope or other upgrade: its own); an enchant needs an enchanter")
     say("   the Enchant tips box on the character panel turns them off and on")
@@ -1850,7 +1893,7 @@ if type(_G.CreateFrame) == "function" then
         -- What the tips were before off: "auto" or a role, kept only while they are off.
         local was = S.enchantsBeforeOff
         if S.enchants ~= "off" or (was ~= "auto" and not ROLES[was]) then S.enchantsBeforeOff = nil end
-        -- Top 2 or Top 5, kept apart from the role; anything else is the default (Top 2).
+        -- Top 2 or Top 5, kept apart from the role; anything else is the default (Top 5).
         if S.enchantsTop ~= nil and not TOPS[S.enchantsTop] then S.enchantsTop = nil end
       end
     end)
