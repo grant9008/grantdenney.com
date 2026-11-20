@@ -623,7 +623,7 @@ def test_files():
                 "## X-Website: https://grantdenney.com/goblin-ledger/\r\n"
                 "## SavedVariables: ForeverAH_Settings\r\n## Version: X.Y.Z\r\n"
                 "Data.lua\r\nLatest.lua\r\nCore.lua\r\nRecommend.lua\r\nChart.lua\r\nAH.lua\r\nSidebar.lua\r\nBags.lua\r\nEnchants.lua\r\n"
-                "Consumes.lua\r\n")
+                "Consumes.lua\r\nFlights.lua\r\n")
     # Git may check these out with either line ending; WoW reads both.
     def text(name):
         with open(os.path.join(ADDON, name), "rb") as fh:

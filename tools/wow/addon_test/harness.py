@@ -52,7 +52,7 @@ SIM = os.path.join(HERE, "sim_fetch.py")  # makes the simulated test data in gob
 SAMPLE = 250   # data files with more items than this are checked on a fixed sample of them
 
 TOC_FILES = ["Data.lua", "Latest.lua", "Core.lua", "Recommend.lua", "Chart.lua", "AH.lua", "Sidebar.lua", "Bags.lua", "Enchants.lua",
-             "Consumes.lua"]
+             "Consumes.lua", "Flights.lua"]
 TOC_HEADER = [
     "## Interface: 16001",
     "## Title: Goblin Ledger",
@@ -562,6 +562,7 @@ M.shift, M.faction, M.hardcore = false, "Alliance", false
 M.screenH, M.screenW, M.uiParentScale = 768, 768 * 16 / 9, 1
 M.client, M.copperValues, M.setOwnerClears, M.bareCoinGlobal = "modern", true, true, false
 M.hookCount = 0
+M.secureHooks = setmetatable({}, { __mode = "k" })
 
 local dbg = debug
 local os_date, os_time = os.date, os.time
@@ -1293,6 +1294,7 @@ function Tooltip:_Clear()
   local n = #(self._lines or {})
   self._lines = {}
   self._blz = 0
+  self._laidOut = 0
   if self._L then
     for i = 1, n do
       if self._L[i] then self._L[i]:SetText(nil); self._R[i]:SetText(nil) end
@@ -1335,6 +1337,12 @@ function Tooltip:AddDoubleLine(lt, rt, lr, lg, lb, rr, rg, rb)
 end
 function Tooltip:SetText(t, r, g, b, a, wrap) self:_Clear(); self:AddLine(t, r, g, b, wrap) end
 function Tooltip:NumLines() return #self._lines end
+-- Show lays the tooltip out (sizes it to its lines): lines added after the last Show are not in it.
+-- _laidOut = how many lines the last Show saw.
+function Tooltip:Show()
+  self._laidOut = #(self._lines or {})
+  Base.Show(self)
+end
 function Tooltip:SetMinimumWidth() end
 function Tooltip:SetPadding() end
 function Tooltip:FadeOut() end
@@ -1568,6 +1576,7 @@ function hooksecurefunc(a, b, c)
     fn(...)
     return unpack(res)
   end
+  M.secureHooks[tbl[name]] = name   -- the wrappers hooksecurefunc made (a global replaced by hand is not one)
   M.hookCount = M.hookCount + 1
 end
 
@@ -2504,6 +2513,25 @@ function M.InstallElvUIAddon(o)
       M.elvChecks[#M.elvChecks + 1] = frame
       frame.IsSkinned = true
     end
+    -- S:HandleCloseButton (Skins.lua 1797): strips the button's art, puts ElvUI's X (12px,
+    -- OVERLAY) in its middle, with hit insets 6, 6, 7, 7. M.elvCloses lists the buttons.
+    M.elvCloses = {}
+    function S:HandleCloseButton(f, point, x, y)
+      if f.IsSkinned then return end
+      f._normalTex, f._pushedTex, f._highlightTex, f._disabledTex, f._tex = nil, nil, nil, nil, {}
+      if not f.Texture then
+        f.Texture = f:CreateTexture(nil, "OVERLAY")
+        f.Texture:SetPoint("CENTER", f, "CENTER", 0, 0)
+        f.Texture:SetTexture("Interface\\AddOns\\ElvUI\\Media\\Textures\\Close")
+        f.Texture:SetSize(12, 12)
+        f:HookScript("OnEnter", function() end)
+        f:HookScript("OnLeave", function() end)
+        f:SetHitRectInsets(6, 6, 7, 7)
+      end
+      if point then f:SetPoint("TOPRIGHT", point, "TOPRIGHT", x or 2, y or 2) end
+      M.elvCloses[#M.elvCloses + 1] = f
+      f.IsSkinned = true
+    end
     local sk = CreateFrame("Frame")
     sk:RegisterEvent("PLAYER_LOGIN")
     sk:SetScript("OnEvent", function(self) self:UnregisterAllEvents(); S.Initialized = true end)
@@ -2713,6 +2741,131 @@ function M.InstallLegacyAPI()
   end
 end
 
+-- The flight master's map, shaped like the game's TaxiFrame (Blizzard_UIPanels_Game/Shared/
+-- TaxiFrame.lua and .xml): TaxiButton<slot> buttons whose OnEnter calls the global
+-- TaxiNodeOnButtonEnter and whose OnClick calls the global TakeTaxiNode(self:GetID()), and the
+-- taxi API. M.OpenTaxi(nodes, mapID): nodes[slot] = { id, name, type ("CURRENT", "REACHABLE",
+-- "DISTANT", "UNREACHABLE", "NONE"), x, y (TaxiNodePosition), cost, hops = { slot, ..., slot }
+-- (the route the game will fly, from the current slot) }. M.taxi.noMapIDs: C_TaxiMap lists
+-- nothing. TakeTaxiNode(slot): unless M.taxi.refuse (no money, in combat), M.taxi.delay (0.3 s)
+-- later the flight starts: UnitOnTaxi, the map closes (TAXIMAP_CLOSED), PLAYER_CONTROL_LOST.
+-- M.Land(x, y): it ends there (UnitOnTaxi false, PLAYER_CONTROL_GAINED). UnitPosition gives
+-- M.pos (world x, y) or nothing. M.spells: the spells C_SpellBook.IsSpellKnown knows.
+-- MirrorTimerContainer: Edit Mode's Timer Bars (MirrorTimer.xml: TOP, y -100).
+M.taxi = { open = false, nodes = {}, mapID = 1463, taken = {}, early = 0, delay = 0.3 }
+M.onTaxi, M.pos, M.spells, M.playerGUID = false, nil, {}, "Player-1-0000ABCD"
+function UnitGUID(unit) if unit == "player" then return M.playerGUID end end
+function UnitOnTaxi(unit) return unit == "player" and M.onTaxi == true end
+function UnitPosition(unit) if unit == "player" and M.pos then return M.pos[1], M.pos[2], 0, 0 end end
+C_SpellBook = { IsSpellKnown = function(id, bank) return M.spells[id] == true end }
+local function taxiNode(i) return M.taxi.open and M.taxi.nodes[i] or nil end
+function NumTaxiNodes() return M.taxi.open and #M.taxi.nodes or 0 end
+function TaxiNodeName(i) local n = taxiNode(i); return n and n.name or "INVALID" end
+function TaxiNodeGetType(i) local n = taxiNode(i); return n and n.type or "NONE" end
+function TaxiNodePosition(i) local n = taxiNode(i); if n then return n.x, n.y end return 0, 0 end
+function TaxiNodeCost(i) local n = taxiNode(i); return n and n.cost or 0 end
+function GetNumRoutes(i) local n = taxiNode(i); return n and n.hops and (#n.hops - 1) or 0 end
+function TaxiGetNodeSlot(i, hop, isSource)
+  local n = taxiNode(i)
+  local h = n and n.hops
+  if not h then return 0 end
+  if isSource then return h[hop] or 0 end
+  return h[hop + 1] or 0
+end
+function TaxiIsDirectFlight(i) return GetNumRoutes(i) == 1 end
+function GetTaxiMapID() if M.taxi.open then return M.taxi.mapID end end
+C_TaxiMap = {}
+function C_TaxiMap.GetAllTaxiNodes(mapID)
+  local out = {}
+  if not M.taxi.open or M.taxi.noMapIDs or mapID ~= M.taxi.mapID then return out end
+  for i, n in ipairs(M.taxi.nodes) do
+    if n.type ~= "NONE" then out[#out + 1] = { nodeID = n.id, slotIndex = i, name = n.name, state = 0 } end
+  end
+  return out
+end
+function TaxiRequestEarlyLanding() M.taxi.early = M.taxi.early + 1 end
+TAXINODEYOUAREHERE = "You are here."
+function GameTooltip_AddMoneyLine(tt, money) tt:AddDoubleLine("Cost:", GetMoneyString(money)) end
+TaxiFrame = CreateFrame("Frame", "TaxiFrame", UIParent)
+TaxiFrame:SetSize(590, 608)
+TaxiFrame._shown = false
+TaxiRouteMap = CreateFrame("Frame", "TaxiRouteMap", TaxiFrame)
+TaxiRouteMap:SetAllPoints(TaxiFrame)
+TEMPLATES.TaxiButtonTemplate = function(f)
+  if f._otype ~= "Button" then apiError("TaxiButtonTemplate needs a Button") end
+  f:SetSize(16, 16)
+  f._shown = false
+  f:SetScript("OnEnter", function(self, motion) TaxiNodeOnButtonEnter(self, motion) end)
+  f:SetScript("OnLeave", function(self, motion) TaxiNodeOnButtonLeave(self, motion) end)
+  f:SetScript("OnClick", function(self) TakeTaxiNode(self:GetID()) end)
+end
+function TaxiNodeOnButtonEnter(button)
+  local index = button:GetID()
+  GameTooltip:SetOwner(button, "ANCHOR_RIGHT")
+  GameTooltip:AddLine(TaxiNodeName(index), nil, nil, nil, true)
+  local t = TaxiNodeGetType(index)
+  if t == "REACHABLE" then
+    GameTooltip_AddMoneyLine(GameTooltip, TaxiNodeCost(index))
+  elseif t == "CURRENT" then
+    GameTooltip:AddLine(TAXINODEYOUAREHERE, 1.0, 1.0, 1.0, true)
+  end
+  GameTooltip:Show()
+end
+function TaxiNodeOnButtonLeave(button) GameTooltip:Hide() end
+function M.OpenTaxi(nodes, mapID)
+  M.taxi.nodes = nodes or {}
+  M.taxi.mapID = mapID or 1463
+  M.taxi.open = true
+  M.fire("TAXIMAP_OPENED", 1)
+  for i = 1, #M.taxi.nodes do
+    local b = _G["TaxiButton" .. i] or CreateFrame("Button", "TaxiButton" .. i, TaxiRouteMap, "TaxiButtonTemplate")
+    b:SetID(i)
+    local typ = M.taxi.nodes[i].type
+    if typ ~= "NONE" and typ ~= "DISTANT" then b:Show() else b:Hide() end
+  end
+  for i = #M.taxi.nodes + 1, 80 do
+    local b = _G["TaxiButton" .. i]
+    if b then b:Hide() end
+  end
+  ShowUIPanel(TaxiFrame)
+end
+function M.CloseTaxi()
+  if not M.taxi.open then return end
+  M.taxi.open = false
+  HideUIPanel(TaxiFrame)
+  M.fire("TAXIMAP_CLOSED")
+end
+function TakeTaxiNode(slot)
+  M.taxi.taken[#M.taxi.taken + 1] = slot
+  local n = taxiNode(slot)
+  if not n or n.type ~= "REACHABLE" or M.taxi.refuse then return end
+  C_Timer.After(M.taxi.delay, function()
+    M.onTaxi = true
+    M.taxi.flying = slot
+    M.CloseTaxi()
+    M.fire("PLAYER_CONTROL_LOST")
+  end)
+end
+function M.Land(x, y)
+  M.onTaxi = false
+  if x then M.pos = { x, y } end
+  M.fire("PLAYER_CONTROL_GAINED")
+end
+-- SharedUIPanelTemplates.xml: UIPanelCloseButtonNoScripts, 24x24, the red X atlases, frameLevel 510.
+TEMPLATES.UIPanelCloseButtonNoScripts = function(f)
+  if f._otype ~= "Button" then apiError("UIPanelCloseButtonNoScripts needs a Button") end
+  f:SetSize(24, 24)
+  f:SetDisabledTexture("RedButton-Exit-Disabled")
+  f:SetNormalTexture("RedButton-Exit")
+  f:SetPushedTexture("RedButton-exit-pressed")
+  f:SetHighlightTexture("RedButton-Highlight", "ADD")
+  f._level = 510
+end
+MirrorTimerContainer = CreateFrame("Frame", "MirrorTimerContainer", UIParent)
+MirrorTimerContainer:SetSize(1, 1)
+MirrorTimerContainer:SetPoint("TOP", UIParent, "TOP", 0, -100)
+MirrorTimerContainer._shown = false
+
 M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
   "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "AUCTION_HOUSE_BROWSE_RESULTS_UPDATED", "AUCTION_HOUSE_BROWSE_RESULTS_ADDED",
@@ -2721,13 +2874,15 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "TOOLTIP_DATA_UPDATE", "GET_ITEM_INFO_RECEIVED", "PLAYER_MONEY", "BAG_UPDATE", "AUCTION_HOUSE_POST_WARNING",
   "AUCTION_HOUSE_POST_ERROR", "AUCTION_HOUSE_THROTTLED_SYSTEM_READY", "OWNED_AUCTIONS_UPDATED" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED",
   "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "ACTIVE_TALENT_GROUP_CHANGED", "TRAIT_CONFIG_UPDATED",
-  "SKILL_LINES_CHANGED"}
+  "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
+  "PLAYER_CONTROL_GAINED"}
 -- The legacy client has no TRAIT_CONFIG_UPDATED or ACTIVE_TALENT_GROUP_CHANGED: registering them must not break anything.
 M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "AUCTION_ITEM_LIST_UPDATE", "NEW_AUCTION_UPDATE",
   "AUCTION_OWNED_LIST_UPDATE", "AUCTION_BIDDER_LIST_UPDATE", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
   "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_MONEY",
-  "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "SKILL_LINES_CHANGED"}
+  "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
+  "PLAYER_CONTROL_GAINED"}
 function M.SetClient(kind)
   M.client = kind
   M.knownEvents = {}
@@ -3649,6 +3804,9 @@ class Scenario:
         cs = ns.Consumes
         if cs is not None:
             self.check(cs.lastError is None, "%s: Consumes.lastError is nil (%s)" % (label, cs.lastError))
+        fl = ns.Flights
+        if fl is not None:
+            self.check(fl.lastError is None, "%s: Flights.lastError is nil (%s)" % (label, fl.lastError))
         v = [w.M.violations[i] for i in range(1, len(w.M.violations) + 1)]
         self.check(not v, "%s: addon never sends AH queries or restricted calls (%s)" % (label, v[:3]))
         d = [w.M.dash[i] for i in range(1, len(w.M.dash) + 1)]
@@ -20700,14 +20858,15 @@ def sc_consumes_slash(sc, ref, items):
         w.settle(0.3)
         sc.check(F.IsVisible(F), "slash: and shown")
     sc.clean(w, "slash: open first")
-    # The source: plain ASCII with CRLF line ends, last in both TOC files.
+    # The source: plain ASCII with CRLF line ends, after Enchants.lua in both TOC files.
     raw = open(os.path.join(ADDON, "Consumes.lua"), "rb").read()
     sc.check(all(b < 128 for b in raw), "slash: Consumes.lua is plain ASCII")
     sc.check(raw.count(b"\r\n") == raw.count(b"\n") or raw.count(b"\r") == 0,
              "slash: Consumes.lua line ends all alike")
     for toc in ("GoblinLedger.toc", "GoblinLedger_Forever.toc"):
         lines = [l.strip() for l in open(os.path.join(ADDON, toc), "rb").read().decode("ascii").splitlines() if l.strip()]
-        sc.eq(lines[-2:], ["Enchants.lua", "Consumes.lua"], "slash: %s loads Consumes.lua last" % toc)
+        at = lines.index("Enchants.lua") if "Enchants.lua" in lines else -2
+        sc.eq(lines[at:at + 2], ["Enchants.lua", "Consumes.lua"], "slash: %s loads Consumes.lua after Enchants.lua" % toc)
 
 
 def sc_consumes_picks(sc, ref, items):
@@ -22781,6 +22940,1024 @@ def sc_empty_search_real(sc, ref, items):
 # --- empty searches, live prices, data age, the "vs avg" badge: end ---
 
 
+# ===========================================================================
+# Flight timers (Flights.lua): the flight map's tooltip line, the bar while you fly
+# ===========================================================================
+FL_SW, FL_SH, FL_LAKE, FL_IF, FL_MEN = 2, 4, 5, 6, 7
+FL_FF = 1225490                      # Frequent Flier
+FL_GUID = "Player-1-0000ABCD"        # the mock's UnitGUID("player")
+FL_ROUTES = {FL_IF: [FL_SW, FL_IF], FL_SH: [FL_SW, FL_SH], FL_MEN: [FL_SW, FL_IF, FL_MEN]}
+FL_HIDDEN_LINE = "flight timer hidden until you land. /gl flights brings it back."
+# Flight times from warcraft.wiki.gg's 2010 tables (Flight_path/Eastern_Kingdoms revision 596640,
+# Flight_path/Kalimdor revision 508748), timed by players in the game: not from Forever's data.
+FL_WIKI = [
+    ("Stormwind, Elwynn", "Ironforge, Dun Morogh", 260),
+    ("Ironforge, Dun Morogh", "Menethil Harbor, Wetlands", 130),
+    ("Menethil Harbor, Wetlands", "Ironforge, Dun Morogh", 90),
+    ("Auberdine, Darkshore", "Rut'theran Village, Teldrassil", 85),
+    ("Rut'theran Village, Teldrassil", "Auberdine, Darkshore", 85),
+    ("Stormwind, Elwynn", "Sentinel Hill, Westfall", 77),
+    ("Ironforge, Dun Morogh", "Thelsamar, Loch Modan", 102),
+    ("Undercity, Tirisfal", "Tarren Mill, Hillsbrad", 141),
+    ("Orgrimmar, Durotar", "Crossroads, The Barrens", 111),
+    ("Ironforge, Dun Morogh", "Light's Hope Chapel, Eastern Plaguelands", 348),
+]
+
+
+class _FlSrc(object):
+    data = None
+
+
+def fl_source():
+    """Flights.lua's data block, read from the source: nodes {id: (name, x, y, map x, map y)},
+    edges {"a>b": seconds}, tracks {"a>b": [(x, y), ...]}, junctions {"a>b>c": seconds saved at b}."""
+    if _FlSrc.data is None:
+        raw = open(os.path.join(ADDON, "Flights.lua"), "rb").read().decode("ascii").replace("\r\n", "\n")
+
+        def block(name):
+            i = raw.index("local %s = {\n" % name)
+            return raw[i:raw.index("\n}\n", i)]
+        nodes = {}
+        for m in re.finditer(r'^  \[(\d+)\] = \{ "([^"]*)", (-?\d+), (-?\d+)(?:, ([\d.]+), ([\d.]+))? \},$',
+                             block("NODES"), re.M):
+            nodes[int(m.group(1))] = (m.group(2), int(m.group(3)), int(m.group(4)),
+                                      float(m.group(5)) if m.group(5) else None,
+                                      float(m.group(6)) if m.group(6) else None)
+        edges = {k: float(v) for k, v in re.findall(r'\["(\d+>\d+)"\] = ([\d.]+),', block("EDGES"))}
+        tracks = {k: [(int(a), int(b)) for a, b in re.findall(r"(-?\d+),(-?\d+)", v)]
+                  for k, v in re.findall(r'^  \["(\d+>\d+)"\] = "([^"]*)",$', block("TRACKS"), re.M)}
+        junc = {k: float(v) for k, v in re.findall(r'\["(\d+>\d+>\d+)"\] = ([\d.]+),', block("JUNC"))}
+        _FlSrc.data = (nodes, edges, tracks, junc)
+    return _FlSrc.data
+
+
+def fl_med(v):
+    v = sorted(v)
+    n = len(v)
+    return v[n // 2] if n % 2 else (v[n // 2 - 1] + v[n // 2]) / 2.0
+
+
+def fl_ff(s):
+    return 0.56 + (s - 0.56) / 1.2
+
+
+FL_JOIN_FULL, FL_JOIN_GUESS = 0.56, 1.6   # a place flown past: both paths whole; a cut JUNC does not have
+
+
+def fl_at(s, fast):
+    return fl_ff(s) if fast else s
+
+
+def fl_joins(route, fast=False, model="short"):
+    """Seconds saved over the places a route flies past: the data's cut corners, or 0.56 s each (whole)."""
+    junc = fl_source()[3]
+    return sum(fl_at(FL_JOIN_FULL if model == "full" else junc.get("%d>%d>%d" % (a, b, c), FL_JOIN_GUESS), fast)
+               for a, b, c in zip(route, route[1:], route[2:]))
+
+
+def fl_data(route, fast=False, model="short"):
+    """The data's time for a route (node ids) at a speed, with a kind of join."""
+    edges = fl_source()[1]
+    total = 0.0
+    for a, b in zip(route, route[1:]):
+        total += fl_at(edges["%d>%d" % (a, b)], fast)
+    return max(1.0, total - fl_joins(route, fast, model))
+
+
+def fl_own(v, ref):
+    """Your own time from your samples: the middle one; of two, the one nearer ref."""
+    if len(v) == 2 and ref is not None:
+        return v[0] if abs(v[0] - ref) <= abs(v[1] - ref) else v[1]
+    return fl_med(v)
+
+
+def fl_est(route, times=None, fast=False, pace=None, model="short"):
+    """What Flights.lua should give a route (node ids): (seconds, your own time?)."""
+    times = times or {}
+    sfx = " ff" if fast else ""
+    key = ">".join(str(i) for i in route)
+    if times.get(key + sfx):
+        return fl_own(times[key + sfx], fl_data(route, fast, model)), True
+    edges = fl_source()[1]
+    total = 0.0
+    for a, b in zip(route, route[1:]):
+        k = "%d>%d" % (a, b)
+        if times.get(k + sfx):
+            total += fl_own(times[k + sfx], fl_at(edges[k], fast))
+        else:
+            total += fl_at(edges[k], fast) * (pace or 1)
+    return max(1.0, total - fl_joins(route, fast, model)), False
+
+
+def fl_list(v):
+    """A saved Lua list as a Python list (None when there is none)."""
+    v = lua_to_py(v)
+    return None if v is None else [v[i] for i in sorted(v)]
+
+
+def fl_clock(sec):
+    sec = max(0, int(math.floor(sec)))
+    return "%d:%02d" % (sec // 60, sec % 60)
+
+
+def fl_tip(secs, own):
+    return ("Flight time: " if own else "Flight time: about ") + fl_clock(secs + 0.5)
+
+
+def fl_line(dest, est, el):
+    """The bar's text el seconds into a flight."""
+    if est:
+        left = est - el
+        if left > 0:
+            return "%s %s" % (dest, fl_clock(math.ceil(left - 1e-6)))
+        return "%s +%s" % (dest, fl_clock(-left))
+    return "%s %s so far" % (dest, fl_clock(max(0, el)))
+
+
+def fl_pos(nid):
+    n = fl_source()[0][nid]
+    return (n[1], n[2])
+
+
+def fl_world(ref, items, saved=None, login=(True, False), t=None, now=None, on_taxi=False, pos=None,
+             guid=None, ff=False, before=None, **kw):
+    """A world for the flight timers: GetTime at t, on a taxi or not, at world x, y pos."""
+    def setup(w):
+        M = w.M
+        if t is not None:
+            M.t = t
+        if on_taxi:
+            M.onTaxi = True
+        if pos is not None:
+            M.pos = w.to_lua(list(pos))
+        if guid:
+            M.playerGUID = guid
+        if ff:
+            M.spells[FL_FF] = True
+        if before:
+            before(w)
+    w = World(ref, items, saved=saved, login=login, before_addon=setup, now=now, **kw)
+    w.fl_base = (w.M.t, w.M.now)
+    return w
+
+
+def fl_wait(w, sec, dt=0.1):
+    """Time goes by: GetTime in steps of dt, GetServerTime in whole seconds with it."""
+    M = w.M
+    t0, n0 = w.fl_base
+    for _ in range(int(round(sec / dt))):
+        M.tick(dt)
+        M.now = n0 + int(math.floor(M.t - t0 + 1e-9))
+
+
+def fl_open(w, routes=None, current=FL_SW, extra=((FL_LAKE, "UNREACHABLE"),), no_ids=False, names=None):
+    """The flight master's map at current: routes {destination: [node ids, from current]}. Gives {node id: slot}."""
+    src = fl_source()[0]
+    routes = FL_ROUTES if routes is None else routes
+    order = [current] + [d for d in routes if d != current] + [i for i, _ in extra]
+    slot = {nid: k + 1 for k, nid in enumerate(order)}
+    ex = dict(extra)
+    nodes = []
+    for nid in order:
+        s = src.get(nid)
+        n = {"id": nid, "name": (names or {}).get(nid) or (s[0] if s else "Place %d" % nid),
+             "x": s[3] if s and s[3] is not None else 0.5, "y": s[4] if s and s[4] is not None else 0.5, "cost": 1000}
+        if nid == current:
+            n["type"] = "CURRENT"
+        elif nid in routes:
+            n["type"], n["hops"] = "REACHABLE", [slot[h] for h in routes[nid]]
+        else:
+            n["type"] = ex[nid]
+        nodes.append(n)
+    w.M.taxi.noMapIDs = bool(no_ids)
+    w.M.OpenTaxi(w.to_lua(nodes), 1463)
+    return slot
+
+
+def fl_hover(w, slot):
+    """The flight map's tooltip over a place: all its lines, and whether it was shown."""
+    b = w.g["TaxiButton%d" % slot]
+    G = w.g.GameTooltip
+    w.M.enter(b)
+    lines, shown = w.all_lines(G), G.IsShown(G)
+    w.M.leave(b)
+    return lines, shown
+
+
+def fl_tips(lines):
+    return [l for l, r in lines if l and l.startswith("Flight time")]
+
+
+def fl_take(w, slot, wait=0.5):
+    w.M.click(w.g["TaxiButton%d" % slot])
+    if wait:
+        fl_wait(w, wait)
+
+
+def fl_land(w, nid=None, pos=None):
+    """The flight comes down (at a place, or a spot); 0.7 s later (half a second off the taxi is a landing)."""
+    p = pos if pos is not None else (fl_pos(nid) if nid else None)
+    if p:
+        w.M.Land(p[0], p[1])
+    else:
+        w.M.Land()
+    fl_wait(w, 0.7)
+
+
+def fl_state(w):
+    """(the flight under way, a click waiting for take-off, a saved flight waiting to go on)"""
+    return w.ns.Flights.State()
+
+
+def fl_bar_line(w):
+    b = w.ns.Flights.Bar()
+    if b is None or not b.IsVisible(b):
+        return None
+    return b.text.GetText(b.text)
+
+
+def fl_el(w):
+    cur = fl_state(w)[0]
+    return w.M.t - cur.gt
+
+
+def fl_times(w, key=None):
+    T = lua_to_py(w.ns.settings.flightTimes) or {}
+    T = {k: [v[i] for i in sorted(v)] for k, v in T.items()}
+    return T.get(key) if key else T
+
+
+def fl_watching(w):
+    wt = w.ns.Flights.Watcher()
+    return wt is not None and wt.IsShown(wt)
+
+
+def sc_flights_data(sc, ref, items):
+    """Flights.lua's data: every flight joins two places in it, its track runs from one to the other at
+    the taxi's speed, and its time matches the times players measured (the wiki's)."""
+    nodes, edges, tracks = fl_source()[:3]
+    sc.check(len(nodes) >= 70 and len(edges) >= 290, "data: %d places, %d flights" % (len(nodes), len(edges)))
+    bad = []
+    for k, secs in edges.items():
+        a, b = (int(x) for x in k.split(">"))
+        if a not in nodes or b not in nodes or a == b or not 10 <= secs <= 900:
+            bad.append(k)
+    sc.eq(bad, [], "data: every flight joins two known places and takes 10 s to 15 min")
+    sc.eq(sorted(k for k in edges if k not in tracks), [], "data: a track for every flight")
+    sc.eq(sorted(k for k in ("59>6", "6>59", "11>60", "60>11") if k in edges or k in tracks), [],
+          "data: no time for Alterac Valley's four flights (their paths change maps)")
+    junc = fl_source()[3]
+    bad = [k for k, v in junc.items() if not 0 < v < 80 or any("%s>%s" % p not in edges for p in zip(k.split(">"), k.split(">")[1:]))
+           or len(set(k.split(">"))) != 3]
+    sc.check(len(junc) >= 1000, "data: %d junctions (places flown past)" % len(junc))
+    sc.eq(bad[:5], [], "data: every junction joins two flights in the data, saves 0 to 80 s")
+    sc.eq((fl_clock(fl_data([FL_SH, FL_SW, FL_IF]) + 0.5), fl_clock(fl_data([FL_SH, FL_SW, FL_IF], model="full") + 0.5)),
+          ("5:28", "5:41"), "data: Sentinel Hill over Stormwind to Ironforge: 5:28 with the corner cut, 5:41 flown whole")
+    bad = []
+    for k, pts in tracks.items():
+        a, b = (int(x) for x in k.split(">"))
+        secs = edges[k]
+        want_n = len([j for j in range(200) if j * 20 < secs - 10]) + 1
+        d0 = math.hypot(pts[0][0] - nodes[a][1], pts[0][1] - nodes[a][2])
+        d1 = math.hypot(pts[-1][0] - nodes[b][1], pts[-1][1] - nodes[b][2])
+        poly = sum(math.hypot(q[0] - p[0], q[1] - p[1]) for p, q in zip(pts, pts[1:]))
+        if len(pts) != want_n or d0 > 150 or d1 > 150 or not secs * 0.6 <= poly / 30.32 <= secs + 1:
+            bad.append((k, len(pts), want_n, round(d0), round(d1), round(poly / 30.32, 1), secs))
+    sc.eq(bad[:5], [], "data: each track starts at its place, ends at the other, one point per 20 s at taxi speed")
+    by_name = {}
+    for nid, n in nodes.items():
+        by_name.setdefault(n[0], []).append(nid)
+    for a, b, wiki in FL_WIKI:
+        keys = ["%d>%d" % (x, y) for x in by_name.get(a, []) for y in by_name.get(b, []) if "%d>%d" % (x, y) in edges]
+        if sc.eq(len(keys), 1, "data: one flight %s to %s" % (a, b)):
+            secs = edges[keys[0]]
+            sc.check(abs(secs - wiki) <= 6, "data: %s to %s takes %.1f s, the wiki's %d s (6 s or less off)" % (a, b, secs, wiki))
+    for b in (5, 8):   # Farholde Keep (Riverglades, new in Forever): to Lakeshire and Thelsamar
+        sc.check("3276>%d" % b in edges and "%d>3276" % b in edges, "data: Farholde Keep to %s and back" % nodes[b][0])
+    raw = open(os.path.join(ADDON, "Flights.lua"), "rb").read()
+    sc.check(all(c < 128 for c in raw), "data: Flights.lua is plain ASCII")
+    sc.check(raw.count(b"\r\n") == raw.count(b"\n"), "data: Flights.lua has CRLF line ends throughout")
+    w = World(ref, items)
+    FL = w.ns.Flights
+    sc.eq(len(list(FL.EDGES.keys())), len(edges), "data: the addon has every flight")
+    sc.eq((FL.EDGES["2>6"], FL.NODES[FL_IF][1]), (edges["2>6"], "Ironforge, Dun Morogh"), "data: as in the source")
+    sc.eq(sorted(k for k in ("TakeTaxiNode", "TaxiNodeOnButtonEnter", "TaxiRequestEarlyLanding") if FL.Hooked(k)),
+          ["TakeTaxiNode", "TaxiNodeOnButtonEnter", "TaxiRequestEarlyLanding"], "data: hooks the map and the early landing")
+    sc.eq([k for k in ("TakeTaxiNode", "TaxiNodeOnButtonEnter", "TaxiRequestEarlyLanding") if w.M.secureHooks[w.g[k]] != k], [],
+          "data: hooked with hooksecurefunc (the game's own functions are not replaced: no taint)")
+    sc.clean(w, "data")
+
+
+def sc_flights_map(sc, ref, items):
+    """The flight map's tooltip: one more line, "Flight time: about 4:19", or your own time once flown."""
+    nodes, edges, _ = fl_source()[:3]
+    w = fl_world(ref, items)
+    M = w.M
+    slot = fl_open(w)
+    lines, shown = fl_hover(w, slot[FL_IF])
+    est, own = fl_est([FL_SW, FL_IF])
+    sc.eq(fl_tip(est, own), "Flight time: about 4:19", "map: Stormwind to Ironforge, about 4:19 (the wiki's 4:20)")
+    sc.eq([l for l, _ in lines], ["Ironforge, Dun Morogh", "Cost:", "Flight time: about 4:19"], "map: name, cost, then the time")
+    sc.check(shown, "map: the tooltip shows")
+    G = w.g.GameTooltip
+    M.enter(w.g["TaxiButton%d" % slot[FL_IF]])
+    st = M.lineStyle(G, 3)
+    tc = w.ns.COLORS.text
+    sc.eq((round(st.left.r, 3), round(st.left.g, 3), round(st.left.b, 3)), (tc[1], tc[2], tc[3]), "map: in the addon's text colour")
+    sc.eq((G._laidOut, G.NumLines(G)), (3, 3), "map: the tooltip shown again after the line (sized for it)")
+    M.leave(w.g["TaxiButton%d" % slot[FL_IF]])
+    for dest, route in ((FL_SH, [FL_SW, FL_SH]), (FL_MEN, [FL_SW, FL_IF, FL_MEN])):
+        lines, _ = fl_hover(w, slot[dest])
+        sc.eq(fl_tips(lines), [fl_tip(*fl_est(route))], "map: %s's line (%d hops)" % (nodes[dest][0], len(route) - 1))
+    e2 = fl_est([FL_SW, FL_IF, FL_MEN])[0]
+    sc.eq(e2, edges["2>6"] + edges["6>7"] - fl_source()[3]["2>6>7"], "map: two hops are both legs less the corner cut at Ironforge")
+    lines, _ = fl_hover(w, slot[FL_SW])
+    sc.eq((fl_tips(lines), lines[-1][0]), ([], "You are here."), "map: where you are: no time")
+    lines, _ = fl_hover(w, slot[FL_LAKE])
+    sc.eq(fl_tips(lines), [], "map: a place you cannot fly to: no time")
+    M.CloseTaxi()
+    # Without C_TaxiMap's node ids: the names and map spots find the places.
+    slot = fl_open(w, no_ids=True)
+    for dest, route in FL_ROUTES.items():
+        lines, _ = fl_hover(w, slot[dest])
+        sc.eq(fl_tips(lines), [fl_tip(*fl_est(route))], "map: no node ids: %s by its name" % nodes[dest][0])
+    M.CloseTaxi()
+    # A place the data does not know: no line (and no error).
+    slot = fl_open(w, routes={99999: [FL_SW, 99999], FL_IF: [FL_SW, FL_IF]}, names={99999: "Somewhere New, Riverglades"})
+    lines, _ = fl_hover(w, slot[99999])
+    sc.eq(fl_tips(lines), [], "map: a new place: no time")
+    M.CloseTaxi()
+    sc.clean(w, "map")
+    # Your own times: the middle of the last few; two hops add your own leg.
+    times = {"2>6": [262.0, 263.4, 300.0]}
+    w = fl_world(ref, items, saved={"flightTimes": times})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: 4:23"], "map: your own time, the middle one of three (no about)")
+    lines, _ = fl_hover(w, slot[FL_MEN])
+    sc.eq(fl_tips(lines), [fl_tip(*fl_est([FL_SW, FL_IF, FL_MEN], times))], "map: two hops: your Ironforge leg + the data's")
+    sc.check(fl_tips(lines)[0].startswith("Flight time: about"), "map: still about for a route never flown whole")
+    lines, _ = fl_hover(w, slot[FL_SH])
+    sc.eq(fl_tips(lines), [fl_tip(edges["2>4"], False)], "map: a route you have not flown: the estimate")
+    w.M.CloseTaxi()
+    sc.clean(w, "map own legs")
+    # Two of your own: the one nearer the data's time (one odd flight is not your time).
+    w = fl_world(ref, items, saved={"flightTimes": {"2>6": [280.0, 258.0]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: 4:18"], "map: of two of your own, the one nearer the data's 4:19 (not 4:29)")
+    sc.clean(w, "map own")
+    # Frequent Flier: 20% faster; its own times are kept apart.
+    w = fl_world(ref, items, ff=True, saved={"flightTimes": {"2>6 ff": [200.0], "2>5": [99.0]}})
+    slot = fl_open(w, routes={FL_IF: [FL_SW, FL_IF], FL_LAKE: [FL_SW, FL_LAKE]}, extra=())
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: 3:20"], "map: Frequent Flier: your own time at that speed")
+    lines, _ = fl_hover(w, slot[FL_LAKE])
+    sc.eq(fl_tips(lines), [fl_tip(fl_ff(edges["2>5"]), False)], "map: Frequent Flier: not the normal-speed time")
+    sc.clean(w, "map ff")
+    w = fl_world(ref, items, saved={"flightTimes": {"2>6 ff": [200.0]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "map: without the talent, the fast time is not used")
+    sc.clean(w, "map no ff")
+    # Your pace (real / estimate, per character) after two flights.
+    w = fl_world(ref, items, saved={"flightPace": {FL_GUID: [0.95, 0.97]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), [fl_tip(*fl_est([FL_SW, FL_IF], pace=0.96))], "map: your pace (0.96) on the estimate")
+    w = fl_world(ref, items, guid="Player-1-00000OTHER", saved={"flightPace": {FL_GUID: [0.95, 0.97]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "map: another character's pace is not yours")
+    w = fl_world(ref, items, saved={"flightPace": {FL_GUID: [0.95]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "map: one flight is not a pace yet")
+    w = fl_world(ref, items, saved={"flightFast": {FL_GUID: [1, 0, 1]}, "flightTimes": {"2>6 ff": [215.0]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: 3:35"], "map: most of your last flights at Frequent Flier's speed count as it")
+    w = fl_world(ref, items, saved={"flightFast": {FL_GUID: [1, 0, 0]}, "flightTimes": {"2>6 ff": [215.0]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "map: most at normal speed: normal")
+    # Frequent Flier learned after normal-speed flights: its own speed, not the old normal pace.
+    w = fl_world(ref, items, ff=True, saved={"flightPace": {FL_GUID: [1.1, 1.1, 1.1, 1.1, 1.1]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), [fl_tip(fl_ff(edges["2>6"]), False)], "map: Frequent Flier with an old normal pace: 20% faster")
+    w = fl_world(ref, items, ff=True, saved={"flightPace": {FL_GUID + " ff": [0.95, 0.95], FL_GUID: [1.1, 1.1]}})
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), [fl_tip(fl_ff(edges["2>6"]) * 0.95, False)], "map: Frequent Flier: your pace at that speed")
+    sc.clean(w, "map pace")
+    # Alterac Valley's flights change maps: no time.
+    w = fl_world(ref, items)
+    slot = fl_open(w, current=FL_IF, routes={59: [FL_IF, 59]}, extra=(), names={59: "Dun Baldar, Alterac Valley"})
+    lines, _ = fl_hover(w, slot[59])
+    sc.eq((fl_tips(lines), lines[0][0]), ([], "Dun Baldar, Alterac Valley"), "map: Alterac Valley: no time")
+    sc.clean(w, "map av")
+    # Off: no line.
+    w = fl_world(ref, items)
+    w.slash("/gl flights off")
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq([l for l, _ in lines], ["Ironforge, Dun Morogh", "Cost:"], "map: off: the game's lines only")
+    w.slash("/gl flights on")
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "map: on again")
+    sc.clean(w, "map off")
+
+
+def sc_flights_bar(sc, ref, items):
+    """A flight: the bar at the top shows "Ironforge 4:19" counting down, "+0:12" when it runs over;
+    landing hides it and keeps the real time. Nothing runs before or after."""
+    nodes, edges, _ = fl_source()[:3]
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    M, ns, FL, S = w.M, w.ns, w.ns.Flights, w.ns.settings
+    fl_wait(w, 30)
+    sc.eq((FL.polls, fl_watching(w), FL.Bar()), (0, False, None), "bar: nothing runs before a flight")
+    slot = fl_open(w)
+    mark = w.chat_mark()
+    click_t = M.t
+    fl_take(w, slot[FL_IF], wait=0)
+    sc.check(fl_state(w)[1] is not None and fl_bar_line(w) is None, "bar: a click waits for the take-off")
+    fl_wait(w, 0.5)
+    cur = fl_state(w)[0]
+    if not sc.check(cur is not None, "bar: the flight started"):
+        return
+    sc.check(0.29 <= cur.gt - click_t <= 0.41, "bar: timed from the take-off (%.2f s after the click)" % (cur.gt - click_t))
+    est = fl_est([FL_SW, FL_IF])[0]
+    sc.eq((cur.est, cur.dest, cur.key, cur.mine), (est, "Ironforge", "2>6", False), "bar: the flight")
+    sc.check(w.same(S.flightNow, cur), "bar: kept in the saved settings (for a /reload)")
+    sc.eq(fl_bar_line(w), fl_line("Ironforge", est, fl_el(w)), "bar: Ironforge 4:19 at the start")
+    sc.eq(fl_bar_line(w), "Ironforge 4:19", "bar: the words")
+    b = FL.Bar()
+    r = w.rect(b)
+    sw, sh = M.screenW, M.screenH
+    sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 100)) < 0.01,
+             "bar: top centre, where the game's timer bars go (%s)" % (r,))
+    sc.eq((round(r[2] - r[0], 3), round(r[3] - r[1], 3), FL.anchor), (180, 16, "MirrorTimerContainer"), "bar: slim, on the Timer Bars spot")
+    sc.check(not b.IsMouseEnabled(b), "bar: clicks go through it")
+    sc.eq((w.same(b.GetParent(b), w.g.UIParent), b.GetFrameStrata(b)), (True, "MEDIUM"),
+          "bar: on the game's interface (Alt+Z hides it), at its middle strata")
+    x = b.x
+    xr = w.rect(x)
+    sc.check(xr[2] <= r[2] and xr[0] >= r[2] - 16 and abs((xr[1] + xr[3]) / 2 - (r[1] + r[3]) / 2) < 0.01,
+             "bar: the X at its right end (%s in %s)" % (xr, r))
+    sc.eq((round(xr[2] - xr[0], 3), x.IsVisible(x)), (14, True), "bar: a 14px X")
+    tr = w.rect(b.text)
+    sc.check(tr[2] <= xr[0], "bar: the words stop before the X")
+    sc.check(abs((tr[0] + tr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01, "bar: the words centred on the bar (%s in %s)" % (tr, r))
+    for wait in (60, 61.3, 0.45, 100):
+        fl_wait(w, wait)
+        el = fl_el(w)
+        sc.eq(fl_bar_line(w), fl_line("Ironforge", est, el), "bar: %.1f s in" % el)
+        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, 178 * (est - el) / est)) < 1e-6, "bar: the fill is what is left (%.1f s in)" % el)
+    tc = b.text.GetTextColor(b.text)
+    sc.eq(tuple(round(v, 3) for v in tc[:3]), (1, 1, 1), "bar: white while on time")
+    fl_wait(w, est - fl_el(w) + 12.3)
+    sc.eq(fl_bar_line(w), "Ironforge +0:12", "bar: over the estimate: +0:12, never a negative time")
+    tc = b.text.GetTextColor(b.text)
+    bc = ns.COLORS.buy
+    sc.eq(tuple(round(v, 3) for v in tc[:3]), (bc[1], bc[2], bc[3]), "bar: gold when over")
+    sc.check(not b.fill.IsShown(b.fill), "bar: no fill when over")
+    land_t = M.t
+    gt = cur.gt
+    fl_land(w, FL_IF)
+    dur = land_t - gt
+    sc.eq((fl_bar_line(w), fl_state(w)[0], S.flightNow), (None, None, None), "bar: gone on landing")
+    sc.eq(fl_times(w), {"2>6": [math.floor(dur * 10 + 0.5) / 10]}, "bar: the real time kept (%.1f s)" % dur)
+    pace = lua_to_py(S.flightPace)
+    sc.eq(pace, {FL_GUID: {1: math.floor(dur / est * 1000 + 0.5) / 1000}}, "bar: and your pace against the estimate")
+    sc.eq((FL.learned, w.chat(mark)), (1, []), "bar: learned, and not a word in chat")
+    polls = FL.polls
+    fl_wait(w, 20)
+    sc.eq((FL.polls, fl_watching(w)), (polls, False), "bar: nothing runs after landing")
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), [fl_tip(math.floor(dur * 10 + 0.5) / 10, True)], "bar: next time the map says your time")
+    # The game says no (no money, in combat): no bar, and the wait ends.
+    M.taxi.refuse = True
+    fl_take(w, slot[FL_SH], wait=0.5)
+    sc.check(fl_bar_line(w) is None and fl_state(w)[1] is not None, "bar: refused: no bar yet")
+    fl_wait(w, 10.5)
+    sc.eq((fl_state(w)[1], fl_watching(w), fl_bar_line(w)), (None, False, None), "bar: refused: the wait ends after 10 s")
+    M.taxi.refuse = False
+    fl_take(w, slot[FL_SW], wait=0.5)
+    sc.eq((fl_state(w)[1], fl_state(w)[0]), (None, None), "bar: a click on where you are does nothing")
+    # The interface hidden (Alt+Z) and no PLAYER_CONTROL_GAINED: the landing is still seen.
+    fl_take(w, slot[FL_SH])
+    wt = FL.Watcher()
+    sc.check(wt.GetParent(wt) is None, "bar: the watcher has no parent (it runs while the interface is hidden)")
+    w.g.UIParent.Hide(w.g.UIParent)
+    fl_wait(w, 80)
+    M.pos = w.to_lua(list(fl_pos(FL_SH)))
+    M.onTaxi = False
+    fl_wait(w, 0.7)
+    w.g.UIParent.Show(w.g.UIParent)
+    sc.eq((fl_state(w)[0], FL.learned), (None, 2), "bar: landed with the interface hidden, by the watcher alone")
+    sc.clean(w, "bar")
+
+
+def sc_flights_x(sc, ref, items):
+    """The X hides the bar for this flight only; /gl flights brings it back; the next flight shows it.
+    ns.CloseX is the same small X for anything else."""
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    M, ns, FL, S = w.M, w.ns, w.ns.Flights, w.ns.settings
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    x = b.x
+    sc.eq((x.glLook, lua_to_py(x._tex).get("normal"), x.GetFrameLevel(x)), ("game", "RedButton-Exit", b.GetFrameLevel(b) + 2),
+          "x: the game's red close X, just over the bar")
+    sc.eq(x.GetHitRectInsets(x), (-2, -2, -2, -2), "x: a little easier to hit than it looks")
+    mark = w.chat_mark()
+    M.click(x)
+    sc.eq(fl_bar_line(w), None, "x: the bar is gone")
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: " + FL_HIDDEN_LINE], "x: one line says how to get it back")
+    sc.check(S.flightNow.hidden is True and fl_watching(w), "x: hidden for this flight; still watching for the landing")
+    polls = FL.polls
+    fl_wait(w, 30)
+    sc.check(FL.polls > polls and fl_bar_line(w) is None, "x: stays hidden")
+    out = [strip_codes(c) for c in w.slash("/gl flights")]
+    sc.eq((out, fl_bar_line(w)), (["Goblin Ledger: the flight timer is back."], fl_line("Ironforge", fl_state(w)[0].est, fl_el(w))),
+          "x: /gl flights brings it back")
+    M.click(x)
+    fl_wait(w, 250)
+    fl_land(w, FL_IF)
+    sc.eq((FL.learned, S.flightNow), (1, None), "x: a hidden flight is still timed")
+    slot = fl_open(w, current=FL_IF, routes={FL_SW: [FL_IF, FL_SW]}, extra=())
+    fl_take(w, slot[FL_SW])
+    sc.check(fl_bar_line(w) is not None and fl_bar_line(w).startswith("Stormwind "), "x: the next flight shows the bar again")
+    sc.clean(w, "x")
+    # ns.CloseX on anything: a click calls back with the mouse button; errors are caught.
+    g = w.g
+    f = g.CreateFrame("Frame", None, g.UIParent)
+    f.SetSize(f, 100, 20)
+    cb = w.lua.eval("function(t) return function(btn, mouse) t[#t + 1] = mouse end end")
+    hits = w.lua.table()
+    cx = ns.CloseX(f, cb(hits))
+    sc.eq((cx.GetWidth(cx), cx.GetHeight(cx), w.same(cx.GetParent(cx), f)), (14, 14, True), "closex: 14px on its parent")
+    cx.SetPoint(cx, "RIGHT", f, "RIGHT", 0, 0)
+    M.click(cx)
+    sc.eq([hits[i] for i in range(1, len(hits) + 1)], ["LeftButton"], "closex: a click calls back")
+    cx = ns.CloseX(f, w.lua.eval("function() error('boom') end"), 12)
+    cx.SetPoint(cx, "LEFT", f, "LEFT", 0, 0)
+    M.click(cx)
+    sc.check(cx.GetWidth(cx) == 12 and "boom" in str(ns.lastError), "closex: 12px; an error in the callback is caught")
+    ns.lastError = None
+    sc.eq(ns.CloseX(None, cb(hits)), None, "closex: no parent, no button")
+    real = g.CreateFrame
+    g.CreateFrame = w.lua.eval("""function(real) return function(t, n, p, tpl, ...)
+      if tpl == "UIPanelCloseButtonNoScripts" then error("no template") end
+      return real(t, n, p, tpl, ...) end end""")(real)
+    cx = ns.CloseX(f, cb(hits))
+    g.CreateFrame = real
+    sc.eq((cx.glLook, lua_to_py(cx._tex).get("normal")), ("plain", "Interface\\Buttons\\UI-Panel-MinimizeButton-Up"),
+          "closex: without the template, the classic X")
+    sc.clean(w, "closex")
+
+
+def sc_flights_reload(sc, ref, items):
+    """/reload in the air: the bar carries on with the same clock, the X's choice too; a relog finds its
+    place from where you are (not timed); a landing while away, another character's or an old flight: dropped."""
+    nodes, edges, tracks = fl_source()[:3]
+    est = fl_est([FL_SW, FL_IF])[0]
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 90)
+    gt, st = fl_state(w)[0].gt, fl_state(w)[0].st
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    w2 = fl_world(ref, items, saved=saved, login=(False, True), t=w.M.t + 3, now=w.M.now + 3, on_taxi=True)
+    cur = fl_state(w2)[0]
+    if not sc.check(cur is not None, "reload: the flight goes on"):
+        return
+    sc.eq((w2.ns.Flights.resumed, cur.gt, cur.learn), ("reload", gt, True), "reload: the same clock")
+    sc.eq(fl_bar_line(w2), fl_line("Ironforge", est, fl_el(w2)), "reload: the bar at 93 s in")
+    fl_wait(w2, est - fl_el(w2) + 1)
+    land_t = w2.M.t
+    fl_land(w2, FL_IF)
+    sc.eq(fl_times(w2, "2>6"), [math.floor((land_t - gt) * 10 + 0.5) / 10], "reload: still timed")
+    sc.clean(w2, "reload")
+    # Hidden with the X: still hidden after the reload.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    w.M.click(w.ns.Flights.Bar().x)
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    w2 = fl_world(ref, items, saved=saved, login=(False, True), t=w.M.t + 3, now=w.M.now + 3, on_taxi=True)
+    sc.check(fl_state(w2)[0] is not None and fl_bar_line(w2) is None, "reload: hidden stays hidden")
+    w2.slash("/gl flights")
+    sc.check(fl_bar_line(w2) is not None, "reload: /gl flights brings it back")
+    sc.clean(w2, "reload hidden")
+    # A relog: the game's clock is new, the flight went on from where you were.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 40)
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    st = saved["flightNow"]["st"]
+    spot = tracks["2>6"][5]   # 100 s from take-off
+    w2 = fl_world(ref, items, saved=saved, login=(True, False), t=50000.0, now=st + 600, on_taxi=True, pos=spot)
+    cur = fl_state(w2)[0]
+    if sc.check(cur is not None, "relog: the flight goes on"):
+        sc.eq((w2.ns.Flights.resumed, cur.learn), ("position", False), "relog: placed from where you are, not timed")
+        sc.check(abs((w2.M.t - cur.gt) - 100) < 0.3, "relog: 100 s in, as the spot on the track says (%.1f)" % (w2.M.t - cur.gt))
+        sc.eq(fl_bar_line(w2), fl_line("Ironforge", est, fl_el(w2)), "relog: the bar from there")
+        fl_wait(w2, 160)
+        fl_land(w2, FL_IF)
+        sc.eq((fl_times(w2), w2.ns.Flights.learned), ({}, 0), "relog: a resumed flight is not timed")
+    sc.clean(w2, "relog")
+    # A relog with no position: the server's clock.
+    w2 = fl_world(ref, items, saved=saved, login=(True, False), t=50000.0, now=st + 150, on_taxi=True)
+    cur = fl_state(w2)[0]
+    sc.check(cur is not None and abs((w2.M.t - cur.gt) - 150) < 0.3, "relog: no position: the time since take-off")
+    sc.eq(w2.ns.Flights.resumed, "server", "relog: no position: says so")
+    sc.clean(w2, "relog no position")
+    # On a taxi far off the saved route (that flight is long over: say a crash after a /reload on it): dropped.
+    far = tracks["2>4"][2]   # on the Westfall flight
+    w2 = fl_world(ref, items, saved=saved, login=(True, False), t=90000.0, now=st + 1500, on_taxi=True, pos=far)
+    fl_wait(w2, 1)
+    sc.eq((fl_state(w2)[0], w2.ns.settings.flightNow, fl_bar_line(w2)), (None, None, None),
+          "relog off the saved route: some other flight, the saved one dropped (no Ironforge +20:42)")
+    sc.clean(w2, "relog off route")
+    # A "reload" whose server clock says much more time went by: not the same clock, placed from where you are.
+    w2 = fl_world(ref, items, saved=saved, login=(False, True), t=w.M.t + 3, now=st + 600, on_taxi=True, pos=spot)
+    cur = fl_state(w2)[0]
+    if sc.check(cur is not None, "reload, other clock: the flight goes on"):
+        sc.eq((w2.ns.Flights.resumed, cur.learn), ("position", False), "reload, other clock: placed from where you are")
+        sc.check(abs((w2.M.t - cur.gt) - 100) < 0.3, "reload, other clock: 100 s in (%.1f)" % (w2.M.t - cur.gt))
+    sc.clean(w2, "reload other clock")
+    # Landed while away (or the reload came after the landing): dropped.
+    w2 = fl_world(ref, items, saved=saved, login=(True, False), t=50000.0, now=st + 600, on_taxi=False)
+    sc.check(w2.ns.settings.flightNow is not None, "landed: kept while it checks")
+    fl_wait(w2, 6)
+    sc.eq((w2.ns.settings.flightNow, fl_bar_line(w2), fl_watching(w2)), (None, None, False), "landed: dropped after 5 s, no bar")
+    sc.clean(w2, "landed away")
+    # Another character's flight: left alone for that one.
+    w2 = fl_world(ref, items, saved=saved, guid="Player-1-00000OTHER", now=st + 60, on_taxi=True)
+    fl_wait(w2, 6)
+    sc.check(w2.ns.settings.flightNow is not None and fl_state(w2)[0] is None and fl_bar_line(w2) is None,
+             "other character: kept, not shown")
+    sc.clean(w2, "other character")
+    # An old record (over an hour past its end), or junk: dropped at once.
+    w2 = fl_world(ref, items, saved=saved, now=st + 259 + 3700, on_taxi=True)
+    sc.eq((w2.ns.settings.flightNow, fl_state(w2)[2]), (None, None), "old: dropped")
+    for junk in ("junk", {"ids": {}}, {"ids": {1: 2}, "names": {1: "x"}, "n": 2, "gt": 5, "key": "2>6", "dest": "x", "who": FL_GUID}):
+        w2 = fl_world(ref, items, saved={"flightNow": junk}, on_taxi=True)
+        fl_wait(w2, 6)
+        sc.eq((w2.ns.settings.flightNow, fl_bar_line(w2)), (None, None), "junk: dropped (%r)" % (junk,))
+        sc.clean(w2, "junk")
+
+
+def sc_flights_multihop(sc, ref, items):
+    """Two hops: the bar counts to the last place; the whole route's time is kept by itself. An early
+    landing points the bar at the next place and is not timed; nor is a landing somewhere else."""
+    nodes, edges, _ = fl_source()[:3]
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    M, FL = w.M, w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_MEN])
+    est = fl_est([FL_SW, FL_IF, FL_MEN])[0]
+    cur = fl_state(w)[0]
+    sc.eq((cur.key, cur.est, cur.dest), ("2>6>7", est, "Menethil Harbor"), "hops: the route the game flies")
+    sc.eq(fl_bar_line(w), fl_line("Menethil Harbor", est, fl_el(w)), "hops: counts to Menethil Harbor")
+    fl_wait(w, est - fl_el(w) - 3.2, dt=0.5)
+    sc.eq(fl_bar_line(w), fl_line("Menethil Harbor", est, fl_el(w)), "hops: near the end")
+    land_t, gt = M.t, cur.gt
+    fl_land(w, FL_MEN)
+    dur = math.floor((land_t - gt) * 10 + 0.5) / 10
+    sc.eq(fl_times(w), {"2>6>7": [dur]}, "hops: the whole route's time, not the legs'")
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_MEN])
+    sc.eq(fl_tips(lines), [fl_tip(dur, True)], "hops: the map says your time for it")
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "hops: Ironforge alone is still the estimate")
+    M.CloseTaxi()
+    sc.clean(w, "hops")
+    # An early landing: down at the next place (Ironforge), not timed.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    M, FL = w.M, w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_MEN])
+    fl_wait(w, 100, dt=0.5)
+    w.g.TaxiRequestEarlyLanding()
+    cur = fl_state(w)[0]
+    end1 = edges["2>6"] * est / (edges["2>6"] + edges["6>7"])
+    sc.eq((cur.dest, round(cur.est, 6), cur.learn, M.taxi.early), ("Ironforge", round(end1, 6), False, 1),
+          "early: the bar points at the next place")
+    sc.eq(fl_bar_line(w), fl_line("Ironforge", cur.est, fl_el(w)), "early: counts to it")
+    fl_wait(w, cur.est - fl_el(w) + 0.5, dt=0.5)
+    fl_land(w, FL_IF)
+    sc.eq((fl_times(w), FL.learned, FL.lastFlight.learned), ({}, 0, False), "early: not timed")
+    sc.clean(w, "early")
+    # Down somewhere else (no early-landing call seen): not timed.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 255, dt=0.5)
+    fl_land(w, pos=fl_pos(FL_SH))
+    sc.eq((fl_times(w), w.ns.Flights.lastFlight.learned), ({}, False), "elsewhere: not timed")
+    sc.clean(w, "elsewhere")
+
+
+def sc_flights_learning(sc, ref, items):
+    """Your times: the last 5 per route, the middle one counts; too short, too long or somewhere else is not
+    kept; no position counts as there. Frequent Flier's times are kept apart; your pace learns."""
+    edges = fl_source()[1]
+    times = {"2>6": [250.0, 251.0, 252.0, 253.0, 254.0]}
+    w = fl_world(ref, items, pos=fl_pos(FL_SW), saved={"flightTimes": times})
+    M, FL = w.M, w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    cur = fl_state(w)[0]
+    sc.eq((cur.est, cur.mine), (252.0, True), "learn: your own time (the middle of 5) on the bar")
+    fl_wait(w, 261, dt=0.5)
+    land_t = M.t
+    fl_land(w, FL_IF)
+    new = math.floor((land_t - cur.gt) * 10 + 0.5) / 10
+    sc.eq(fl_times(w, "2>6"), [251.0, 252.0, 253.0, 254.0, new], "learn: the newest in, the oldest out (5 kept)")
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: 4:13"], "learn: the middle one (one slow flight does not move it much)")
+    M.CloseTaxi()
+    sc.clean(w, "learn")
+    est = fl_est([FL_SW, FL_IF])[0]
+    for label, secs, pos, kept in (("too short", 100, fl_pos(FL_IF), False), ("too long", 600, fl_pos(FL_IF), False),
+                                   ("no position", 262, None, True), ("a quarter long", round(est * 1.25), fl_pos(FL_IF), False),
+                                   ("1.9 times as long", round(est * 1.9), fl_pos(FL_IF), False),
+                                   ("12% long", round(est * 1.12), fl_pos(FL_IF), True)):
+        w = fl_world(ref, items, pos=fl_pos(FL_SW))
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        fl_wait(w, secs, dt=0.5)
+        if pos is None:   # none, or a secret one (the game hides it): the same
+            w.M.pos = w.to_lua([12345.5, 12345.5])
+            w.g.issecretvalue = w.lua.eval("function(v) return v == 12345.5 end")
+        fl_land(w, pos=pos)
+        sc.eq(bool(fl_times(w)), kept, "learn: %s (%d s for %.0f): %s" % (label, secs, est, "kept" if kept else "not kept"))
+        sc.clean(w, "learn " + label)
+    # Frequent Flier: its estimate, its own key.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW), ff=True)
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    cur = fl_state(w)[0]
+    sc.eq((cur.est, cur.fast), (fl_ff(est), True), "learn: Frequent Flier: 20% faster")
+    sc.eq(fl_bar_line(w), "Ironforge 3:36", "learn: Frequent Flier on the bar")
+    fl_wait(w, 216, dt=0.5)
+    fl_land(w, FL_IF)
+    sc.eq(sorted(fl_times(w)), ["2>6 ff"], "learn: kept apart from normal speed")
+    sc.clean(w, "learn ff")
+    # No talent seen, but every flight comes in about 17% early: Frequent Flier's speed, kept as such;
+    # after two of them, its times count.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    S = w.ns.settings
+    for i in range(3):
+        slot = fl_open(w) if i % 2 == 0 else fl_open(w, current=FL_IF, routes={FL_SW: [FL_IF, FL_SW]}, extra=())
+        dest = FL_IF if i % 2 == 0 else FL_SW
+        fl_take(w, slot[dest])
+        cur = fl_state(w)[0]
+        if i == 1:
+            sc.eq((cur.fast, cur.est), (False, edges["6>2"]), "learn: one fast flight is not Frequent Flier yet")
+        if i == 2:
+            first = fl_times(w, "2>6 ff")
+            sc.eq((cur.fast, cur.est, cur.mine), (True, first[0], True), "learn: after two at its speed, its times (%s)" % first)
+        fl_wait(w, cur.est * 0.83 if i < 2 else cur.est, dt=0.5)
+        fl_land(w, dest)
+    sc.eq(sorted(fl_times(w)), ["2>6 ff", "6>2 ff"], "learn: flights at Frequent Flier's speed kept as such, not as normal times")
+    sc.eq((fl_list(S.flightFast[FL_GUID]), len(fl_list(S.flightPace[FL_GUID + " ff"])), S.flightPace[FL_GUID]), ([1, 1, 1], 3, None),
+          "learn: three at its speed; the pace kept at that speed")
+    sc.clean(w, "learn pace")
+
+
+def sc_flights_slash(sc, ref, items):
+    """/gl flights on, off, status, alone; /gl help says it in one line; works on the legacy client too."""
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    M, FL, S = w.M, w.ns.Flights, w.ns.settings
+    out = [strip_codes(c) for c in w.slash("/gl help")]
+    want = "Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off or status)"
+    sc.eq(sum(1 for t in out if t == want), 1, "slash: /gl help says it once")
+    sc.check(any("/gl consumes" in t for t in out) and any("/gl chart" in t for t in out), "slash: the other lines stay")
+    out = [strip_codes(c) for c in w.slash("/gl flights status")]
+    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 0 routes."], "slash: status")
+    out = [strip_codes(c) for c in w.slash("/gl flights")]
+    sc.eq(out, ["Goblin Ledger: flight timers are on. /gl flights off turns them off."], "slash: alone, while on")
+    out = [strip_codes(c) for c in w.slash("/gl flights off")]
+    sc.eq((out, S.flights), (["Goblin Ledger: flight timers are off. /gl flights on brings them back."], False), "slash: off")
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    sc.eq((fl_state(w)[0], fl_state(w)[1], fl_bar_line(w)), (None, None, None), "slash: off: a flight is not followed")
+    fl_land(w, FL_IF)
+    out = [strip_codes(c) for c in w.slash("/gl flights")]
+    sc.eq((out, S.flights), (["Goblin Ledger: flight timers are on: flight times on the flight map, and a countdown while you fly."], None),
+          "slash: alone, while off: on")
+    slot = fl_open(w, current=FL_IF, routes={FL_SW: [FL_IF, FL_SW]}, extra=())
+    fl_take(w, slot[FL_SW])
+    fl_wait(w, 9.3)
+    cur = fl_state(w)[0]
+    left = fl_clock(math.ceil(cur.est - fl_el(w) - 1e-6))
+    out = [strip_codes(c) for c in w.slash("/gl flights status")]
+    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 0 routes.",
+                "Goblin Ledger: flying to Stormwind: %s left." % left], "slash: status in the air")
+    w.slash("/gl flights off")
+    sc.check(fl_bar_line(w) is None and fl_state(w)[0] is not None, "slash: off in the air: the bar goes")
+    w.slash("/gl flights on")
+    sc.check(fl_bar_line(w) is not None, "slash: on in the air: back")
+    M.click(FL.Bar().x)
+    out = [strip_codes(c) for c in w.slash("/gl flights status")]
+    sc.check(out[-1].endswith("left (bar hidden)."), "slash: status says the bar is hidden (%s)" % out[-1:])
+    w.slash("/gl flights on")
+    sc.check(fl_bar_line(w) is not None, "slash: on brings a hidden bar back")
+    for alias in ("/gl fly status", "/gl flight status", "/gl FLIGHTS status"):
+        out = [strip_codes(c) for c in w.slash(alias)]
+        sc.check(out and out[0].startswith("Goblin Ledger: flight timers are on."), "slash: %s" % alias)
+    out = [strip_codes(c) for c in w.slash("/gl flights maybe")]
+    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl flights on, /gl flights off or /gl flights status."], "slash: unknown choice")
+    fl_wait(w, cur.est - fl_el(w) + 1, dt=0.5)
+    fl_land(w, FL_SW)
+    out = [strip_codes(c) for c in w.slash("/gl flights status")]
+    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 1 route."], "slash: one route timed")
+    w.slash("/gl flights off")
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.clean(w, "slash")
+    w2 = fl_world(ref, items, saved=saved)
+    sc.eq(w2.ns.Flights.IsOn(), False, "slash: off after a reload")
+    sc.clean(w2, "slash saved")
+    # The legacy client (old auction house API): the same.
+    w = fl_world(ref, items, client="legacy", pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "legacy: the map line")
+    fl_take(w, slot[FL_IF])
+    sc.eq(fl_bar_line(w), "Ironforge 4:19", "legacy: the bar")
+    sc.clean(w, "legacy")
+
+
+def sc_flights_elvui(sc, ref, items):
+    """With ElvUI: the bar in ElvUI's panel look, the X as ElvUI's own X (still 14px to hit, still works)."""
+    def setup(w):
+        w.M.InstallBlizzardBags()
+        w.M.InstallElvUIAddon(w.to_lua({}))
+    w = fl_world(ref, items, pos=fl_pos(FL_SW), before=setup)
+    M, FL = w.M, w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    x = b.x
+    sc.eq((b._template, FL.look), ("Transparent", "elvui"), "elvui: the bar in ElvUI's look")
+    sc.eq((x.glLook, x.Texture._texture, x.Texture.GetWidth(x.Texture)), ("elvui", "Interface\\AddOns\\ElvUI\\Media\\Textures\\Close", 12),
+          "elvui: ElvUI's X")
+    sc.eq((x.GetHitRectInsets(x), x.GetWidth(x)), ((-2, -2, -2, -2), 14), "elvui: still easy to hit")
+    sc.check(any(w.same(M.elvCloses[i], x) for i in range(1, len(M.elvCloses) + 1)), "elvui: skinned by ElvUI's HandleCloseButton")
+    sc.eq(fl_bar_line(w), "Ironforge 4:19", "elvui: the words")
+    M.click(x)
+    sc.eq(fl_bar_line(w), None, "elvui: the X hides it")
+    sc.clean(w, "elvui")
+    def setup2(w):
+        w.M.InstallBlizzardBags()
+        w.M.InstallElvUIAddon(w.to_lua({"noSkins": True}))
+    w = fl_world(ref, items, pos=fl_pos(FL_SW), before=setup2)
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    x = w.ns.Flights.Bar().x
+    sc.eq(x.glLook, "game", "elvui without its skins: the game's X")
+    sc.clean(w, "elvui no skins")
+    # A smaller X (the boat line's, say): ElvUI's art made to fit.
+    w = fl_world(ref, items, before=setup)
+    f = w.g.CreateFrame("Frame", None, w.g.UIParent)
+    cx = w.ns.CloseX(f, w.lua.eval("function() end"), 12)
+    sc.eq((cx.glLook, cx.GetWidth(cx), cx.Texture.GetWidth(cx.Texture), cx.GetHitRectInsets(cx)), ("elvui", 12, 10, (-2, -2, -2, -2)),
+          "elvui: a 12px X gets 10px art, still easy to hit")
+    sc.clean(w, "elvui no skins")
+
+
+def sc_flights_guards(sc, ref, items):
+    """Only plain flights are timed. A blip off the taxi is not a landing; a loading screen in the air, a
+    landing nothing saw (the game stalled) or a time far from the data's is not kept. The map's routes gone
+    when the click is seen: the route its tooltip showed."""
+    est = fl_est([FL_SW, FL_IF])[0]
+    for with_event in (False, True):
+        label = "blip with the events" if with_event else "blip"
+        w = fl_world(ref, items, pos=fl_pos(FL_SW))
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        fl_wait(w, 60)
+        w.M.onTaxi = False
+        if with_event:
+            w.M.fire("PLAYER_CONTROL_GAINED")
+        fl_wait(w, 0.3)
+        w.M.onTaxi = True
+        if with_event:
+            w.M.fire("PLAYER_CONTROL_LOST")
+        fl_wait(w, 1)
+        sc.check(fl_state(w)[0] is not None and fl_bar_line(w) is not None, "%s: off the taxi for 0.3 s: the flight goes on" % label)
+        fl_wait(w, est - fl_el(w) + 0.5)
+        fl_land(w, FL_IF)
+        sc.eq((sorted(fl_times(w)), fl_state(w)[0]), (["2>6"], None), "%s: landed later, timed" % label)
+        sc.clean(w, label)
+    # A loading screen in the air (Alterac Valley's flights have no data, so this is not one of them).
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 100)
+    w.M.fire("PLAYER_ENTERING_WORLD", False, False)
+    fl_wait(w, 1)
+    sc.check(fl_bar_line(w) is not None, "loading screen in the air: the bar goes on")
+    fl_wait(w, est - fl_el(w) + 1)
+    fl_land(w, FL_IF)
+    sc.eq((fl_times(w), w.ns.Flights.learned, fl_state(w)[0]), ({}, 0, None), "loading screen in the air: landed, not timed")
+    sc.clean(w, "loading screen")
+    # The game stalled over the landing (3 s with no frame): its moment is not known.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, est - 1)
+    w.M.t = w.M.t + 3
+    fl_land(w, FL_IF)
+    sc.eq((fl_times(w), fl_state(w)[0], fl_bar_line(w)), ({}, None, None), "stall over the landing: landed, not timed")
+    sc.clean(w, "stall landing")
+    # A stall on the way does not matter (the clock goes on): timed.
+    w = fl_world(ref, items, pos=fl_pos(FL_SW))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 100)
+    w.M.t = w.M.t + 3
+    fl_wait(w, est - fl_el(w) + 0.5)
+    fl_land(w, FL_IF)
+    sc.eq(sorted(fl_times(w)), ["2>6"], "stall on the way: timed")
+    sc.clean(w, "stall on the way")
+    # The game lets go of the map's routes before the click is seen: the route its tooltip showed.
+    for hover, want in ((FL_IF, "2>6"), (FL_SH, None)):
+        w = fl_world(ref, items, pos=fl_pos(FL_SW))
+        slot = fl_open(w)
+        fl_hover(w, slot[hover])
+        w.lua.execute("""local M = ...
+          local g = GetNumRoutes
+          GetNumRoutes = function(i) if M.taxi.gone then return 0 end return g(i) end""", w.M)
+        b = w.g["TaxiButton%d" % slot[FL_IF]]
+        w.lua.execute("""local b, M = ...
+          local old = b:GetScript("OnClick")
+          b:SetScript("OnClick", function(self, ...) M.taxi.gone = true; return old(self, ...) end)""", b, w.M)
+        w.M.click(b)
+        fl_wait(w, 1)
+        cur = fl_state(w)[0]
+        sc.eq(cur.key if cur else None, want, "routes gone at the click, the tooltip was on %s: %s" % (
+            fl_source()[0][hover][0], "that route" if want else "not followed"))
+        sc.clean(w, "routes gone")
+
+
+def sc_flights_joins(sc, ref, items):
+    """Flying on past a place: the data's cut corner (JUNC) until your multi-hop flights say the game flies
+    both paths whole. Only a flight where the two differ by 8 s or more says. One-hop flights set your pace,
+    multi-hop ones do not."""
+    edges = fl_source()[1]
+    route, back = [FL_SH, FL_SW, FL_IF], [FL_IF, FL_SW, FL_SH]
+    short, full = fl_data(route), fl_data(route, model="full")
+    w = fl_world(ref, items, pos=fl_pos(FL_SH))
+    FL, S = w.ns.Flights, w.ns.settings
+    slot = fl_open(w, current=FL_SH, routes={FL_IF: route, FL_SW: [FL_SH, FL_SW]}, extra=())
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq((FL.JoinModel(), fl_tips(lines)), ("short", ["Flight time: about 5:28"]), "joins: at first the corner cut: 5:28")
+    fl_take(w, slot[FL_IF])
+    sc.eq(fl_state(w)[0].est, short, "joins: the bar's the same")
+    fl_wait(w, full - fl_el(w), dt=0.5)
+    fl_land(w, FL_IF)
+    sc.eq((fl_list(S.flightJoins), FL.JoinModel(), sorted(fl_times(w)), S.flightPace), ([0], "full", ["4>2>6"], None),
+          "joins: in at 5:40: says both paths whole; timed; no pace from a multi-hop flight")
+    slot = fl_open(w, current=FL_IF, routes={FL_SH: back, FL_SW: [FL_IF, FL_SW]}, extra=())
+    lines, _ = fl_hover(w, slot[FL_SH])
+    sc.eq(fl_tips(lines), [fl_tip(fl_data(back, model="full"), False)], "joins: then the way back counts both paths whole")
+    fl_take(w, slot[FL_SH])
+    sc.eq(fl_state(w)[0].est, fl_data(back, model="full"), "joins: on the bar too")
+    fl_wait(w, fl_data(back) - fl_el(w), dt=0.5)
+    fl_land(w, FL_SH)
+    sc.eq((fl_list(S.flightJoins), FL.JoinModel()), ([0, 1], "short"), "joins: one in at the cut time: a tie, the corner cut")
+    slot = fl_open(w, current=FL_SH, routes={FL_SW: [FL_SH, FL_SW]}, extra=())
+    fl_take(w, slot[FL_SW])
+    fl_wait(w, edges["4>2"] - fl_el(w), dt=0.5)
+    fl_land(w, FL_SW)
+    sc.eq((fl_list(S.flightJoins), len(fl_list(S.flightPace[FL_GUID]))), ([0, 1], 1), "joins: a one-hop flight: no say; it sets your pace")
+    slot = fl_open(w, routes={FL_MEN: [FL_SW, FL_IF, FL_MEN], FL_IF: [FL_SW, FL_IF]}, extra=())
+    fl_take(w, slot[FL_MEN])
+    fl_wait(w, fl_state(w)[0].est - fl_el(w), dt=0.5)
+    fl_land(w, FL_MEN)
+    sc.eq((fl_list(S.flightJoins), "2>6>7" in fl_times(w)), ([0, 1], True),
+          "joins: over Ironforge to Menethil (the two 1 s apart): no say, timed")
+    sc.clean(w, "joins")
+    # At Frequent Flier's speed: the same, at that speed.
+    w = fl_world(ref, items, pos=fl_pos(FL_SH), ff=True)
+    S = w.ns.settings
+    slot = fl_open(w, current=FL_SH, routes={FL_IF: route, FL_SW: [FL_SH, FL_SW]}, extra=())
+    fl_take(w, slot[FL_IF])
+    sc.eq(fl_state(w)[0].est, fl_data(route, fast=True), "joins: Frequent Flier: the cut corner at its speed")
+    fl_wait(w, fl_data(route, fast=True, model="full") - fl_el(w), dt=0.5)
+    fl_land(w, FL_IF)
+    sc.eq((fl_list(S.flightJoins), sorted(fl_times(w))), ([0], ["4>2>6 ff"]), "joins: Frequent Flier: in at the whole paths' time")
+    sc.clean(w, "joins ff")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -22926,6 +24103,17 @@ SCENARIOS = [
     ("tooltip-live-price", sc_tooltip_live),
     ("tooltip-data-age", sc_data_age),
     ("tooltip-vs-badge", sc_vs_badge),
+    ("flights-data", sc_flights_data),
+    ("flights-map", sc_flights_map),
+    ("flights-bar", sc_flights_bar),
+    ("flights-x", sc_flights_x),
+    ("flights-reload", sc_flights_reload),
+    ("flights-multihop", sc_flights_multihop),
+    ("flights-learning", sc_flights_learning),
+    ("flights-slash", sc_flights_slash),
+    ("flights-elvui", sc_flights_elvui),
+    ("flights-guards", sc_flights_guards),
+    ("flights-joins", sc_flights_joins),
 ]
 
 
