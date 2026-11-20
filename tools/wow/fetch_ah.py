@@ -167,6 +167,11 @@ RULESET_NAMES = {1: "PvP"}
 VID_MULT = 1000            # vid = item id * VID_MULT + index
 VARIANT_MAX = 999          # indexes per item; later versions are only counted in the item itself
 VARIANT_IDLE_HOURS = 72    # a version with nothing listed or sold for this long stops getting hourly points
+ADDON_VERSION_HOURLY = 72  # ... and its addon line gets ADDON_NO_HOURLY as H, its hourly prices packed after it
+# Two empty hours: "nothing listed in the last 2 hours", which is true for such a version. Two, not
+# one: Goblin Ledger 1.0.0 then says "Nothing was listed in this timeframe. Try a longer one." on its
+# 1D, 5D and 1W charts (one point would say it is still collecting prices). Its daily points stay.
+ADDON_NO_HOURLY = "~,~;~,~;,"
 SUFFIX_FILE = "suffix_names.json"
 # item details (slot, item level, class ids) added to items.json; older entries are filled in
 META_VERSION = 2
@@ -1556,12 +1561,23 @@ def flip_line(f):
 #   name ("" = unknown) | cheapest now | market now | units listed now |
 #   est. sold last 24h (measured hours only) | avg7 (mean daily market, last
 #   7 days) | vendor sell | H | D | auctions now (separate listings)
+#   [| P: idle versions only, see below]
 # H (hourly, <= 168 points) and D (daily, <= 400 points) are each
 #   "cheapest;market;sold", comma-separated tokens, right-aligned so the last
 #   token is hourEnd (H) or dayEnd (D) and the k-th from the end is k steps
 #   earlier. Price tokens: "~" = nothing listed, otherwise a base-36 delta from
 #   the previous non-null value ("" = no change, leading "-" = down; the first
 #   one is the absolute price). Sold tokens: base-36 count, "" = 0.
+# A version (vid) with nothing listed or sold in the last ADDON_VERSION_HOURLY
+#   hours gets ADDON_NO_HOURLY as H (two empty hours) and an 11th field, P: its
+#   hourly prices packed (pack_runs). A version is mostly one listing that
+#   sells and is gone for days, and a week of empty hours costs 5 bytes an
+#   hour; packed, the whole week is about 60 bytes. Goblin Ledger 1.0.0 reads
+#   only the first 10 fields (it sees two empty hours); newer copies read P,
+#   so their prices, advice and charts are the same as with H written out.
+# P: H with every run of 2 or more equal tokens of a sub-series written once
+#   as "<token>*<count>" (count in base 36), when that is shorter ("~*4" is
+#   "~,~,~,~", "*5" is five empty tokens). Expanding it gives H exactly.
 _B36 = "0123456789abcdefghijklmnopqrstuvwxyz"
 _B36_PAD = [a + b + c for a in _B36 for b in _B36 for c in _B36]   # 3 digits, zero padded
 _B36_SHORT = [s.lstrip("0") or "0" for s in _B36_PAD]
@@ -1659,17 +1675,58 @@ def _addon_series(points, end, step, count, bridge=0):
     return ",".join(cheap) + ";" + ",".join(mkt) + ";" + ",".join(sold)
 
 
+def pack_runs(series):
+    """A 'cheap;market;sold' series with each run of 2 or more equal tokens of a
+    sub-series written once as "<token>*<count>" (count in base 36), where that
+    is shorter. Core.lua (unpackRuns) expands it back to exactly `series`."""
+    out = []
+    for sub in series.split(";"):
+        toks = sub.split(",") if sub != "" else []
+        res, i = [], 0
+        while i < len(toks):
+            j = i + 1
+            while j < len(toks) and toks[j] == toks[i]:
+                j += 1
+            run = j - i
+            packed = toks[i] + "*" + b36(run)
+            if run >= 2 and len(packed) < run * len(toks[i]) + run - 1:
+                res.append(packed)
+            else:
+                res.extend(toks[i:j])
+            i = j
+        out.append(",".join(res))
+    return ";".join(out)
+
+
+def unpack_runs(packed):
+    """pack_runs backwards (what Core.lua does; for tests and checks)."""
+    out = []
+    for sub in packed.split(";"):
+        toks = []
+        for tok in (sub.split(",") if sub != "" else []):
+            if "*" in tok:
+                t, n = tok.split("*", 1)
+                toks.extend([t] * int(n, 36))
+            else:
+                toks.append(tok)
+        out.append(",".join(toks))
+    return ";".join(out)
+
+
 def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auctions=0, measured=None,
-                    sold24=None):
+                    sold24=None, hourly_idle=None):
     """One `[id] = "...",` line for ForeverAH_Data.items, or None when the item
     had no listing and no estimated sale in the last 7 days. `days` is how many
     daily points to keep (fewer only when the file would be too big).
     `auctions` is how many separate auctions are listed now. `measured` is the
     set of hours with a measured sold estimate (None = every hour); sold24
     only adds up those hours, unless `sold24` gives it (a version just after
-    the upgrade that started tracking versions)."""
+    the upgrade that started tracking versions). `hourly_idle` (hours, for
+    versions: ADDON_VERSION_HOURLY): with nothing listed or sold for that
+    long, H is ADDON_NO_HOURLY and the hourly prices follow packed (P)."""
     hstart = hour - (ADDON_HOURS - 1) * 3600
     recent = False
+    last_active = None
     given, sold24 = sold24, 0
     for p in reversed(h["h"]):
         if p[0] < hstart:
@@ -1678,6 +1735,8 @@ def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auction
             continue
         if p[1] > 0 or p[3] > 0 or p[4] > 0:
             recent = True
+            if last_active is None:
+                last_active = p[0]
         if p[0] > hour - 86400 and (measured is None or p[0] in measured):
             sold24 += int(p[4])
     if not recent:
@@ -1688,11 +1747,17 @@ def addon_item_line(iid, meta, h, lo, hi, listed, hour, days=ADDON_DAYS, auction
     week = [int(p[2]) for p in h["d"] if day_end - 6 * 86400 <= p[0] <= day_end and p[2] > 0]
     avg7 = int(sum(week) / len(week) + 0.5) if week else 0
     hs = _addon_series(h["h"], hour, 3600, ADDON_HOURS, ADDON_BRIDGE_H)
+    packed = None
+    if hourly_idle is not None and last_active <= hour - int(hourly_idle) * 3600:
+        hs, packed = ADDON_NO_HOURLY, pack_runs(hs)
     ds = _addon_series(h["d"], day_end, 86400, max(1, min(int(days), ADDON_DAYS)), ADDON_BRIDGE_D)
     name = item_name(meta).replace("|", "/")
     lo, hi = min(int(lo), ADDON_PRICE_CAP), min(int(hi), ADDON_PRICE_CAP)
-    body = "|".join((name, str(lo), str(hi), str(int(listed)), str(sold24), str(avg7),
-                     str(int((meta or {}).get("sell") or 0)), hs, ds, str(max(0, int(auctions or 0)))))
+    fields = [name, str(lo), str(hi), str(int(listed)), str(sold24), str(avg7),
+              str(int((meta or {}).get("sell") or 0)), hs, ds, str(max(0, int(auctions or 0)))]
+    if packed is not None:
+        fields.append(packed)
+    body = "|".join(fields)
     return f"    [{int(iid)}] = {lua_str(body)},\n"
 
 
@@ -2111,7 +2176,7 @@ def main(out=None):
                     if vs is not None:
                         vsold24[sid] = vs
                     line = addon_item_line(sid, meta, h, 0, 0, 0, hour, auctions=0, measured=measured,
-                                           sold24=vs)
+                                           sold24=vs, hourly_idle=ADDON_VERSION_HOURLY)
                     if line:
                         addon[sid], addon_now[sid], addon_meta[sid] = line, (0, 0, 0, 0), meta
                 except Exception as e:
@@ -2143,7 +2208,7 @@ def main(out=None):
             if vs is not None:
                 vsold24[sid] = vs
             line = addon_item_line(sid, meta, h, lo, hi, listed, hour, auctions=nauc, measured=measured,
-                                   sold24=vs)
+                                   sold24=vs, hourly_idle=None if key is None else ADDON_VERSION_HOURLY)
             if line:
                 addon[sid], addon_now[sid], addon_meta[sid] = line, (lo, hi, listed, nauc), meta
         except Exception as e:
@@ -2292,8 +2357,8 @@ def main(out=None):
                 return None
             lo_, hi_, listed_, nauc_ = addon_now[eid]
             return addon_item_line(eid, addon_meta.get(eid), hh, lo_, hi_, listed_, hour, days,
-                                   sold24=vsold24.get(eid),
-                                   auctions=nauc_, measured=measured)
+                                   sold24=vsold24.get(eid), auctions=nauc_, measured=measured,
+                                   hourly_idle=ADDON_VERSION_HOURLY if eid in vid_lines else None)
         extra = len(addon_tables(vtable, addon_flips).encode("utf-8")) + 1024
         est, shortened = fit_addon_lines(addon, rebuild, vids=vid_lines, extra=extra)
         if shortened:
