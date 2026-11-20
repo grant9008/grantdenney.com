@@ -1,16 +1,17 @@
 local ADDON_NAME, ns = ...
--- Goblin Ledger: boat timers. Standing at a dock, a short line under the minimap says when
--- the boat comes:
+-- Goblin Ledger: boat timers. Standing at a dock, a big timer in the upper middle of the screen
+-- says when the boat comes (/gl boats small: a short line under the minimap instead):
 --   "Boat to Theramore: 1:42"                        (the timer is good to 5 s)
 --   "Boat to Theramore: docked, leaves in 0:35"
 --   "Boat to Theramore: about 2 min"                 (it may be off by up to 30 s)
---   "Boat to Theramore: unknown - /gl boat now when it docks"
--- A dock that several boats use (Menethil, Auberdine, the zeppelin towers) gets one line per
--- boat, nearest first (3 at most); when the lines would run into the quest tracker they
--- become one line. Zeppelins and skyships say Zeppelin and Skyship. A small X at their right
--- end hides them until you leave that dock (250 yd from its piers; a /reload there keeps them
--- hidden, the next visit shows them again) and says in one chat line that /gl boats on brings
--- them back.
+--   "Boat to Theramore: unknown, every 5:29 - /gl boat now when it docks"
+-- Big, the route is small before the countdown, which is about three times the small line's
+-- size; an unknown boat is a size smaller, with the hint under it. A dock that several boats
+-- use (Menethil, Auberdine, the zeppelin towers) gets one line per boat, nearest pier first (3
+-- at most), the others smaller; when they would run into something they become one line.
+-- Zeppelins and skyships say Zeppelin and Skyship. A small X at the top right hides them until
+-- you leave that dock (250 yd from its piers; a /reload there keeps them hidden, the next visit
+-- shows them again) and says in one chat line that /gl boats on brings them back.
 --
 -- Each boat runs a fixed loop (the table below, from the game's own data). Where in its loop
 -- a boat is right now is in no game data, so the addon learns it, best first:
@@ -27,7 +28,7 @@ local ADDON_NAME, ns = ...
 -- Nothing runs away from docks and boats: a zone change starts a check every 3 s within
 -- 1500 yd of a dock, every second within 150 yd, while the line shows and while you ride (a
 -- ride ends at the next dock, 20 s after the boat should have got there, or when you are
--- off its track). /gl boats [on|off|all], /gl boat now. Plain ASCII only.
+-- off its track). /gl boats [on|off|big|small|all], /gl boat now. Plain ASCII only.
 
 ADDON_NAME = ADDON_NAME or "GoblinLedger"
 ns = ns or {}
@@ -125,8 +126,20 @@ local MAX_AGE = 30 * 86400
 local MAX_LINES, LINE_H, GAP = 3, 12, 2
 -- The X: as tall as a line; its hit area reaches 2 px past it, so 4 px keep it off the lines'.
 local X_SIZE, X_GAP = 12, 4
-local HINT = " - /gl boat now when it docks"
+local HINT_WORDS = "/gl boat now when it docks"
+local HINT = " - " .. HINT_WORDS
 local X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+-- The big timer (font sizes and gaps in UI units). The small line uses the game's small font
+-- (10), so the countdown is about three times its size. Its place: centred, its top 290 below
+-- the top of the screen, or 30% of the screen height down when that is lower. The game's own
+-- messages at the top centre hang from the top at fixed distances (Forever 1.60.1: the timer
+-- bars at 100, three 206 x 32 at most, the flight bar on their spot; the red error lines 122 to
+-- 182; raid warnings 182 to 282; the zone name 128 to 256), so at any UI scale and screen size
+-- they stay above it. The camera looks at the character's head at the screen centre: the timer
+-- has to end above 46% of the screen height. Where it does not fit, the other boats join in one
+-- line; then it goes above the timer bars (18 below the top); else the small line is used.
+local BIG = { value = 32, head = 16, med = 20, hint = 13, sub = 15, gap = 3, hgap = 8, lift = 3, x = 14, xgap = 6,
+              top = 290, frac = 0.30, char = 0.46, band = 18, timerW = 206, timerH = 96 }
 local X_SAID = "boat timers hidden until you leave this dock. /gl boats on brings them back."
 
 local function isSecret(v)
@@ -139,6 +152,8 @@ local function say(msg)
 end
 local function settings() return type(ns.settings) == "table" and ns.settings or {} end
 local function isOn() return settings().boats ~= false end
+-- The big timer is the default; /gl boats small saves boatStyle = "small".
+local function bigStyle() return settings().boatStyle ~= "small" end
 local function finite(v) return type(v) == "number" and v == v and v ~= math.huge and v ~= -math.huge end
 local function dist(x1, y1, x2, y2)
   local dx, dy = x1 - x2, y1 - y2
@@ -979,8 +994,11 @@ end
 ---------------------------------------------------------------------------
 -- The line(s) under the minimap
 ---------------------------------------------------------------------------
-local UI = { holder = nil, btn = {}, fs = {}, x = nil, list = nil, mode = nil, shown = false, confirm = nil }
+-- UI.style: "big" or "small", what shows now; UI.big: the big timer's frames (BG below).
+local UI = { holder = nil, btn = {}, fs = {}, x = nil, list = nil, mode = nil, shown = false, confirm = nil, style = nil }
 B.ui = UI
+local BG = { holder = nil, btn = {}, fs = {}, value = nil, hint = nil, x = nil, fonts = {}, mode = nil, rect = nil, joined = nil }
+UI.big = BG
 local hideHere
 
 -- m:ss, rounded up like a countdown: 1:00 as it docks, 0:01 in its last second, never 0:00.
@@ -989,17 +1007,26 @@ local function clockText(sec)
   return sformat("%d:%02d", floor(sec / 60), sec % 60)
 end
 
--- "Boat to Theramore", "1:42" / "docked, leaves in 0:35" / "about 2 min" / "about now" / "unknown"
+-- "Boat to Theramore", "1:42" / "docked, leaves in 0:35" / "about 2 min" / "about now" /
+-- "unknown, every 5:29" (no timer, one too old to trust, or one from before a weekly reset that
+-- moved the boats: how often it comes, its round trip), its state, and the value as one boat of
+-- a joined line says it ("? (every 5:29)" when unknown).
 local function lineParts(st, now)
   local head = st.rt.kind .. " to " .. st.to
   local kind, sec, sg = stopState(st.rt, st.i, now)
-  if not kind or sg > ABOUT_S then return head, "unknown", "unknown" end
-  if sg <= EXACT_S then
-    if kind == "docked" then return head, "docked, leaves in " .. clockText(sec), "docked" end
-    return head, clockText(sec), "exact"
+  if not kind or sg > ABOUT_S then
+    local every = "every " .. clockText(floor(period(st.rt) + 0.5))
+    return head, "unknown, " .. every, "unknown", "? (" .. every .. ")"
   end
-  if kind == "docked" or sec <= sg then return head, "about now", "about" end
-  return head, "about " .. max(1, floor(sec / 60 + 0.5)) .. " min", "about"
+  local v, state
+  if sg <= EXACT_S then
+    if kind == "docked" then v, state = "docked, leaves in " .. clockText(sec), "docked" else v, state = clockText(sec), "exact" end
+  elseif kind == "docked" or sec <= sg then
+    v, state = "about now", "about"
+  else
+    v, state = "about " .. max(1, floor(sec / 60 + 0.5)) .. " min", "about"
+  end
+  return head, v, state, v
 end
 B.LineParts = lineParts
 
@@ -1083,13 +1110,46 @@ local function overlapsAny(rect)
 end
 B.OverlapsAny = overlapsAny
 
-local function onClick(self)
+-- The boat a line is for: the small lines' own (one joined line: the nearest pier's); the big
+-- timer's line i is boat i (its joined line of the other boats: the nearer of them).
+local function lineEntry(self)
   local list = UI.list
-  local e = list and list[UI.mode == "stacked" and self.idx or 1]
+  if not list then return nil end
+  if self.big then return list[self.idx] end
+  return list[UI.mode == "stacked" and self.idx or 1]
+end
+
+local function onClick(self)
+  local e = lineEntry(self)
   if e and B.Click then
     local ok, err = pcall(B.Click, e.st)
     if not ok then B.lastError = err end
   end
+end
+
+local function tipHide()
+  local tt = _G.GameTooltip
+  if type(tt) == "table" then pcall(tt.Hide, tt) end
+end
+local function lineTip(self)
+  local tt, e = _G.GameTooltip, lineEntry(self)
+  if type(tt) == "table" and e then
+    local k = slower(e.st.rt.kind)
+    pcall(tt.SetOwner, tt, self, self.big and "ANCHOR_BOTTOM" or "ANCHOR_BOTTOMLEFT")
+    pcall(tt.SetText, tt, "Click when " .. (self.big and ("the " .. k .. " to " .. e.st.to) or ("this " .. k)) .. " docks to set its timer.")
+    pcall(tt.Show, tt)
+  end
+end
+-- The X's hover (hooked: ElvUI's X colours itself on hover with its own hooks).
+local function xTip(x)
+  pcall(x.HookScript, x, "OnEnter", function(self)
+    local tt = _G.GameTooltip
+    if type(tt) ~= "table" then return end
+    pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
+    pcall(tt.SetText, tt, X_TIP)
+    pcall(tt.Show, tt)
+  end)
+  pcall(x.HookScript, x, "OnLeave", tipHide)
 end
 
 local function buildUI()
@@ -1110,37 +1170,15 @@ local function buildUI()
     fs:SetPoint("CENTER", b, "CENTER", 0, 0)
     fs:SetJustifyH("CENTER")
     b:SetScript("OnClick", onClick)
-    b:SetScript("OnEnter", function(self)
-      local tt, list = _G.GameTooltip, UI.list
-      local e = list and list[UI.mode == "stacked" and self.idx or 1]
-      if type(tt) == "table" and e then
-        pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
-        pcall(tt.SetText, tt, "Click when this " .. slower(e.st.rt.kind) .. " docks to set its timer.")
-        pcall(tt.Show, tt)
-      end
-    end)
-    b:SetScript("OnLeave", function()
-      local tt = _G.GameTooltip
-      if type(tt) == "table" then pcall(tt.Hide, tt) end
-    end)
+    b:SetScript("OnEnter", lineTip)
+    b:SetScript("OnLeave", tipHide)
     UI.btn[i], UI.fs[i] = b, fs
   end
   -- One X for all the lines, at the holder's top right (the lines take the rest of it).
   local x = type(ns.CloseX) == "function" and ns.CloseX(h, function() hideHere() end, X_SIZE) or nil
   if x then
     x:SetPoint("TOPRIGHT", h, "TOPRIGHT", 0, 0)
-    -- (Hooked: ElvUI's X colours itself on hover with its own hooks.)
-    pcall(x.HookScript, x, "OnEnter", function(self)
-      local tt = _G.GameTooltip
-      if type(tt) ~= "table" then return end
-      pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
-      pcall(tt.SetText, tt, X_TIP)
-      pcall(tt.Show, tt)
-    end)
-    pcall(x.HookScript, x, "OnLeave", function()
-      local tt = _G.GameTooltip
-      if type(tt) == "table" then pcall(tt.Hide, tt) end
-    end)
+    xTip(x)
   end
   UI.x = x
   UI.holder = h
@@ -1215,9 +1253,244 @@ local function layout(texts, joined)
   UI.mode = "joined"
 end
 
+---------------------------------------------------------------------------
+-- The big timer in the upper middle of the screen (the default)
+---------------------------------------------------------------------------
+-- Its fonts: the game's own face (ElvUI's, when it puts its font on the game's), its shadow,
+-- an outline, at BIG's sizes; one Font per size, made once.
+local function bigFont(size)
+  local f = BG.fonts[size]
+  if f ~= nil then return f or nil end
+  BG.fonts[size] = false
+  local src = _G.GameFontHighlight
+  local file = call(src, "GetFont")
+  if type(file) ~= "string" or file == "" or isSecret(file) then file = "Fonts\\FRIZQT__.TTF" end
+  if type(_G.CreateFont) ~= "function" then return nil end
+  local ok, o = pcall(_G.CreateFont, "GoblinLedgerBoatFont" .. size)
+  if not ok or type(o) ~= "table" then return nil end
+  call(o, "CopyFontObject", src)
+  if call(o, "SetFont", file, size, "OUTLINE") == false then return nil end
+  BG.fonts[size] = o
+  return o
+end
+local function setSize(fs, size)
+  if fs.glSize == size then return end
+  local o = bigFont(size)
+  if o then call(fs, "SetFontObject", o) else call(fs, "SetFont", "Fonts\\FRIZQT__.TTF", size, "OUTLINE") end
+  call(fs, "SetTextColor", 1, 1, 1)
+  fs.glSize = size
+end
+local function textW(fs, plain, size)
+  local w = tonumber(call(fs, "GetStringWidth"))
+  if not finite(w) or isSecret(w) then w = #plain * size / 2 end
+  return w
+end
+
+local function buildBig()
+  if BG.holder then return BG.holder end
+  local h = _G.CreateFrame("Frame", "GoblinLedgerBoatsBig", _G.UIParent)
+  h:SetFrameStrata("LOW")
+  h:SetSize(10, 10)
+  h:Hide()
+  for i = 1, MAX_LINES do
+    local b = _G.CreateFrame("Button", nil, h)
+    b.idx, b.big = i, true
+    b:SetSize(10, 10)
+    b:EnableMouse(true)
+    b:RegisterForClicks("LeftButtonUp")
+    b:SetScript("OnClick", onClick)
+    b:SetScript("OnEnter", lineTip)
+    b:SetScript("OnLeave", tipHide)
+    local fs = b:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+    fs:SetJustifyH("CENTER")
+    if i > 1 then fs:SetPoint("CENTER", b, "CENTER", 0, 0) end
+    BG.btn[i], BG.fs[i] = b, fs
+  end
+  -- The first line: its route (fs[1]) before the countdown (value), or one medium line.
+  BG.value = BG.btn[1]:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  BG.hint = h:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  local x = type(ns.CloseX) == "function" and ns.CloseX(h, function() hideHere() end, BIG.x) or nil
+  if x then
+    x:SetPoint("TOPRIGHT", h, "TOPRIGHT", 0, 0)
+    xTip(x)
+  end
+  BG.x = x
+  BG.holder = h
+  return h
+end
+
+-- Lays out the big timer: main = { head, value, state } (the nearest pier's boat), the hint
+-- under it when that one is unknown, then others (one text per line, coloured). The lines are
+-- centred in the holder, which is as wide again on both sides as the X and its gap (so the
+-- words sit in the middle and the X at the top right). Returns its width and height.
+local function bigApply(main, hint, others)
+  local h, head, val, b1 = BG.holder, BG.fs[1], BG.value, BG.btn[1]
+  local w1, h1
+  head:ClearAllPoints()
+  if main.state == "unknown" then
+    setSize(head, BIG.med)
+    head:SetText(main.head .. ": |cffffd100" .. main.value .. "|r")
+    head:SetPoint("CENTER", b1, "CENTER", 0, 0)
+    val:SetText("")
+    val:Hide()
+    w1, h1 = textW(head, main.head .. ": " .. main.value, BIG.med), BIG.med
+  else
+    setSize(head, BIG.head)
+    setSize(val, BIG.value)
+    head:SetText(main.head)
+    val:SetText("|cffffd100" .. main.value .. "|r")
+    val:Show()
+    head:SetPoint("BOTTOMLEFT", b1, "BOTTOMLEFT", 0, BIG.lift)   -- (on the countdown's baseline)
+    val:ClearAllPoints()
+    val:SetPoint("BOTTOMRIGHT", b1, "BOTTOMRIGHT", 0, 0)
+    w1 = textW(head, main.head, BIG.head) + BIG.hgap + textW(val, main.value, BIG.value)
+    h1 = BIG.value
+  end
+  b1:SetSize(w1, h1)
+  b1:ClearAllPoints()
+  b1:SetPoint("TOP", h, "TOP", 0, 0)
+  local y, wide = h1, w1
+  local hf = BG.hint
+  if hint then
+    setSize(hf, BIG.hint)
+    hf:SetText(HINT_WORDS)
+    hf:ClearAllPoints()
+    hf:SetPoint("TOP", h, "TOP", 0, -(y + BIG.gap))
+    hf:Show()
+    y = y + BIG.gap + BIG.hint
+    wide = max(wide, textW(hf, HINT_WORDS, BIG.hint))
+  else
+    hf:SetText("")
+    hf:Hide()
+  end
+  for i = 2, MAX_LINES do
+    local b, fs, t = BG.btn[i], BG.fs[i], others[i - 1]
+    if t then
+      setSize(fs, BIG.sub)
+      fs:SetText(t)
+      local sw = textW(fs, (t:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")), BIG.sub)
+      b:SetSize(sw, BIG.sub)
+      b:ClearAllPoints()
+      b:SetPoint("TOP", h, "TOP", 0, -(y + BIG.gap))
+      b:Show()
+      y = y + BIG.gap + BIG.sub
+      wide = max(wide, sw)
+    else
+      fs:SetText("")
+      b:Hide()
+    end
+  end
+  local hw = wide + (BG.x and 2 * (BIG.xgap + BIG.x) or 0)
+  h:SetSize(hw, y)
+  return hw, y
+end
+
+-- What the big timer must never cover: the game's messages at the top centre, shown or not
+-- (they come and go: an error, a raid warning, the zone's name as you arrive; SubZoneTextFrame's
+-- own box holds nothing, its words hang under the zone name), the spot of the timer bars
+-- (breath, fatigue: three at most) and of the flight bar on it, and widgets at the top centre
+-- or over the subzone name while they show.
+local TOP_MSGS = { "UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame", "ZoneTextString",
+                   "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString", "GoblinLedgerFlightBar" }
+-- A widget container that shows something (empty, they are 10 x 10).
+local function widgetsIn(o)
+  if not shown(o) then return false end
+  local w, h = tonumber(call(o, "GetWidth")), tonumber(call(o, "GetHeight"))
+  return finite(w) and finite(h) and not isSecret(w) and not isSecret(h) and w > 12 and h > 12
+end
+local function bigObstacles()
+  local out = {}
+  local function add(l, b, r, t)
+    if l and r - l > 0.5 and t - b > 0.5 then out[#out + 1] = { l, b, r, t } end
+  end
+  for _, n in ipairs(TOP_MSGS) do add(rectOf(_G[n])) end
+  local mt = _G.MirrorTimerContainer
+  local l, _, r, t = rectOf(mt)
+  local s = call(mt, "GetEffectiveScale")
+  if not (l and finite(s)) then   -- (no container: the timer bars' own spot)
+    local ul, _, ur, ut = rectOf(_G.UIParent)
+    s = call(_G.UIParent, "GetEffectiveScale") or 1
+    if ul then l, r, t = ul, ur, ut - 100 * s end
+  end
+  if l then
+    local cx = (l + r) / 2
+    add(cx - BIG.timerW / 2 * s, t - BIG.timerH * s, cx + BIG.timerW / 2 * s, t)
+  end
+  for _, n in ipairs({ "UIWidgetTopCenterContainerFrame", "UIWidgetSubZoneTextContainerFrame" }) do
+    local o = _G[n]
+    if widgetsIn(o) then add(rectOf(o)) end
+  end
+  return out
+end
+B.BigObstacles = bigObstacles
+
+-- Puts the holder (hw x hh) centred at "middle" or "top"; returns the screen rectangle it takes.
+local function bigPlace(hw, hh, where)
+  local h = BG.holder
+  local sl, sb, sr, st = rectOf(_G.UIParent)
+  local hes = call(h, "GetEffectiveScale") or 1
+  if not sl or not finite(hes) or hes <= 0 then return nil end
+  local down
+  if where == "middle" then
+    down = max(BIG.top * hes, BIG.frac * (st - sb))
+  else
+    down = BIG.band * hes
+    local tc = _G.UIWidgetTopCenterContainerFrame
+    if widgetsIn(tc) then
+      local _, b = rectOf(tc)
+      if b then down = max(down, st - b + 4 * hes) end   -- (under its widgets, a capture bar)
+    end
+  end
+  h:ClearAllPoints()
+  h:SetPoint("TOP", _G.UIParent, "TOP", 0, -down / hes)
+  local cx, W = (sl + sr) / 2, hw * hes
+  return { cx - W / 2, st - down - hh * hes, cx + W / 2, st - down }
+end
+
+-- On screen, above the character (the camera looks at its head at the screen centre) and
+-- clear of everything bigObstacles lists.
+local function bigFits(rect)
+  local sl, sb, sr, st = rectOf(_G.UIParent)
+  if not sl then return true end
+  if rect[1] < sl - 0.5 or rect[3] > sr + 0.5 or rect[2] < st - BIG.char * (st - sb) then return false end
+  for _, q in ipairs(bigObstacles()) do
+    if rect[1] < q[3] - 0.5 and rect[3] > q[1] + 0.5 and rect[2] < q[4] - 0.5 and rect[4] > q[2] + 0.5 then return false end
+  end
+  return true
+end
+
+-- The big timer for the boats of list (r: their words, see render); false when it fits nowhere.
+local function renderBig(list, r)
+  buildBig()
+  local main = { head = r.heads[1], value = r.values[1], state = r.states[1] }
+  local hint = main.state == "unknown"
+  local others, colJoined = {}, {}
+  for i = 2, #list do
+    others[#others + 1] = r.texts[i]
+    colJoined[#colJoined + 1] = list[i].st.to .. " |cffffd100" .. r.shorts[i] .. "|r"
+  end
+  BG.joined = #list > 2 and tconcat(r.parts, "; ", 2, #list) or nil
+  local tries = { { "middle" }, { "middle", true }, { "top" }, { "top", true } }
+  for _, tr in ipairs(tries) do
+    if not tr[2] or #others > 1 then
+      local hw, hh = bigApply(main, hint, tr[2] and { tconcat(colJoined, "; ") } or others)
+      local rect = bigPlace(hw, hh, tr[1])
+      if not rect or bigFits(rect) then
+        BG.mode, BG.rect = tr[1] .. (tr[2] and " joined" or ""), rect
+        BG.holder:Show()
+        return true
+      end
+    end
+  end
+  BG.mode, BG.rect = nil, nil
+  BG.holder:Hide()
+  return false
+end
+
 local function hideUI()
   if UI.holder then UI.holder:Hide() end
-  UI.shown, UI.list, UI.texts = false, nil, nil
+  if BG.holder then BG.holder:Hide() end
+  UI.shown, UI.list, UI.texts, UI.style = false, nil, nil, nil
 end
 B.Hide = hideUI
 
@@ -1268,7 +1541,8 @@ hideHere = function()
     settings().boatHide = { inst = list[1].st.inst, ses = sessionId(), piers = piers }
   end
   local tt = _G.GameTooltip
-  if UI.x and type(tt) == "table" and call(tt, "GetOwner") == UI.x then pcall(tt.Hide, tt) end
+  local owner = type(tt) == "table" and call(tt, "GetOwner")
+  if owner and (owner == UI.x or owner == BG.x) then pcall(tt.Hide, tt) end
   local was = UI.shown
   hideUI()
   -- One line, like the flight bar's X: what it did and how to undo it (a near miss happens).
@@ -1276,32 +1550,46 @@ hideHere = function()
 end
 B.HideHere = hideHere
 
+-- The words for the boats of list (the first unknown one gets the hint), then the big timer,
+-- or the small line(s) under the minimap (/gl boats small, or no room for the big one).
 local function render(list, now)
-  buildUI()
-  local texts, parts, plain, hinted = {}, {}, {}, false
+  local r = { heads = {}, values = {}, states = {}, shorts = {}, texts = {}, parts = {} }
+  local plain, hinted = {}, false
   for i, e in ipairs(list) do
-    local head, value, state = lineParts(e.st, now)
+    local head, value, state, short = lineParts(e.st, now)
     local shownValue = value
     if state == "unknown" and not hinted then
       shownValue, hinted = value .. HINT, true
     end
+    r.heads[i], r.values[i], r.states[i], r.shorts[i] = head, value, state, short
     plain[i] = head .. ": " .. shownValue
-    texts[i] = head .. ": |cffffd100" .. shownValue .. "|r"
-    parts[i] = e.st.to .. " " .. value
+    r.texts[i] = head .. ": |cffffd100" .. shownValue .. "|r"
+    r.parts[i] = e.st.to .. " " .. short
   end
-  local joinedPlain = #list > 1 and ("Boats: " .. tconcat(parts, "; ")) or plain[1]
+  local joinedPlain = #list > 1 and ("Boats: " .. tconcat(r.parts, "; ")) or plain[1]
   UI.list, UI.texts, UI.joined, UI.at = list, plain, joinedPlain, now
-  layout(texts, #list > 1 and joinedPlain or texts[1])
-  UI.holder:Show()
+  if bigStyle() and renderBig(list, r) then
+    if UI.holder then UI.holder:Hide() end
+    UI.style = "big"
+  else
+    if BG.holder then BG.holder:Hide() end
+    buildUI()
+    layout(r.texts, #list > 1 and joinedPlain or r.texts[1])
+    UI.holder:Show()
+    UI.style = "small"
+  end
   UI.shown = true
   B.stats.renders = B.stats.renders + 1
 end
 
--- What the line(s) say now, without colour codes (for /gl boats status and the tests).
+-- What the line(s) say now, without colour codes (for /gl boats status and the tests); the
+-- big timer's lines say it in the same words (its route and countdown as "route: countdown",
+-- the hint after the unknown one).
 function B.Lines()
   if not UI.shown then return {} end
-  if UI.mode == "stacked" then
-    local out = {}
+  local out = {}
+  if UI.style == "big" and BG.mode and BG.mode:find("joined", 1, true) then return { UI.texts[1], BG.joined } end
+  if UI.style == "big" or UI.mode == "stacked" then
     for i, t in ipairs(UI.texts or {}) do out[i] = t end
     return out
   end
@@ -1494,7 +1782,7 @@ end
 B.OnAddonMessage = onAddonMessage
 
 ---------------------------------------------------------------------------
--- /gl boat now, a click on the line, /gl boats [on|off|all]
+-- /gl boat now, a click on the line, /gl boats [on|off|big|small|all]
 ---------------------------------------------------------------------------
 -- Seconds from the timer's nearest arrival at stop st to now (+: it arrived that long ago).
 local function fromArrival(st, kind, sec)
@@ -1572,7 +1860,12 @@ local function nearestText(now)
   return sformat("nearest dock: %s, %d yd. %s", st.place, floor(d + 0.5), tconcat(parts, "; "))
 end
 
--- /gl boats: two lines (on or off, and the nearest dock with its boats).
+-- Where the timers show, for the chat lines.
+local function whereText()
+  return bigStyle() and "a big timer in the middle of the screen" or "a line under the minimap"
+end
+
+-- /gl boats: two lines (on or off, big or small, and the nearest dock with its boats).
 local function status()
   if not isOn() then
     say("boat timers are off. /gl boats on turns them on.")
@@ -1580,9 +1873,11 @@ local function status()
   end
   local x, y, inst = pos()
   if x and hiddenHere(x, y, inst, docksHere(x, y, inst, 0)) then
-    say("boat timers are on, hidden at this dock until you leave it (/gl boats on shows them).")
+    say("boat timers are on (" .. (bigStyle() and "big" or "small") .. "), hidden at this dock until you leave it (/gl boats on shows them).")
+  elseif bigStyle() then
+    say("boat timers are on: big, in the middle of the screen (/gl boats small: under the minimap). /gl boats all lists every route.")
   else
-    say("boat timers are on. /gl boats all lists every route.")
+    say("boat timers are on: small, under the minimap (/gl boats big: in the middle of the screen). /gl boats all lists every route.")
   end
   local now = serverNow()
   local t = now and nearestText(now)
@@ -1591,7 +1886,7 @@ end
 
 -- /gl boats all: every route, what is known about it, and the nearest dock.
 local function listAll()
-  say("boat timers are " .. (isOn() and "on: at a dock, a line under the minimap says when the boat comes." or "off. /gl boats on turns them on."))
+  say("boat timers are " .. (isOn() and ("on: at a dock, " .. whereText() .. " says when the boat comes.") or "off. /gl boats on turns them on."))
   local now = serverNow()
   if not now then return end
   for _, rt in ipairs(R) do
@@ -1616,7 +1911,13 @@ local function boatsCommand(rest)
   local S = settings()
   if rest == "on" then
     S.boats, S.boatHide = nil, nil   -- (and back at a dock the X hid them at)
-    say("boat timers are on: at a dock, a line under the minimap says when the boat comes.")
+    say("boat timers are on: at a dock, " .. whereText() .. " says when the boat comes.")
+    wake()
+  elseif rest == "big" or rest == "small" then
+    S.boatStyle = rest == "small" and "small" or nil   -- (saved; big is the default)
+    local msg = rest == "small" and "boat timers are small now: a line under the minimap. /gl boats big makes them big again."
+                or "boat timers are big now: in the middle of the screen. /gl boats small puts them under the minimap."
+    say(isOn() and msg or (msg .. " They are off: /gl boats on turns them on."))
     wake()
   elseif rest == "off" then
     S.boats = false
@@ -1629,7 +1930,7 @@ local function boatsCommand(rest)
   elseif rest == "now" then
     B.BoatNow()
   else
-    say("unknown choice. Use /gl boats on, /gl boats off or /gl boats all.")
+    say("unknown choice. Use /gl boats on, off, big, small or all.")
   end
 end
 
@@ -1668,7 +1969,7 @@ function ns.HandleSlash(msg)
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "help" or cmd == "?" then
-    say("/gl boats : at a dock, when the boat comes (on, off, all); /gl boat now as a boat docks sets its timer")
+    say("/gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer")
   end
 end
 
