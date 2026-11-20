@@ -502,17 +502,27 @@ local function Candidates()
   if candCache.key == key and candCache.list then return candCache.list end
   local cand = {}
   local hasVersions = type(ns.HasVariants) == "function" and ns.HasVariants or function() return false end
+  -- Each line's numbers are read without unpacking or keeping the item
+  -- (ns.PeekItem): an item table kept for each of tens of thousands of lines
+  -- took 50 MB. Only the candidates' advice below unpacks items.
+  local peek = type(ns.PeekItem) == "function" and ns.PeekItem or function(n)
+    local it = ns.GetItem(n)
+    if it then return it.cheapest, it.market, it.listed, it.sold24, it.vendor, tonumber(it.auctions) end
+  end
+  local one = {}   -- what SoldPerDay reads (sold24), for every line in turn
   for id in pairs(db.items) do
     local n = tonumber(id)
-    -- An item whose versions differ: its prices mix them (each version that
-    -- has its own prices is a candidate of its own).
-    local it = n and not hasVersions(n) and ns.GetItem(n)
-    local sold = it and SoldPerDay(it)
-    local auctions = it and tonumber(it.auctions)
-    if it and sold and it.cheapest > 0 and it.market > 0 and sold >= MIN_SOLD_RELAX and it.listed >= 2
+    local cheapest, market, listed, sold24, vendor, auctions
+    if n then cheapest, market, listed, sold24, vendor, auctions = peek(n) end
+    one.sold24 = sold24
+    local sold = cheapest and SoldPerDay(one)
+    if sold and cheapest > 0 and market > 0 and sold >= MIN_SOLD_RELAX and listed >= 2
       and not (auctions and auctions < MIN_AUCTIONS)
-      and not ((it.vendor or 0) > 0 and it.market > VENDOR_FAR * it.vendor and it.listed < VENDOR_FAR_UNITS) then
-      cand[#cand + 1] = { id = n, q = it.market * min(sold, VOL_CAP) }
+      and not ((vendor or 0) > 0 and market > VENDOR_FAR * vendor and listed < VENDOR_FAR_UNITS)
+      -- An item whose versions differ: its prices mix them (each version that
+      -- has its own prices is a candidate of its own).
+      and not hasVersions(n) then
+      cand[#cand + 1] = { id = n, q = market * min(sold, VOL_CAP) }
     end
   end
   sort(cand, function(a, b)

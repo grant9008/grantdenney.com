@@ -101,8 +101,9 @@ H_MAX, D_MAX = 168, 400
 TOKEN_MAX = 2 ** 32 - 1   # Lua 5.1 tonumber(s, 36) uses a 32-bit strtoul on Windows
 FIELDS = 10               # fields in a line written now (old files have 9: no auctions count)
 # A version with nothing listed or sold in the last 72 hours gets two empty hours as its hourly
-# series (H), never its hourly prices; its daily points stay (Goblin Ledger 1.0.0 reads it as
-# "nothing listed in this timeframe")
+# series (H, what Goblin Ledger 1.0.0 reads: "nothing listed in this timeframe") and an 11th
+# field, P: its hourly prices with each run of equal tokens packed as "<token>*<count>" (count in
+# base 36), which newer addon copies read instead. Its daily points stay.
 VERSION_HOURLY_IDLE = 72
 NO_HOURLY = "~,~;~,~;,"
 
@@ -168,7 +169,7 @@ end
 
 function FAH_Decode(str)
   local f, nf = split(str, "|")
-  assert(nf == 9 or nf == 10, "expected 9 or 10 fields, got " .. nf)
+  assert(nf == 9 or nf == 10 or nf == 11, "expected 9 to 11 fields, got " .. nf)
   local it = { name = f[1], nfields = nf }
   local keys = { "cheapest", "market", "listed", "sold24", "avg7", "vendor" }
   for i, k in ipairs(keys) do
@@ -181,6 +182,7 @@ function FAH_Decode(str)
     assert(string.find(f[10], "^%d+$"), "auctions is not a base-10 number")
     it.auctions = tonumber(f[10])
   end
+  it.packed = f[11]
   return it
 end
 """
@@ -221,16 +223,34 @@ def py_series(s):
     return out
 
 
+def py_unpack(p):
+    """P (the 11th field) written out: "<token>*<count>" is the token count (base 36, 2 or more) times."""
+    out = []
+    for sub in p.split(";"):
+        toks = []
+        for tok in (sub.split(",") if sub != "" else []):
+            if "*" in tok:
+                t, k = tok.split("*")
+                assert re.match(r"^[0-9a-z]+$", k) and int(k, 36) >= 2, f"bad count in {tok!r}"
+                toks += [t] * int(k, 36)
+            else:
+                toks.append(tok)
+        out.append(",".join(toks))
+    assert len(out) == 3, f"P needs 3 parts: {p[:60]!r}"
+    return ";".join(out)
+
+
 def py_decode(s):
     f = s.split("|")
-    assert len(f) in (9, 10), f"expected 9 or 10 fields, got {len(f)}"
+    assert len(f) in (9, 10, 11), f"expected 9 to 11 fields, got {len(f)}"
     nums = [int(x) for x in f[1:7]]
     out = {"name": f[0], "cheapest": nums[0], "market": nums[1], "listed": nums[2],
            "sold24": nums[3], "avg7": nums[4], "vendor": nums[5],
            "H": py_series(f[7]), "D": py_series(f[8]), "nfields": len(f), "auctions": None}
-    if len(f) == 10:
+    if len(f) >= 10:
         assert re.match(r"^\d+$", f[9]), f"auctions {f[9]!r} is not a base-10 number"
         out["auctions"] = int(f[9])
+    out["packed"] = f[10] if len(f) == 11 else None
     return out
 
 
@@ -617,9 +637,13 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
         tag = f"{label} item {iid}"
         py = py_decode(s)
         lt = decode(s)
-        check(py["nfields"] == FIELDS, f"{tag}: {py['nfields']} fields, a new file must have {FIELDS}")
+        h = hists[iid]
+        idle = iid in vinfo and not any(hour_end - VERSION_HOURLY_IDLE * 3600 < p[0] <= hour_end
+                                        and (p[1] > 0 or p[3] > 0 or p[4] > 0) for p in h["h"])
+        check(py["nfields"] == FIELDS + (1 if idle else 0),
+              f"{tag}: {py['nfields']} fields, a new file must have {FIELDS} (and P for an idle version)")
         # Lua and Python decoders agree
-        for k in ("name", "cheapest", "market", "listed", "sold24", "avg7", "vendor", "auctions", "nfields"):
+        for k in ("name", "cheapest", "market", "listed", "sold24", "avg7", "vendor", "auctions", "nfields", "packed"):
             check(lt[k] == py[k], f"{tag}: Lua {k}={lt[k]!r} Python {k}={py[k]!r}")
         for key in ("H", "D"):
             ls = lt[key]
@@ -629,7 +653,6 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
                        lua_list(ls.sold, n)]
             check(lua_dec == py[key], f"{tag} {key}: Lua and Python decoders disagree")
 
-        h = hists[iid]
         meta, want_name = meta_for(iid)
         check(py["name"] == want_name, f"{tag}: name {py['name']!r}, want {want_name!r}")
         check((h.get("v") or None) == (vinfo[iid][1] if iid in vinfo else None),
@@ -652,11 +675,17 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
             check((py["auctions"] > 0) == (py["listed"] > 0), f"{tag}: auctions and listed disagree")
             if py["listed"] > 0:
                 check(py["cheapest"] >= 1 and py["market"] >= 1, f"{tag}: listed but a price below 1c")
-        if iid in vinfo and not any(hour_end - VERSION_HOURLY_IDLE * 3600 < p[0] <= hour_end
-                                    and (p[1] > 0 or p[3] > 0 or p[4] > 0) for p in h["h"]):
+        if idle:
             check(s.split("|")[7] == NO_HOURLY and py["H"] == [[None, None], [None, None], [0, 0]],
-                  f"{tag}: a version idle for {VERSION_HOURLY_IDLE} hours must have no hourly prices, "
+                  f"{tag}: a version idle for {VERSION_HOURLY_IDLE} hours must have two empty hours as H, "
                   f"got {s.split('|')[7][:60]!r}")
+            # its hourly prices are in P, packed: written out they are what H would be
+            p = py["packed"] or ""
+            full = py_unpack(p)
+            check(fetch_ah.unpack_runs(p) == full and fetch_ah.pack_runs(full) == p,
+                  f"{tag}: P is not packed the collector's way {p[:60]!r}")
+            points += check_series(f"{tag} P", py_series(full), h["h"], hour_end, 3600, H_MAX)
+            check(len(p) + len(NO_HOURLY) < len(full), f"{tag}: P ({len(p)} bytes) is not shorter than H written out")
             trimmed.add(iid)
         else:
             points += check_series(f"{tag} H", py["H"], h["h"], hour_end, 3600, H_MAX)
@@ -792,6 +821,7 @@ def run_checks(data_dir, label, expect_status=True, exact_hour=True, quiet=False
               f"without hourly prices), {points} points checked, "
               f"{len(flips)} flips, file {len(raw)} bytes, Lua and Python decoders agree")
     run_checks.trimmed = trimmed
+    run_checks.lines = got_ids
     return got_ids, lua_items, decode
 
 
@@ -1826,10 +1856,25 @@ def hourly_trim_tests():
         v = fetch_ah.addon_item_line(1001, meta, h, 0, 0, 0, hour, hourly_idle=fetch_ah.ADDON_VERSION_HOURLY)
         plain = fetch_ah.addon_item_line(1001, meta, h, 0, 0, 0, hour)
         f, g = fields(v), fields(plain)
-        check(f[:7] == g[:7] and f[8:] == g[8:], f"only H differs ({last} hours idle)")
+        check(f[:7] == g[:7] and f[8:10] == g[8:10] and len(g) == 10, f"only H differs ({last} hours idle)")
         check((f[7] == NO_HOURLY) == cut and (cut or f[7] == g[7]),
-              f"{last} hours since the last listing: hourly prices {'left out' if cut else 'kept'} ({f[7][:40]!r})")
+              f"{last} hours since the last listing: H {'is two empty hours' if cut else 'kept'} ({f[7][:40]!r})")
+        check(len(f) == (11 if cut else 10) and (not cut or py_unpack(f[10]) == g[7]),
+              f"{last} hours since the last listing: the hourly prices {'packed after the 10 fields' if cut else 'as H'}")
+        check(not cut or len(f[-1]) * 5 < len(g[7]), f"packed: {len(f[-1])} bytes for {len(g[7])}")
         check(py_series(f[8])[0][-5] == 50000, "the daily points stay")
+    # the packing: runs of 2+ equal tokens where shorter, written out exactly; never a count of 1
+    for s, want in (("~,~,~,~;~,~,~,~;,,,", "~*4;~*4;*4"), ("~;~;", "~;~;"), ("5,5;~,~;,", "5,5;~,~;,"),
+                    ("abc,,,,,,~,~,~;x,,,,;,,1", "abc,*5,~*3;x,*4;,,1"), (",,;,,;,,", ",,;,,;,,")):
+        check(fetch_ah.pack_runs(s) == want and py_unpack(want) == s and fetch_ah.unpack_runs(want) == s,
+              f"pack_runs({s!r}) = {fetch_ah.pack_runs(s)!r}, want {want!r}")
+    import random
+    rnd = random.Random(7)
+    for _ in range(500):
+        toks = [rnd.choice(["", "~", "5", "-3", "1z", "abc"]) for _ in range(rnd.randint(0, 60))]
+        s = ";".join([",".join(toks), ",".join(reversed(toks)), ",".join(rnd.choice(["", "1", "2"]) for _ in toks)])
+        p = fetch_ah.pack_runs(s)
+        check(py_unpack(p) == s and len(p) <= len(s), f"pack_runs round trip {s[:60]!r}")
     # a sale counts like a listing; a week without either leaves the version out, as before
     h = {"h": [[hour - 71 * 3600, 0, 0, 0, 1]], "d": [[day, 0, 0, 0, 1]]}
     check(fields(fetch_ah.addon_item_line(1001, meta, h, 0, 0, 0, hour, hourly_idle=72))[7] != NO_HOURLY,
@@ -1843,7 +1888,9 @@ def hourly_trim_tests():
     lines = {1001: fetch_ah.addon_item_line(1001, meta, hist(80), 0, 0, 0, hour, hourly_idle=72)}
     fetch_ah.fit_addon_lines(lines, lambda iid, days: fetch_ah.addon_item_line(
         iid, meta, hist(80), 0, 0, 0, hour, days, hourly_idle=72), limit=1, vids={1001})
-    check(fields(lines[1001])[7] == NO_HOURLY, "shortened by the size guard: still no hourly prices")
+    f = fields(lines[1001])
+    check(f[7] == NO_HOURLY and len(f) == 11 and py_unpack(f[10]) == fields(fetch_ah.addon_item_line(
+        1001, meta, hist(80), 0, 0, 0, hour))[7], "shortened by the size guard: still two empty hours and P")
 
 
 def unit_tests():
@@ -2170,7 +2217,7 @@ def pipeline_tests():
         shutil.rmtree(tmp, ignore_errors=True)
 
 
-CLEAVER, SHIELD = 800, 900
+CLEAVER, SHIELD, CHARM = 800, 900, 950
 BEAR, EAGLE, ODD, WOLF = 12722, 12718, 99001, 12726      # 99001 has no known suffix name
 
 
@@ -2212,10 +2259,10 @@ def variant_pipeline_tests():
     import contextlib
     log = io.StringIO()
 
-    def run(data_t, run_delay=5 * M):
+    def run(data_t, run_delay=5 * M, where=None):
         fb.now = data_t + run_delay
         fb.modified = email.utils.formatdate(data_t, usegmt=True)
-        fetch_ah.main(out)
+        fetch_ah.main(where or out)
 
     def js(name):
         return load_json(os.path.join(out, name))
@@ -2232,6 +2279,8 @@ def variant_pipeline_tests():
         fetch_ah.api, fetch_ah.get_token, fetch_ah.time = fb.api, (lambda: "fake"), fb
         fetch_ah.SOLD_FLOOR_FROM = 0       # a collector that always had the sold floor: every hour counts
         start_gear_book(fb)
+        fb.names[CHARM], fb.sell[CHARM] = "Old Charm", 100      # an item without versions, up for an hour
+        fb.auctions[2300] = {"id": 2300, "item": {"id": CHARM}, "quantity": 1, "buyout": 700, "time_left": "VERY_LONG"}
         with contextlib.redirect_stdout(log):
             # 1. first snapshot: three versions of the cleaver, in order of first appearance
             run(T0)
@@ -2278,14 +2327,15 @@ def variant_pipeline_tests():
             check([r["usual"] for r in fl] == [0, 0, 0] and fl[0]["market"] == 50000 and fl[1]["market"] == 180,
                   f"usual prices {[r['usual'] for r in fl]}")
             st = js("status.json")
-            check(st["versions"] == 3 and st["itemsWithVersions"] == 1 and st["flips"] == 3 and st["items"] == 3
+            check(st["versions"] == 3 and st["itemsWithVersions"] == 1 and st["flips"] == 3 and st["items"] == 4
                   and st["suffixNames"] > 300, f"status {st!r}")
             check(js("suffix_names.json").get(str(BEAR)) == "of the Bear", "suffix table copied to the data folder")
             run_checks(out, "versions run 1", quiet=True)
 
-            # 2. an hour later the cheap Bear and the Eagle sold
+            # 2. an hour later the cheap Bear and the Eagle sold, and the charm is gone
             del fb.auctions[2010]
             del fb.auctions[2020]
+            del fb.auctions[2300]
             run(T0 + 60 * M)
             check(load_json(os.path.join(out, "hist", f"{V1}.json"))["h"][-1][4] == 1
                   and load_json(os.path.join(out, "hist", f"{V2}.json"))["h"][-1][3:5] == [0, 1]
@@ -2295,7 +2345,8 @@ def variant_pipeline_tests():
             run_checks(out, "versions run 2", quiet=True)
 
             # 3. three and a half days later nobody listed or bought an Eagle: its file is left alone,
-            #    its line stays for the rest of the week, it leaves latest.json
+            #    its line stays for the rest of the week, it leaves latest.json. Nobody listed another
+            #    charm either: an item keeps its hourly prices however long it is idle
             before = open(os.path.join(out, "hist", f"{V2}.json"), "rb").read()
             run(T0 + 84 * 60 * M)
             check(open(os.path.join(out, "hist", f"{V2}.json"), "rb").read() == before, "idle version file not rewritten")
@@ -2315,8 +2366,40 @@ def variant_pipeline_tests():
             check(sum(1 for p in bear["H"][0] if p) >= 3 and sum(1 for p in cleaver["H"][0] if p) >= 3
                   and cleaver["H"][0][-1] == 30000, "listed versions and the item keep their hourly prices")
             check(db().variants[CLEAVER] == f"{BEAR}={V1},{EAGLE}={V2},{ODD}={V3}", "the idle version stays in the variants table")
+            charm = db()["items"][CHARM]
+            check(charm is not None and len(charm.split("|")) == 10 and charm.split("|")[7] != NO_HOURLY
+                  and sum(1 for p in py_decode(charm)["H"][0] if p) == 1,
+                  f"an item idle as long keeps its hourly prices {charm!r}")
             run_checks(out, "versions idle", quiet=True)
             check(run_checks.trimmed == {V2}, f"versions written without hourly prices {sorted(run_checks.trimmed)}")
+            check(CHARM in run_checks.lines, "the charm has a line")
+
+            # 3b. the same an hour later in a copy of the data, with the file over the size limit: the
+            #     size guard rebuilds every line with a shorter daily history and keeps the rule (the
+            #     Eagle: two empty hours and P; the items keep their hourly prices)
+            small = os.path.join(tmp, "data_small")
+            shutil.copytree(out, small)
+            real_fit = fetch_ah.fit_addon_lines
+            fetch_ah.fit_addon_lines = lambda lines, rebuild, **kw: real_fit(lines, rebuild, **dict(kw, limit=1))
+            try:
+                run(T0 + 85 * 60 * M, where=small)
+            finally:
+                fetch_ah.fit_addon_lines = real_fit
+            _, sdb, _ = load_lua(os.path.join(small, "ForeverAH_Data.lua"))
+            S = int(sdb.hourEnd)
+            check("shortened the daily history" in log.getvalue(), "the size guard ran")
+            for iid, idle in ((V2, True), (V1, False), (CLEAVER, False), (CHARM, False), (SHIELD, False)):
+                s = sdb["items"][iid]
+                f = s.split("|")
+                hh = load_json(os.path.join(small, "hist", f"{iid}.json"))
+                if idle:
+                    check(len(f) == 11 and f[7] == NO_HOURLY and len(py_series(f[8])[0]) == 1,
+                          f"size guard: the idle version has two empty hours, P and one day {s[:90]!r}")
+                    check_series(f"size guard {iid} P", py_series(py_unpack(f[10])), hh["h"], S, 3600, H_MAX)
+                else:
+                    check(len(f) == 10 and f[7] != NO_HOURLY, f"size guard: {iid} keeps its hourly prices {s[:90]!r}")
+                    check_series(f"size guard {iid} H", py_series(f[7]), hh["h"], S, 3600, H_MAX)
+            shutil.rmtree(small, ignore_errors=True)
 
             # 4. state.json lost its registry: rebuilt from the hist files, indexes never handed out twice
             sp = os.path.join(out, "state.json")

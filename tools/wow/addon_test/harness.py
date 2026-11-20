@@ -128,6 +128,50 @@ def decode_sold(sub):
     return [int(t, 36) if t else 0 for t in toks]
 
 
+def unpack_runs(p):
+    """An idle version's packed hourly prices (the 11th field) written out, as Core.lua's
+    unpackRuns does: "<token>*<count>" (count in base 36, 2 or more) is that token count
+    times; None when it is not usable (the addon then uses H, the 8th field)."""
+    out, total = [], 0
+    for sub in p.split(";"):
+        toks = []
+        for tok in (sub.split(",") if sub != "" else []):
+            if "*" in tok:
+                t, k = tok.split("*", 1)
+                if not re.match(r"^[0-9a-z]+$", k):
+                    return None
+                n = int(k, 36)
+                total += n
+                if n < 2 or total > PACKED_MAX:
+                    return None
+                toks.extend([t] * n)
+            else:
+                toks.append(tok)
+        out.append(",".join(toks))
+    return ";".join(out)
+
+
+def pack_runs(series):
+    """The collector's packing (fetch_ah.pack_runs), written again for test data: each run of 2
+    or more equal tokens of a sub-series as "<token>*<count>" where that is shorter."""
+    out = []
+    for sub in series.split(";"):
+        toks = sub.split(",") if sub != "" else []
+        res, i = [], 0
+        while i < len(toks):
+            j = i
+            while j < len(toks) and toks[j] == toks[i]:
+                j += 1
+            run, packed = j - i, toks[i] + "*" + b36_enc(j - i)
+            if run >= 2 and len(packed) < run * len(toks[i]) + run - 1:
+                res.append(packed)
+            else:
+                res.extend(toks[i:j])
+            i = j
+        out.append(",".join(res))
+    return ";".join(out)
+
+
 def decode_series(s):
     parts = (s or "").split(";")
     parts += [""] * (3 - len(parts))
@@ -187,9 +231,11 @@ def parse_flip(s):
 
 
 class RefData:
-    """Reads ForeverAH_Data.lua with plain Python (no Lua)."""
+    """Reads ForeverAH_Data.lua with plain Python (no Lua). packed=False reads it the way
+    Goblin Ledger 1.0.0 does: an idle version's hourly prices are its 8th field (two empty
+    hours), not the packed 11th one."""
 
-    def __init__(self, path=None, text=None):
+    def __init__(self, path=None, text=None, packed=True):
         raw = text if text is not None else open(path, "rb").read().decode("utf-8")
         self.text = raw
         self.first_line = raw.split("\n", 1)[0].rstrip("\r")
@@ -238,7 +284,9 @@ class RefData:
         for m in re.finditer(r'\[(\d+)\]\s*=\s*"((?:[^"\\\n]|\\.)*)"', table_block(raw, "items") or ""):
             iid = int(m.group(1))
             f = lua_unescape(m.group(2)).split("|")
-            f += [""] * (10 - len(f))
+            f += [""] * (11 - len(f))
+            # an idle version: two empty hours as H, its hourly prices packed in the 11th field
+            hs = (unpack_runs(f[10]) if packed and f[10] else None) or f[7]
 
             def n10(x):
                 try:
@@ -248,7 +296,7 @@ class RefData:
             self.items[iid] = {
                 "id": iid, "name": f[0], "cheapest": n10(f[1]), "market": n10(f[2]),
                 "listed": n10(f[3]), "sold24": n10(f[4]), "avg7": n10(f[5]), "vendor": n10(f[6]),
-                "H": decode_series(f[7]), "D": decode_series(f[8]),
+                "H": decode_series(hs), "D": decode_series(f[8]),
                 # separate listings behind today's prices (10th field, newer files; None = unknown)
                 "auctions": int(f[9]) if f[9].isdigit() else None,
             }
@@ -344,23 +392,11 @@ def no_advice_text(rec):
 
 
 # A version nobody listed or bought for 3 days: the collector writes two empty hours as its
-# hourly prices (fetch_ah.ADDON_NO_HOURLY), its daily prices stay.
+# hourly prices (fetch_ah.ADDON_NO_HOURLY) and the prices themselves packed after the 10th field.
 NO_HOURLY = "~,~;~,~;,"
-DAILY_NOTE = "Not listed lately: daily prices shown"
-
-
-def chart_window(ref, iid, tf):
-    """(window, timeframe, note) the chart draws for (iid, tf) (Chart:Draw): the timeframe's
-    own window, or, for an hourly timeframe of an item with no hourly price at all (a version
-    nobody listed for days), the 1M daily window with a note when that has 2+ points and a price."""
-    win = ref.window(iid, tf)
-    if win["step"] < 86400:
-        hs = ref.items[iid]["H"]
-        if not any(v is not None for v in hs["cheap"] + hs["market"]):
-            d = ref.window(iid, "1M")
-            if d["n"] >= 2 and any(v is not None for v in d["cheap"] + d["market"]):
-                return d, "1M", DAILY_NOTE
-    return win, tf, None
+PACKED_MAX = 3 * 400   # Core.lua: tokens a packed series may expand to
+IDLE_HOURS = 72        # fetch_ah.ADDON_VERSION_HOURLY: nothing listed or sold for this long
+H_POINTS = 168         # hourly points in the data file
 
 
 def collecting_msg(ref, iid, tf):
@@ -3820,7 +3856,7 @@ def chart_check(sc, w, ref, iid, tf, label):
     it = ref.items[iid]
     live = w.live(iid)
     want = ref_recommend(ref, iid, tf, live)
-    win, wtf, wnote = chart_window(ref, iid, tf)
+    win = ref.window(iid, tf)
     shown_name = w.display_name(iid)
     sc.eq(C.name._text, shown_name if len(shown_name) <= 34 else shown_name[:33] + "...", "%s: header name" % label)
     nowp = it["market"] if it["market"] > 0 else it["cheapest"]
@@ -3828,7 +3864,7 @@ def chart_check(sc, w, ref, iid, tf, label):
     mk = [v for v in win["market"] if v is not None]
     if win["n"] > 1 and mk:
         p = (mk[-1] - mk[0]) / mk[0] * 100
-        sc.eq(C.change._text, "%+.1f%% %s" % (p, wtf), "%s: header change" % label)
+        sc.eq(C.change._text, "%+.1f%% %s" % (p, tf), "%s: header change" % label)
     ahs0 = ns.AHState
     mixed = iid not in ref.base_of and (iid in ref.variants or (ahs0 is not None and bool(ahs0.suffix[iid])))
     if mixed:
@@ -3865,8 +3901,6 @@ def chart_check(sc, w, ref, iid, tf, label):
     ahs = ns.AHState
     if (ahs is not None and ahs.suffix[iid]) or iid in ref.variants:
         notes.append("Price covers all versions of this item")
-    if wnote:
-        notes.append(wnote)
     sc.eq(C.notes._text or "", ". ".join(notes), "%s: notes" % label)
     narrow = C.frame._w < 650
     sc.check(C.change._shown != narrow and C.volume._shown != narrow,
@@ -3988,7 +4022,7 @@ def hover_check(sc, w, ref, iid, tf, idx, label):
     ns, M = w.ns, w.M
     C = ns.ChartPanel
     plot = C.plot
-    win = chart_window(ref, iid, tf)[0]
+    win = ref.window(iid, tf)
     n = win["n"]
     plotW = plot._w
     stepX = plotW / (n - 1) if n > 1 else 0
@@ -7048,7 +7082,7 @@ def sc_edge(sc, ref_unused, items_unused):
         for tf in TFS:
             ns.SetChartTF(tf)
             ns.ShowChart(iid, "slash")
-            win = chart_window(ref, iid, tf)[0]
+            win = ref.window(iid, tf)
             label = "edge %d %s" % (iid, tf)
             C = ns.ChartPanel
             if win["n"] < 2 or any(v is not None for v in win["cheap"] + win["market"]):
@@ -7855,28 +7889,37 @@ def versioned_data(ref, items):
 
 
 def trimmed_data(ref, items):
-    """versioned_data with its first version written the way the collector writes a version
-    nobody listed or bought for 3 days: nothing listed now, two empty hours as its hourly
-    prices, its daily prices (the item's when it has under two daily prices of its own). The
-    second version keeps its hourly prices. (text, ref, base, [trimmed vid, other vid], keys)"""
+    """versioned_data with its first version as it is once nobody has listed or bought it for 3
+    days: nothing listed now and 72 empty hours after its hourly prices (the oldest beyond a week
+    left out). Returns (full_text, text, full_ref, ref, base, [that vid, the other vid], keys):
+    full_text has that version's hourly prices written out (H, as for a version still trading);
+    text has the line as the collector writes an idle version: two empty hours as H and the
+    hourly prices packed in an 11th field. The other version keeps its own line."""
     text, r2, base, vids, keys = versioned_data(ref, items)
     v1 = vids[0]
+    h = r2.items[v1]["H"]
+    hs = enc_series((h["cheap"] + [None] * IDLE_HOURS)[-H_POINTS:], (h["market"] + [None] * IDLE_HOURS)[-H_POINTS:],
+                    (h["sold"] + [0] * IDLE_HOURS)[-H_POINTS:])
 
-    def priced(d):
-        return sum(1 for v in d["market"] if v is not None) >= 2
-    ds = None
-    if not priced(r2.items[v1]["D"]):
-        bd = r2.items[base]["D"]
-        m = next((v for v in reversed(bd["market"]) if v), None) or r2.items[base]["market"] or 1000
-        ds = enc_series(bd["cheap"], bd["market"], bd["sold"]) if priced(bd) else enc_series([m, m], [m, m], [0, 0])
+    def line(packed):
+        def fn(iid, f):
+            if iid != v1:
+                return None
+            f = f + [""] * (10 - len(f))
+            head = [f[0], "0", "0", "0", "0", f[5], f[6]]
+            if packed:
+                return head + [NO_HOURLY, f[8], "0", pack_runs(hs)]
+            return head + [hs, f[8], "0"]
+        return fn
+    full_text = rewrite_items(text, line(False))
+    text = rewrite_items(text, line(True))
+    return full_text, text, RefData(text=full_text), RefData(text=text), base, vids, keys
 
-    def trim(iid, f):
-        if iid != v1:
-            return None
-        f = f + [""] * (10 - len(f))
-        return [f[0], "0", "0", "0", "0", f[5], f[6], NO_HOURLY, ds or f[8], "0"]
-    text = rewrite_items(text, trim)
-    return text, RefData(text=text), base, vids, keys
+
+def item_line(text, iid):
+    """The fields of an item's line in a data text."""
+    m = re.search(r'(?m)^[ \t]*\[%d\]\s*=\s*"((?:[^"\\\n]|\\.)*)"' % iid, text)
+    return lua_unescape(m.group(1)).split("|")
 
 
 def drop_version(text, vid):
@@ -7898,59 +7941,89 @@ def drop_version(text, vid):
     return text, r2
 
 
+def rec_view(w, r):
+    """What Recommend says (as a plain dict), for comparing two addon states."""
+    if r is None:
+        return None
+    keys = ("buy", "sell", "listAt", "postAt", "followFloor", "margin", "marginPct", "verdict", "score", "pos",
+            "lo", "hi", "cheapestNow", "marketNow", "sold24", "soldPerDay", "tf", "askedTF", "points", "history",
+            "advice", "far", "settled", "settledHours", "live", "vendorBetter")
+    out = dict((k, r[k]) for k in keys)
+    out["notes"] = w.lua_list(r.notes, len(r.notes))
+    return out
+
+
+def sell_view(w, ns, iid, tf, live):
+    """ns.SellPrices and ns.SellVerdict for an item (as plain values)."""
+    P = ns.SellPrices(iid, tf, live)
+    if P is None:
+        return None
+    out = dict((k, P[k]) for k in ("now", "best", "nowWhy", "bestWhy", "nowVendor", "bestVendor", "cheapest", "live"))
+    V = ns.SellVerdict(ns.GetItem(iid), P)
+    out["verdict"] = V and (V.kind, V.unit, V.left, V.right)
+    return out
+
+
 def sc_trimmed_rows(sc, ref, items):
-    """A version with no hourly prices (nobody listed it for 3 days): the item, the series and
-    the advice come from its daily prices; the chart's hourly timeframes show those with a note;
-    the tooltip and the name search still find it. A version with hourly prices is unchanged."""
-    text, r2, base, vids, keys = trimmed_data(ref, items)
+    """A version nobody listed or bought for 3 days: the collector writes two empty hours as its
+    hourly prices (what Goblin Ledger 1.0.0 reads) and the prices themselves packed after the 10
+    fields. This addon reads the packed ones: its series, advice, Suggested price and sell call,
+    tooltip and chart are the same as for the line written out in full. A packed field that is
+    not usable falls back to the two empty hours."""
+    full_text, text, rf, r2, base, vids, keys = trimmed_data(ref, items)
     v1, v2 = vids
-    sc.check(r2.items[v1]["H"]["n"] == 2 and not any(r2.items[v1]["H"]["cheap"] + r2.items[v1]["H"]["market"])
-             and r2.items[v1]["listed"] == 0, "trimmed: test data has a version without hourly prices")
+    f, ff = item_line(text, v1), item_line(full_text, v1)
+    sc.check(len(f) == 11 and f[7] == NO_HOURLY and unpack_runs(f[10]) == ff[7] and len(ff) == 10,
+             "trimmed: the line has two empty hours and its hourly prices packed")
+    sc.check(len(f[7]) + len(f[10]) + 200 < len(ff[7]), "trimmed: packed, the line is shorter (hourly prices %d bytes, "
+             "written out %d)" % (len(f[10]), len(ff[7])))
+    sc.eq(r2.items[v1]["H"], rf.items[v1]["H"], "trimmed: the reference reads the packed prices")
+    sc.check(not any(v is not None for v in r2.items[v1]["H"]["market"][-IDLE_HOURS:])
+             and r2.items[v1]["listed"] == 0, "trimmed: nothing listed in the version's last 72 hours")
+    wf = World(rf, items, data_src=full_text)
     w = World(r2, items, data_src=text)
-    ns = w.ns
-    sc.eq(w.load_errors, [], "trimmed: the file loads")
-    age = w.now - r2.updated
+    sc.eq((w.load_errors, wf.load_errors), ([], []), "trimmed: both files load")
+    ns, nf = w.ns, wf.ns
     sc.check(ns.IsVariant(v1) and ns.BaseItemID(v1) == base and ns.GetItem(v1).base == base, "trimmed: still a version of its item")
-    sc.eq((bool(ns.HasHourlyPrices(v1)), bool(ns.HasHourlyPrices(v2)), bool(ns.HasHourlyPrices(base)),
-           bool(ns.HasHourlyPrices(99999999))), (False, any(r2.items[v2]["H"]["cheap"] + r2.items[v2]["H"]["market"]),
-                                                  any(r2.items[base]["H"]["cheap"] + r2.items[base]["H"]["market"]), False),
-          "trimmed: HasHourlyPrices")
-    # series and advice against the model (hourly windows: two empty hours; daily ones as written)
     check_series_and_recommend(sc, w, r2, ids=[v1, v2, base])
-    for tf in ("1D", "5D", "1W"):
-        s_ = ns.GetSeries(v1, tf)
-        sc.check(int(s_.n) == 2 and not any(w.lua_list(s_.cheap, 2) + w.lua_list(s_.market, 2)),
-                 "trimmed: %s window is two empty hours" % tf)
-    # tooltip: the version's own line (no "no recent listings"), its average from the daily prices
-    tt = w.g.GameTooltip
-    w.put_bag(2, 1, base, 1, bonus=keys[0])
-    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
-    tt.SetBagItem(tt, 2, 1)
-    got = w.lines(tt)
-    sc.eq(got, expected_tooltip(r2, v1, age, count=1, cover="version"), "trimmed: tooltip of the version")
-    sc.check(not any("no recent listings" in (l or "") for l, _ in got), "trimmed: the tooltip never says no recent listings")
-    # chart: every timeframe against the model; the hourly ones draw the daily prices with a note
-    daily = chart_window(r2, v1, "1D")[1] == "1M"
+    win = rf.window(v1, "1W")
+    mk = sorted(v for v in win["market"] if v is not None)
+    lives = (None, mk[len(mk) // 2] if mk else 12345)
     for tf in TFS:
-        ns.SetChartTF(tf)
-        ns.ShowChart(v1, "slash")
+        a, b = ns.GetSeries(v1, tf), nf.GetSeries(v1, tf)
+        n = int(b.n)
+        sc.eq((int(a.n), w.lua_list(a.cheap, n), w.lua_list(a.market, n), w.lua_list(a.sold, n)),
+              (n, wf.lua_list(b.cheap, n), wf.lua_list(b.market, n), wf.lua_list(b.sold, n)), "trimmed: %s series" % tf)
+        for live in lives:
+            sc.eq(rec_view(w, ns.Recommend(v1, tf, live)), rec_view(wf, nf.Recommend(v1, tf, live)),
+                  "trimmed: %s advice%s" % (tf, " with a live listing" if live else ""))
+            sc.eq(sell_view(w, ns, v1, tf, live), sell_view(wf, nf, v1, tf, live),
+                  "trimmed: %s sell prices and call%s" % (tf, " with a live listing" if live else ""))
+    best = sell_view(wf, nf, v1, "1D", None)["best"]
+    sc.check(best is not None or not R.SIM, "trimmed: the version keeps its Suggested price from its hourly prices (%s)" % best)
+    # tooltip: the same lines, and as the model says (the version's own line, its Suggested price)
+    age = w.now - r2.updated
+    lines = []
+    for x in (w, wf):
+        tt = x.g.GameTooltip
+        x.put_bag(2, 1, base, 1, bonus=keys[0])
+        tt.SetOwner(tt, x.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 2, 1)
+        lines.append(x.lines(tt))
+    sc.eq(lines[0], lines[1], "trimmed: the tooltip is the same")
+    sc.eq(lines[0], expected_tooltip(r2, v1, age, count=1, cover="version"), "trimmed: tooltip of the version")
+    sc.check(best is None or any(l == "Suggested price" for l, _ in lines[0]), "trimmed: the tooltip has a Suggested price")
+    # chart: every timeframe as the model says, and the same as with the prices written out
+    for tf in TFS:
+        shown = []
+        for x, r in ((w, r2), (wf, rf)):
+            x.ns.SetChartTF(tf)
+            x.ns.ShowChart(v1, "slash")
+            C = x.ns.ChartPanel
+            shown.append((C.name._text, C.change._text, C.notes._text, bool(C.msg._shown), C.msg._text,
+                          int(C.pools.dot.used)))
         chart_check(sc, w, r2, v1, tf, "trimmed chart %s" % tf)
-        win = chart_window(r2, v1, tf)[0]
-        if win["n"] < 2 or any(v is not None for v in win["cheap"] + win["market"]):   # a plot to hover
-            for idx in sorted({0, max(0, win["n"] - 1)}):
-                hover_check(sc, w, r2, v1, tf, idx, "trimmed chart %s" % tf)
-        C = ns.ChartPanel
-        if tf in ("1D", "5D", "1W"):
-            sc.eq(DAILY_NOTE in (C.notes._text or ""), daily, "trimmed chart %s: the daily-prices note" % tf)
-            if daily:
-                sc.check(not C.msg._shown and int(C.pools.dot.used) > 0, "trimmed chart %s: daily prices drawn" % tf)
-        else:
-            sc.check(DAILY_NOTE not in (C.notes._text or ""), "trimmed chart %s: no note on a daily timeframe" % tf)
-    sc.check(daily or R.SIM is False, "trimmed: the simulated data's version has daily prices to show")
-    ns.SetChartTF("1D")
-    ns.ShowChart(v2, "slash")
-    chart_check(sc, w, r2, v2, "1D", "trimmed: the other version's hourly chart")
-    sc.check(DAILY_NOTE not in (ns.ChartPanel.notes._text or ""), "trimmed: no note with hourly prices")
+        sc.eq(shown[0], shown[1], "trimmed chart %s: the same as written out" % tf)
     # the name search and links still find it
     nm = r2.items[v1]["name"]
     if known_name(nm):
@@ -7958,6 +8031,19 @@ def sc_trimmed_rows(sc, ref, items):
         sc.check(v1 in lua_list(ns.FindItemIDs(nm)), "trimmed: the name search finds the version")
     sc.eq(ns.ResolveItem(gear_link(base, keys[0])), v1, "trimmed: found by link")
     sc.clean(w, "trimmed")
+    sc.clean(wf, "trimmed (written out)")
+    # a packed field that is not usable: the two empty hours, no error
+    for bad in ("~*", "~*1", "~*zzzz", "~**2", "~*2*3", ",".join(["~*4o"] * 8)):
+        def fn(iid, f, bad=bad):
+            return f[:10] + [bad] if iid == v1 else None
+        t = rewrite_items(text, fn)
+        rb = RefData(text=t)
+        wb = World(rb, items, data_src=t)
+        s_ = wb.ns.GetSeries(v1, "1W")
+        sc.check(wb.load_errors == [] and int(s_.n) == 2 and rb.items[v1]["H"]["n"] == 2,
+                 "trimmed: a packed field %r is not used (%s hours)" % (bad[:20], s_.n))
+        check_series_and_recommend(sc, wb, rb, ids=[v1], tfs=("1D", "1W", "1M"))
+        sc.clean(wb, "trimmed, packed field %r" % bad[:20])
 
 
 def sc_dropped_version(sc, ref, items):
@@ -8015,15 +8101,17 @@ def export_release(commit=OLD_RELEASE):
 
 
 def sc_old_release(sc, ref, items):
-    """Goblin Ledger 1.0.0 (what friends run) on a data file with a version without hourly
-    prices and a version left out: it loads, its tooltip shows the version's summary and
-    average, its hourly charts say nothing was listed (the two empty hours), its daily chart
-    draws, a link to the left-out version uses the item's prices, the name search finds the
-    version, and nothing errors."""
+    """Goblin Ledger 1.0.0 (what friends run) on a data file with an idle version (two empty
+    hours as H, its hourly prices packed in an 11th field 1.0.0 does not read) and a version
+    left out: it loads, its tooltip shows the version's summary and average, its hourly charts
+    say nothing was listed (the two empty hours), its daily chart draws, a link to the
+    left-out version uses the item's prices, the name search finds the version, and nothing
+    errors."""
     global ADDON
-    text, r2, base, vids, keys = trimmed_data(ref, items)
+    _, text, _, r2, base, vids, keys = trimmed_data(ref, items)
     v1, v2 = vids
-    text, r3 = drop_version(text, v2)
+    text, _ = drop_version(text, v2)
+    r3 = RefData(text=text, packed=False)   # what 1.0.0 reads: two empty hours, the 11th field unread
     tmp = export_release()
     if not sc.check(tmp is not None, "old release: git archive %s worked" % OLD_RELEASE):
         return
@@ -8129,9 +8217,38 @@ def sc_login_gc(sc, ref, items):
         sc.clean(w2, "login GC %s" % label)
 
 
+MANY_BASE = 2000000     # test items of many_versions_data: ids no real item or version has
+
+
+def many_versions_data(ref, n_items=3000, per=10):
+    """The data with n_items more items of `per` versions each, every one with a line, as a real
+    file has them (tens of thousands of random-suffix versions), and one more variants entry
+    whose vid has no line. Returns (text, ref, [the new item ids], the vid without a line)."""
+    text = ref.text
+    bases = [MANY_BASE + i for i in range(n_items)]
+    row = '    [%d] = "|500|520|1|0|510|0|e0,,;e0,a,;,,|e0;e0;|1",\n'
+    lines = []
+    vlines = ["[%d] = %s" % (item, lua_quote(",".join("%s=%d" % kv for kv in ref.variants[item])))
+              for item in sorted(ref.variants)]
+    for b in bases:
+        lines.append(row % b)
+        entries = []
+        for k in range(1, per + 1):
+            lines.append(row % (b * 1000 + k))
+            entries.append("%d=%d" % (12717 + k, b * 1000 + k))
+        if b == bases[0]:
+            entries.append("12999=%d" % (b * 1000 + 999))   # a version without a line
+        vlines.append("[%d] = %s" % (b, lua_quote(",".join(entries))))
+    text = set_table(text, "variants", vlines)
+    span = block_span(text, "items")
+    text = text[:span[1]] + "".join(lines) + text[span[1]:]
+    return text, RefData(text=text), bases, bases[0] * 1000 + 999
+
+
 def sc_versions_lazy(sc, ref, items):
     """The variants table is read one item at a time: the first tooltip of a version does not
-    unpack every version in the data (that took as much memory as all the prices)."""
+    unpack every version in the data (that took as much memory as all the prices), and once
+    every version has been asked about they take a few dozen bytes each."""
     text, r2, base, vids, keys = versioned_data(ref, items)
     w = World(r2, items, data_src=text)
     ns, L = w.ns, w.lua
@@ -8156,6 +8273,118 @@ def sc_versions_lazy(sc, ref, items):
     sc.eq((ns.IsVariant(float("nan")), ns.HasVariants(float("nan")), ns.IsVariant(float("inf")), ns.HasVariants("x")),
           (False, False, False, False), "lazy versions: NaN, inf and text ids")
     sc.clean(w, "lazy versions")
+    # as many versions as a real file has: one item's versions, then all of them
+    text, r3, bases, lineless = many_versions_data(ref)
+    w = World(r3, items, data_src=text)
+    ns, L = w.ns, w.lua
+    sc.eq(w.load_errors, [], "lazy versions (many): the file loads")
+    L.execute("collectgarbage('collect')")
+    before = L.eval("collectgarbage('count')")
+    b0 = bases[1]
+    sc.eq((ns.GetItem(b0 * 1000 + 3).base, ns.FindVariant(b0, gear_link(b0, [12722])), ns.VariantNumber(b0 * 1000 + 7)),
+          (b0, b0 * 1000 + 5, 7), "lazy versions (many): a version read")
+    L.execute("collectgarbage('collect')")
+    grew = L.eval("collectgarbage('count')") - before
+    nv = len(r3.base_of)
+    sc.check(grew < 64, "lazy versions (many): reading one item's versions of %d kept %.0f KB" % (nv, grew))
+    L.execute("collectgarbage('collect')")
+    before = L.eval("collectgarbage('count')")
+    asked = L.eval("""function(ns)
+      local n = 0
+      for item, s in pairs(ns.db.variants) do
+        if ns.HasVariants(item) then n = n + 1 end
+        for entry in string.gmatch(s, "[^,]+") do
+          local vid = tonumber(string.match(entry, "=(%d+)%s*$"))
+          if ns.IsVariant(vid) and ns.BaseItemID(vid) == item then n = n + 1 end
+        end
+      end
+      return n
+    end""")(ns)
+    L.execute("collectgarbage('collect')")
+    grew = (L.eval("collectgarbage('count')") - before) * 1024
+    sc.eq(asked, len(r3.variants) + nv, "lazy versions (many): every item and version answers")
+    sc.check(grew < 100 * nv, "lazy versions (many): every version read keeps %.0f bytes each (%d versions)" % (
+        grew / max(1, nv), nv))
+    sc.eq((ns.VariantCount(), ns.ItemCount()), (nv, r3.base_count()), "lazy versions (many): VariantCount and ItemCount")
+    # a variants entry whose vid has no line: a link to it uses the item's prices
+    b = bases[0]
+    link = gear_link(b, [12999])
+    sc.eq((ns.FindVariant(b, link), ns.ResolveItem(link), ns.GetItem(lineless)), (None, b, None),
+          "lazy versions (many): a version without a line: its link uses the item")
+    sc.eq(ns.FindVariant(b, gear_link(b, [12718])), b * 1000 + 1, "lazy versions (many): the item's other versions")
+    sc.clean(w, "lazy versions (many)")
+
+
+QUIET_BASE = 3000000000   # test lines of quiet_rows_data: ids no real item or version has
+
+
+# Odd lines (never written by the collector) for ns.PeekItem: cut short, 9 fields (no auctions
+# count), 11 fields (P), not numbers, an empty auctions count.
+ODD_LINES = ("Odd|5|6", "Old|5|6|2|7|8|9|~;~;|~;~;", "New|5|6|2|7|8|9|~;~;|~;~;|4|~*2;~*2;*2",
+             "|x|6|2|7|8|9|~;~;|~;~;|", "|1|2|3")
+
+
+def quiet_rows_data(ref, n=20000, odd=False):
+    """The data with n more lines nobody trades (listed, nothing sold): never a flip idea (and
+    with odd, ODD_LINES after them)."""
+    text = ref.text
+    span = block_span(text, "items")
+    rows = "".join('    [%d] = "|500|520|3|0|510|0|e0,,;e0,a,;,,|e0;e0;|3",\n' % (QUIET_BASE + i) for i in range(n))
+    if odd:
+        rows += "".join('    [%d] = "%s",\n' % (QUIET_BASE + n + i, s) for i, s in enumerate(ODD_LINES))
+    text = text[:span[1]] + rows + text[span[1]:]
+    return text, RefData(text=text)
+
+
+def sc_flip_lines_memory(sc, ref, items):
+    """The price-history flip ideas (the sidebar when the collector's flips do not fill it, as
+    for a character with no gold) look at every line without keeping an item for each: 20,000
+    lines nobody trades keep nothing, and the ideas are the same. ns.PeekItem, which reads a
+    line's numbers for that, has the numbers ns.GetItem has, for every line."""
+    base = drop_table(ref.text, "flips")
+    r0 = RefData(text=base)
+    text, r1 = quiet_rows_data(r0, odd=True)
+    got = []
+    for t, r, label in ((base, r0, "the data"), (text, r1, "20,000 quiet lines more")):
+        w = World(r, items, data_src=t, gold=0)
+        L = w.lua
+        L.execute("collectgarbage('collect')")
+        before = L.eval("collectgarbage('count')")
+        res = w.ns.HistoryFlipIdeas(60, False)
+        res = res[0] if isinstance(res, tuple) else res
+        ids = [res[k].id for k in range(1, len(res) + 1)]
+        w.open_ah_modern()
+        w.M.settle(1.0)
+        L.execute("collectgarbage('collect')")
+        grew = L.eval("collectgarbage('count')") - before
+        want = [x["id"] for x in ref_history_flips_why(r, limit=60, gold=None)[0]]
+        sc.eq(ids, want, "flip lines (%s): the price-history ideas" % label)
+        sc.check(w.ns.SidebarPanel.flipWhy is not None or w.ns.SidebarPanel.ideas is not None,
+                 "flip lines (%s): the sidebar has its ideas" % label)
+        got.append((grew, ids))
+        w.close_ah_modern()
+        # every line's numbers, read before and after the item is unpacked
+        peek = w.ns.PeekItem
+        ids = sorted(r.items)
+        odd = [i for i in ids if i >= QUIET_BASE + 20000]
+        for when in ("not unpacked", "unpacked"):
+            if when == "unpacked":
+                ids = sorted(set(ids[::max(1, len(ids) // 300)] + odd))
+                for i in ids:
+                    w.ns.GetItem(i)
+            bad = []
+            for i in ids:
+                it = r.items[i]
+                want = (it["cheapest"], it["market"], it["listed"], it["sold24"], it["vendor"], it["auctions"])
+                g = peek(i)
+                if tuple(g) != want:
+                    bad.append((i, g, want))
+            sc.eq(bad[:3], [], "flip lines (%s): PeekItem of %d lines, %s" % (label, len(ids), when))
+        sc.eq((peek(99999999), peek("x"), peek(None)), (None, None, None), "flip lines (%s): PeekItem with no line" % label)
+        sc.clean(w, "flip lines (%s)" % label)
+    sc.eq(got[1][1], got[0][1], "flip lines: quiet lines change no idea")
+    sc.check(got[1][0] - got[0][0] < 512, "flip lines: 20,000 quiet lines kept %.0f KB (%.0f KB vs %.0f KB)" % (
+        got[1][0] - got[0][0], got[1][0], got[0][0]))
 
 
 def sc_versions(sc, ref, items):
@@ -19898,6 +20127,7 @@ SCENARIOS = [
     ("chart-line-toggles", sc_chart_lines),
     ("gear-versions", sc_versions),
     ("versions-lazy", sc_versions_lazy),
+    ("flip-lines-memory", sc_flip_lines_memory),
     ("trimmed-rows", sc_trimmed_rows),
     ("dropped-version", sc_dropped_version),
     ("old-release-data", sc_old_release),

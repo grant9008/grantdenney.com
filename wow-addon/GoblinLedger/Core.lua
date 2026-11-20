@@ -13,6 +13,7 @@ local _G = _G
 local type, tonumber, tostring, pairs, ipairs, pcall, select = type, tonumber, tostring, pairs, ipairs, pcall, select
 local floor, max, min, abs = math.floor, math.max, math.min, math.abs
 local sfind, ssub, sbyte, slower, sformat, smatch, sgsub = string.find, string.sub, string.byte, string.lower, string.format, string.match, string.gsub
+local srep = string.rep
 local tconcat, tinsert = table.concat, table.insert
 
 ---------------------------------------------------------------------------
@@ -96,21 +97,28 @@ end
 -- version's bonus ids, lowest first, joined with ":" (maybe followed by
 -- "m<type>=<value>" modifier parts). A vid (itemID * 1000 + n) has its own
 -- item line, like an item. The plain item id keeps meaning "all versions".
--- Older data files have no variants: every item is then one plain item.
--- An item's entry is read the first time something asks about that item or
--- one of its versions, and kept: reading the whole table at once (tens of
--- thousands of versions) took about as much memory as all the prices.
-local versionCache = {}   -- item id -> { list = { entries }, byVid = { [vid] = entry } }, or false
-local NOMODS = {}         -- shared by every entry without modifier parts (never written to)
+-- Older data files have no variants: every item is then one plain item. The
+-- table's keys are numbers ([727] = "..."), as the collector writes them.
+-- An item's versions are read the first time something asks about that item
+-- or one of its versions, and kept as one flat list: { vid, bonus, vid,
+-- bonus, ... } (bonus: "12722:12740", lowest first, a text Lua keeps once for
+-- all the items that share it), plus mods = { [position of the vid] =
+-- { { [type] = value }, how many } } for versions with modifier parts. That
+-- is about 65 bytes a version: a table for each version (all of them read at
+-- the first tooltip) took about as much memory as all the prices.
+local versionCache = {}   -- item id -> that list, or false (its text has no usable version)
+local NOMODS = {}         -- the modifiers of a version without any (never written to)
 
--- One "key=vid" entry of item `base`: key, vid, bonus ("12722:12740",
--- lowest first), mods ({ [type] = value }) and how many mods; nil when it
--- is not a usable version.
+-- One "key=vid" entry of item `base`: vid, bonus ("12722:12740", lowest
+-- first), and for modifier parts mods ({ [type] = value }) and how many; nil
+-- when it is not a usable version.
 local function versionEntry(base, entry)
   local key, v = smatch(entry, "^%s*(.-)=(%d+)%s*$")
   local vid = tonumber(v)
   -- A vid is itemID * 1000 + 1..999; anything else is not a version.
   if not (key and key ~= "" and vid and vid > base * 1000 and vid < base * 1000 + 1000) then return nil end
+  -- Most keys are one bonus id: the key is then its own bonus text.
+  if #key <= 14 and smatch(key, "^[1-9]%d*$") then return vid, key end
   local bonus, mods, nmods = {}, nil, 0
   for tok in string.gmatch(key, "[^:]+") do
     local mt, mv = smatch(tok, "^m(%-?%d+)=(%-?%d+)$")
@@ -125,63 +133,86 @@ local function versionEntry(base, entry)
     end
   end
   table.sort(bonus)
-  return key, vid, tconcat(bonus, ":"), mods or NOMODS, nmods
+  return vid, tconcat(bonus, ":"), mods, nmods
 end
 
--- Data.lua's text for an item's versions, or nil.
-local function versionText(base)
-  local raw = db.variants
-  if type(raw) ~= "table" then return nil end
-  local s = raw[base]
-  if s == nil then s = raw[tostring(base)] end
-  return type(s) == "string" and s or nil
-end
-
--- The versions of item `base` (read on first use), or nil.
+-- The versions of item `base` (read on first use): its flat list, or nil.
 local function itemVersions(base)
   if type(base) ~= "number" or base ~= base then return nil end   -- (NaN is no table key)
+  local raw = db.variants
+  local s = type(raw) == "table" and raw[base] or nil
+  if type(s) ~= "string" then return nil end   -- (most ids: nothing is kept for them)
   local c = versionCache[base]
   if c ~= nil then return c or nil end
-  c = false
-  local s = versionText(base)
-  if s then
-    local list, byVid = {}, {}
-    for entry in string.gmatch(s, "[^,]+") do
-      local key, vid, bonus, mods, nmods = versionEntry(base, entry)
-      if key then
-        local e = { key = key, vid = vid, bonus = bonus, mods = mods, nmods = nmods }
-        list[#list + 1] = e
-        byVid[vid] = e
+  c = {}
+  local n = 0
+  for entry in string.gmatch(s, "[^,]+") do
+    local vid, bonus, mods, nmods = versionEntry(base, entry)
+    if vid then
+      c[n + 1], c[n + 2] = vid, bonus
+      if mods then
+        c.mods = c.mods or {}
+        c.mods[n + 1] = { mods, nmods }
       end
+      n = n + 2
     end
-    if #list > 0 then c = { list = list, byVid = byVid } end
   end
+  if n == 0 then c = false end
   versionCache[base] = c
   return c or nil
+end
+
+-- Where vid n of item b is in its flat list c (the vid's position), or nil.
+local function versionPos(c, n, b)
+  -- The collector writes an item's versions in order: version k is usually the k-th.
+  local i = 2 * (n - b * 1000) - 1
+  if c[i] == n then return i end
+  for j = 1, #c, 2 do
+    if c[j] == n then return j end
+  end
+  return nil
 end
 
 -- The item id behind a vid (a version in the variants table), or nil.
 local function baseOf(n)
   if type(n) ~= "number" then return nil end
   local b = floor(n / 1000)
-  local v = itemVersions(b)
-  return (v and v.byVid[n]) and b or nil
+  local c = itemVersions(b)
+  return (c and versionPos(c, n, b)) and b or nil
 end
 
--- Every vid in the variants table, as a set (a new table each time, not kept).
-local function allVersionIDs()
-  local set, raw = {}, db.variants
-  if type(raw) ~= "table" then return set end
-  for k, s in pairs(raw) do
-    local base = tonumber(k)
-    if base and type(s) == "string" then
-      for entry in string.gmatch(s, "[^,]+") do
-        local key, vid = versionEntry(base, entry)
-        if key then set[vid] = true end
+-- The modifiers of the version at position i of list c, and how many.
+local function versionMods(c, i)
+  local m = c.mods and c.mods[i]
+  if m then return m[1], m[2] end
+  return NOMODS, 0
+end
+
+-- How many versions the variants table has and how many items the data has
+-- (lines that are not versions): counted in one pass when first asked,
+-- without keeping the versions.
+local variantCount, itemCount
+local function countItems()
+  if itemCount then return end
+  local vids, nv, raw = {}, 0, db.variants
+  if type(raw) == "table" then
+    for base, s in pairs(raw) do
+      if type(base) == "number" and type(s) == "string" then
+        for entry in string.gmatch(s, "[^,]+") do
+          local vid = versionEntry(base, entry)
+          if vid and not vids[vid] then
+            vids[vid] = true
+            nv = nv + 1
+          end
+        end
       end
     end
   end
-  return set
+  local ni = 0
+  for id in pairs(db.items) do
+    if not vids[tonumber(id) or -1] then ni = ni + 1 end
+  end
+  variantCount, itemCount = nv, ni
 end
 
 -- The item id behind a version id (itself for a plain item id).
@@ -212,12 +243,8 @@ function ns.VariantNumber(id)
 end
 
 -- How many versions have their own prices.
-local variantCount
 function ns.VariantCount()
-  if not variantCount then
-    variantCount = 0
-    for _ in pairs(allVersionIDs()) do variantCount = variantCount + 1 end
-  end
+  countItems()
   return variantCount
 end
 
@@ -274,20 +301,22 @@ end
 -- for that version. The most exact match wins (modifier parts count).
 function ns.FindVariant(itemID, link)
   local id = tonumber(itemID)
-  local v = id and itemVersions(id)
-  local list = v and v.list
-  if not list then return nil end
+  local c = id and itemVersions(id)
+  if not c then return nil end
   local bonus, mods = ns.LinkBonus(link)
   if not bonus then return nil end
   local key = tconcat(bonus, ":")
   local best, bestN
-  for _, e in ipairs(list) do
-    if e.bonus == key and (key ~= "" or e.nmods > 0) then
-      local ok = true
-      for t, v in pairs(e.mods) do
-        if mods[t] ~= v then ok = false break end
+  for i = 1, #c, 2 do
+    if c[i + 1] == key then
+      local emods, nmods = versionMods(c, i)
+      if key ~= "" or nmods > 0 then
+        local ok = true
+        for t, v in pairs(emods) do
+          if mods[t] ~= v then ok = false break end
+        end
+        if ok and (not bestN or nmods > bestN) then best, bestN = c[i], nmods end
       end
-      if ok and (not bestN or e.nmods > bestN) then best, bestN = e.vid, e.nmods end
     end
   end
   if best and type(db.items[best]) == "string" then return best end
@@ -298,11 +327,11 @@ end
 -- of the Bear") is `name`, or nil. Versions named "(version N)" never match.
 function ns.VersionByName(itemID, name)
   local id = tonumber(itemID)
-  local v = id and itemVersions(id)
-  local list = v and v.list
-  if not list or type(name) ~= "string" or isSecret(name) or name == "" then return nil end
-  for _, e in ipairs(list) do
-    if type(db.items[e.vid]) == "string" and ns.ItemName(e.vid) == name then return e.vid end
+  local c = id and itemVersions(id)
+  if not c or type(name) ~= "string" or isSecret(name) or name == "" then return nil end
+  for i = 1, #c, 2 do
+    local vid = c[i]
+    if type(db.items[vid]) == "string" and ns.ItemName(vid) == name then return vid end
   end
   return nil
 end
@@ -313,21 +342,18 @@ function ns.VariantLink(vid)
   local n = tonumber(vid)
   local base = n and baseOf(n)
   if not base then return nil end
-  for _, e in ipairs(itemVersions(base).list) do
-    if e.vid == n then
-      local bonus = {}
-      for tok in string.gmatch(e.bonus, "[^:]+") do bonus[#bonus + 1] = tok end
-      local parts = { "item:" .. base, "", "", "", "", "", "", "", "", "", "", "", tostring(#bonus) }
-      for _, b in ipairs(bonus) do parts[#parts + 1] = b end
-      local mods = {}
-      for t, v in pairs(e.mods) do mods[#mods + 1] = t .. ":" .. v end
-      table.sort(mods)
-      parts[#parts + 1] = tostring(#mods)
-      for _, m in ipairs(mods) do parts[#parts + 1] = m end
-      return tconcat(parts, ":")
-    end
-  end
-  return nil
+  local c = itemVersions(base)
+  local i = versionPos(c, n, base)
+  local bonus = {}
+  for tok in string.gmatch(c[i + 1], "[^:]+") do bonus[#bonus + 1] = tok end
+  local parts = { "item:" .. base, "", "", "", "", "", "", "", "", "", "", "", tostring(#bonus) }
+  for _, b in ipairs(bonus) do parts[#parts + 1] = b end
+  local mods = {}
+  for t, v in pairs((versionMods(c, i))) do mods[#mods + 1] = t .. ":" .. v end
+  table.sort(mods)
+  parts[#parts + 1] = tostring(#mods)
+  for _, m in ipairs(mods) do parts[#parts + 1] = m end
+  return tconcat(parts, ":")
 end
 
 -- The game's own name for an item, or nil when it has not loaded it (asking
@@ -466,6 +492,31 @@ function ns.GetItem(itemID)
   return item
 end
 
+-- The numbers of an item's line, read without unpacking or keeping it (for
+-- passes over every item: an item table kept for each of the 40,000 lines of
+-- a real file took 50 MB): cheapest, market, listed, sold24, vendor and
+-- auctions (nil in older files), as ns.GetItem has them; nil when there is
+-- no line.
+function ns.PeekItem(itemID)
+  local id = tonumber(itemID)
+  if not id then return nil end
+  local it = itemCache[id]
+  if it then return it.cheapest, it.market, it.listed, it.sold24, it.vendor, it.auctions end
+  if it == false then return nil end
+  local raw = db.items[id]
+  if type(raw) ~= "string" then return nil end
+  local c, m, l, s, _, v, p = smatch(raw, "^[^|]*|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)|([^|]*)()")
+  if not c then
+    local f = split(raw, "|")   -- a line with fewer fields
+    return num10(f[2]), num10(f[3]), num10(f[4]), num10(f[5]), num10(f[7]), tonumber(f[10])
+  end
+  -- p is at the "|" before H: skip H and D for the auctions count.
+  local q = sfind(raw, "|", p + 1, true)
+  q = q and sfind(raw, "|", q + 1, true)
+  local auctions = q and tonumber(smatch(raw, "^([^|]*)", q + 1)) or nil
+  return num10(c), num10(m), num10(l), num10(s), num10(v), auctions
+end
+
 -- The name to show for an item: the data's, else the game's, else "Item 123".
 function ns.ItemName(itemID)
   local id = tonumber(itemID)
@@ -583,6 +634,29 @@ end
 
 local fullCache = { H = {}, D = {} }
 
+-- A version nobody listed or bought for 3 days has two empty hours as H and
+-- its hourly prices packed in an 11th field: each run of 2 or more equal
+-- tokens of a sub-series written once as "<token>*<count>" (count in base 36).
+-- Returns them written out (exactly the H the collector packed), or nil when
+-- the field is not usable (H is used then). Goblin Ledger 1.0.0 reads only
+-- the first 10 fields.
+local PACKED_MAX = 3 * 400   -- tokens a packed series may expand to (an hourly one has at most 3 * 168)
+local function unpackRuns(p)
+  if sfind(p, "%*[^,;]*%*") then return nil end   -- two counts in one token
+  local bad, total = false, 0
+  local s = sgsub(p, "([^,;*]*)%*([0-9a-z]+)", function(tok, k)
+    local n = tonumber(k, 36)
+    total = total + (n or 0)
+    if not n or n < 2 or total > PACKED_MAX then
+      bad = true
+      return ""
+    end
+    return srep(tok .. ",", n - 1) .. tok
+  end)
+  if bad or sfind(s, "*", 1, true) then return nil end
+  return s
+end
+
 local function decodeFull(id, key)
   local cache = fullCache[key]
   local c = cache[id]
@@ -591,6 +665,7 @@ local function decodeFull(id, key)
   if type(raw) ~= "string" then return nil end
   local f = split(raw, "|")
   local s = f[key == "H" and 8 or 9] or ""
+  if key == "H" and f[11] and f[11] ~= "" then s = unpackRuns(f[11]) or s end
   local parts = split(s, ";")
   local cs, ms, ss = parts[1] or "", parts[2] or "", parts[3] or ""
   local cc, mc, sc = countTokens(cs), countTokens(ms), countTokens(ss)
@@ -633,20 +708,6 @@ function ns.GetSeries(itemID, tf)
   end
   windowCache[ck] = w
   return w
-end
-
--- True when the item's hourly prices (the last week) have any price at all.
--- A version nobody listed or bought for 3 days has none in newer data files
--- (only its daily prices): the chart then shows those.
-function ns.HasHourlyPrices(itemID)
-  local id = tonumber(itemID)
-  if not id or not ns.GetItem(id) then return false end
-  local full = decodeFull(id, "H")
-  if not full then return false end
-  for i = 1, full.n do
-    if full.cheap[i] or full.market[i] then return true end
-  end
-  return false
 end
 
 -- How many days the item's daily prices cover (read without unpacking them).
@@ -755,15 +816,8 @@ function ns.FindItemIDs(name)
 end
 
 -- How many items the data has prices for (versions of an item not counted).
-local itemCount
 function ns.ItemCount()
-  if not itemCount then
-    itemCount = 0
-    local vids = allVersionIDs()
-    for id in pairs(db.items) do
-      if not vids[tonumber(id) or -1] then itemCount = itemCount + 1 end
-    end
-  end
+  countItems()
   return itemCount
 end
 

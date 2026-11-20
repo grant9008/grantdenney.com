@@ -1151,14 +1151,6 @@ function Chart:Dashed(y, color, label, above)
   end
 end
 
--- True when a series window has at least one cheapest or market price.
-local function HasPrice(s)
-  for i = 1, Num(s.n) or 0 do
-    if Num(s.cheap[i]) or Num(s.market[i]) then return true end
-  end
-  return false
-end
-
 function Chart:DrawPlot(s, rec, tf)
   local n = s.n
   local plot, plotW, plotH = self.plot, self.plotW, self.plotH
@@ -1374,16 +1366,6 @@ function Chart:Draw(tf)
     return
   end
   local s = type(ns.GetSeries) == "function" and ns.GetSeries(id, tf) or nil
-  -- No hourly prices at all (a version nobody listed for days keeps only its
-  -- daily prices): the hourly timeframes show the last month of daily ones.
-  local shownTF, note = tf, nil
-  if type(s) == "table" and (Num(s.step) or 0) < 86400 and type(ns.HasHourlyPrices) == "function"
-     and not ns.HasHourlyPrices(id) then
-    local d = ns.GetSeries(id, "1M")
-    if type(d) == "table" and (Num(d.n) or 0) >= 2 and HasPrice(d) then
-      s, shownTF, note = d, "1M", "Not listed lately: daily prices shown"
-    end
-  end
   -- The live cheapest listing (when the open AH has loaded it) beats the hourly data.
   local live = type(ns.LiveCheapest) == "function" and ns.LiveCheapest(id) or nil
   local rec = type(ns.Recommend) == "function" and ns.Recommend(id, tf, live) or nil
@@ -1395,9 +1377,9 @@ function Chart:Draw(tf)
     r.mixed, r.buy, r.listAt, r.sell, r.margin = true, 0, 0, 0, 0
     rec = r
   end
-  self:SetHeader(id, DisplayName(id, item), item, s, shownTF)
+  self:SetHeader(id, DisplayName(id, item), item, s, tf)
   self:SetBoxes(item, rec)
-  self:SetFooter(item, rec, note)
+  self:SetFooter(item, rec)
   local n = type(s) == "table" and (Num(s.n) or 0) or 0
   if n < 2 then
     -- A new data set has one price per item: a chart needs at least two.
@@ -1411,7 +1393,7 @@ function Chart:Draw(tf)
     self:ShowMessage(msg)
     return
   end
-  self:DrawPlot(s, rec, shownTF)
+  self:DrawPlot(s, rec, tf)
 end
 
 function Chart:Redraw()
