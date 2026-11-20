@@ -163,7 +163,12 @@ local function TooltipTime(t, step)
   return FormatTime("%a %b %d, %H:%M", t)
 end
 
+-- The chart's timeframe: the saved one, unless ns.ShowChart gave one for the
+-- item on show (Chart.tfOnly).
 local function CurrentTF()
+  local C = ns.ChartPanel
+  local only = type(C) == "table" and C.tfOnly or nil
+  if type(only) == "table" and only.id == C.itemID and TF_VALID[only.tf] then return only.tf end
   local tf = ns.settings and ns.settings.chartTF
   if type(tf) == "string" then tf = tf:upper() end
   if TF_VALID[tf] then return tf end
@@ -1052,7 +1057,13 @@ function Chart:SetFooter(item, rec, extraNote)
   local age = type(ns.DataAge) == "function" and ns.DataAge() or nil
   local house = tostring((ns.db and ns.db.houseName) or "Alliance Auction House")
   if age then
-    self.age:SetText("Data: " .. AgeText(age) .. DOT .. house)
+    -- Over 80 minutes old: a newer file is most likely installed, waiting for a
+    -- /reload (said as short as the tooltip says it: the notes left of it do not wrap).
+    local a = AgeText(age)
+    if type(ns.ReloadHint) == "function" and ns.ReloadHint(age) and type(ns.Hex) == "function" then
+      a = "|c" .. ns.Hex(Col("warn")) .. a .. " - /reload|r"
+    end
+    self.age:SetText("Data: " .. a .. DOT .. house)
   else
     self.age:SetText("Data: none yet")
   end
@@ -1521,15 +1532,22 @@ end
 ---------------------------------------------------------------------------
 -- Public API (see the shared contract)
 ---------------------------------------------------------------------------
-function ns.ShowChart(itemID, source)
+-- tf (optional): a timeframe for this item only, kept until the chart shows
+-- something else or a timeframe button is clicked (AH.lua: an item nothing
+-- is listed for shows its last 30 days). The saved timeframe stays.
+function ns.ShowChart(itemID, source, tf)
   Chart:Build()
   local F = Chart.frame
   local id = tonumber(itemID)
   if not id then id = Chart.itemID or (ns.settings and tonumber(ns.settings.lastItem)) end
   local wasShown = F:IsShown()
   local wasDocked, wasPlacement = Chart.docked, Chart.placement
+  local wasTF = CurrentTF()
   local changed = id ~= Chart.itemID
   Chart.itemID = id
+  tf = type(tf) == "string" and tf:upper() or nil
+  Chart.tfOnly = (id and tf and TF_VALID[tf]) and { id = id, tf = tf } or nil
+  if CurrentTF() ~= wasTF then changed = true end
   Chart.source = source or (wasShown and Chart.source) or "standalone"
   if id and type(ns.settings) == "table" then ns.settings.lastItem = id end
   -- Showing the chart while the auction house is open (Chart button, /gl chart)
@@ -1571,6 +1589,7 @@ function ns.SetChartTF(tf)
   tf = tf:upper()
   if not TF_VALID[tf] then return end
   if type(ns.settings) == "table" then ns.settings.chartTF = tf end
+  Chart.tfOnly = nil
   if Chart.built then
     if Chart.frame:IsShown() then
       Chart:Redraw()

@@ -282,11 +282,19 @@ def lua_hex(c):
 
 
 POS, NEG, MUTED = (0.25, 0.80, 0.45), (0.90, 0.33, 0.33), (0.55, 0.51, 0.45)
+WARN = (1.00, 0.86, 0.25)   # Core.lua ns.COLORS.warn
 
 
-def vs(pct_text, colour):
-    """The AH value's "+3%" as Core.lua colours it."""
-    return "|c%s%s|r" % (lua_hex(colour), pct_text)
+def vs(pct_text):
+    """The AH value's badge as Core.lua writes it: "+3% vs avg", yellow from 40% either
+    way, grey under that (never green or red)."""
+    p = abs(int(pct_text.rstrip("%")))
+    return "|c%s%s vs avg|r" % (lua_hex(WARN if p >= 40 else MUTED), pct_text)
+
+
+def old_hint(text):
+    """Compact mode's short grey age note for prices over 80 minutes old ("2h" -> "  (2h old - /reload)")."""
+    return "  |c%s(%s old - /reload)|r" % (lua_hex(MUTED), text)
 
 
 def lines_of(tt_lines):
@@ -599,7 +607,7 @@ def test_settled_drop():
     # the steak's tooltip: Sell now 3s 97c and the verdict as before, Suggested price 4s 47c (was 8s 29c);
     # the 3-day average 5s 34c, the AH value 3s 99c is 25% under it
     L, G, ns = font_env(items=SETTLED_ITEMS)
-    tc(G, G.GameTooltip, 18045, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("3s 99c", "-25%", NEG),
+    tc(G, G.GameTooltip, 18045, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("3s 99c", "-25%"),
                                  ROW("3-day average", "5s 34c"), ROW("Sell now", "3s 97c"), ROW("Suggested price", "4s 47c")],
        True, "TC1 steak tooltip")
 
@@ -832,8 +840,8 @@ def test_tooltip(G, ns):
     # target. The verdict judges List At (52c) capped at the AH value: 47c x 95 = 4,465
     # against a vendor's 13c x 100 = 1,300, 3.4x. This stack of 20 at that price after
     # the 5% cut: 47c x 20 x 95 / 100 = 8s 93c, in white.
-    up2 = vs("+2%", POS)
-    eq(got, [("Goblin Ledger", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
+    up2 = vs("+2%")
+    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
              ("7-day average", "46c"), ("Sell now", "44c"), ("Suggested price", "52c"),
              ("This stack (20), after AH cut", "8s 93c")], "full tooltip, known item")
     sp = rec_model.sell_prices(py_recommend(ns, 2589, "1D"), None, False, 13)
@@ -850,7 +858,7 @@ def test_tooltip(G, ns):
 
     M.shift = True
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    eq(got, [("Goblin Ledger", "2h ago"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
+    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
              ("7-day average (x20)", "9s 20c"), ("Sell now (x20)", "8s 80c"), ("Suggested price (x20)", "10s 40c"),
              ("This stack (20), after AH cut", "8s 93c")], "Shift shows stack values (the verdict and stack line stay)")
     got = lines_of(M.ShowItem(tt, 2589, None))
@@ -893,25 +901,26 @@ def test_tooltip(G, ns):
     eq(ns.LinkHasSuffix("item:9789:0:0:0:0:0:0:0"), False, "zero suffix id")
 
     got = lines_of(M.ShowItem(tt, 99001, None))
-    eq(got, [("Goblin Ledger", "2h ago"), ("AH value", "none listed")],
+    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("AH value", "none listed")],
        "item with nothing listed: no prices (the game's own line says what a vendor pays)")
 
     got = lines_of(M.ShowItem(tt, 13468, None))
-    eq(got[1:3], [("Auction it", "over 100x vendor"), ("AH value", "350g  " + vs("0%", MUTED))],
+    eq(got[1:3], [("Auction it", "over 100x vendor"), ("AH value", "350g  " + vs("0%"))],
        "big price in tooltip, under 1% from its average: a grey 0%")
 
     ns.settings.compact = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH 47c  " + up2)], "compact one line")
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH 47c  " + up2 + old_hint("2h"))],
+       "compact one line (2h old: a short grey note)")
     M.shift = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH (x20) 9s 40c  " + up2)],
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH (x20) 9s 40c  " + up2 + old_hint("2h"))],
        "compact with Shift")
     M.shift = False
-    eq(lines_of(M.ShowItem(tt, 99001, None)), [("AH value: none listed now",)], "compact nothing listed")
+    eq(lines_of(M.ShowItem(tt, 99001, None)), [("AH value: none listed now" + old_hint("2h"),)], "compact nothing listed")
     ns.settings.compact = False
 
     M.now = UPDATED + 7 * 3600 + 5
     got = lines_of(M.ShowItem(tt, 2589, None))
-    eq(got[0], ("Goblin Ledger", "7h ago"), "stale header age")
+    eq(got[0], ("Goblin Ledger", "7h ago - /reload"), "stale header age (with /reload)")
     eq(got[-1], ("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "stale warning line")
     M.now = UPDATED + 2 * 3600 + 100
 
@@ -1039,7 +1048,7 @@ def test_fallback_hooks():
     tt = G.GameTooltip
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(lines_of(tt.lines)[:3], [("Goblin Ledger", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%", POS))],
+    eq(lines_of(tt.lines)[:3], [("Goblin Ledger", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%"))],
        "fallback adds lines")
     eq(tt.shown, 1, "fallback resizes the tooltip with Show")
     tt.Fire(tt, "OnTooltipSetItem")
@@ -1446,14 +1455,14 @@ def test_daily_points():
     def ah_and_avg(iid):
         got = lines_of(M2.ShowItem(G2.GameTooltip, iid, None))
         return [x for x in got if x[0] == "AH value"][0], [x for x in got if x[0].endswith("-day average")]
-    eq(ah_and_avg(9403), (("AH value", "1s 10c  " + vs("+4%", POS)), [("3-day average", "1s 5c")]),
-       "3 days of prices: a 3-day average, and the AH value 4% over it (green)")
-    eq(ah_and_avg(9404), (("AH value", "90c  " + vs("-10%", NEG)), [("7-day average", "1s")]),
-       "9 days of prices: a 7-day average, the AH value 10% under it (red)")
-    eq(ah_and_avg(9405), (("AH value", "10s  " + vs("0%", MUTED)), [("7-day average", "10s 5c")]),
+    eq(ah_and_avg(9403), (("AH value", "1s 10c  " + vs("+4%")), [("3-day average", "1s 5c")]),
+       "3 days of prices: a 3-day average, and the AH value 4% over it (grey: under 25%)")
+    eq(ah_and_avg(9404), (("AH value", "90c  " + vs("-10%")), [("7-day average", "1s")]),
+       "9 days of prices: a 7-day average, the AH value 10% under it (grey, never red)")
+    eq(ah_and_avg(9405), (("AH value", "10s  " + vs("0%")), [("7-day average", "10s 5c")]),
        "under 1% from the average: a grey 0%")
     ns2.settings.compact = True
-    eq(lines_of(M2.ShowItem(G2.GameTooltip, 9404, None)), [("Auction it: can't vendor", "AH 90c  " + vs("-10%", NEG))],
+    eq(lines_of(M2.ShowItem(G2.GameTooltip, 9404, None)), [("Auction it: can't vendor", "AH 90c  " + vs("-10%"))],
        "compact: the verdict, the AH value and its % too")
     ns2.settings.compact = False
 
@@ -1671,12 +1680,12 @@ def test_versions():
     tt.itemLink = link([12718])
     got = lines_of(M.ShowItem(tt, CLOAK, None))
     # the verdict judges that version's prices: 1g 50s x 95 against a vendor's 23s 82c x 100
-    eq(got[1:3], [("Auction it", "5.9x vendor"), ("AH value", "1g 50s  " + vs("0%", MUTED))],
+    eq(got[1:3], [("Auction it", "5.9x vendor"), ("AH value", "1g 50s  " + vs("0%"))],
        "version tooltip: that version's verdict and market price")
     eq(got[-1], ("Prices for this version only",), "version tooltip: says so")
     tt.itemLink = link([55555])
     got = lines_of(M.ShowItem(tt, CLOAK, None))
-    eq((got[1], got[-1]), (("AH value", "1g 40s  " + vs("0%", MUTED)), ("Price covers all versions of this item",)),
+    eq((got[1], got[-1]), (("AH value", "1g 40s  " + vs("0%")), ("Price covers all versions of this item",)),
        "unknown version: the whole item's prices, covering all versions")
     tt.itemLink = link([])
     eq(lines_of(M.ShowItem(tt, CLOAK, None))[-1], ("Price covers all versions of this item",), "plain copy: all versions")
@@ -1818,7 +1827,7 @@ def test_stack_verdicts():
         else:
             eq(lines, [], "stack %d: no stack line for %s" % (iid, V and V["kind"]))
     ns.settings.compact = True
-    eq(lines_of(M.ShowItem(tt, 9502, bag)), [("Auction it: can't vendor", "AH 11s  " + vs("+4%", POS))],
+    eq(lines_of(M.ShowItem(tt, 9502, bag)), [("Auction it: can't vendor", "AH 11s  " + vs("+4%"))],
        "compact tooltips are one line, no stack line")
     ns.settings.compact = False
 
@@ -1994,7 +2003,7 @@ def font_env(items=None, now_offset=100, sales_hours=None):
     return L, G, G.NS
 
 
-COLOR_NAMES = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "text": (0.90, 0.88, 0.84), "white": (1, 1, 1),
+COLOR_NAMES = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "warn": (1.00, 0.86, 0.25), "text": (0.90, 0.88, 0.84), "white": (1, 1, 1),
                "pos": (0.25, 0.80, 0.45), "neg": (0.90, 0.33, 0.33), "buy": (0.898, 0.722, 0.259)}
 
 
@@ -2069,11 +2078,12 @@ def tc(G, tt, iid, want, big, label, count=1, shift=False):
 
 
 def H(age="1m ago"):
-    return (("Goblin Ledger", age), "sell", "muted")
+    """The header: the age in grey, or over 80 minutes old "7h ago - /reload" in yellow."""
+    return (("Goblin Ledger", age), "sell", "warn" if age.endswith(" - /reload") else "muted")
 
 
-def AHV(money, pct=None, colour=MUTED, tag=""):
-    return (("AH value" + tag, money + ("  " + vs(pct, colour) if pct else "")), "text", "white")
+def AHV(money, pct=None, tag=""):
+    return (("AH value" + tag, money + ("  " + vs(pct) if pct else "")), "text", "white")
 
 
 def ROW(left, right, rc="white"):
@@ -2104,10 +2114,10 @@ def test_verdict_tooltips():
        count=20, shift=True)
     tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC3 Shift released: TC1 again", count=20)
     eq(len(big_lines(G, tt)), 4, "TC3: exactly four big FontStrings (two lines) after the rebuild")
-    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+5%", POS),
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+5%"),
                      ROW("7-day average", "3s 67c"), ROW("Sell now", "3s 88c"), ROW("Suggested price", "3s 89c"),
                      stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17", count=17)
-    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("66s 13c", "+5%", POS, " (x17)"),
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("66s 13c", "+5%", tag=" (x17)"),
                      ROW("7-day average (x17)", "62s 39c"), ROW("Sell now (x17)", "65s 96c"),
                      ROW("Suggested price (x17)", "66s 13c"), stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17 Shift",
        count=17, shift=True)
@@ -2130,13 +2140,13 @@ def test_verdict_tooltips():
                      AHV("8g 40s", "0%", tag=" (x20)"), ROW("5-day average (x20)", "8g 40s"),
                      ROW("Sell now (x20)", "7g 99s 80c", "neg"), ROW("Suggested price (x20)", "8g 40s", "neg")], True,
        "TC8 Vendor Pays More x20 with Shift", count=20, shift=True)
-    tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "+4%", POS),
+    tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "+4%"),
                      ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c"), ROW("Suggested price", "11s"),
                      stack((20, "2g 9s"))], True, "TC9 No Vendor x20", count=20)
-    tc(G, tt, 9102, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("11s", "+4%", POS),
+    tc(G, tt, 9102, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("11s", "+4%"),
                      ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c")], False,
        "TC10 One Listing (no 'Few listed' line, no Suggested price)")
-    tc(G, tt, 9104, [H(), AHV("11s", "+4%", POS), ROW("5-day average", "10s 50c"),
+    tc(G, tt, 9104, [H(), AHV("11s", "+4%"), ROW("5-day average", "10s 50c"),
                      (("Few listed: the price may not be reliable",), "muted", None)], False, "TC11 vendorFar: no verdict")
     tc(G, tt, 9504, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
                      ROW("Suggested price", "32c")], False, "TC12 Nothing Now")
@@ -2162,10 +2172,10 @@ def test_verdict_tooltips():
                                (100, 100, "AH", "same as AH"), (19000, 15000, "vendor", "+26% vs vendor")):
         eq(ns.BetterText(hi, lo, what), want, "TC13 BetterText(%d, %d, %s)" % (hi, lo, what))
         eq(rec_model.better_text(hi, lo, what), want, "TC13 the Python twin's better_text(%d, %d, %s)" % (hi, lo, what))
-    tc(G, tt, 9601, [H(), (("Maybe auction", "price jumped"), "buy", "muted"), AHV("30s", "+200%", POS),
+    tc(G, tt, 9601, [H(), (("Maybe auction", "price jumped"), "buy", "muted"), AHV("30s", "+200%"),
                      ROW("5-day average", "10s"), ROW("Sell now", "29s 99c"), ROW("Suggested price", "10s 10c", "neg")],
        False, "TC14 Jumped")
-    slow_rows = [AHV("5s 20c", "+1%", POS), ROW("5-day average", "5s 10c"), ROW("Sell now", "4s 99c"),
+    slow_rows = [AHV("5s 20c", "+1%"), ROW("5-day average", "5s 10c"), ROW("Sell now", "4s 99c"),
                  ROW("Suggested price", "5s 20c")]
     tc(G, tt, 9701, [H(), (("Maybe auction", "sells slowly"), "buy", "muted")] + slow_rows, False, "TC15 Slow Seller")
     tc(G, tt, 9702, [H(), (("Auction it", "4.9x vendor"), "pos", "pos")] + slow_rows, True, "TC15 Slow Huge")
@@ -2256,23 +2266,23 @@ def test_verdict_cases():
     ns.LiveCheapest = None
     # TC22 prices 7h old: the verdict at the normal size, the stale line last
     L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
-    tc(G2, G2.GameTooltip, 4306, [H("7h ago")] + SILK_LINES[1:] +
+    tc(G2, G2.GameTooltip, 4306, [H("7h ago - /reload")] + SILK_LINES[1:] +
        [(("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
     # exactly 6h old (ns.STALE_SECONDS) is still fresh: bigger, no stale line
     L2, G2, ns2 = font_env(now_offset=6 * 3600)
-    tc(G2, G2.GameTooltip, 4306, [H("6h ago")] + SILK_LINES[1:], True, "TC22 Silk exactly 6h old")
+    tc(G2, G2.GameTooltip, 4306, [H("6h ago - /reload")] + SILK_LINES[1:], True, "TC22 Silk exactly 6h old")
     # TC23 compact: one line, never bigger
     ns.settings.compact = True
     for iid, count, shift, want in (
-            (4306, 20, False, (("Auction it: +26% vs vendor", "AH 2s  " + vs("0%", MUTED)), "pos", "white")),
-            (4306, 20, True, (("Auction it: +26% vs vendor", "AH (x20) 40s  " + vs("0%", MUTED)), "pos", "white")),
-            (2838, 17, False, (("Auction it: 6.1x vendor", "AH 3s 89c  " + vs("+5%", POS)), "pos", "white")),
-            (17057, 20, False, (("Vendor it: +5% vs AH", "AH 7c  " + vs("0%", MUTED)), "neg", "white")),
-            (12365, 1, False, (("Close call: AH +9%", "AH 2s 88c  " + vs("0%", MUTED)), "muted", "white")),
-            (9102, 1, False, (("Maybe auction: few listed", "AH 11s  " + vs("+4%", POS)), "buy", "white")),
+            (4306, 20, False, (("Auction it: +26% vs vendor", "AH 2s  " + vs("0%")), "pos", "white")),
+            (4306, 20, True, (("Auction it: +26% vs vendor", "AH (x20) 40s  " + vs("0%")), "pos", "white")),
+            (2838, 17, False, (("Auction it: 6.1x vendor", "AH 3s 89c  " + vs("+5%")), "pos", "white")),
+            (17057, 20, False, (("Vendor it: +5% vs AH", "AH 7c  " + vs("0%")), "neg", "white")),
+            (12365, 1, False, (("Close call: AH +9%", "AH 2s 88c  " + vs("0%")), "muted", "white")),
+            (9102, 1, False, (("Maybe auction: few listed", "AH 11s  " + vs("+4%")), "buy", "white")),
             (9504, 1, False, (("Maybe auction: none listed now", "AH: none listed"), "buy", "muted")),
-            (9502, 1, False, (("Auction it: can't vendor", "AH 11s  " + vs("+4%", POS)), "pos", "white")),
-            (9104, 1, False, (("AH value: 11s  " + vs("+4%", POS),), "text", None)),
+            (9502, 1, False, (("Auction it: can't vendor", "AH 11s  " + vs("+4%")), "pos", "white")),
+            (9104, 1, False, (("AH value: 11s  " + vs("+4%"),), "text", None)),
             (99001, 1, False, (("AH value: none listed now",), "text", None))):
         tc(G, tt, iid, [want], False, "TC23 compact %d x%d%s" % (iid, count, " Shift" if shift else ""), count, shift)
     ns.settings.compact = False
