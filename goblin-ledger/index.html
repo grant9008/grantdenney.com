@@ -3,36 +3,53 @@
   Goblin Ledger: the page to send friends (grantdenney.com/goblin-ledger/).
   One static file: inline CSS, no scripts, no analytics. Kept out of search
   on purpose (robots meta below) and NOT listed in sitemap.xml.
+  Short on purpose: a hero, one tile per feature (a picture and 2-3 bullets),
+  install in 4 steps, the commands, then help. It describes 1.1.0.
 
-  PICTURES. Only real photos are shown as images. Today that is two:
+  PICTURES. Real photos (all from the game, cropped, no names in them):
 
-    img/auction-house.png  selling window + the chart docked under it        REAL PHOTO 710 x 726
-    img/bag-cleanup.png    the Bag cleanup panel                             REAL PHOTO 222 x 254
-                           (its Old quest items rows were cut out: that row showed a
-                           wrong "done" that a later version fixed; nothing was added)
-    img/og.png             link preview for Discord and texts, 1200 x 630   (og:image, absolute URL; a graphic, not a screenshot)
+    img/chart.png          the price chart under the AH                   REAL 693 x 222
+                           Cropped from the 2026-11-19 13:30 screenshot. The panel is
+                           see-through: the name plates of other players behind it were
+                           wiped by flattening only its darkest pixels (its own text,
+                           lines and bars are untouched). One build back: its blue
+                           "List At" box is "Sell at" in 1.1.0 (the caption says so).
+    img/consumes.png       the Consumes panel                              REAL 542 x 186
+                           Cropped from the 2026-11-19 14:45 screenshot (256 colours).
+                           One build back: no Best / Budget switch or grey % per row yet.
+    img/bag-cleanup.png    the Bag cleanup panel                           REAL 222 x 254
+    img/auction-house.png  sell window + chart                             REAL, NOT SHOWN:
+                           it still has the old Suggested button (gone in 1.1.0).
+    img/og.png             link preview for Discord and texts, 1200 x 630 (og:image; a graphic)
 
-  Two spots show a small drawing made in HTML/CSS instead of a photo,
-  each labelled "Drawing, not a screenshot" (class "mock"). When a real
-  photo exists, save it in goblin-ledger/img/ under the name below and
-  swap the drawing's <div class="mock-box ..."> ... </div> for the <img>
-  line given here (keep the <figure>, change the figcaption to describe
-  the photo):
+  DRAWINGS (HTML/CSS, class "mock-box", each captioned "Drawing, not a
+  screenshot"). Every line in them is one the addon really prints: the 1.1.0
+  code (build/mergepolish at 3a76542cb1) run in tools/wow/addon_test/harness.py
+  on a real price file (Nov 18). Names are items and places, never players.
 
-    img/tooltip.png      item tooltip with the Goblin Ledger lines
-      <img src="img/tooltip.png" width="600" height="750" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: a green Auction it call, AH value, average, Sell now and Suggested price.">
-    img/prices-site.png  the price website (goblin-ledger/prices/)
-      <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
+    tooltip   Iron Ore, a stack of 20 in the bags
+    enchants  Bonebiter worn by a level 47 warrior, Top 5 (the default), no Blacksmithing
+    crafts    Thorium Ore (with Smelting) and Plans: Mithril Spurs: only the craft lines
+    flights   flight map, Stormwind to Ironforge; the bar 60 s into that flight
+    boats     at the Theramore dock (a line from the harness's boat checks)
+    website   a made-up price line (says so)
 
-  Any photo size works: each image scales to its column and keeps its own
-  shape; set width/height to the photo's pixel size for a load without a
-  jump. Check each alt text against its photo (bags.png assumes the panel
-  away from a vendor, with Drop cheapest; at a vendor it shows Sell junk).
+  To swap a drawing for a real photo: save the photo in goblin-ledger/img/
+  under the name below, replace the drawing's <div class="mock-box ..."> ... </div>
+  with the <img> line (set width/height to the photo's pixel size), and change
+  its figcaption to "Real screenshot". Check each alt text against the photo.
 
-  The install steps below match tools/goblin-ledger/install.ps1 and
-  uninstall.ps1 (the GoblinLedger.zip release, built by make_release.ps1).
-  The Download links work once GoblinLedger.zip is attached to a GitHub
-  release of grant9008/grantdenney.com (releases/latest/download/...).
+    <img src="img/tooltip.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: the Auction it call, AH value, usual price, Sell now and the stack after the AH cut.">
+    <img src="img/enchants.png" width="400" height="360" loading="lazy" decoding="async" alt="Screenshot of a worn weapon's tooltip with the Goblin Ledger enchant tips: the best enchants for your role, their mats and their cost.">
+    <img src="img/crafts.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of a plan's tooltip with what it makes, its mats with their cost, and the profit after the AH cut.">
+    <img src="img/flight.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger flight bar counting down to the next flight point.">
+    <img src="img/boat.png" width="300" height="240" loading="lazy" decoding="async" alt="Screenshot of the minimap with the Goblin Ledger boat line under it saying when the boat comes.">
+    <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
+
+  The install steps match tools/goblin-ledger/install.ps1 and README.txt (the
+  GoblinLedger.zip release, built by make_release.ps1). The Download links
+  work once GoblinLedger.zip is attached to a GitHub release of
+  grant9008/grantdenney.com (releases/latest/download/...).
 -->
 <html lang="en">
 <head>
@@ -40,7 +57,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="robots" content="noindex, nofollow">
 <title>Goblin Ledger</title>
-<meta name="description" content="Auction house prices in your WoW Forever tooltips, a bag cleanup button, flip ideas and a price website. Free Windows installer. Alliance PvP realms.">
+<meta name="description" content="Auction house prices in your WoW Forever tooltips, plus enchant, consumes, crafting, flight and boat tips, a bag cleanup button and a price website. Free Windows installer. Alliance PvP realms.">
 <meta name="color-scheme" content="dark light">
 <meta name="theme-color" content="#0C0B09" media="(prefers-color-scheme: dark)">
 <meta name="theme-color" content="#F7F3EA" media="(prefers-color-scheme: light)">
@@ -51,7 +68,7 @@
 <meta property="og:site_name" content="Goblin Ledger">
 <meta property="og:url" content="https://grantdenney.com/goblin-ledger/">
 <meta property="og:title" content="Goblin Ledger">
-<meta property="og:description" content="Auction house prices in your WoW Forever tooltips, a bag cleanup button, flip ideas and a price website. Free, installs in about 3 minutes. Alliance PvP realms.">
+<meta property="og:description" content="Auction house prices in your WoW Forever tooltips, plus enchant, consumes, crafting, flight and boat tips. Free, installs in about 3 minutes. Alliance PvP realms.">
 <meta property="og:image" content="https://grantdenney.com/goblin-ledger/img/og.png">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
@@ -62,13 +79,13 @@
 /* Colours and type follow the price website (prices/app.css, "Gilded and
    Obsidian"): warm obsidian blacks, champagne gold, the same system fonts.
    Light mode swaps in parchment tones. Every text colour pair here was
-   checked at 4.5:1 or better. */
+   checked at 4.5:1 or better. The pictures of the game stay dark in both. */
 :root {
   color-scheme: dark;
   --bg: #0C0B09;
   --bg-2: #131110;
   --panel: #1B1815;
-  --hair: rgba(255, 255, 255, 0.06);
+  --hair: rgba(255, 255, 255, 0.07);
   --line-2: #3C352B;
   --text: #D9D3C7;
   --strong: #F2EDE3;
@@ -78,13 +95,10 @@
   --accent-2: #C9A64D;
   --code-bg: #282320;
   --code-ink: #F2D49B;
-  --pos: #4ADE80;
-  --neg: #F87171;
   --focus: #FFD24D;
   --glow: rgba(229, 193, 88, 0.11);
   --shadow: 0 14px 34px rgba(0, 0, 0, 0.45);
   --head-bg: rgba(12, 11, 9, 0.88);
-  --ss: #3B82F6;
 }
 @media (prefers-color-scheme: light) {
   :root {
@@ -102,13 +116,10 @@
     --accent-2: #B08A2E;
     --code-bg: #F1E7D2;
     --code-ink: #5A4100;
-    --pos: #0F7A3D;
-    --neg: #B42318;
     --focus: #7A5A00;
     --glow: rgba(201, 166, 77, 0.22);
     --shadow: 0 14px 34px rgba(70, 50, 20, 0.12);
     --head-bg: rgba(247, 243, 234, 0.9);
-    --ss: #1D4ED8;
   }
 }
 
@@ -117,13 +128,13 @@ html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; scroll-behavior: 
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Trebuchet MS", Roboto, Ubuntu, sans-serif;
-  font-size: 16px; line-height: 1.6; -webkit-font-smoothing: antialiased; overflow-wrap: break-word;
+  font-size: 16px; line-height: 1.55; -webkit-font-smoothing: antialiased; overflow-wrap: break-word;
 }
 img { display: block; max-width: 100%; height: auto; }
 a { color: var(--accent); text-underline-offset: 3px; }
 a:hover { text-decoration-thickness: 2px; }
 :focus-visible { outline: 3px solid var(--focus); outline-offset: 3px; border-radius: 6px; }
-p { margin: 0 0 12px; }
+p { margin: 0 0 10px; }
 b { color: var(--strong); font-weight: 700; }
 code {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 0.9em;
@@ -182,28 +193,23 @@ code {
 .btn-ghost { color: var(--strong); background: var(--panel); border-color: var(--line-2); }
 .btn-ghost:hover { color: var(--accent); border-color: var(--accent-2); }
 .btn-sm { min-height: 40px; padding: 8px 14px; border-radius: 8px; font-size: 14.5px; }
-.cta { display: flex; flex-wrap: wrap; gap: 12px; }
+.cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
 @media (max-width: 520px) { .cta .btn { flex: 1 1 100%; } }
 
 /* ---- hero ---- */
 .hero {
-  padding: 44px 0 56px; border-bottom: 1px solid var(--hair);
-  background: radial-gradient(900px 440px at 85% -12%, var(--glow), transparent 70%);
+  padding: 40px 0 44px; border-bottom: 1px solid var(--hair); text-align: center;
+  background: radial-gradient(900px 420px at 50% -20%, var(--glow), transparent 70%);
 }
-.hero-grid { display: grid; gap: 40px; align-items: center; }
-.hero-grid > * { min-width: 0; }
-@media (min-width: 920px) {
-  .hero { padding: 84px 0 92px; }
-  .hero-grid { grid-template-columns: minmax(0, 1.12fr) minmax(0, 0.88fr); gap: 56px; }
-}
+@media (min-width: 920px) { .hero { padding: 68px 0 64px; } }
 .badge {
-  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 18px; padding: 6px 13px;
+  display: inline-flex; align-items: center; gap: 8px; margin: 0 0 16px; padding: 6px 13px;
   border: 1px solid var(--accent-2); border-radius: 999px; background: rgba(201, 166, 77, 0.1);
   color: var(--accent); font-size: 14px; font-weight: 800; letter-spacing: 0.2px;
 }
 .badge svg { width: 15px; height: 15px; flex: none; }
 h1 {
-  margin: 0 0 16px; font-size: clamp(42px, 8vw, 72px); line-height: 1.04; letter-spacing: -1.5px;
+  margin: 0 0 12px; font-size: clamp(42px, 8vw, 68px); line-height: 1.04; letter-spacing: -1.5px;
   font-weight: 800; color: var(--accent);
   background: linear-gradient(180deg, #FFE7A3 10%, #E5C158 60%, #C9A64D 100%);
   -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
@@ -215,210 +221,177 @@ h1 {
   h1 { background: none; color: CanvasText; -webkit-text-fill-color: currentColor; }
 }
 .pitch {
-  max-width: 32ch; margin: 0 0 12px; color: var(--strong);
-  font-size: clamp(19px, 2.4vw, 23px); font-weight: 700; line-height: 1.4;
+  max-width: 30ch; margin: 0 auto 24px; color: var(--strong);
+  font-size: clamp(19px, 2.4vw, 23px); font-weight: 700; line-height: 1.35;
 }
-.sub { max-width: 54ch; margin: 0 0 28px; color: var(--muted); font-size: 17px; }
-.fine { margin: 16px 0 0; color: var(--muted); font-size: 14px; }
-
-/* The example tooltip stays dark in both modes: it is a picture of the game. */
-.legend { margin: 0; }
-.tipbox {
-  max-width: 440px; margin: 0 auto; padding: 14px 20px 10px;
-  border: 1px solid #2C3A50; border-radius: 10px; background: linear-gradient(180deg, #10141C, #0B0E14);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), var(--shadow); color: #E6E0D6;
-  font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
-}
-.tipbox p { margin: 0; }
-.tip-head {
-  display: flex; justify-content: space-between; gap: 12px; margin-bottom: 6px; padding-bottom: 9px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 14px; font-weight: 700;
-}
-.tip-head .tl-brand { color: #38BDF7; }
-.tip-head .tl-note { color: #A39A8A; font-weight: 600; }
-.tip-row {
-  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 2px 14px;
-  padding: 6px 0; font-size: 16px; font-weight: 700;
-}
-.tip-row.big { font-size: 23px; }
-.tip-row.big span + span { font-size: 17px; }
-.t-pos { color: #40CC73; }
-.t-neg { color: #E65454; }
-.t-mut { color: #A39A8A; }
-.t-buy { color: #E5B842; }
-.legend figcaption { max-width: 440px; margin: 14px auto 0; color: var(--muted); font-size: 14px; text-align: center; }
+.fine { margin: 14px 0 0; color: var(--muted); font-size: 14px; }
 
 /* ---- sections ---- */
-.section { padding: 64px 0; border-bottom: 1px solid var(--hair); }
-@media (min-width: 920px) { .section { padding: 88px 0; } }
-/* Clear the sticky top bar (60px + border) when a link jumps here,
-   including Skip to content. */
+.section { padding: 48px 0; border-bottom: 1px solid var(--hair); }
+@media (min-width: 920px) { .section { padding: 72px 0; } }
+/* Clear the sticky top bar (60px + border) when a link jumps here. */
 main, .section[id] { scroll-margin-top: 64px; }
 .eyebrow {
-  display: inline-block; margin: 0 0 10px; padding-left: 10px; border-left: 3px solid var(--accent-2);
+  display: inline-block; margin: 0 0 8px; padding-left: 10px; border-left: 3px solid var(--accent-2);
   color: var(--structural); font-size: 12.5px; font-weight: 700; letter-spacing: 0.8px; line-height: 1.3;
   text-transform: uppercase;
 }
 h2 {
-  margin: 0 0 12px; color: var(--strong); font-size: clamp(28px, 4.6vw, 40px); font-weight: 800;
+  margin: 0 0 24px; color: var(--strong); font-size: clamp(28px, 4.6vw, 38px); font-weight: 800;
   line-height: 1.12; letter-spacing: -0.6px;
 }
-h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; line-height: 1.25; letter-spacing: -0.2px; }
-.lede { max-width: 62ch; margin: 0 0 32px; color: var(--muted); font-size: 17px; }
-.note { color: var(--muted); font-size: 15px; }
-.c-pos { color: var(--pos); }
-.c-neg { color: var(--neg); }
-
-/* ---- what you get ---- */
-.feature { display: grid; gap: 24px; align-items: center; padding: 32px 0; }
-.feature + .feature { border-top: 1px solid var(--hair); }
-.feature > * { min-width: 0; }
-@media (min-width: 920px) {
-  .feature { grid-template-columns: minmax(0, 1fr) minmax(0, 1.15fr); gap: 56px; padding: 44px 0; }
-  .feature.flip > .copy { order: 2; }
-}
-.copy > :last-child { margin-bottom: 0; }
-.ticks { display: grid; gap: 9px; margin: 0 0 14px; padding: 0; list-style: none; }
-.ticks li { position: relative; padding-left: 24px; }
+h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; line-height: 1.25; letter-spacing: -0.2px; }
+.ticks { display: grid; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.ticks li { position: relative; padding-left: 22px; }
 .ticks li::before {
-  content: ""; position: absolute; left: 3px; top: 0.62em; width: 8px; height: 8px;
+  content: ""; position: absolute; left: 3px; top: 0.6em; width: 7px; height: 7px;
   border-radius: 2px; background: var(--accent-2); transform: rotate(45deg);
 }
-.shot { width: 100%; margin: 0; justify-self: center; }
-.shot img {
-  width: 100%; border: 1px solid var(--line-2); border-radius: 12px; background: var(--bg-2);
-  box-shadow: var(--shadow);
-}
-.shot.tall { max-width: 400px; }
-.shot.mid { max-width: 580px; }
-.shot.small { max-width: 340px; }
-.shot figcaption { max-width: 440px; margin: 12px auto 0; color: var(--muted); font-size: 14px; text-align: center; }
-.url { overflow-wrap: anywhere; }
 
-/* ---- install ---- */
-.steps { display: grid; gap: 16px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
-.steps > li {
-  position: relative; padding: 22px 22px 20px 80px; counter-increment: step;
+/* ---- feature tiles ---- */
+.tiles { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 860px) {
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .tile.wide { grid-column: 1 / -1; display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); }
+  .tile.wide .stage { border-bottom: 0; border-right: 1px solid var(--hair); }
+  .tile.wide .tile-body { align-self: center; }
+}
+.tile {
+  display: flex; flex-direction: column; min-width: 0; overflow: hidden;
   border: 1px solid var(--hair); border-radius: 14px; background: var(--panel);
 }
-.steps > li::before {
-  content: counter(step); position: absolute; left: 22px; top: 20px; display: grid; place-items: center;
-  width: 40px; height: 40px; border-radius: 50%; background: linear-gradient(180deg, #F0D06A, #D4B04A);
-  color: #1C1300; font-size: 19px; font-weight: 800;
+/* The picture area: dark in both modes, it pictures the game. */
+.stage {
+  flex: 1 1 auto; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 10px; margin: 0; padding: 18px 14px 12px; border-bottom: 1px solid var(--hair);
+  background: radial-gradient(520px 260px at 50% 0%, rgba(56, 189, 247, 0.07), transparent 70%), #0A0D12;
 }
-@media (max-width: 600px) {
-  .steps > li { padding: 18px 16px 16px; }
-  .steps > li::before { position: static; margin-bottom: 12px; }
-}
-.steps > li > :last-child { margin-bottom: 0; }
-.files { display: grid; gap: 6px; margin: 0 0 12px; padding: 0; list-style: none; }
-.files li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; }
-.files li span { color: var(--muted); font-size: 15px; }
-.warns { display: grid; gap: 12px; margin: 14px 0 16px; }
-@media (min-width: 760px) { .warns { grid-template-columns: 1fr 1fr; } }
-.warn {
-  padding: 14px 16px; border: 1px solid var(--line-2); border-left-width: 4px; border-radius: 10px;
-  background: var(--bg-2);
-}
-.warn.ss { border-left-color: var(--ss); }
-.warn.of { border-left-color: var(--accent-2); }
-.warn p { margin: 0; }
-.warn .wt { margin-bottom: 6px; color: var(--strong); font-weight: 800; }
-.ui {
-  display: inline-block; padding: 0 8px; border: 1px solid var(--line-2); border-radius: 6px;
-  background: var(--panel); color: var(--strong); font-weight: 800; white-space: nowrap;
-}
-.warn .ui { background: var(--bg); }
+.stage a { display: block; max-width: 100%; }
+.stage img { border: 1px solid #2C3A50; border-radius: 8px; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); }
+.cap { margin: 0; color: #A39A8A; font-size: 12.5px; line-height: 1.4; text-align: center; }
+@media (min-width: 860px) { .tap { display: none; } }
+.tile-body { padding: 16px 18px 18px; }
 
-/* ---- tips, updating, faq ---- */
-.tips { display: grid; gap: 14px; grid-template-columns: repeat(auto-fill, minmax(min(100%, 250px), 1fr)); }
-.cols { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 290px), 1fr)); }
-.card { padding: 18px 20px; border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); }
-.card > :last-child { margin-bottom: 0; }
-.card .k { margin-bottom: 8px; color: var(--strong); font-weight: 800; }
-.card .k code { font-size: 15px; }
-.faq { display: grid; gap: 14px; }
-@media (min-width: 920px) {
-  .faq { grid-template-columns: 1fr 1fr; align-items: start; }
-  .faq .wide { grid-column: 1 / -1; }
-}
-.faq h3 { font-size: 18.5px; }
-.fix { display: grid; gap: 8px; margin: 0 0 12px; padding-left: 24px; }
-.fix li { padding-left: 4px; }
-.fix li::marker { color: var(--accent); font-weight: 800; }
-
-/* ---- closing + footer ---- */
-.closing {
-  padding: 64px 0; text-align: center;
-  background: radial-gradient(700px 300px at 50% 120%, var(--glow), transparent 70%);
-}
-.closing .cta { justify-content: center; }
-.closing p { color: var(--muted); }
-.foot { padding: 32px 0 44px; border-top: 1px solid var(--hair); color: var(--muted); font-size: 14px; }
-.foot-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 14px; padding: 0; list-style: none; }
-.foot a { color: var(--muted); }
-.foot a:hover { color: var(--accent); }
-.legal { max-width: 75ch; margin: 0; }
-
-/* ---- drawings (not screenshots) ---- */
-/* Like the hero example: dark in both modes, because they picture the game. */
-.mock { width: 100%; margin: 0; justify-self: center; }
+/* ---- drawings (not screenshots), in the game's tooltip look ---- */
 .mock-box {
-  margin: 0 auto; border: 1px solid #2C3A50; border-radius: 10px;
+  width: 100%; margin: 0 auto; border: 1px solid #2C3A50; border-radius: 9px;
   background: linear-gradient(180deg, #10141C, #0B0E14);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), var(--shadow); color: #E6E0D6;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.55), 0 10px 26px rgba(0, 0, 0, 0.5); color: #E6E0D6;
   font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
+  font-size: 15px; font-weight: 600; line-height: 1.35;
 }
 .mock-box p { margin: 0; }
-.mock figcaption { max-width: 440px; margin: 12px auto 0; color: var(--muted); font-size: 14px; text-align: center; }
-.mock-tag {
-  display: inline-block; margin-bottom: 10px; padding: 1px 8px; border: 1px solid #3A4458; border-radius: 999px;
-  color: #A39A8A; font-size: 11.5px; font-weight: 700; letter-spacing: 0.4px; text-transform: uppercase;
+.gametip { max-width: 380px; padding: 12px 15px 12px; }
+.pair { display: grid; gap: 12px; justify-items: center; width: 100%; }
+.tip-line { padding: 2px 0; }
+.tip-item { margin-bottom: 6px; color: #FFFFFF; font-size: 16.5px; font-weight: 700; }
+.tip-head {
+  display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; padding-bottom: 6px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 14px; font-weight: 700;
 }
-.gametip { max-width: 400px; padding: 14px 18px 12px; }
-.gametip .tip-item { margin-bottom: 8px; color: #FFFFFF; font-size: 17px; font-weight: 700; }
-.gametip .tip-row { padding: 3px 0; font-size: 15px; font-weight: 600; color: #E6E0D6; }
-.gametip .tip-row.big { padding: 5px 0; font-size: 21px; font-weight: 700; }
-.gametip .tip-row.big span + span { font-size: 16px; }
-.mock-box .t-pos { color: #40CC73; }
-.mock-box .t-mut { color: #A39A8A; }
+.tip-row {
+  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 12px;
+  padding: 2px 0;
+}
+.tip-row > :last-child { margin-left: auto; color: #FFFFFF; text-align: right; }
+.tip-row.big { padding: 3px 0; font-size: 18.5px; font-weight: 700; }
+.tip-mats { padding: 0 0 3px 12px; color: #8C8273; font-size: 14px; }
+.tl-brand { color: #38BDF7; }
+.mock-box .t-pos, .tip-row > .t-pos { color: #40CC73; }
+.mock-box .t-neg, .tip-row > .t-neg { color: #E65454; }
+.mock-box .t-mut, .tip-row .t-mut { color: #8C8273; }
+.sm { font-size: 0.8em; }
 .m-g { color: #FFD24D; }
 .m-s { color: #D3D3DB; }
 .m-c { color: #E0915A; }
-.bagbox { max-width: 360px; padding: 12px 14px 14px; font-size: 14px; }
-.bag-title { font-size: 16px; font-weight: 800; }
-.bag-title .b1 { color: #E5B842; }
-.bag-title .b2 { color: #38BDF7; }
-.bag-sub { margin-bottom: 4px; color: #A39A8A; font-size: 13px; }
-.bag-sec { margin: 12px 0 4px; color: #E5B842; font-size: 11.5px; font-weight: 800; letter-spacing: 0.8px; }
-.bag-row { display: flex; align-items: center; gap: 8px; padding: 3px 0; font-weight: 600; }
-.bag-row .ic { flex: none; width: 18px; height: 18px; border: 1px solid #3A4458; border-radius: 3px; background: #26303F; }
-.bag-row .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.bag-row .rt { flex: none; }
-.q-grey { color: #9D9D9D; }
-.q-white { color: #FFFFFF; }
-.bag-btn {
-  margin-top: 12px; padding: 5px 0; border: 1px solid #5A4A22; border-radius: 4px; background: #2A2312;
-  color: #E5B842; font-weight: 800; text-align: center;
+/* the flight bar: slim, dark, filled in the addon's blue */
+.flybar {
+  position: relative; width: 100%; max-width: 300px; height: 26px; margin: 4px auto 0;
+  border: 1px solid #3A4458; border-radius: 3px; background: rgba(8, 10, 14, 0.85); overflow: hidden;
+  color: #E6E0D6; font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
+  font-size: 14px; font-weight: 700; line-height: 24px; text-align: center;
 }
-.sitecard { max-width: 520px; overflow: hidden; }
-.sc-bar { display: flex; align-items: center; gap: 6px; padding: 10px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
+.flybar .fill { position: absolute; inset: 0 auto 0 0; width: 23%; background: rgba(56, 189, 247, 0.45); }
+.flybar .txt { position: relative; }
+.xbox {
+  position: absolute; right: 3px; top: 50%; width: 16px; height: 16px; margin-top: -8px;
+  border: 1px solid #5A6478; border-radius: 3px; color: #C9C2B4; font-size: 11px; line-height: 14px; text-align: center;
+}
+/* the minimap and the boat line under it */
+.minimap {
+  position: relative; width: 132px; height: 132px; margin: 0 auto; border: 4px solid #7A6A48; border-radius: 50%;
+  background:
+    linear-gradient(118deg, transparent 0 53%, rgba(255, 255, 255, 0.1) 53% 55%, transparent 55%),
+    linear-gradient(118deg, #3F5A35 0 46%, #6B5B3E 46% 54%, #23506E 54%);
+  box-shadow: 0 0 0 2px #1A160F, inset 0 0 18px rgba(0, 0, 0, 0.55), 0 10px 26px rgba(0, 0, 0, 0.5);
+}
+.minimap::after {
+  content: ""; position: absolute; left: 50%; top: 50%; margin: -9px 0 0 -6px;
+  border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 16px solid #F2D49B;
+  transform: rotate(-30deg);
+}
+.boatline {
+  position: relative; display: inline-block; max-width: 100%; margin: 10px auto 0; padding: 2px 26px 2px 6px;
+  color: #FFFFFF; font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
+  font-size: 14px; font-weight: 700; text-align: center; text-shadow: 0 1px 2px #000;
+}
+.boatwrap { text-align: center; }
+/* the price website card (a drawing too) */
+.sitecard { max-width: 380px; overflow: hidden; }
+.sc-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
 .sc-bar i { flex: none; width: 9px; height: 9px; border-radius: 50%; background: #3A4458; }
 .sc-url {
   flex: 1 1 auto; min-width: 0; margin-left: 6px; padding: 3px 10px; border-radius: 999px; background: #1A2130;
-  color: #C9C2B4; font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: #C9C2B4; font-size: 12.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
-.sc-body { padding: 18px 18px 20px; }
-.sc-head { margin-bottom: 4px; color: #FFFFFF; font-size: 18px; font-weight: 800; }
-.sc-note { margin-bottom: 16px; color: #A39A8A; font-size: 14px; }
-.sc-spark { display: block; width: 100%; height: 70px; margin-bottom: 16px; }
+.sc-body { padding: 14px 16px 16px; }
+.sc-head { margin-bottom: 10px; color: #FFFFFF; font-size: 17px; font-weight: 800; }
+.sc-spark { display: block; width: 100%; height: 64px; }
 
-/* ---- why not just Auctionator ---- */
-.vs { margin-bottom: 28px; }
-.vs .card h3 { margin-bottom: 8px; }
-.adds { max-width: 760px; }
-.adds h3 { margin-top: 4px; }
-.both { max-width: 760px; margin-top: 22px; border-left: 4px solid var(--accent-2); }
+/* ---- install ---- */
+.steps { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; counter-reset: step; }
+@media (min-width: 860px) { .steps { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+.steps > li {
+  position: relative; padding: 16px 16px 16px 62px; counter-increment: step;
+  border: 1px solid var(--hair); border-radius: 12px; background: var(--panel);
+}
+.steps > li::before {
+  content: counter(step); position: absolute; left: 16px; top: 14px; display: grid; place-items: center;
+  width: 32px; height: 32px; border-radius: 50%; background: linear-gradient(180deg, #F0D06A, #D4B04A);
+  color: #1C1300; font-size: 17px; font-weight: 800;
+}
+.steps p { margin: 0 0 6px; }
+.steps .k { color: var(--strong); font-weight: 800; }
+.steps .s { color: var(--muted); font-size: 14.5px; }
+.steps > li > :last-child { margin-bottom: 0; }
+
+/* ---- commands, good to know ---- */
+.cmds { display: grid; gap: 8px 22px; margin: 0; padding: 0; list-style: none;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 300px), 1fr)); }
+.cmds li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 10px; padding: 8px 0; border-bottom: 1px solid var(--hair); }
+.cmds code { font-size: 14.5px; }
+kbd {
+  padding: 1px 7px; border: 1px solid var(--line-2); border-bottom-width: 2px; border-radius: 5px;
+  background: var(--panel); color: var(--strong); font-family: inherit; font-size: 14px; font-weight: 700;
+}
+.cmds span { color: var(--muted); font-size: 15px; }
+.cols { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
+.card { padding: 18px 20px; border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); }
+.card h3 { font-size: 18.5px; margin-bottom: 10px; }
+.note { margin: 10px 0 0; color: var(--muted); font-size: 14.5px; }
+.more { margin: 14px 0 0; }
+
+/* ---- closing + footer ---- */
+.closing {
+  padding: 48px 0; text-align: center;
+  background: radial-gradient(700px 300px at 50% 120%, var(--glow), transparent 70%);
+}
+.closing h2 { margin-bottom: 18px; }
+.foot { padding: 28px 0 40px; border-top: 1px solid var(--hair); color: var(--muted); font-size: 14px; }
+.foot-links { display: flex; flex-wrap: wrap; gap: 8px 20px; margin: 0 0 12px; padding: 0; list-style: none; }
+.foot a { color: var(--muted); }
+.foot a:hover { color: var(--accent); }
+.legal { max-width: 75ch; margin: 0; }
 
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
@@ -443,11 +416,10 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
     </a>
     <nav aria-label="On this page">
       <ul>
-        <li><a href="#features">What you get</a></li>
-        <li><a href="#why">Vs Auctionator</a></li>
+        <li><a href="#features">What it does</a></li>
         <li><a href="#install">Install</a></li>
-        <li><a href="#tips">Using it</a></li>
-        <li><a href="#faq">FAQ</a></li>
+        <li><a href="#commands">Commands</a></li>
+        <li><a href="#help">Help</a></li>
       </ul>
     </nav>
     <a class="btn btn-gold btn-sm" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">Download</a>
@@ -458,184 +430,232 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 
 <!-- ===================== HERO ===================== -->
 <section class="hero" aria-labelledby="page-title">
-  <div class="wrap hero-grid">
-    <div>
-      <p class="badge">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4.6 3.4 7.9 8 9 4.6-1.1 8-4.4 8-9V6z"/></svg>
-        Alliance PvP realms
-      </p>
-      <h1 id="page-title">Goblin Ledger</h1>
-      <p class="pitch">Auction house prices right in your item tooltips, so you know what to auction, what to vendor and what to flip.</p>
-      <p class="sub">A free addon and price website for WoW Forever. One Windows installer, about 3 minutes, no sign-up and no Battle.net key.</p>
-      <div class="cta">
-        <a class="btn btn-gold" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-          Download for Windows
-        </a>
-        <a class="btn btn-ghost" href="prices/">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 6-7"/></svg>
-          See the price website
-        </a>
-      </div>
-      <p class="fine">GoblinLedger.zip, free, from GitHub. Works alongside ElvUI, Auctionator and Questie. New versions install by themselves; to get one right away, double-click Update-Goblin-Ledger.bat.</p>
+  <div class="wrap">
+    <p class="badge">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3 4 6v6c0 4.6 3.4 7.9 8 9 4.6-1.1 8-4.4 8-9V6z"/></svg>
+      WoW Forever, Alliance
+    </p>
+    <h1 id="page-title">Goblin Ledger</h1>
+    <p class="pitch">Auction house prices and handy tips, right in your game.</p>
+    <div class="cta">
+      <a class="btn btn-gold" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
+        Download for Windows
+      </a>
+      <a class="btn btn-ghost" href="prices/">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 3v18h18"/><path d="m7 15 4-4 3 3 6-7"/></svg>
+        Price website
+      </a>
     </div>
-
-    <figure class="legend">
-      <div class="tipbox">
-        <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">examples</span></p>
-        <p class="tip-row big t-pos"><span>Auction it</span><span>+26% vs vendor</span></p>
-        <p class="tip-row big t-neg"><span>Vendor it</span><span>+5% vs AH</span></p>
-        <p class="tip-row t-mut"><span>Close call</span><span>AH +9%</span></p>
-        <p class="tip-row"><span class="t-buy">Maybe auction</span><span class="t-mut">few listed</span></p>
-      </div>
-      <figcaption>Example calls from an item tooltip. Green means auction it, red means vendor it, and the number says by how much.</figcaption>
-    </figure>
+    <p class="fine">Free. About 3 minutes to install. US PvP realms.</p>
   </div>
 </section>
 
-<!-- ===================== WHAT YOU GET ===================== -->
+<!-- ===================== WHAT IT DOES ===================== -->
 <section class="section" id="features" aria-labelledby="features-title">
   <div class="wrap">
-    <p class="eyebrow">What you get</p>
-    <h2 id="features-title">Prices wherever you need them</h2>
-    <p class="lede">In your tooltips, in your bags, at the auction house and on the web. All of it runs on the same prices, refreshed about every hour.</p>
+    <p class="eyebrow">What it does</p>
+    <h2 id="features-title">Everything in one addon</h2>
 
-    <div class="feature">
-      <div class="copy">
-        <h3>Prices in your tooltips</h3>
-        <p>Hover an item and the tooltip shows:</p>
-        <ul class="ticks">
-          <li><b>AH value</b>: what it goes for on the auction house now, and how far that is from its recent average, like "+2% vs avg". At the auction house it shows the cheapest listing live.</li>
-          <li><b>Average</b>: its average price over the last 7 days</li>
-          <li><b>Sell now</b>: 1 copper under the cheapest listing</li>
-          <li><b>Suggested price</b>: what it usually sells for, going by its price history</li>
-          <li>A big green <b class="c-pos">Auction it</b> or red <b class="c-neg">Vendor it</b> that says how much better that choice is, like "Auction it +26% vs vendor". The price that wins is big too: the <b>AH value</b> under Auction it, or a <b>Vendor pays</b> line under Vendor it. When it is not clear-cut, it says <b>Close call</b> or <b>Maybe auction</b>.</li>
-        </ul>
-        <p class="note">Tip: hold Shift over a stack to see what the whole stack is worth.</p>
-      </div>
-      <figure class="mock">
-        <div class="mock-box gametip" role="img" aria-label="Drawing of an item tooltip for a stack of 20 Linen Cloth with the Goblin Ledger lines: Auction it, 3.4 times the vendor price, and the AH value, both in bigger text; AH value 44 copper, 2 percent over its average; 7-day average 43 copper; Sell now 41 copper; Suggested price 46 copper; this stack after the auction cut 8 silver 36 copper.">
-          <p class="mock-tag">Drawing, not a screenshot</p>
-          <p class="tip-item">Linen Cloth</p>
-          <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="tl-note">25m ago</span></p>
-          <p class="tip-row big t-pos"><span>Auction it</span><span>3.4x vendor</span></p>
-          <p class="tip-row big"><span>AH value</span><span><span class="m-c">44c</span> <span class="t-mut">+2% vs avg</span></span></p>
-          <p class="tip-row"><span>7-day average</span><span class="m-c">43c</span></p>
-          <p class="tip-row"><span>Sell now</span><span class="m-c">41c</span></p>
-          <p class="tip-row"><span>Suggested price</span><span class="m-c">46c</span></p>
-          <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">8s</span> <span class="m-c">36c</span></span></p>
-        </div>
-        <figcaption>What the lines look like, drawn here with example numbers. In the game they sit under the item's own tooltip text.</figcaption>
-      </figure>
-    </div>
+    <div class="tiles">
 
-    <div class="feature flip">
-      <div class="copy">
-        <h3>Bag cleanup</h3>
-        <p>Bags full again? A gold <b>Bag cleanup</b> button sits on your bag window, on the game's own bags or on ElvUI's. Click it to see:</p>
-        <ul class="ticks">
-          <li><b>Worth the least</b>: your stacks, cheapest first, at the better of the vendor price and the auction price</li>
-          <li><b>Old quest items</b>: with <b>Questie</b> installed, it checks Questie's quest database and says which quest items you can drop ("Can drop: done with" and the quest). An item a quest you can still do asks for stays, even when that quest is not in your log: a book you find in the world and hand in to a librarian says "Keep: turn in for" the quest. An item only for a quest you can never take (one that follows a quest for another class, or needs a profession you have not learned) can go. Without Questie, it goes by your quest log: quest items no quest in your log asks for, and items that start a quest you already finished. Your quest log always wins: if a quest in it names the item, it stays. When it is not sure, it says so and never offers the item to drop.</li>
-          <li><b>Merge stacks</b>: partial stacks that fit in one slot</li>
-          <li><b>Sell junk</b>: at a vendor, sells your grey items for you</li>
-          <li><b>Sell a stack</b>: at a vendor, click a stack under Worth the least to sell it right away (you can buy it back from the vendor)</li>
-          <li><b>Drop cheapest</b>: asks first, naming the stack and what it is worth</li>
-        </ul>
-        <p class="note">Nothing is sold or destroyed without your click, and Rare or better items always go through the game's own check. Your hearthstone, tools, reagents, ammo and keys never show up on the list.</p>
-      </div>
-      <figure class="shot small">
-        <img src="img/bag-cleanup.png" width="222" height="254" loading="lazy" decoding="async"
-             alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button.">
-        <figcaption>The panel beside your bags, from a real game. Hover a row to see why it is listed.</figcaption>
-      </figure>
-    </div>
-
-    <div class="feature">
-      <div class="copy">
-        <h3>Help at the auction house</h3>
-        <ul class="ticks">
-          <li>A <b>price chart</b> docks under the auction house window and follows the item you search for or click.</li>
-          <li>Nothing listed? Under "No items found" it says when the item was last listed, for how much, and how many sold.</li>
-          <li><b>Sell now</b> and <b>Suggested</b> buttons fill in the price box. You still click Post yourself.</li>
-          <li>Little <b>up and down arrows</b> in the gold, silver and copper boxes change the price by 1. Hold one to keep going.</li>
-          <li>A <b>sidebar of flip ideas</b> sized to the gold on your character, ranked by the profit you can expect within a day. Click one to search for it.</li>
-          <li>Your <b>watchlist</b>: a starter list of trade goods that you add to and trim.</li>
-        </ul>
-        <p class="note">It never buys, bids, posts or cancels anything for you.</p>
-      </div>
-      <figure class="shot">
-        <img src="img/auction-house.png" width="710" height="726" loading="lazy" decoding="async"
-             alt="Screenshot of the auction house selling a stack of Smooth Stone Chip: the Sell now and Suggested buttons under the price box, and the Goblin Ledger price chart docked underneath with Target Buy, List At and a note that a vendor pays more.">
-      </figure>
-    </div>
-
-    <div class="feature flip">
-      <div class="copy">
-        <h3>The price website</h3>
-        <p>Open <a class="url" href="prices/">grantdenney.com/goblin-ledger/prices</a> on your PC or phone:</p>
-        <ul class="ticks">
-          <li><b>Browse</b> every item on the auction house</li>
-          <li><b>Price history charts</b> for each item</li>
-          <li><b>Flip Finder</b> with deals on greens, blues and epics</li>
-          <li><b>Favorites</b> lists for the items you care about</li>
-        </ul>
-        <p class="note">Prices come from Blizzard's auction house data for the Alliance auction house on the US PvP realms, refreshed about every hour.</p>
-      </div>
-      <figure class="mock">
-        <div class="mock-box sitecard">
-          <div class="sc-bar" aria-hidden="true"><i></i><i></i><i></i><span class="sc-url">grantdenney.com/goblin-ledger/prices</span></div>
-          <div class="sc-body">
-            <p class="sc-head">The price website</p>
-            <p class="sc-note">Free, no login, works on a phone. The same prices as the addon.</p>
-            <svg class="sc-spark" viewBox="0 0 300 70" preserveAspectRatio="none" aria-hidden="true" focusable="false">
-              <polyline fill="none" stroke="#E5C158" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
-                        points="2,52 30,48 58,50 86,40 114,44 142,34 170,38 198,26 226,30 254,20 282,24 298,14"/>
-              <line x1="2" y1="40" x2="298" y2="40" stroke="#3A4458" stroke-width="1" stroke-dasharray="4 4"/>
-            </svg>
-            <a class="btn btn-gold btn-sm" href="prices/">Open the price website</a>
+      <!-- Tooltip: drawing, real lines (Iron Ore x20 in the bags) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="mock-box gametip" role="img" aria-label="Drawing of an Iron Ore tooltip for a stack of 20 with the Goblin Ledger lines: prices 25 minutes old; Auction it, 48 percent more than a vendor pays; AH value 2 silver 44 copper, 0 percent versus usual; usual price 2 silver 43 copper; Sell now 2 silver 34 copper; this stack of 20 after the AH cut 44 silver 46 copper.">
+            <p class="tip-item">Iron Ore</p>
+            <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="t-mut">25m ago</span></p>
+            <p class="tip-row big"><span class="t-pos">Auction it</span><span class="t-pos">+48% vs vendor</span></p>
+            <p class="tip-row big"><span>AH value</span><span><span class="m-s">2s</span> <span class="m-c">44c</span> <span class="t-mut sm">0% vs usual</span></span></p>
+            <p class="tip-row"><span>Usual price</span><span><span class="m-s">2s</span> <span class="m-c">43c</span></span></p>
+            <p class="tip-row"><span>Sell now</span><span><span class="m-s">2s</span> <span class="m-c">34c</span></span></p>
+            <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">44s</span> <span class="m-c">46c</span></span></p>
           </div>
+          <figcaption class="cap">Drawing, not a screenshot. Real lines on real prices.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Prices on every item</h3>
+          <ul class="ticks">
+            <li>Big call: <b>Auction it</b>, <b>Vendor it</b>, <b>Close call</b> or <b>Maybe auction</b></li>
+            <li>AH value vs usual, and <b>Sell now</b>: 1c under the cheapest</li>
+            <li>Someone dumping? It says "52% under usual" and gives a <b>Sell at</b></li>
+          </ul>
         </div>
-        <figcaption>A drawing with a made-up price line, not a screenshot. Open the site to see the real thing.</figcaption>
-      </figure>
-    </div>
-  </div>
-</section>
+      </article>
 
-<!-- ===================== WHY NOT JUST AUCTIONATOR ===================== -->
-<section class="section" id="why" aria-labelledby="why-title">
-  <div class="wrap">
-    <p class="eyebrow">Compared</p>
-    <h2 id="why-title">Why not just Auctionator?</h2>
-    <p class="lede">Auctionator is a great addon, and Goblin Ledger runs right alongside it. They get their prices in different ways and help with different things, so many players will want both.</p>
+      <!-- Bag cleanup: real photo -->
+      <article class="tile">
+        <figure class="stage">
+          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" loading="lazy" decoding="async"
+               alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button."></a>
+          <figcaption class="cap">Real screenshot.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Bag cleanup</h3>
+          <ul class="ticks">
+            <li>A <b>Bag cleanup</b> button on your bags (ElvUI too)</li>
+            <li>Cheapest stacks, old quest items, stacks to merge</li>
+            <li>Never deletes on its own: dropping always asks first</li>
+          </ul>
+        </div>
+      </article>
 
-    <div class="cols vs">
-      <div class="card">
-        <h3>Auctionator</h3>
-        <p>A great helper for posting and buying at the auction house. Its prices come from scans you run yourself, so they are only as fresh and as complete as your last scan.</p>
-        <p class="note">Works on every realm and faction.</p>
-      </div>
-      <div class="card">
-        <h3>Goblin Ledger</h3>
-        <p>Gets the whole auction house from Blizzard's own data every hour. No scanning: the prices and their history are already there, even before you visit the auction house.</p>
-        <p class="note">Covers the Alliance auction house on the US PvP realms.</p>
-      </div>
-    </div>
+      <!-- Auction house: real photo of the chart, wide -->
+      <article class="tile wide">
+        <figure class="stage">
+          <a href="img/chart.png"><img src="img/chart.png" width="693" height="222" loading="lazy" decoding="async"
+               alt="Screenshot of the Goblin Ledger price chart docked under the auction house for Plans: Runed Copper Breastplate: price 4 silver 99 copper, the 1D, 5D, 1W, 1M and 1Y buttons, a Target Buy box and a List At box, a one-day price line with sales bars, and the margin after the 5% cut."></a>
+          <figcaption class="cap">Real screenshot, one build back (List At is now Sell at).<span class="tap"> Tap to enlarge.</span></figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>At the auction house</h3>
+          <ul class="ticks">
+            <li>A <b>price chart</b> under the AH: 1D, 5D, 1W, 1M, 1Y</li>
+            <li><b>Sell now</b> button fills the price; arrows nudge it</li>
+            <li>Empty search? Last listed, sold a day, mats cost of plans</li>
+          </ul>
+        </div>
+      </article>
 
-    <div class="adds">
-      <h3>What Goblin Ledger adds</h3>
-      <ul class="ticks">
-        <li><b>It tells you what to do.</b> A big <b class="c-pos">Auction it</b> or <b class="c-neg">Vendor it</b> on the tooltip, with how much better that choice is.</li>
-        <li><b>Price history charts</b>, and how today's price compares with the usual one.</li>
-        <li><b>Flip ideas</b> sized to the gold on your character, ranked by the profit you can realistically make within a day.</li>
-        <li><b>Deals</b>: greens, blues and epics listed well under their usual price.</li>
-        <li><b>Bag cleanup</b>: what is worth the least, cheapest first, quest items you are done with, and a drop button that asks first.</li>
-        <li><b>A price website</b> for your phone or PC.</li>
-      </ul>
-    </div>
+      <!-- Enchant tips: drawing, real lines (Bonebiter, level 47 warrior, Top 5) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="mock-box gametip" role="img" aria-label="Drawing of the enchant tips on a worn Bonebiter for a level 47 warrior: best enchant Crusader about 33 gold, from 4 Large Brilliant Shard and 2 Righteous Orb; 2nd Fiery Weapon about 4 gold 21 silver; 3rd Lesser Strength plus 15 about 1 gold 50 silver; 4th Greater Impact plus 7 about 2 gold 3 silver; 5th Impact plus 6 about 50 silver; each with its mats.">
+            <p class="tip-item">Bonebiter</p>
+            <p class="tip-row"><span>Best enchant: Crusader</span><span><span class="m-g">~33g</span></span></p>
+            <p class="tip-mats">4 Large Brilliant Shard, 2 Righteous Orb</p>
+            <p class="tip-row"><span>2nd: Fiery Weapon</span><span><span class="m-g">~4g</span> <span class="m-s">21s</span></span></p>
+            <p class="tip-mats">2 Small Radiant Shard, 1 Essence of Fire</p>
+            <p class="tip-row"><span>3rd: Lesser Strength +15</span><span><span class="m-g">~1g</span> <span class="m-s">50s</span></span></p>
+            <p class="tip-mats">1 Vision Dust, 1 Large Glowing Shard, 2 Lesser Nether Essence</p>
+            <p class="tip-row"><span>4th: Greater Impact +7</span><span><span class="m-g">~2g</span> <span class="m-s">3s</span></span></p>
+            <p class="tip-mats">1 Large Radiant Shard, 1 Dream Dust</p>
+            <p class="tip-row"><span>5th: Impact +6</span><span><span class="m-s">~50s</span></span></p>
+            <p class="tip-mats">2 Vision Dust, 1 Large Glowing Shard</p>
+          </div>
+          <figcaption class="cap">Drawing, not a screenshot. Real lines: a level 47 warrior.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Enchant tips</h3>
+          <ul class="ticks">
+            <li>On the gear you wear (character screen)</li>
+            <li>Best enchants for your class and role, mats and AH cost</li>
+            <li>Top 5 by default; the <b>Top 2</b> button shows just the best</li>
+          </ul>
+        </div>
+      </article>
 
-    <div class="card both">
-      <p class="k">Use both if you like</p>
-      <p>The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab. Auctionator does the posting and buying, Goblin Ledger tells you what things are worth.</p>
+      <!-- Crafting profit: drawing, real lines (Thorium Ore with Smelting; Plans: Mithril Spurs) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="pair" role="img" aria-label="Drawing of two tooltips. Thorium Ore: smelt to Thorium Bar, 2 silver 87 copper profit each. Plans: Mithril Spurs: makes Mithril Spurs, which sells for 3 silver 87 copper; mats 4 Mithril Bar at 42 silver 24 copper and 3 Solid Grinding Stone at 29 silver 22 copper; mats 71 silver 46 copper, profit minus 67 silver 79 copper, in red.">
+            <div class="mock-box gametip">
+              <p class="tip-item">Thorium Ore</p>
+              <p class="tip-row"><span>Smelt to Thorium Bar</span><span class="t-pos">+2s 87c each</span></p>
+            </div>
+            <div class="mock-box gametip">
+              <p class="tip-item">Plans: Mithril Spurs</p>
+              <p class="tip-row"><span>Makes: Mithril Spurs</span><span><span class="m-s">3s</span> <span class="m-c">87c</span></span></p>
+              <p class="tip-mats">4 Mithril Bar 42s 24c, 3 Solid Grinding Stone 29s 22c</p>
+              <p class="tip-row"><span>Mats: 71s 46c</span><span class="t-neg">Profit: -67s 79c</span></p>
+            </div>
+          </div>
+          <figcaption class="cap">Drawing, not a screenshot. Real lines; price lines left out.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Crafting profit</h3>
+          <ul class="ticks">
+            <li>Plans, patterns, ore and bars show what the mats cost</li>
+            <li>Green when crafting or smelting pays after the AH cut</li>
+            <li>One line in the Professions window too</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Consumes: real photo -->
+      <article class="tile wide">
+        <figure class="stage">
+          <a href="img/consumes.png"><img src="img/consumes.png" width="542" height="186" loading="lazy" decoding="async"
+               alt="Screenshot of the Goblin Ledger Consumes panel for melee, level 47: food like Poached Sunscale Salmon with plus 5% XP, elixirs like Mongoose, potions like Major Healing and Mighty Rage, scrolls of Strength III and Agility III, and weapon stones, each with its price."></a>
+          <figcaption class="cap">Real screenshot, one build back (no Budget switch or % yet).<span class="tap"> Tap to enlarge.</span></figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Consumes</h3>
+          <ul class="ticks">
+            <li>Hangs under your character screen</li>
+            <li>Best food, potions, elixirs, scrolls for your role and level</li>
+            <li>Prices, % of best, and a <b>Best / Budget</b> switch</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Flight timer: drawing, real lines (Stormwind to Ironforge) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="pair" role="img" aria-label="Drawing of the flight map tooltip for Ironforge, Dun Morogh, with the line Flight time: about 4:19, and below it the flight bar while you fly: Ironforge 3:19, with an X to hide it.">
+            <div class="mock-box gametip">
+              <p class="tip-item">Ironforge, Dun Morogh</p>
+              <p class="tip-line">Flight time: about 4:19</p>
+            </div>
+            <div class="flybar">
+              <span class="fill"></span><span class="txt">Ironforge 3:19</span><span class="xbox">x</span>
+            </div>
+          </div>
+          <figcaption class="cap">Drawing, not a screenshot. Real lines: Stormwind to Ironforge.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Flight timer</h3>
+          <ul class="ticks">
+            <li>The flight map shows each flight's time</li>
+            <li>A slim countdown bar while you fly; its X hides it</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Boat timer: drawing, a real line (at the Theramore dock) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="boatwrap" role="img" aria-label="Drawing of the minimap with the line Boat to Menethil: docked, leaves in 0:41 under it, and an X to hide it.">
+            <div class="minimap"></div>
+            <p class="boatline">Boat to Menethil: docked, leaves in 0:41<span class="xbox" aria-hidden="true">x</span></p>
+          </div>
+          <figcaption class="cap">Drawing, not a screenshot. A real line, at the Theramore dock.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Boat timer</h3>
+          <ul class="ticks">
+            <li>At a dock: when the boat or zeppelin comes</li>
+            <li>Learns from your rides; X hides it until you leave</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Price website: drawing with a made-up price line -->
+      <article class="tile wide">
+        <figure class="stage">
+          <div class="mock-box sitecard" role="img" aria-label="Drawing of the price website in a browser, with a made-up price line.">
+            <div class="sc-bar"><i></i><i></i><i></i><span class="sc-url">grantdenney.com/goblin-ledger/prices</span></div>
+            <div class="sc-body">
+              <p class="sc-head">Price history</p>
+              <svg class="sc-spark" viewBox="0 0 300 64" preserveAspectRatio="none" aria-hidden="true" focusable="false">
+                <line x1="2" y1="36" x2="298" y2="36" stroke="#3A4458" stroke-width="1" stroke-dasharray="4 4"/>
+                <polyline fill="none" stroke="#E5C158" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"
+                          points="2,48 30,44 58,46 86,36 114,40 142,30 170,34 198,22 226,26 254,16 282,20 298,10"/>
+              </svg>
+            </div>
+          </div>
+          <figcaption class="cap">Drawing with a made-up price line.</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Price website</h3>
+          <ul class="ticks">
+            <li>Price history charts for every item</li>
+            <li>Favorites lists; works on your phone</li>
+          </ul>
+          <p class="more"><a class="btn btn-ghost btn-sm" href="prices/">Open the price website</a></p>
+        </div>
+      </article>
+
     </div>
   </div>
 </section>
@@ -645,231 +665,84 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
   <div class="wrap">
     <p class="eyebrow">Install</p>
     <h2 id="install-title">Install in 3 minutes</h2>
-    <p class="lede">Windows only. All you need is WoW Forever installed on your PC.</p>
-
     <ol class="steps">
       <li>
-        <h3>Download the zip</h3>
-        <p><a class="btn btn-gold btn-sm" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
-          Download GoblinLedger.zip
-        </a></p>
-        <p><b>Your browser may check with you first.</b> The file is new, so not many people have downloaded it yet. You may see:</p>
-        <div class="warns">
-          <div class="warn ss">
-            <p class="wt">Edge: "GoblinLedger.zip isn't commonly downloaded"</p>
-            <p>Point at the download, click the three dots <span class="ui">...</span> and choose <span class="ui">Keep</span>. In the box that opens, click <span class="ui">Show more</span>, then <span class="ui">Keep anyway</span>.</p>
-          </div>
-          <div class="warn of">
-            <p class="wt">Chrome: asks if you want to keep the file</p>
-            <p>Choose <span class="ui">Keep</span>.</p>
-          </div>
-        </div>
+        <p class="k">Download</p>
+        <p><a class="btn btn-gold btn-sm" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">GoblinLedger.zip</a></p>
+        <p class="s">Browser asks? Choose Keep (Edge: Keep anyway).</p>
       </li>
-
       <li>
-        <h3>Unzip it</h3>
-        <p>In your Downloads folder, right-click <b>GoblinLedger.zip</b>, choose <span class="ui">Extract All</span>, then <span class="ui">Extract</span>. The new folder holds:</p>
-        <ul class="files">
-          <li><code>GoblinLedger</code> <span>the addon</span></li>
-          <li><code>Install-Goblin-Ledger.bat</code> <span>the installer</span></li>
-          <li><code>Update-Goblin-Ledger.bat</code> <span>gets the newest version now</span></li>
-          <li><code>Uninstall-Goblin-Ledger.bat</code> <span>removes it again</span></li>
-          <li><code>scripts</code> <span>the installer's steps, plain text</span></li>
-          <li><code>README.txt</code> <span>these steps in short</span></li>
-        </ul>
-        <p class="note">Unzip first: the installer does not work from inside the zip.</p>
+        <p class="k">Unzip it</p>
+        <p class="s">Right-click the zip, Extract All, Extract.</p>
       </li>
-
       <li>
-        <h3>Run the installer</h3>
-        <p>Double-click <b>Install-Goblin-Ledger.bat</b>. A black window opens and sets everything up:</p>
-        <ul class="ticks">
-          <li>finds WoW Forever in <code>C:\Program Files (x86)\World of Warcraft\_forever_</code> (or the same folder on another drive), or asks you where it is if your game is somewhere else</li>
-          <li>copies the addon into <code>Interface\AddOns\GoblinLedger</code></li>
-          <li>downloads the latest prices</li>
-          <li>asks <b>"Update prices automatically every 30 minutes?"</b> Press <span class="ui">Y</span> (or just Enter). It then adds a Windows task called <b>Goblin Ledger Prices</b> that quietly refreshes the prices while you are logged in to Windows. No window pops up, and Uninstall-Goblin-Ledger.bat removes it.</li>
-          <li>asks <b>"Install new Goblin Ledger versions by themselves?"</b> Press <span class="ui">Y</span> (or just Enter). The same task then checks every few hours for a new official version and installs it, keeping your prices and settings.</li>
-        </ul>
-        <p>No administrator rights needed. When it says <b>All set</b>, press any key to close the window.</p>
-        <p><b>Windows may warn you first.</b> It does that for files from the internet that are not from a big-name publisher. You may see one or both of these:</p>
-        <div class="warns">
-          <div class="warn ss">
-            <p class="wt">A blue box: "Windows protected your PC"</p>
-            <p>Click <span class="ui">More info</span>, then <span class="ui">Run anyway</span>.</p>
-          </div>
-          <div class="warn of">
-            <p class="wt">A box called "Open File - Security Warning"</p>
-            <p>It asks if you want to run the file. Click <span class="ui">Run</span>.</p>
-          </div>
-        </div>
-        <p class="note">Rather skip the warnings? Before you unzip, right-click GoblinLedger.zip, choose Properties, tick <b>Unblock</b> at the bottom and click OK. Curious what the installer does? Every step is plain text: open <code>install.ps1</code> in the <code>scripts</code> folder with Notepad to read every line.</p>
-        <p class="note">Game in another folder? The installer asks for it. In the Battle.net app, click the gear next to Play and choose Show in Explorer. Go into the <code>_forever_</code> folder if you are not already in it. Click the address bar at the top and press Ctrl+C. Then click the installer window, press Ctrl+V (or right-click) and press Enter.</p>
+        <p class="k">Run the installer</p>
+        <p>Double-click <b>Install-Goblin-Ledger.bat</b>, press Y twice.</p>
+        <p class="s">Windows warns? More info, Run anyway.</p>
       </li>
-
       <li>
-        <h3>Start the game</h3>
-        <p>Start WoW Forever. Was it already open? Close it fully and start it again: the game only notices a new addon when it starts.</p>
-        <p>Hover something you could sell, like cloth or ore. See the Goblin Ledger lines? You are done. Type <code>/gl help</code> for the list of commands.</p>
-        <p class="note">You can delete the zip and the unzipped folder in Downloads now. Need the installer or the uninstaller again later? Just download the zip again.</p>
+        <p class="k">Restart WoW</p>
+        <p class="s">Hover an item: the prices are there.</p>
       </li>
     </ol>
   </div>
 </section>
 
-<!-- ===================== USING IT ===================== -->
-<section class="section" id="tips" aria-labelledby="tips-title">
+<!-- ===================== COMMANDS ===================== -->
+<section class="section" id="commands" aria-labelledby="commands-title">
   <div class="wrap">
-    <p class="eyebrow">Using it</p>
-    <h2 id="tips-title">Quick tips</h2>
-    <p class="lede">It all works on its own. These help when you want more.</p>
-
-    <div class="tips">
-      <div class="card">
-        <p class="k"><code>/reload</code></p>
-        <p>Prices load when you log in. Type /reload to pick up fresh ones without logging out.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl help</code></p>
-        <p>Shows every command in one list.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl bags</code></p>
-        <p>What to drop or sell first, in chat. Handy if you use another bag addon.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl flips</code></p>
-        <p>The current flip ideas, sized to the gold you are carrying.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl watch &lt;item&gt;</code></p>
-        <p>Adds an item to your auction house watchlist, like /gl watch Runecloth. You can shift-click the item into chat instead of typing its name.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl compact</code></p>
-        <p>Switches tooltips between the full view and a single line.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl enchants</code></p>
-        <p>Tooltips on the gear you wear (the character panel) show the best enchants for your role on weapons, shields and most armor (not belts, shoulders, rings or trinkets), with mats and cost: the two best, then up to three cheaper ones. Top 2 shows the two best only (the Top button next to Enchant tips, or /gl enchants top2). Armor kits and scopes count, and a blacksmith's spikes and counterweight. Only upgrades show. Your talents pick the role; /gl enchants tank picks one by hand. The Enchant tips box turns them off and on.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl consumes</code></p>
-        <p>Open your character screen: the best food, potions, elixirs and scrolls for your role and level hang under it, with prices (food that gives +5% XP says so) and how each compares to the best (62%). Budget in its header shows cheaper picks. Click its header to fold it. /gl consumes off hides it, /gl consumes on brings it back.</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl flights</code></p>
-        <p>The flight map shows how long each flight takes, and a slim bar at the top of the screen counts down while you fly (its X hides it until you land).</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl boat now</code></p>
-        <p>At a dock, a line under the minimap says when the boat, zeppelin or skyship comes; it learns each one's timing when you ride it, or type /gl boat now as one docks (/gl boats off hides it).</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl crafts</code></p>
-        <p>Plans, patterns, ore, bars and the Professions window show what the mats cost and whether crafting or smelting it pays after the AH cut. Green only when it pays at every price and the item really sells; "unsure" when only 1 or 2 are listed (/gl crafts off hides it).</p>
-      </div>
-      <div class="card">
-        <p class="k"><code>/gl tooltip</code></p>
-        <p>Turns the prices in tooltips off, or back on.</p>
-      </div>
-      <div class="card">
-        <p class="k">Hold Shift</p>
-        <p>Over a stack, the tooltip prices count the whole stack. Over a plan or pattern, it lists every mat.</p>
-      </div>
-      <div class="card">
-        <p class="k">Sell now and Suggested</p>
-        <p>They only fill in the price box. Check the price, then click Post.</p>
-      </div>
-    </div>
+    <p class="eyebrow">Commands</p>
+    <h2 id="commands-title">Type these in chat</h2>
+    <ul class="cmds">
+      <li><code>/gl help</code> <span>every command</span></li>
+      <li><code>/reload</code> <span>load the newest prices</span></li>
+      <li><code>/gl compact</code> <span>one-line tooltips</span></li>
+      <li><code>/gl tooltip</code> <span>tooltip prices off or on</span></li>
+      <li><code>/gl chart Linen Cloth</code> <span>a chart for any item</span></li>
+      <li><code>/gl bags</code> <span>the bag cleanup list in chat</span></li>
+      <li><code>/gl enchants top2</code> <span>just the best two (top5: five)</span></li>
+      <li><code>/gl enchants tank</code> <span>pick your role (auto: talents)</span></li>
+      <li><code>/gl consumes budget</code> <span>cheaper picks (best: strongest)</span></li>
+      <li><code>/gl crafts off</code> <span>hide the craft tips</span></li>
+      <li><code>/gl flights off</code> <span>hide the flight timer</span></li>
+      <li><code>/gl boat now</code> <span>as a boat docks: sets its timer</span></li>
+      <li><code>/gl boats off</code> <span>hide the boat timer</span></li>
+      <li><code>/gl update</code> <span>your version, how to update</span></li>
+      <li><kbd>Shift</kbd> <span>hold over a stack or plan: whole stack, every mat</span></li>
+    </ul>
   </div>
 </section>
 
-<!-- ===================== UPDATING AND REMOVING ===================== -->
-<section class="section" id="updating" aria-labelledby="updating-title">
+<!-- ===================== GOOD TO KNOW + HELP ===================== -->
+<section class="section" id="help" aria-labelledby="help-title">
   <div class="wrap">
-    <p class="eyebrow">Later on</p>
-    <h2 id="updating-title">Updating and removing</h2>
-    <p class="lede">Nothing to babysit. Here is what to do when you want to.</p>
-
+    <p class="eyebrow">Help</p>
+    <h2 id="help-title">Good to know</h2>
     <div class="cols">
       <div class="card">
-        <h3>Fresh prices</h3>
-        <p>They update by themselves every 30 minutes while you are logged in to Windows (if you pressed Y in the installer). The game picks them up when you log in or type <code>/reload</code>.</p>
-        <p>Want fresh prices this minute? Run <b>Install-Goblin-Ledger.bat</b> again.</p>
-      </div>
-      <div class="card">
-        <h3>A new version</h3>
-        <p>New versions install by themselves within a few hours (if you pressed Y in the installer), and the game says <b>Goblin Ledger updated to ...</b> in chat. Only official releases from this page are installed, after a fingerprint check, and your prices and settings are kept.</p>
-        <p>Want it this minute? Double-click <b>Update-Goblin-Ledger.bat</b> (in the unzipped folder, or the copy in <code>%LOCALAPPDATA%\GoblinLedger</code>: press Windows+R, type that and press Enter), then restart the game or type <code>/reload</code>. In the game, <code>/gl update</code> says the same.</p>
-        <p class="note">Installed version 1.0.0? It cannot update itself yet: download the zip once more and run Install-Goblin-Ledger.bat. After that, new versions come by themselves.</p>
-        <p class="note">Had an early copy called Forever AH? The installer swaps it for Goblin Ledger and keeps your settings and watchlist.</p>
-      </div>
-      <div class="card">
-        <h3>Removing it</h3>
-        <p>Double-click <b>Uninstall-Goblin-Ledger.bat</b>, in the folder you unzipped. Deleted that folder? Download the zip again and unzip it. When it asks to remove Goblin Ledger, press <span class="ui">Y</span>. It removes the addon, the price updater and the Goblin Ledger Prices task. It asks before it deletes your saved settings.</p>
-        <p class="note">By hand: delete the <code>GoblinLedger</code> folder from your game's <code>Interface\AddOns</code> folder, delete the Goblin Ledger Prices task in Task Scheduler, and delete the folder <code>%LOCALAPPDATA%\GoblinLedger</code> (paste that into the File Explorer address bar).</p>
-      </div>
-    </div>
-  </div>
-</section>
-
-<!-- ===================== FAQ ===================== -->
-<section class="section" id="faq" aria-labelledby="faq-title">
-  <div class="wrap">
-    <p class="eyebrow">FAQ</p>
-    <h2 id="faq-title">Questions</h2>
-    <p class="lede">The short answers.</p>
-
-    <div class="faq">
-      <div class="card">
-        <h3>Which realms does it cover?</h3>
-        <p>Alliance on the US (North America) PvP realms. That is the one auction house the prices come from today.</p>
-        <p>It installs on any character, but on Horde, PvE, Hardcore or another region your auction house is a different market, so the prices will not match yours. On Horde and Hardcore the tooltip leaves out the Auction it / Vendor it advice for that reason.</p>
-      </div>
-
-      <div class="card">
-        <h3>Is it safe?</h3>
-        <p>Yes. Most of it only shows information. It never buys, bids, posts or cancels anything: the Sell now and Suggested buttons only fill in the price box. It sells or drops items only when you click. Sell junk, or a click on a stack in the Bag cleanup list at a vendor, sells right away (you can buy it back from the vendor), and dropping an item always asks first.</p>
-        <p>The installer is plain text you can read in Notepad. It copies the addon into your AddOns folder, downloads the public price file from GitHub and, if you say yes, adds one Windows task that keeps that file fresh and installs new official versions of the addon. No passwords, no Battle.net key or account, and nothing about you or your PC is sent anywhere.</p>
-      </div>
-
-      <div class="card">
-        <h3>Do I need anything else?</h3>
-        <p>No. Just WoW Forever on a Windows PC with an internet connection. No other addons, no sign-up, no Battle.net key.</p>
-      </div>
-
-      <div class="card">
-        <h3>Does it work with ElvUI, Auctionator and Questie?</h3>
+        <h3>Updates</h3>
         <ul class="ticks">
-          <li><b>ElvUI</b>: yes. The Bag cleanup button shows up in ElvUI's bag window.</li>
-          <li><b>Auctionator</b>: yes. The price chart follows Auctionator's tabs, and the Sell now and Suggested buttons sit under its price box in the Selling tab.</li>
-          <li><b>Questie</b>: yes, and it helps. Bag cleanup uses Questie's quest database to say which quest items you can drop ("Can drop: done with" and the quest). Without Questie it goes by your quest log.</li>
+          <li>Prices update every 30 min by themselves</li>
+          <li>The game loads them at log in or <code>/reload</code></li>
+          <li>New versions install themselves. On 1.0.0? Run the new installer once.</li>
         </ul>
-        <p>Another bag addon that hides the game's bags? Type <code>/gl bags</code> to get the cleanup list in chat.</p>
       </div>
-
       <div class="card">
-        <h3>How fresh are the prices?</h3>
-        <p>Blizzard updates its auction house data about once an hour, and the price file follows soon after. Your PC fetches it every 30 minutes, and the game loads it when you log in or type <code>/reload</code>. The tooltip shows how old your prices are.</p>
+        <h3>Safe and simple</h3>
+        <ul class="ticks">
+          <li>Never buys, bids or posts for you</li>
+          <li>Alliance, US PvP realms; Windows only</li>
+          <li>Unlike Auctionator, no scanning; runs fine next to it</li>
+        </ul>
       </div>
-
       <div class="card">
-        <h3>Does it work on a Mac?</h3>
-        <p>Not yet. The installer and the automatic price updates are Windows only. The price website works on any computer or phone.</p>
-      </div>
-
-      <div class="card wide">
-        <h3>It shows no prices. What now?</h3>
-        <ol class="fix">
-          <li>Close WoW completely and start it again. A new addon only loads when the game starts.</li>
-          <li>At the character screen, click <b>AddOns</b> and check that Goblin Ledger is ticked. If it says out of date, tick <b>Load out of date AddOns</b>.</li>
-          <li>Type <code>/gl</code> in chat. No answer means the addon is not loaded: run the installer again and check it found the right game folder.</li>
-          <li>The addon says there is no price data yet? Run <b>Install-Goblin-Ledger.bat</b> again, then type <code>/reload</code>.</li>
-          <li>The installer said Windows would not let it copy into the game folder? Right-click <b>Install-Goblin-Ledger.bat</b> and choose <b>Run as administrator</b>.</li>
-        </ol>
-        <p class="note">Soulbound and most quest items cannot go on the auction house, so they show no price, or a price without the Auction it / Vendor it call. Items nobody has listed lately say "no recent listings".</p>
-        <p class="note">Still stuck? Send a screenshot of the installer window to whoever sent you this page.</p>
+        <h3>Not working?</h3>
+        <ul class="ticks">
+          <li>Close WoW fully and start it again</li>
+          <li>Character screen, AddOns: tick Goblin Ledger</li>
+          <li>Can't copy? Right-click the installer, Run as administrator</li>
+        </ul>
+        <p class="note">To remove it: Uninstall-Goblin-Ledger.bat.</p>
       </div>
     </div>
   </div>
@@ -879,13 +752,12 @@ h3 { margin: 0 0 10px; color: var(--strong); font-size: 21px; font-weight: 800; 
 <section class="closing" aria-labelledby="closing-title">
   <div class="wrap">
     <h2 id="closing-title">Ready to try it?</h2>
-    <p>Three minutes to install. Then just play.</p>
     <div class="cta">
       <a class="btn btn-gold" href="https://github.com/grant9008/grantdenney.com/releases/latest/download/GoblinLedger.zip">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M12 3v12"/><path d="m7 10 5 5 5-5"/><path d="M5 21h14"/></svg>
         Download for Windows
       </a>
-      <a class="btn btn-ghost" href="prices/">See the price website</a>
+      <a class="btn btn-ghost" href="prices/">Price website</a>
     </div>
   </div>
 </section>
