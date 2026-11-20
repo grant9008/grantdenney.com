@@ -16860,6 +16860,17 @@ EN_SPEED = {911: "Minor Speed", 8737: "Speed +8%", 464: "Mithril Spurs"}
 # The grey line alone when the best enchant for the role is on (the list's first, or an up one).
 EN_BEST_LINE = "Best enchant already on"
 EN_BEST = [(EN_BEST_LINE, None)]
+# The grey line alone when a known enchant is on (in the list, or an at one) and nothing the player can
+# use yet beats it (the better ones need a higher level, a profession or a better item).
+EN_USABLE_LINE = "Best you can use already on"
+EN_USABLE = [(EN_USABLE_LINE, None)]
+# The grey line alone when nothing on the list fits yet only because of the player's level (a head
+# below 50): the lowest level one fits from.
+EN_FROM_RE = re.compile(r"^Enchants from level \d+$")
+
+
+def en_from(level):
+    return [("Enchants from level %d" % level, None)]
 
 
 def en_speed_on(group, current):
@@ -16881,6 +16892,27 @@ def en_best_on(group, role, cls, tab, current, sub=None, loc=None):
         return False
     lst, up, at, _ = rec
     return current in up or current == EN_IDS[lst[0]] or at.get(current) == 1
+
+
+def en_known_on(group, role, cls, tab, current, sub=None, loc=None):
+    """Whether the item's enchant is one the role's list places (an entry, an up or an at one); a boot's
+    speed enchant is not (a choice)."""
+    rec = en_pick(group, role, cls, tab, sub, loc)
+    if rec is None or not current or en_speed_on(group, current):
+        return False
+    lst, up, at, _ = rec
+    return current in up or current in [EN_IDS[k] for k in lst] or current in at
+
+
+def en_first_level(group, role, cls, tab, level=60, skills=None, sub=None, ilvl=None, loc=None):
+    """The lowest level above the player's from which an entry of the list fits the item (only the level
+    stops it now), or None."""
+    rec = en_pick(group, role, cls, tab, sub, loc)
+    if rec is None:
+        return None
+    found = [EN_REQ[k][0] for k in rec[0] if EN_REQ.get(k, (None,))[0] and EN_REQ[k][0] > level
+             and en_usable(k, EN_REQ[k][0], skills, sub, ilvl)]
+    return min(found) if found else None
 
 
 def en_copper(prices, key):
@@ -17094,11 +17126,20 @@ def en_want_for(w, prices, keys, group, role, cls, tab, full=True, current=None)
 def en_tip(w, prices, group, role, cls, tab, n, full=True, **kw):
     """Our lines on an item as the product asks: the Top n options (en_top) with the list's note,
     under the speed line on a boot with a speed enchant (kw current); the grey best line alone when
-    the best for the role is on; [] when nothing shows."""
+    the best for the role is on; "Best you can use already on" when a known enchant is on and nothing
+    usable beats it; "Enchants from level N" when nothing fits yet but the level; [] when nothing shows."""
     cur = kw.get("current")
     keys = en_top(group, role, cls, tab, n, prices=prices, **kw)
     if not keys:
-        return list(EN_BEST) if en_best_on(group, role, cls, tab, cur, kw.get("sub"), kw.get("loc")) else []
+        sub, loc = kw.get("sub"), kw.get("loc")
+        if en_best_on(group, role, cls, tab, cur, sub, loc):
+            return list(EN_BEST)
+        if en_known_on(group, role, cls, tab, cur, sub, loc):
+            return list(EN_USABLE)
+        if en_pick(group, role, cls, tab, sub, loc) is None:
+            return []
+        frm = en_first_level(group, role, cls, tab, kw.get("level", 60), kw.get("skills"), sub, kw.get("ilvl"), loc)
+        return en_from(frm) if frm else []
     return en_want_for(w, prices, keys, group, role, cls, tab, full, cur)
 
 
@@ -17110,8 +17151,9 @@ EN_HEAD_RE = re.compile(r"^Has .+\. Stat options:$")
 
 
 def en_is_status(l):
-    """Our grey lines that say what is on: the best line, a boot's speed line."""
-    return bool(l) and (l == EN_BEST_LINE or bool(EN_HEAD_RE.match(l)))
+    """Our grey lines that say what is on (the best line, the best you can use line, a boot's speed
+    line) or when the first enchant fits (the from level line)."""
+    return bool(l) and (l in (EN_BEST_LINE, EN_USABLE_LINE) or bool(EN_HEAD_RE.match(l)) or bool(EN_FROM_RE.match(l)))
 
 
 def en_block(w, tt):
@@ -17821,7 +17863,11 @@ def sc_enchants_levels(sc, ref, items):
     kits and scopes by the level their items need; scopes for hunters only."""
     w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 0, 0), level=49)
     tt = en_hover(w, "equipped", 990113)
-    sc.eq(en_count(w, tt), 0, "enchants levels: no Arcanum at level 49 (head)")
+    sc.eq(w.lines(tt), en_from(50), "enchants levels: no Arcanum at level 49 (head): the grey from level 50 line")
+    en_styles_ok(sc, w, tt, "enchants levels: the from level line")
+    for eid in (99999, 1506):   # an enchant the data does not know: the same; a bought Lesser Arcanum: the best you can use
+        tt = en_hover(w, "equipped", 990113, eid)
+        sc.eq(w.lines(tt), en_from(50) if eid == 99999 else EN_USABLE, "enchants levels: level 49 head, enchant %d" % eid)
     tt = en_hover(w, "equipped", 990114)
     sc.eq(w.lines(tt), en_want(w, prices, ["k252463", "k252453"]), "enchants levels: level 49 legs: the best kits a 49 can use")
     tt = en_hover(w, "equipped", 990122)
@@ -17833,7 +17879,8 @@ def sc_enchants_levels(sc, ref, items):
               "enchants levels: level %d head: the Lesser Arcanum only (Rapidity's quest needs 58)" % level)
         sc.check(any("30g quest fee" in (l or "") for l, _ in w.lines(tt)), "enchants levels: the Lesser Arcanum's fee is named")
         tt = en_hover(w, "equipped", 990114, 1506)
-        sc.eq(en_count(w, tt), 0, "enchants levels: level %d legs with the Lesser Arcanum: nothing" % level)
+        sc.eq(w.lines(tt), EN_USABLE, "enchants levels: level %d legs with the Lesser Arcanum: the best you can use line" % level)
+        en_styles_ok(sc, w, tt, "enchants levels: the best you can use line, level %d" % level)
         tt = en_hover(w, "equipped", 990114, 2543)
         sc.eq(en_block(w, tt), EN_BEST, "enchants levels: level %d legs with Rapidity (bought on): the best line" % level)
         tt = en_hover(w, "equipped", 990114)
@@ -17871,24 +17918,26 @@ def sc_enchants_levels(sc, ref, items):
                         if not en_can_use(cls, iid) or (iid == 990132 and cls in ("PRIEST", "MAGE", "WARLOCK")):
                             continue
                         g = "head" if iid == 990113 else "legs"
-                        want = en_top(g, role, cls, tab, top, prices=prices, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
+                        want = en_tip(w, prices, g, role, cls, tab, top, level=level, sub=en_sub(iid), ilvl=en_ilvl(iid))
                         tt = en_hover(w, "equipped", iid)
-                        sc.eq(w.lines(tt), en_want(w, prices, want), "enchants levels: Top %d, %s %s level %d %s" % (top, cls, tname, level, EN_GEAR[iid][0]))
+                        sc.eq(w.lines(tt), want, "enchants levels: Top %d, %s %s level %d %s" % (top, cls, tname, level, EN_GEAR[iid][0]))
+                        if g == "head" and level < 50:
+                            sc.eq(want, en_from(50), "enchants levels: the model, %s %s level %d head: from level 50" % (cls, tname, level))
     w.slash("/gl enchants top2")
     for level, want in ((60, ["i10548", "i10546"]), (40, ["i10548", "i10546"]), (39, ["i10546", "i4407"]),
                         (25, ["i4407", "i4406"]), (9, ["i4405"]), (4, [])):
         en_player(w, "HUNTER", (0, 31, 0), level=level)
         for iid in (990115, 990116, 990128):
             tt = en_hover(w, "equipped", iid)
-            sc.eq(w.lines(tt), en_want(w, prices, want), "enchants levels: hunter level %d, %s" % (level, EN_GEAR[iid][0]))
+            sc.eq(w.lines(tt), en_want(w, prices, want) if want else en_from(5), "enchants levels: hunter level %d, %s" % (level, EN_GEAR[iid][0]))
     en_player(w, "HUNTER", (0, 31, 0), level=35)
     # The best (the list's first, or an up scope) on: the grey best line. Deadly Scope (the 2nd, the best
-    # a 35 can use) on: nothing, as before (nothing above it the player can use).
-    for enchant, want, why in ((664, EN_BEST, "Sniper Scope on (above what level 35 uses)"), (663, [], "Deadly Scope on"),
+    # a 35 can use) on: the grey best you can use line (nothing above it the player can use yet).
+    for enchant, want, why in ((664, EN_BEST, "Sniper Scope on (above what level 35 uses)"), (663, EN_USABLE, "Deadly Scope on"),
                                (33, ["i10546"], "Accurate Scope on: the best only"), (32, ["i10546", "i4407"], "a lower scope"),
                                (8720, EN_BEST, "the new SAF-T scope"), (2523, EN_BEST, "Biznicks Accurascope")):
         tt = en_hover(w, "equipped", 990116, enchant)
-        sc.eq(w.lines(tt), want if want is EN_BEST else en_want(w, prices, want), "enchants levels: hunter 35 gun, %s" % why)
+        sc.eq(w.lines(tt), want if want in (EN_BEST, EN_USABLE) else en_want(w, prices, want), "enchants levels: hunter 35 gun, %s" % why)
     w.slash("/gl enchants top5")
     tt = en_hover(w, "equipped", 990115)
     sc.eq(w.lines(tt), en_want(w, prices, ["i10546", "i4407", "i4406", "i4405"]), "enchants levels: Top 5, hunter 35 bow: four scopes")
@@ -17904,6 +17953,17 @@ def sc_enchants_levels(sc, ref, items):
     sc.eq(w.lines(tt), en_want(w, prices, ["i10548"], note=EN_PULL_NOTE),
           "enchants levels: a warrior's gun in Top 2: the best scope, then the pull note")
     sc.clean(w)
+    # The from line counts only what fits the item at its level (a test world with changed data): a Lesser
+    # Arcanum that also needs Blacksmithing 300 leaves Rapidity's 58; with Rapidity out of reach too: nothing.
+    w, prices = en_world(ref, items, cls="WARRIOR", points=(31, 0, 0), level=49)
+    D = w.ns.Enchants.DATA.enchants
+    D.a11645.prof, D.a11645.rank = EN_BS, 300
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(w.lines(tt), en_from(58), "enchants levels: a Lesser Arcanum that needs Blacksmithing 300 (a test): from level 58")
+    D.a18329.prof, D.a18329.rank = EN_BS, 300
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(en_count(w, tt), 0, "enchants levels: no Arcanum fits at any level (a test): nothing")
+    sc.clean(w, "enchants levels: the from line's fit")
 
 
 def sc_enchants_links(sc, ref, items):
@@ -18833,6 +18893,17 @@ def sc_enchants_boots(sc, ref, items):
               "boots: worn, %s on, Top 2: the speed line, then the two best" % EN_SPEED[eid])
         sc.eq(w.lines(tt), en_tip(w, prices, "feet", "melee", "WARRIOR", 1, 2, current=eid, **kw),
               "boots: %s on, Top 2: the model's" % EN_SPEED[eid])
+    # Forever's own slot hover (PaperDollItemSlotButton_OnEnter): the feet slot button owns the tooltip and
+    # SetInventoryItem("player", 8) packs its args (SafePack: { "player", 8, n = 2 }).
+    feet = en_button(w, "CharacterFeetSlot", 8)
+    for eid, want in ((464, [(EN_SPEED_HEADS[464], None)] + en_want(w, prices, bare[:2])), (8491, EN_BEST), (8488, EN_USABLE)):
+        s = w.to_lua({"itemID": B, "bound": True})
+        s.enchant = eid
+        M.equipped[8] = s
+        tt = g.GameTooltip
+        tt.SetOwner(tt, feet, "ANCHOR_RIGHT")
+        w.lua.eval("function(tt) return tt:ProcessInfo({ getterName = 'GetInventoryItem', getterArgs = { 'player', 8, n = 2 } }) end")(tt)
+        sc.eq(w.lines(tt), want, "boots: Forever's feet slot hover (the slot button, packed args), enchant %d" % eid)
     # Greater Agility +7 on (the 3rd): only what beats it a 47 can use, no speed line; Top 2 and Top 5.
     for top in (2, 5):
         w.slash("/gl enchants top%d" % top)
@@ -18854,7 +18925,31 @@ def sc_enchants_boots(sc, ref, items):
     tt = en_hover(w, "equipped", B, 464)
     sc.eq([l for l, _ in w.lines(tt)][:2], [EN_SPEED_HEADS[464], "Best enchant: Forceful Rugged Armor Kit"],
           "boots: level 50, Mithril Spurs on: the speed line, then the Forceful Rugged kit first")
+    tt = en_hover(w, "equipped", B, 8488)
+    sc.eq(w.lines(tt), en_want(w, prices, ["k252488"]), "boots: level 50, the Forceful Thick kit on: the Forceful Rugged kit")
     en_player(w, "WARRIOR", (31, 5, 0), level=47)
+    # The tip's own best pick at 47 on (the Forceful Thick kit; the Forceful Rugged kit above it needs 50):
+    # one grey "Best you can use already on", not nothing, in Top 2 and Top 5.
+    for top in (2, 5):
+        w.slash("/gl enchants top%d" % top)
+        tt = en_hover(w, "equipped", B, 8488)
+        sc.eq(w.lines(tt), EN_USABLE, "boots: level 47, the Forceful Thick kit on, Top %d: the grey best you can use line" % top)
+        sc.eq(en_tip(w, prices, "feet", "melee", "WARRIOR", 1, top, current=8488, **kw), EN_USABLE,
+              "boots: the Forceful Thick kit on, Top %d: the model's" % top)
+        en_styles_ok(sc, w, tt, "boots: the best you can use line, Top %d" % top)
+    sc.check(len(EN_USABLE_LINE) <= 35, "boots: the best you can use line is short (%d letters)" % len(EN_USABLE_LINE))
+    w.slash("/gl enchants top2")
+    # A priest's cloth boots with the Mystic Thick kit at 47 (the Mystic Rugged kit needs 50): the same line.
+    en_player(w, "PRIEST", (0, 0, 31), level=47)
+    tt = en_hover(w, "equipped", 990111, 8489)
+    sc.eq(w.lines(tt), EN_USABLE, "boots: a Shadow priest 47, the Mystic Thick kit on: the grey best you can use line")
+    sc.eq(en_tip(w, prices, "feet", "caster", "PRIEST", 3, 2, current=8489, level=47, sub=en_sub(990111), ilvl=en_ilvl(990111)),
+          EN_USABLE, "boots: the priest's: the model's")
+    en_player(w, "WARRIOR", (31, 5, 0), level=47)
+    # The head below 50 (the Arcanums need 50 and 58): one grey "Enchants from level 50", not nothing.
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(w.lines(tt), en_from(50), "boots: level 47, a bare head: the grey from level 50 line")
+    en_styles_ok(sc, w, tt, "boots: the from level line")
     # Compact: the speed line and the names; Shift: the mats too. The best line in compact too.
     w.slash("/gl compact")
     tt = en_hover(w, "equipped", B, 464)
@@ -18867,6 +18962,10 @@ def sc_enchants_boots(sc, ref, items):
     w.M.shift = False
     tt = en_hover(w, "equipped", B, 8491)
     sc.eq(w.lines(tt), EN_BEST, "boots: compact, the best on: the grey best line")
+    tt = en_hover(w, "equipped", B, 8488)
+    sc.eq(w.lines(tt), EN_USABLE, "boots: compact, the Forceful Thick kit on: the grey best you can use line")
+    tt = en_hover(w, "equipped", 990113)
+    sc.eq(w.lines(tt), en_from(50), "boots: compact, a bare head at 47: the grey from level 50 line")
     w.slash("/gl compact")
     # Other roles: a tank (by hand) gets the tank's stat options under the speed line; the Wild Leather
     # Armor Kit (better than the list) gets the best line. A rogue's leather boots the same way.
@@ -18894,9 +18993,11 @@ def sc_enchants_boots(sc, ref, items):
         else:
             w.slash("/gl enchants off")
         sc.eq(E.IsOn(), False, "boots: off by the %s" % how)
-        for eid in (464, 911, 8737, 8491, None):
+        for eid in (464, 911, 8737, 8491, 8488, None):
             tt = en_hover(w, "equipped", B, eid)
             sc.eq(en_count(w, tt), 0, "boots: off by the %s, enchant %s: nothing" % (how, eid))
+        tt = en_hover(w, "equipped", 990113)
+        sc.eq(en_count(w, tt), 0, "boots: off by the %s, a bare head at 47: nothing" % how)
         if how == "box":
             M.click(cb)
         else:
@@ -18904,11 +19005,14 @@ def sc_enchants_boots(sc, ref, items):
         tt = en_hover(w, "equipped", B, 464)
         sc.eq(w.lines(tt), [(EN_SPEED_HEADS[464], None)] + en_want(w, prices, bare[:2]), "boots: on again by the %s" % how)
     # Bags, the bank, links, gear you inspect, the AH: nothing, speed or best on.
-    for eid in (464, 911, 8737, 8491, 1887):
+    for eid in (464, 911, 8737, 8491, 1887, 8488):
         for how in EN_BAG_PLACES + EN_NEVER:
             tt = en_hover(w, how, B, eid)
             sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0,
                      "boots: %s, enchant %d: nothing (%s)" % (how, eid, [strip_codes(l or "") for l, _ in w.all_lines(tt)]))
+    for how in EN_BAG_PLACES + EN_NEVER:
+        tt = en_hover(w, how, 990113)
+        sc.check(len(w.all_lines(tt)) > 0 and en_count(w, tt) == 0, "boots: %s, a bare head at 47: nothing" % how)
     # Slots without a list (rings, trinkets, shoulders, belts, shirts, tabards, thrown, wands): nothing,
     # whatever is on (also an id that is a speed enchant or the best of another slot).
     for iid in EN_NONE:
@@ -18919,7 +19023,16 @@ def sc_enchants_boots(sc, ref, items):
     tt = en_hover(w, "equipped", 990110, 911)
     sc.eq(w.lines(tt), en_want(w, prices, en_five(en_spec("hands", "melee", "WARRIOR", 1, level=47, sub=1, ilvl=60), prices, 2)),
           "boots: gloves with id 911: the whole list, no speed line")
-    sc.clean(w, "boots")
+    # A tooltip error is kept and its lines left out (it would look like no enchant lines): /gl enchants says it.
+    out = [strip_codes(x) for x in w.slash("/gl enchants")]
+    sc.check(len(out) == 1 and "Last error" not in out[0], "boots: no error kept: the status names none (%s)" % out)
+    for err, said in (("Enchants.lua:1: test error", "Enchants.lua:1: test error"), ("x" * 300, "x" * 200)):
+        E.lastError = err
+        out = [strip_codes(x) for x in w.slash("/gl enchants")]
+        sc.check(len(out) == 1 and out[0].startswith("Goblin Ledger: enchant tips: auto, melee")
+                 and out[0].endswith(" Last error: " + said), "boots: /gl enchants names the kept error (%s)" % [o[-60:] for o in out])
+    E.lastError = None
+    sc.clean(w, "boots", ok_chat=("Last error",))
     # The older client (OnTooltipSetItem): from the character panel's feet slot only.
     w, prices = en_world(ref, items, client="legacy", mode="tabs-name", points=(31, 0, 0), level=47, bags=False)
     feet = en_button(w, "CharacterFeetSlot", 8)
@@ -18942,7 +19055,7 @@ def sc_enchants_kits(sc, ref, items):
     # The user's Triprunner Dungarees (leather legs) with Heavy Armor Kit (Stamina +3, Armor +24: enchant 8484).
     cases = (("WARRIOR", (31, 0, 0), 25, ["k252437"], "Arms warrior 25: Forceful Medium (Attack Power +4)"),
              ("WARRIOR", (31, 0, 0), 35, ["k252453", "k252437"], "Arms warrior 35: Forceful Heavy, Forceful Medium"),
-             ("WARRIOR", (0, 0, 31), 25, [], "Protection warrior 25: nothing beats the Heavy Armor Kit yet"),
+             ("WARRIOR", (0, 0, 31), 25, [], "Protection warrior 25: nothing beats the Heavy Armor Kit yet (the best you can use line)"),
              ("WARRIOR", (0, 0, 31), 35, ["k8173"], "Protection warrior 35: Thick Armor Kit"),
              ("DRUID", (0, 31, 0), 25, ["k252437"], "Feral druid 25: Forceful Medium"),
              ("DRUID", (0, 31, 0), 35, ["k252453", "k252437"], "Feral druid 35: Forceful Heavy, Forceful Medium"),
@@ -18953,10 +19066,12 @@ def sc_enchants_kits(sc, ref, items):
         role = w.ns.Enchants.DetectRole()[0]
         tab = pts.index(max(pts)) + 1 if max(pts) >= 5 else None
         sc.eq(en_top("legs", role, cls, tab, 2, level=level, sub=2, current=8484), want, "kits: the rule's own answer, %s" % why)
+        shown = en_want(w, prices, want) if want else EN_USABLE
+        sc.eq(en_tip(w, prices, "legs", role, cls, tab, 2, level=level, sub=2, current=8484), shown, "kits: the model, %s" % why)
         tt = en_hover(w, "equipped", 990132, 8484)
-        sc.eq(w.lines(tt), en_want(w, prices, want), "kits: Triprunner Dungarees with Heavy Armor Kit, %s" % why)
+        sc.eq(w.lines(tt), shown, "kits: Triprunner Dungarees with Heavy Armor Kit, %s" % why)
         tt = en_hover(w, "bag", 990132, 8484)
-        sc.eq(en_block(w, tt), en_want(w, prices, want), "kits: the same legs in a bag, %s" % why)
+        sc.eq(en_block(w, tt), shown, "kits: the same legs in a bag, %s" % why)
     en_player(w, "WARRIOR", (31, 0, 0), level=35)
     w.slash("/gl enchants top5")
     tt = en_hover(w, "equipped", 990132, 8484)
@@ -19009,7 +19124,8 @@ def sc_enchants_kits(sc, ref, items):
         sc.eq(w.lines(tt), en_want(w, prices, en_five(spec, prices)), "kits: Top 5, %s %s" % (cls, EN_GEAR[iid][0]))
         w.slash("/gl enchants top2")
     # A tank's legs with a kit: only better ones; with the Wild Leather Armor Kit (not in the game yet, better):
-    # the grey best line; Rugged (the best a 45 can use, the Arcanums above it need 50 and 58): nothing, as before.
+    # the grey best line; Rugged (the best a 45 can use, the Arcanums above it need 50 and 58): the grey best
+    # you can use line.
     en_player(w, "WARRIOR", (0, 0, 31), level=45)
     w.slash("/gl enchants top5")
     for enchant, want, why in ((8487, ["k15564"], "Thick on: Rugged"), (8490, [], "Rugged on (the best a 45 can use)"),
@@ -19018,7 +19134,7 @@ def sc_enchants_kits(sc, ref, items):
         spec = en_spec("legs", "tank", "WARRIOR", 3, level=45, sub=en_sub(990114), current=enchant)
         sc.eq(spec[:5], want, "kits: the rule, Protection warrior 45 legs, %s" % why)
         tt = en_hover(w, "equipped", 990114, enchant)
-        sc.eq(w.lines(tt), EN_BEST if enchant == 8719 else en_want(w, prices, en_five(spec, prices)),
+        sc.eq(w.lines(tt), EN_BEST if enchant == 8719 else (en_want(w, prices, en_five(spec, prices)) if spec else EN_USABLE),
               "kits: Protection warrior 45 legs, %s" % why)
     w.slash("/gl enchants top2")
     # Item-level floors: Heavy-tier kits need item level 15, Thick 25, Rugged 35 (the game refuses them on
@@ -19507,7 +19623,7 @@ def sc_enchants_weapons(sc, ref, items):
                     for how in ("equipped", "bag"):
                         tt = en_hover(w, how, iid)
                         got = en_block(w, tt) if how == "bag" else w.lines(tt)
-                        sc.eq(got, en_want(w, prices, usable[:1], note=EN_PULL_NOTE),
+                        sc.eq(got, en_want(w, prices, usable[:1], note=EN_PULL_NOTE) if usable else en_from(5),
                               "weapons: %s %s level %d, %s (%s), Top %d" % (cls, role, level, EN_GEAR[iid][0], how, top))
     # The user's gun (Frosty Blunderbuss) at level 47, Top 2 (the default): three short lines.
     en_player(w, "WARRIOR", (31, 5, 0), level=47)

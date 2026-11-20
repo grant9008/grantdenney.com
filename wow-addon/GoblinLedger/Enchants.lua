@@ -7,7 +7,9 @@ local ADDON_NAME, ns = ...
 -- at today's AH value. Upgrades you buy and use yourself are options too: Leatherworking
 -- armor kits, Engineering scopes, and Blacksmithing spikes and counterweights
 -- for a blacksmith. Only upgrades show: an item with the 3rd best gets the best
--- and the 2nd, one with the best gets one grey "Best enchant already on". Speed
+-- and the 2nd, one with the best gets one grey "Best enchant already on" (one
+-- with the best you can use yet: "Best you can use already on"; a head below
+-- level 50: "Enchants from level 50"). Speed
 -- on boots is a choice, not a better enchant: a boot with Minor Speed, Speed or
 -- Mithril Spurs gets the stat options a bare boot gets, under a grey line that
 -- names it ("Has Mithril Spurs. Stat options:"). A warrior's or rogue's gun, bow
@@ -395,12 +397,13 @@ local ENCHANTS = {
   s1249059 = { n = "Agility +5", id = 904, m = { 11175, 2, 11178, 8, 11176, 6, 249410, 4, 249430, 4 } },
   -- Not shown: Enchant Necklace - Deflection (spell 1249060, enchant 925). Its label says Defense +5, but
   -- its aura (spell 13930) gives +2 (rankedboost leaves the value out). Until that is checked in game, tanks
-  -- get Strength +5 and Agility +5, and a necklace with Deflection on is left alone (up = { 925 }).
+  -- get Strength +5 and Agility +5, and a necklace with Deflection on gets the grey best line (up = { 925 }).
 }
 
 -- Best first, in value order for the role (rankedboost's Forever stat weights, averaged over the
 -- role's specs): an item shows the entries above the enchant it has (the grey best line when it has
--- the first), as far as the player's level, professions and the item's level allow. up = enchant ids
+-- the first), as far as the player's level, professions and the item's level allow (none of them yet:
+-- the grey "Best you can use already on"). up = enchant ids
 -- at least as good as the first (the grey best line); at = { [id] = n }: an enchant not in the list
 -- that ranks just above entry n (entries 1 to n - 1 are shown). Any other enchant: the whole list (it
 -- is worth less). Boots' speed enchants (SPEED below) are not in up: they get the whole list.
@@ -1219,9 +1222,7 @@ end
 -- A budget option costs less than both of the two best (the 2nd's full price, when lower, is the
 -- limit): one dearer than the 2nd is worth less and costs more, no budget pick (a warrior's Crusader
 -- ~33g, Fiery Weapon ~4g: not Lifestealing ~24g).
-local function pickKeys(rec, f, level, current, most)
-  local stop = stopAt(rec, current)
-  if stop == 0 then return nil end
+local function pickKeys(rec, f, level, stop, most)
   local out, limit
   for i, key in ipairs(rec) do
     if stop and i >= stop then break end
@@ -1365,8 +1366,21 @@ local PULL_NOTE = "(pulling only)"
 E.PULL_NOTE = PULL_NOTE
 
 -- The best enchant for the role (the list's first, or an "up" one) on an item: one grey line instead
--- of nothing, so the tips are seen to work.
+-- of nothing, so the tips are seen to work. The best one you can use yet (the better ones need a higher
+-- level, a profession or a better item): its own line. Nothing you can use yet (a head below level 50):
+-- the level the first one fits from.
 local BEST_ON = "Best enchant already on"
+local BEST_USABLE = "Best you can use already on"
+
+-- The lowest level from which an entry fits this item (only your level stops it now), or nil.
+local function firstLevel(rec, f, level)
+  local from
+  for _, key in ipairs(rec) do
+    local e = ENCHANTS[key]
+    if e and e.lvl and e.lvl > level and (not from or e.lvl < from) and usable(e, f, e.lvl) then from = e.lvl end
+  end
+  return from
+end
 
 -- The options for an item at a place, best first (a list of keys; empty with the best line), or nil;
 -- then the note under them, and the line over them (a boot with a speed enchant).
@@ -1384,9 +1398,13 @@ local function optionsFor(itemID, link, where)
   if speed then current = nil end   -- a choice, not better: the options a bare boot gets
   local stop = stopAt(rec, current)
   if stop and stop <= 1 then return {}, BEST_ON end
-  local keys = pickKeys(rec, f, d.level or 60, current, rec.pull and 1 or topN())
-  if not keys then return nil end
-  return keys, rec.pull and PULL_NOTE or nil, speed and ("Has " .. speed .. ". Stat options:") or nil
+  local level = d.level or 60
+  local keys = pickKeys(rec, f, level, stop, rec.pull and 1 or topN())
+  if keys then return keys, rec.pull and PULL_NOTE or nil, speed and ("Has " .. speed .. ". Stat options:") or nil end
+  if stop then return {}, BEST_USABLE end   -- a known enchant: nothing you can use beats it yet
+  local from = firstLevel(rec, f, level)
+  if from then return {}, "Enchants from level " .. from end
+  return nil
 end
 E.OptionsFor = optionsFor
 
@@ -1825,6 +1843,13 @@ local function statusText()
   return "enchant tips: auto, " .. autoText(d) .. "." .. topStatus()
 end
 
+-- A tooltip error is kept, not shown (the lines are left out): /gl enchants says it.
+local function errorText()
+  local err = E.lastError
+  if err == nil then return "" end
+  return " Last error: " .. ssub(tostring(err), 1, 200)
+end
+
 local CHOICES = "auto, melee, agility, tank, caster, healer, hunter, off, top2 or top5"
 -- /gl enchants top2 or top5 (or just 2 or 5): how many options the tooltips show.
 local TOP_WORDS = { top2 = 2, ["2"] = 2, ["top 2"] = 2, top5 = 5, ["5"] = 5, ["top 5"] = 5 }
@@ -1833,7 +1858,7 @@ local function enchantsCommand(rest)
   local S = settings()
   rest = slower(rest or "")
   if rest == "" or rest == "status" then
-    say(statusText())
+    say(statusText() .. errorText())
     return
   end
   local top = TOP_WORDS[rest]
