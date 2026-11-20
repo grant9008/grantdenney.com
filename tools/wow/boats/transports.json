@@ -4753,12 +4753,12 @@
    "taxiPathID": 11398,
    "moveSpeed": 30.0,
    "accelRate": 1.0,
-   "cycle_s": 358.81,
-   "cycle_source": "model",
+   "cycle_s": 353.0,
+   "cycle_source": "nauticus_forever",
    "cycle_model_s": 358.81,
    "cycle_measured": {
-    "nauticus_forever_placeholder": 353.0,
-    "tripview": "5:59"
+    "nauticus_forever": 353.0,
+    "tripview": "5:59 (the model)"
    },
    "stops": [
     {
@@ -4829,7 +4829,7 @@
       "y": 0.8381
      },
      "next_stop": "Dalaran",
-     "travel_to_next_s": 131.2
+     "travel_to_next_s": 125.39
     }
    ],
    "teleports": [
@@ -4839,7 +4839,7 @@
      "toMap": 2991
     },
     {
-     "t_s": 273.65,
+     "t_s": 271.61,
      "fromMap": 2991,
      "toMap": 0
     }
@@ -5029,7 +5029,7 @@
      0
     ],
     [
-     238.56,
+     238.08,
      2991,
      1815.5,
      618.3,
@@ -5039,7 +5039,7 @@
      0
     ],
     [
-     242.82,
+     242.15,
      2991,
      1822.1,
      668.0,
@@ -5049,7 +5049,7 @@
      0
     ],
     [
-     249.73,
+     248.75,
      2991,
      1871.7,
      773.7,
@@ -5059,7 +5059,7 @@
      0
     ],
     [
-     253.62,
+     252.47,
      2991,
      1827.3,
      847.8,
@@ -5069,7 +5069,7 @@
      0
     ],
     [
-     257.01,
+     255.71,
      2991,
      1735.6,
      849.0,
@@ -5079,7 +5079,7 @@
      0
     ],
     [
-     261.02,
+     259.54,
      2991,
      1633.3,
      788.6,
@@ -5089,7 +5089,7 @@
      0
     ],
     [
-     273.65,
+     271.61,
      0,
      -969.2,
      -354.3,
@@ -5099,7 +5099,7 @@
      0
     ],
     [
-     273.65,
+     271.61,
      2991,
      1342.5,
      545.7,
@@ -5109,7 +5109,7 @@
      1
     ],
     [
-     279.0,
+     276.72,
      0,
      -808.6,
      -351.7,
@@ -5119,7 +5119,7 @@
      0
     ],
     [
-     283.22,
+     280.76,
      0,
      -682.2,
      -350.7,
@@ -5129,7 +5129,7 @@
      0
     ],
     [
-     292.19,
+     289.33,
      0,
      -413.5,
      -364.2,
@@ -5139,7 +5139,7 @@
      0
     ],
     [
-     297.33,
+     294.24,
      0,
      -259.8,
      -376.1,
@@ -5149,7 +5149,7 @@
      0
     ],
     [
-     302.04,
+     298.74,
      0,
      -118.7,
      -385.3,
@@ -5159,7 +5159,7 @@
      0
     ],
     [
-     306.91,
+     303.4,
      0,
      27.2,
      -383.7,
@@ -5169,7 +5169,7 @@
      0
     ],
     [
-     310.57,
+     306.9,
      0,
      128.4,
      -348.2,
@@ -5179,7 +5179,7 @@
      0
     ],
     [
-     315.23,
+     311.35,
      0,
      179.7,
      -219.1,
@@ -5189,7 +5189,7 @@
      0
     ],
     [
-     319.51,
+     315.44,
      0,
      253.1,
      -116.6,
@@ -5199,7 +5199,7 @@
      0
     ],
     [
-     329.1,
+     324.61,
      0,
      466.3,
      63.7,
@@ -5209,7 +5209,7 @@
      0
     ],
     [
-     338.03,
+     333.14,
      0,
      616.3,
      224.6,
@@ -5227,7 +5227,7 @@
     "worldZ"
    ],
    "track_note": "boat position every 5 s of path time while moving (model); a passenger stands up to ~25 yd from it",
-   "path_time_zero_at_t_s": 273.653,
+   "path_time_zero_at_t_s": 271.61,
    "track": [
     [
      64.8,
@@ -5377,196 +5377,196 @@
      642.7
     ],
     [
-     229.8,
+     229.7,
      2991,
      1846.0,
      572.9,
      642.6
     ],
     [
-     234.8,
+     234.48,
      2991,
      1828.8,
      596.9,
      643.3
     ],
     [
-     239.8,
+     239.26,
      2991,
      1813.3,
      630.1,
      651.9
     ],
     [
-     244.8,
+     244.04,
      2991,
      1833.9,
      691.7,
      681.8
     ],
     [
-     249.8,
+     248.82,
      2991,
      1871.7,
      776.2,
      723.9
     ],
     [
-     254.8,
+     253.6,
      2991,
      1799.5,
      856.0,
      749.2
     ],
     [
-     259.8,
+     258.37,
      2991,
      1677.4,
      821.5,
      750.4
     ],
     [
-     264.8,
+     263.15,
      2991,
      1549.8,
      720.7,
      756.4
     ],
     [
-     269.8,
+     267.93,
      2991,
      1414.8,
      606.9,
      762.7
     ],
     [
-     273.7,
+     271.66,
      0,
      -969.2,
      -354.3,
      239.5
     ],
     [
-     278.7,
+     276.44,
      0,
      -818.2,
      -351.8,
      239.5
     ],
     [
-     283.7,
+     281.22,
      0,
      -672.2,
      -351.1,
      239.5
     ],
     [
-     288.7,
+     285.99,
      0,
      -517.8,
      -358.4,
      239.5
     ],
     [
-     293.7,
+     290.77,
      0,
      -360.9,
      -367.8,
      239.5
     ],
     [
-     298.7,
+     295.55,
      0,
      -219.3,
      -379.2,
      239.5
     ],
     [
-     303.7,
+     300.33,
      0,
      -69.1,
      -386.8,
      239.5
     ],
     [
-     308.7,
+     305.11,
      0,
      81.3,
      -374.6,
      239.6
     ],
     [
-     313.7,
+     309.89,
      0,
      162.6,
      -264.3,
      241.0
     ],
     [
-     318.7,
+     314.67,
      0,
      229.0,
      -141.7,
      226.9
     ],
     [
-     323.7,
+     319.44,
      0,
      338.8,
      -43.1,
      191.5
     ],
     [
-     328.7,
+     324.22,
      0,
      457.6,
      55.7,
      153.9
     ],
     [
-     333.7,
+     329.0,
      0,
      568.0,
      151.3,
      131.1
     ],
     [
-     338.7,
+     333.78,
      0,
      617.8,
      235.5,
      119.3
     ],
     [
-     343.7,
+     338.56,
      0,
      596.7,
      319.2,
      112.2
     ],
     [
-     348.7,
+     343.34,
      0,
      565.7,
      380.2,
      108.8
     ],
     [
-     353.7,
+     348.12,
      0,
      549.2,
      413.6,
      107.4
     ],
     [
-     358.7,
+     352.89,
      0,
      544.8,
      424.2,
      107.0
     ]
    ],
-   "note": "Model 358.81 s agrees with Tripview's 5:59; Nauticus lists 353 for this placeholder route. Zephras Isle is its own map (2991): the ship changes maps (loading screen) on each crossing. Dock NPCs announce arrivals here (Nauticus: 'Arcanist Laurain' at Dalaran and 'High Order Dockmaster' on Zephras, text containing 'just arrived')."
+   "note": "Measured 353 s (NauticusClassicResurrected: dock announcement timestamps, Zephras->Dalaran 186 s twice + Dalaran->Zephras 167 s); the model gives 358.81 s (Tripview's 5:59 is that model). The model's Dalaran -> Zephras time matches the 167 s, so the Zephras -> Dalaran leg is scaled to the measured round trip (times on it may be off by about 3 s). Whole-second timestamps: the round trip may be off by about 2 s. Zephras Isle is its own map (2991): the ship changes maps (loading screen) on each crossing. Dock NPCs announce arrivals here (Nauticus: 'Arcanist Laurain' at Dalaran and 'High Order Dockmaster' on Zephras, text containing 'just arrived')."
   },
   {
    "id": "orgrimmar_undercity",

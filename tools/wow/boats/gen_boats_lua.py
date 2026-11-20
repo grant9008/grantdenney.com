@@ -41,11 +41,12 @@ SHORT = {
 }
 KIND = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}
 # How far the round trip may be off (s per round trip). Measured classic routes: ms; the
-# Forever-only ones were timed by hand or only modelled.
+# Forever-only ones were timed by hand or only modelled. The Dalaran skyship's 353 s is the
+# sum of two dock announcement intervals read from whole-second chat timestamps: about 2 s.
 PERIOD_SIGMA = {
     "menethil_theramore": 0.01, "menethil_southshore_auberdine": 0.05, "auberdine_rutheran": 0.2,
     "stormwind_auberdine": 0.5, "feathermoon_ferry": 0.01, "bootybay_ratchet": 0.01,
-    "tanaris_riverglades": 0.4, "dalaran_zephras": 1.0, "orgrimmar_undercity": 0.01,
+    "tanaris_riverglades": 0.4, "dalaran_zephras": 2.0, "orgrimmar_undercity": 0.01,
     "orgrimmar_gromgol": 0.01, "undercity_gromgol": 0.05, "mulgore_zephras": 0.3,
 }
 # How far a stop's arrival offset (from the first stop) may be off, s: the model's leg times.

@@ -17,13 +17,14 @@ local ADDON_NAME, ns = ...
 --   - /gl boat now (or a click on the line) when the boat docks;
 --   - guild and group members with this addon (addon messages, prefix GLBoat).
 -- What it learns is kept with the server time in the saved settings, per realm. The timer's
--- possible error grows with every round trip (and by 10 s after a weekly reset until a new
--- sighting shows that resets keep the schedule), so the line goes from m:ss to "about" to
+-- possible error grows with every round trip (and by 10 s after a weekly reset until sharp
+-- sightings show whether resets keep the schedule), so the line goes from m:ss to "about" to
 -- "unknown" instead of showing a made-up time. Anything older than 30 days is dropped.
 --
 -- Nothing runs away from docks and boats: a zone change starts a check every 3 s within
--- 1500 yd of a dock, every second within 150 yd, while the line shows and while you ride.
--- /gl boats on|off|status, /gl boat now. Plain ASCII only.
+-- 1500 yd of a dock, every second within 150 yd, while the line shows and while you ride (a
+-- ride ends at the next dock, 20 s after the boat should have got there, or when you are
+-- off its track). /gl boats [on|off|all], /gl boat now. Plain ASCII only.
 
 ADDON_NAME = ADDON_NAME or "GoblinLedger"
 ns = ns or {}
@@ -34,7 +35,7 @@ local floor, abs, sqrt, min, max = math.floor, math.abs, math.sqrt, math.min, ma
 local smatch, sformat, slower, sgmatch, sfind = string.match, string.format, string.lower, string.gmatch, string.find
 local tconcat, tsort = table.concat, table.sort
 
-local B = { lastError = nil, stats = { samples = 0, sent = 0, got = 0, dropped = 0, renders = 0, steps = 0 } }
+local B = { lastError = nil, stats = { samples = 0, sent = 0, got = 0, dropped = 0, renders = 0, steps = 0, rideEnds = 0 } }
 ns.Boats = B
 
 -- BEGIN DATA
@@ -84,11 +85,11 @@ local ROUTES = {
       { "Tanaris", "Powderfuse Port", 0, -8232.3, -5800.8, 70, 136.47, 60, 1.5, 16727 },
     }, "104.13:1>0,233.12:0>1",
     "62.1,1,-6935.2,-4950.5;67.1,1,-6959.6,-4949.5;72.1,1,-7004.1,-4954.8;77.1,1,-7064.3,-4987.1;82.1,1,-7132.1,-5063;87.1,1,-7188.7,-5172.4;92.1,1,-7261.2,-5302.2;97.1,1,-7332.8,-5428.9;102.1,1,-7341.4,-5585.8;107.1,0,-8230.8,-6187.9;112.1,0,-8205,-6058.6;117.1,0,-8164.4,-5953.8;122.1,0,-8164.3,-5871.2;127.1,0,-8195,-5823.5;132.1,0,-8224.8,-5805.1;197.1,0,-8232.5,-5800.7;202.1,0,-8246.9,-5792.5;207.1,0,-8283.9,-5780.6;212.1,0,-8348.9,-5784.5;217.1,0,-8435,-5814.8;222.1,0,-8536.8,-5860.5;227.1,0,-8664.3,-5924.5;232.1,0,-8789.9,-6024.7;233.1,1,-6632.2,-5506.2;238.1,1,-6660.1,-5349.5;243.1,1,-6688.9,-5207.4;248.1,1,-6738.9,-5083.5;253.1,1,-6793.5,-5007.4;258.1,1,-6851.1,-4965;263.1,1,-6903.5,-4952.9;268.1,1,-6929,-4951.1" },
-  { "dalaran_zephras", 11398, "Skyship", "A", 358.81, 1, {
+  { "dalaran_zephras", 11398, "Skyship", "A", 353, 2, {
       { "Zephras Isle", "Dalaran", 0, 544.8, 424.2, 35, 0, 60, 0, 279 },
       { "Dalaran", "Zephras Isle - High Order Dock", 2991, 1848.3, 569.1, 35, 167.61, 60, 3, 16628 },
-    }, "108.6:0>2991,273.65:2991>0",
-    "64.8,0,539.8,437.3;69.8,0,525.9,475.3;74.8,0,503.5,530.3;79.8,0,462.4,594.7;84.8,0,382.2,646.6;89.8,0,247,667.9;94.8,0,107.9,717.6;99.8,0,-28,790.5;104.8,0,-153.5,897.9;109.8,2991,1317.4,566.5;114.8,2991,1445.1,636.3;119.8,2991,1578.9,596.7;124.8,2991,1714.6,505.8;129.8,2991,1785.4,378.1;134.8,2991,1862.7,264.4;139.8,2991,1999.2,265;144.8,2991,2000.8,369.2;149.8,2991,1924.5,430.6;154.8,2991,1885.1,498.4;159.8,2991,1860.1,547.3;164.8,2991,1849.6,566.8;229.8,2991,1846,572.9;234.8,2991,1828.8,596.9;239.8,2991,1813.3,630.1;244.8,2991,1833.9,691.7;249.8,2991,1871.7,776.2;254.8,2991,1799.5,856;259.8,2991,1677.4,821.5;264.8,2991,1549.8,720.7;269.8,2991,1414.8,606.9;273.7,0,-969.2,-354.3;278.7,0,-818.2,-351.8;283.7,0,-672.2,-351.1;288.7,0,-517.8,-358.4;293.7,0,-360.9,-367.8;298.7,0,-219.3,-379.2;303.7,0,-69.1,-386.8;308.7,0,81.3,-374.6;313.7,0,162.6,-264.3;318.7,0,229,-141.7;323.7,0,338.8,-43.1;328.7,0,457.6,55.7;333.7,0,568,151.3;338.7,0,617.8,235.5;343.7,0,596.7,319.2;348.7,0,565.7,380.2;353.7,0,549.2,413.6;358.7,0,544.8,424.2" },
+    }, "108.6:0>2991,271.61:2991>0",
+    "64.8,0,539.8,437.3;69.8,0,525.9,475.3;74.8,0,503.5,530.3;79.8,0,462.4,594.7;84.8,0,382.2,646.6;89.8,0,247,667.9;94.8,0,107.9,717.6;99.8,0,-28,790.5;104.8,0,-153.5,897.9;109.8,2991,1317.4,566.5;114.8,2991,1445.1,636.3;119.8,2991,1578.9,596.7;124.8,2991,1714.6,505.8;129.8,2991,1785.4,378.1;134.8,2991,1862.7,264.4;139.8,2991,1999.2,265;144.8,2991,2000.8,369.2;149.8,2991,1924.5,430.6;154.8,2991,1885.1,498.4;159.8,2991,1860.1,547.3;164.8,2991,1849.6,566.8;229.7,2991,1846,572.9;234.48,2991,1828.8,596.9;239.26,2991,1813.3,630.1;244.04,2991,1833.9,691.7;248.82,2991,1871.7,776.2;253.6,2991,1799.5,856;258.37,2991,1677.4,821.5;263.15,2991,1549.8,720.7;267.93,2991,1414.8,606.9;271.66,0,-969.2,-354.3;276.44,0,-818.2,-351.8;281.22,0,-672.2,-351.1;285.99,0,-517.8,-358.4;290.77,0,-360.9,-367.8;295.55,0,-219.3,-379.2;300.33,0,-69.1,-386.8;305.11,0,81.3,-374.6;309.89,0,162.6,-264.3;314.67,0,229,-141.7;319.44,0,338.8,-43.1;324.22,0,457.6,55.7;329,0,568,151.3;333.78,0,617.8,235.5;338.56,0,596.7,319.2;343.34,0,565.7,380.2;348.12,0,549.2,413.6;352.89,0,544.8,424.2" },
   { "orgrimmar_undercity", 302, "Zeppelin", "H", 356.288, 0.01, {
       { "Undercity", "Orgrimmar zeppelin tower", 1, 1318.1, -4658, 30, 0, 60, 0, 0 },
       { "Orgrimmar", "Undercity zeppelin tower", 0, 2062.4, 293, 30, 190.93, 60, 0.5, 0 },
@@ -139,6 +140,14 @@ end
 -- a in [-P/2, P/2)
 local function wrap(a, P) return (a + P / 2) % P - P / 2 end
 
+-- A short fingerprint of a route's data (round trip and stops): saved timers and shared ones
+-- made with other data (a new version that moved or reordered stops) are dropped.
+local function fingerprint(s)
+  local h = 5381
+  for k = 1, #s do h = (h * 33 + s:byte(k)) % 16777216 end
+  return sformat("%06x", h)
+end
+
 ---------------------------------------------------------------------------
 -- Routes
 ---------------------------------------------------------------------------
@@ -146,11 +155,17 @@ local R, byPath, ALL = {}, {}, {}
 for i, e in ipairs(ROUTES) do
   local rt = { i = i, key = e[1], path = e[2], kind = e[3], side = e[4], P = e[5], sP = e[6], stops = {}, tele = {},
                trackSrc = e[9] }
+  local fp = { sformat("%d|%.3f", rt.path, rt.P) }
   for j, s in ipairs(e[7]) do
     rt.stops[j] = { i = j, rt = rt, to = s[1], place = s[2], inst = s[3], x = s[4], y = s[5], r = s[6], arr = s[7],
                     wait = s[8], err = s[9], area = s[10] }
     ALL[#ALL + 1] = rt.stops[j]
+    fp[#fp + 1] = sformat("%s|%d|%.1f|%.1f|%.2f|%d", s[2], s[3], s[4], s[5], s[7], s[8])
   end
+  rt.ver = fingerprint(tconcat(fp, "|"))
+  -- How far a round trip (a measured one, or one in a shared message) may be from the data's:
+  -- 0.5% on the classic routes, more where the data's own round trip is less sure, 2.5% at most.
+  rt.gate = rt.P * min(0.025, max(0.005, 10 * rt.sP / rt.P))
   for t, a, b in sgmatch(e[8], "([%d%.]+):(%d+)>(%d+)") do
     rt.tele[#rt.tele + 1] = { t = tonumber(t), from = tonumber(a), to = tonumber(b) }
   end
@@ -180,10 +195,46 @@ local function track(rt)
 end
 B.Track = track
 
+-- How far (yd) x, y on instance inst is from route rt's track or docks there (nil: none there).
+local function offTrack(rt, x, y, inst)
+  local best
+  local function near(d) if not best or d < best then best = d end end
+  for _, st in ipairs(rt.stops) do
+    if st.inst == inst then near(dist(x, y, st.x, st.y)) end
+  end
+  local tr = track(rt)
+  for i = 1, #tr do
+    local p, q = tr[i], tr[i + 1]
+    if p[2] == inst then
+      near(dist(x, y, p[3], p[4]))
+      if q and q[2] == inst and q[1] - p[1] <= 5.5 then
+        local sx, sy = q[3] - p[3], q[4] - p[4]
+        local L2 = sx * sx + sy * sy
+        if L2 > 1 then
+          local u = min(1, max(0, ((x - p[3]) * sx + (y - p[4]) * sy) / L2))
+          near(dist(x, y, p[3] + u * sx, p[4] + u * sy))
+        end
+      end
+    end
+  end
+  return best
+end
+B.OffTrack = offTrack
+
 -- Seconds from leaving stop a to arriving at stop b.
 local function legTime(rt, a, b, P)
   local sa, sb = rt.stops[a], rt.stops[b]
   return (sb.arr - sa.arr - sa.wait) % (P or rt.P)
+end
+
+-- Seconds from model time t to the boat's next arrival at any stop.
+local function toNextArrival(rt, t)
+  local best
+  for _, st in ipairs(rt.stops) do
+    local d = (st.arr - t) % rt.P
+    if not best or d < best then best = d end
+  end
+  return best or rt.P
 end
 
 ---------------------------------------------------------------------------
@@ -191,10 +242,13 @@ end
 --   [path] = { t0 = a server time the boat was at t = 0 (arrived at its first stop),
 --              s = its error then (s), src = how it was learned, seen = when, obs = the stop
 --              it was seen at (0: not at a stop), ok = sightings that agreed, p0 = the round
---              trip it was learned with (a new addon version with other data drops it) }
+--              trip and v = the route data's fingerprint it was learned with (a new addon
+--              version with other data drops it), ses = the login it was your own sighting in
+--              (the server clock's tenths can differ by a second between logins), rv = it
+--              already counted towards resetVotes }
 --   periods[path] = { P, sP, p0 }: a round trip measured from two of your own sightings
---   resetKeeps = true / false once a sighting after a weekly reset showed whether resets
---   keep the schedule
+--   resetVotes = { k, m }: sharp sightings after weekly resets that kept (k) or moved (m) the
+--   boats; resetKeeps = true / false once one side leads by two (nil: not known yet)
 ---------------------------------------------------------------------------
 local function realmKey()
   local f = _G.GetNormalizedRealmName
@@ -219,10 +273,30 @@ local function store()
 end
 B.Store = store
 
+-- This login's number, kept in the saved settings: one more at each login (the first
+-- PLAYER_ENTERING_WORLD that is not a /reload; a /reload keeps the game's server clock).
+local function savedSession()
+  local n = tonumber(settings().boatSession)
+  if not finite(n) or n < 0 or n > 1e12 then return 0 end
+  return floor(n)
+end
+local function sessionId()
+  if not B.session then
+    if ns.settingsLoaded == false then return 0 end   -- (not before the saved settings are read)
+    B.session = savedSession()
+  end
+  return B.session
+end
+local function newLogin()
+  local n = savedSession() + 1
+  settings().boatSession = n
+  B.session = n
+end
+
 local function period(rt)
   local p = store().periods[rt.path]
   if type(p) == "table" and finite(p.P) and finite(p.sP) and p.p0 == rt.P and p.sP > 0
-     and abs(p.P - rt.P) <= rt.P * 0.005 then
+     and abs(p.P - rt.P) <= rt.gate then
     return p.P, p.sP
   end
   return rt.P, rt.sP
@@ -242,18 +316,20 @@ local function beforeReset(rec, now)
   return lr ~= nil and rec.seen < lr
 end
 
+local function own(src) return src ~= "G" end
+
 -- The route's learned anchor, or nil (a bad, old or outdated one is dropped).
 local function anchorOf(rt, now)
   local st = store()
   local r = st[rt.path]
   if type(r) ~= "table" then return nil end
   local okStop = type(r.obs) == "number" and r.obs >= 0 and r.obs <= #rt.stops and r.obs == floor(r.obs)
-  if not (finite(r.t0) and finite(r.s) and finite(r.seen) and okStop and r.p0 == rt.P and r.s >= 0 and r.s <= 60
-          and type(r.src) == "string") then
+  if not (finite(r.t0) and finite(r.s) and finite(r.seen) and okStop and r.p0 == rt.P and r.v == rt.ver and r.s >= 0
+          and r.s <= 60 and type(r.src) == "string") then
     st[rt.path] = nil
     return nil
   end
-  if now - r.seen > MAX_AGE or r.seen > now + 600 or (st.resetKeeps == false and beforeReset(r, now)) then
+  if now - r.seen > MAX_AGE or r.seen > now + 600 then
     st[rt.path] = nil
     return nil
   end
@@ -263,15 +339,21 @@ B.AnchorOf = anchorOf
 
 -- How far off the timer may be now at stop j (0: not a stop): the sighting's own error, the
 -- round trips since then times the round trip's error, the stop offsets' error when j is not
--- where it was seen, and 10 s while a weekly reset may have moved the boats.
-local function sigma(rt, rec, j, now)
+-- where it was seen, a second for your own sighting from an earlier login, and after a weekly
+-- reset (noReset: left out) 10 s while it is not known whether resets move the boats, or
+-- unknown once they are known to.
+local function sigma(rt, rec, j, now, noReset)
   local P, sP = period(rt)
   local s = rec.s + (abs(now - rec.seen) / P + 1) * sP
   if j ~= rec.obs then
     if j > 0 then s = s + rt.stops[j].err end
     if rec.obs > 0 then s = s + rt.stops[rec.obs].err end
   end
-  if beforeReset(rec, now) and store().resetKeeps ~= true then s = s + 10 end
+  if own(rec.src) and rec.ses ~= sessionId() then s = s + 1 end
+  if not noReset and beforeReset(rec, now) then
+    local keeps = store().resetKeeps
+    if keeps == nil then s = s + 10 elseif keeps == false then s = s + 1000 end
+  end
   return s
 end
 B.Sigma = sigma
@@ -339,11 +421,10 @@ end
 B.clock = clock
 
 ---------------------------------------------------------------------------
--- Where the player is: UnitPosition's world x, y and continent (nil in instances). The
--- first time the player stands on a pier, the axis order is checked against the docks.
+-- Where the player is: UnitPosition's world x, y and continent (nil in instances), in the
+-- order the game's own documentation gives (positionX, positionY), which is the data's.
 ---------------------------------------------------------------------------
-local swap = nil
-local function rawPos()
+local function pos()
   local f = _G.UnitPosition
   if type(f) ~= "function" then return nil end
   local ok, a, b, _, inst = pcall(f, "player")
@@ -351,28 +432,7 @@ local function rawPos()
   if isSecret(a) or isSecret(b) or isSecret(inst) then return nil end
   return a, b, inst
 end
-local function onPier(x, y, inst)
-  for _, st in ipairs(ALL) do
-    if st.inst == inst and dist(x, y, st.x, st.y) <= st.r then return true end
-  end
-  return false
-end
-local function pos()
-  local a, b, inst = rawPos()
-  if not a then return nil end
-  if swap == nil then
-    if onPier(a, b, inst) then
-      swap = false
-    elseif onPier(b, a, inst) then
-      swap = true
-    end
-  end
-  if swap then return b, a, inst end
-  return a, b, inst
-end
 B.Pos = pos
-function B.ResetAxes() swap = nil end
-function B.Axes() return swap end
 
 -- True while the player moves by themselves (walks, falls, flies, rides a taxi).
 -- IsPlayerMoving is the player's own movement; GetUnitSpeed (which may count the boat's
@@ -445,18 +505,20 @@ end
 
 ---------------------------------------------------------------------------
 -- Sharing with guild and group (addon messages):
---   A1|path|stop|arrival server time|error s|how|round trip   a sighting (arrival at that stop)
---   Q1|path                                                     "does anyone know this boat?"
+--   A1|path|stop|arrival server time|error s|how|round trip|data   a sighting (arrival at that
+--                                                                    stop; data: the route's fingerprint)
+--   Q1|path                                                          "does anyone know this boat?"
 -- Sent: after your own sighting (once per route and channel a minute), a question when you
 -- stand at a dock with no good timer (once per route and channel in 5 minutes), and an answer
 -- 1 to 4 s after a question (only your own sightings, never one you were told: one hop),
 -- dropped when someone else answered first. Our own limit: 8 messages, one more each 5 s.
--- Received: checked (known route and stop, a time in the last 30 days, an error of 1 to 30 s,
--- the round trip within 0.5% of the game data's, not from you, at most 20 per sender in 10
--- minutes); names are never shown or saved.
+-- Received: checked (known route and stop, the same route data, a time in the last 30 days,
+-- an error of 1 to 30 s, the round trip close to the game data's, not from you, at most 20 per
+-- sender in 10 minutes). One sender never moves your own fresh timer, nor one it gave you
+-- itself; names are kept in memory only for that and are never shown or saved.
 ---------------------------------------------------------------------------
 local SH = { sentAt = {}, askAt = {}, replyAt = {}, answeredAt = {}, senders = {}, pending = {}, annAt = {},
-             bucket = 8, bucketAt = nil, out = {} }
+             setBy = {}, bucket = 8, bucketAt = nil, out = {} }
 B.share = SH
 
 local function callG(name, ...)
@@ -483,11 +545,14 @@ local function registerPrefix()
   if prefixOK then return true end
   local api = _G.C_ChatInfo
   if type(api) == "table" and type(api.RegisterAddonMessagePrefix) == "function" then
-    local ok = pcall(api.RegisterAddonMessagePrefix, PREFIX)
-    prefixOK = ok
+    -- 0 Success, 1 DuplicatePrefix (already ours); 2 InvalidPrefix and 3 MaxPrefixes (the
+    -- client's limit is full) mean nothing is received or sent.
+    local ok, res = pcall(api.RegisterAddonMessagePrefix, PREFIX)
+    prefixOK = ok and (res == nil or res == true or res == 0 or res == 1)
   end
   return prefixOK
 end
+B.RegisterPrefix = registerPrefix
 
 local function send(msg, ch, now)
   local api = _G.C_ChatInfo
@@ -513,7 +578,7 @@ local function anchorMessage(rt, rec, now)
   local T = rec.t0 + rt.stops[j].arr
   T = T + floor((now - T) / P) * P   -- the latest arrival at that stop
   local sg = min(30, max(1, floor(sigma(rt, rec, j, now) + 0.999)))
-  return sformat("A1|%d|%d|%.1f|%d|%s|%.3f", rt.path, j, T, sg, rec.src, P)
+  return sformat("A1|%d|%d|%.1f|%d|%s|%.3f|%s", rt.path, j, T, sg, rec.src, P, rt.ver)
 end
 B.AnchorMessage = anchorMessage
 
@@ -543,21 +608,53 @@ end
 -- src: R your ride, L a loading screen on it, T your place on its track, A a dockmaster,
 -- M /gl boat now or a click, G a guild or group member.
 ---------------------------------------------------------------------------
-local function own(src) return src ~= "G" end
-
--- Two of your own good sightings some round trips apart give the round trip itself.
+-- Two of your own good sightings some round trips apart give the round trip itself. The
+-- stops' offset errors count when they were seen at different stops, and a second when they
+-- were seen in different logins.
 local function refine(rt, rec, new)
   if rec.s > 3 or new.s > 3 then return end
   local P, sP = period(rt)
   local dt = new.t0 - rec.t0
   local k = floor(dt / P + 0.5)
   if k < 2 or k * sP > P / 4 then return end
-  if abs(dt - k * P) > 3 * (rec.s + new.s + k * sP) then return end
-  local nP, nsP = dt / k, max(0.002, (rec.s + new.s) / k)
-  if nsP >= sP or abs(nP - rt.P) > rt.P * 0.005 then return end
+  local e = rec.s + new.s
+  if rec.obs ~= new.obs then
+    if rec.obs > 0 then e = e + rt.stops[rec.obs].err end
+    if new.obs > 0 then e = e + rt.stops[new.obs].err end
+  end
+  if rec.ses ~= new.ses then e = e + 1 end
+  if abs(dt - k * P) > 3 * (e + k * sP) then return end
+  local nP, nsP = dt / k, max(0.002, e / k)
+  if nsP >= sP or abs(nP - rt.P) > rt.gate then return end
   store().periods[rt.path] = { P = nP, sP = nsP, p0 = rt.P }
 end
 
+-- Do weekly resets move the boats? Only a sharp test counts: your own sighting against a
+-- timer from before the reset whose error without the reset is small. Each old timer counts
+-- once; one side has to lead by two.
+local function resetVote(rt, rec, new, r, now)
+  if rec.rv or not beforeReset(rec, now) then return end
+  local sharp = sigma(rt, rec, new.obs, now, true) + new.s
+  if sharp > 6 then return end
+  local st = store()
+  local v = st.resetVotes
+  if type(v) ~= "table" or not finite(v.k) or not finite(v.m) then
+    v = { k = 0, m = 0 }
+    st.resetVotes = v
+  end
+  if abs(r) <= 2 * sharp then
+    v.k = v.k + 1
+  elseif abs(r) > 3 * sharp + 10 then
+    v.m = v.m + 1
+  else
+    return
+  end
+  rec.rv = true
+  if v.k - v.m >= 2 then st.resetKeeps = true elseif v.m - v.k >= 2 then st.resetKeeps = false else st.resetKeeps = nil end
+end
+
+-- One sighting: "set" (it is the timer now), "kept" (the timer agrees and is as good),
+-- "ignored" or "pending" (a shared one against yours).
 local function observe(rt, j, T, s, src, who)
   local now = serverNow() or T
   local st = store()
@@ -566,41 +663,49 @@ local function observe(rt, j, T, s, src, who)
     for _, x in ipairs(rt.stops) do e = max(e, x.err) end
     s = s + e / 2
   end
-  local new = { t0 = j and (T - rt.stops[j].arr) or T, s = s, src = src, seen = now, obs = j or 0, ok = 0, p0 = rt.P }
+  local new = { t0 = j and (T - rt.stops[j].arr) or T, s = s, src = src, seen = now, obs = j or 0, ok = 0, p0 = rt.P,
+                v = rt.ver, ses = own(src) and sessionId() or nil }
   local rec = anchorOf(rt, now)
   if rec then
     local P = period(rt)
     local sOld = sigma(rt, rec, new.obs, now)
     local r = wrap(new.t0 - rec.t0, P)
-    if abs(r) <= max(2, 3 * (sOld + s)) then
-      -- It agrees.
-      if own(src) and own(rec.src) then refine(rt, rec, new) end
-      if own(src) and beforeReset(rec, now) and st.resetKeeps == nil then
-        if abs(r) <= max(2, 3 * (sOld - 10 + s)) then st.resetKeeps = true end
-      end
-      new.ok = (tonumber(rec.ok) or 0) + 1
+    if own(src) then
+      resetVote(rt, rec, new, r, now)
       SH.pending[rt.path] = nil
-      if sOld <= s then
-        rec.ok = new.ok
-        return "kept"
+      if abs(r) <= max(2, 3 * (sOld + s)) then
+        -- It agrees: the sharper one stays.
+        if own(rec.src) then refine(rt, rec, new) end
+        new.ok = (tonumber(rec.ok) or 0) + 1
+        if sOld <= s then
+          rec.ok = new.ok
+          return "kept"
+        end
       end
-    elseif not own(src) then
-      -- A shared sighting against ours: kept aside until a second sender agrees with it.
-      if own(rec.src) and sOld <= 10 then return "ignored" end
-      local p = SH.pending[rt.path]
-      if not (p and p.who ~= who and abs(wrap(new.t0 - p.t0, P)) <= 3 * (p.s + s)) then
-        SH.pending[rt.path] = { t0 = new.t0, s = s, who = who }
-        return "pending"
-      end
-      SH.pending[rt.path] = nil
+      -- Else your own sighting wins: the schedule moved (a realm restart, a hotfix, a lost boat).
     else
-      -- Your own sighting wins: the schedule moved (a realm restart, a hotfix, a lost boat).
-      -- The first sharp one (a ride, a dockmaster) after a weekly reset also says resets move boats here.
-      if beforeReset(rec, now) and st.resetKeeps == nil and s <= 2.5 then st.resetKeeps = false end
-      SH.pending[rt.path] = nil
+      local fresh = own(rec.src) and sOld <= 10
+      if abs(r) <= sOld + s then
+        -- A shared sighting that fits ours: it only replaces a shared timer it did not set
+        -- itself, and only when it is at least a second sharper. Your own fresh timer stays.
+        rec.ok = (tonumber(rec.ok) or 0) + 1
+        SH.pending[rt.path] = nil
+        if fresh or s > sOld - 1 or (not own(rec.src) and SH.setBy[rt.path] == who) then return "kept" end
+        new.ok = rec.ok
+      else
+        -- A shared sighting against ours: kept aside until a second sender agrees with it.
+        if fresh then return "ignored" end
+        local p = SH.pending[rt.path]
+        if not (p and p.who ~= who and abs(wrap(new.t0 - p.t0, P)) <= 3 * (p.s + s)) then
+          SH.pending[rt.path] = { t0 = new.t0, s = s, who = who }
+          return "pending"
+        end
+        SH.pending[rt.path] = nil
+      end
     end
   end
   st[rt.path] = new
+  SH.setBy[rt.path] = (not own(src)) and who or nil
   if own(src) and s <= 4 then shareOwn(rt, now) end
   return "set"
 end
@@ -676,12 +781,49 @@ local function previousStop(rt, t)
   return from
 end
 
+-- RD.ride = { rt, from = the stop it left, dep = when (nil: found on the track), t0 = the
+-- server time of its t = 0, ts = how sure that is (s), untilT = 20 s after it should reach
+-- its next dock, off = samples in a row away from its track, grace = no track check until
+-- then (right after a map change the track's next point may be 150 yd ahead) }.
+local OFFTRACK_YD, LOAD_YD, RIDE_SLACK = 150, 250, 20
+local function endRide()
+  if RD.ride then B.stats.rideEnds = B.stats.rideEnds + 1 end
+  RD.ride, RD.fast = nil, nil
+end
+
+-- False (and the ride is over) once the boat should long have reached its next dock, or when
+-- you are away from its track twice in a row: you got off without standing still on the pier.
+local function rideGoesOn(now, x, y, inst)
+  local ride = RD.ride
+  if not ride then return false end
+  if not (finite(ride.untilT) and now <= ride.untilT) then
+    endRide()
+    return false
+  end
+  if ride.grace and now < ride.grace then return true end
+  local d = offTrack(ride.rt, x, y, inst)
+  if not d or d > OFFTRACK_YD then
+    ride.off = (ride.off or 0) + 1
+    if ride.off >= 2 then
+      endRide()
+      return false
+    end
+  else
+    ride.off = 0
+  end
+  return true
+end
+B.RideGoesOn = rideGoesOn
+
 local function departed(rest, T, x, y)
   local st = rest.st
   RD.rest, RD.cand, RD.fast = nil, nil, nil
   if not leavesThisWay(st, x - rest.x, y - rest.y) then return end
-  RD.ride = { rt = st.rt, from = st.i, dep = T }
-  observe(st.rt, st.i, T - st.wait, 1.5, "R")
+  local rt = st.rt
+  local nxt = st.i % #rt.stops + 1
+  RD.ride = { rt = rt, from = st.i, dep = T, t0 = T - st.wait - st.arr, ts = 1.5,
+              untilT = T + legTime(rt, st.i, nxt, period(rt)) + RIDE_SLACK }
+  observe(rt, st.i, T - st.wait, 1.5, "R")
 end
 
 -- The boat stopped (the place stands still again): at one of the route's docks, that is
@@ -694,7 +836,7 @@ local function arrived(now, x, y, inst)
     if st.inst == inst and dist(x, y, st.x, st.y) <= st.r + 30 then stop = st end
   end
   if not stop then return end
-  RD.ride, RD.fast = nil, nil
+  endRide()
   if not f or f.v > 4 or now - f.t > 3.5 then return end
   local T = f.t + f.v / ACC
   if T > now + 0.5 then return end
@@ -710,6 +852,7 @@ local function sampleRide(now, x, y, inst)
   local moving = selfMoving()
   local L = RD.last
   RD.last = { t = now, x = x, y = y, inst = inst, own = moving }
+  rideGoesOn(now, x, y, inst)
   if not L or L.inst ~= inst or now <= L.t or now - L.t > 6 then
     RD.rest, RD.cand, RD.carried = nil, nil, 0
     return
@@ -717,7 +860,8 @@ local function sampleRide(now, x, y, inst)
   local dt = now - L.t
   local step = dist(x, y, L.x, L.y)
   if step > 60 * dt then   -- a blink, a charge or a portal: whatever was going on is over
-    RD.rest, RD.cand, RD.carried, RD.fast, RD.ride = nil, nil, 0, nil, nil
+    RD.rest, RD.cand, RD.carried = nil, nil, 0
+    endRide()
     return
   end
   if moving or L.own then  -- walking about (on deck too): no rest place, the ride goes on
@@ -757,7 +901,8 @@ local function sampleRide(now, x, y, inst)
     if RD.carried >= 2 then
       local m = matchTrack(x, y, inst, x - L.x, y - L.y)
       if m then
-        RD.ride = { rt = m.rt, from = previousStop(m.rt, m.t), dep = nil }
+        RD.ride = { rt = m.rt, from = previousStop(m.rt, m.t), dep = nil, t0 = now - m.t, ts = 6,
+                    untilT = now + toNextArrival(m.rt, m.t) + RIDE_SLACK }
         observe(m.rt, nil, now - m.t, 4, "T")
       end
     end
@@ -771,21 +916,31 @@ local function leavingWorld()
     ride.load, ride.loadFrom = serverNow(), L.inst
   end
 end
+-- After the loading screen you have to be on the boat's track (else it was a hearthstone or a
+-- portal: the ride is over), and the moment has to be the map change the ride expects.
 local function enteredWorld(isLogin, isReload)
   local ride = RD.ride
   RD.last, RD.rest, RD.cand, RD.carried = nil, nil, nil, 0
   if isLogin or isReload then
-    RD.ride = nil
+    endRide()
     return
   end
-  if not ride or not ride.load then return end
-  local x, _, inst = pos()
-  local at = ride.load
-  ride.load = nil
-  if not x or not at then return end
+  if not ride then return end
+  local at, from = ride.load, ride.loadFrom
+  ride.load, ride.loadFrom = nil, nil
+  local x, y, inst = pos()
+  local d = x and offTrack(ride.rt, x, y, inst)
+  if not d or d > LOAD_YD then
+    endRide()
+    return
+  end
+  ride.off, ride.grace = 0, (serverNow() or 0) + 10
+  if not at then return end   -- walking about on deck: the ride goes on, nothing learned
   for _, tp in ipairs(ride.rt.tele) do
-    if tp.from == ride.loadFrom and tp.to == inst and tp.from ~= tp.to then
-      observe(ride.rt, nil, at - tp.t, 2.5, "L")
+    if tp.from == from and tp.to == inst and tp.from ~= tp.to then
+      if finite(ride.t0) and abs(wrap(at - (ride.t0 + tp.t), period(ride.rt))) <= 10 + (tonumber(ride.ts) or 6) then
+        observe(ride.rt, nil, at - tp.t, 2.5, "L")
+      end
       return
     end
   end
@@ -820,8 +975,9 @@ end
 local UI = { holder = nil, btn = {}, fs = {}, list = nil, mode = nil, shown = false, confirm = nil }
 B.ui = UI
 
+-- m:ss, rounded up like a countdown: 1:00 as it docks, 0:01 in its last second, never 0:00.
 local function clockText(sec)
-  sec = max(0, floor(sec))
+  sec = max(0, math.ceil(sec - 1e-6))
   return sformat("%d:%02d", floor(sec / 60), sec % 60)
 end
 
@@ -858,17 +1014,30 @@ local function rectOf(o)
 end
 B.RectOf = rectOf
 
+-- The map's coordinates under the minimap: the frame is always there (the game only blanks
+-- its text when they are switched off), so it counts only while it shows coordinates.
+local function coordsFrame()
+  local cl = _G.MinimapCluster
+  local pc = type(cl) == "table" and type(cl.MinimapContainer) == "table" and cl.MinimapContainer.PlayerCoords
+  if not shown(pc) then return nil end
+  local f = _G.GetCVarBool
+  if type(f) == "function" then
+    local ok, v = pcall(f, "minimapShowPlayerCoords")
+    if ok and type(v) == "boolean" then return v and pc or nil end
+  end
+  local t = call(pc.CoordText, "GetText")
+  if type(t) == "string" and not isSecret(t) and t ~= "" then return pc end
+  return nil
+end
+
 -- The game's (or ElvUI's) minimap pieces: what the lines hang under, and the map itself.
 local function minimapParts()
   local mm = _G.Minimap
   local elv = _G.ElvUI_MinimapHolder
   if shown(elv) then return elv, mm, "elvui" end
   local cl = _G.MinimapCluster
-  local parts = { cl, mm, _G.MinimapBackdrop, _G.UIWidgetBelowMinimapContainerFrame }
-  if type(cl) == "table" then
-    parts[#parts + 1] = cl.ZoneTextButton
-    if type(cl.MinimapContainer) == "table" then parts[#parts + 1] = cl.MinimapContainer.PlayerCoords end
-  end
+  local parts = { cl, mm, _G.MinimapBackdrop, _G.UIWidgetBelowMinimapContainerFrame, coordsFrame() }
+  if type(cl) == "table" then parts[#parts + 1] = cl.ZoneTextButton end
   local low, lowB = nil, nil
   for _, p in ipairs(parts) do
     if shown(p) then
@@ -883,16 +1052,16 @@ end
 local function obstacles()
   local out = {}
   local function add(o) if shown(o) then out[#out + 1] = o end end
+  -- (Questie_BaseFrame: Questie's tracker, which takes the place of the game's.)
   for _, n in ipairs({ "Minimap", "MinimapBackdrop", "ElvUI_MinimapHolder", "MinimapPanel", "ObjectiveTrackerFrame",
-                       "QuestWatchFrame", "WatchFrame", "DurabilityFrame", "VehicleSeatIndicator",
+                       "QuestWatchFrame", "WatchFrame", "Questie_BaseFrame", "DurabilityFrame", "VehicleSeatIndicator",
                        "UIWidgetBelowMinimapContainerFrame", "BuffFrame", "DebuffFrame" }) do
     add(_G[n])
   end
   local cl = _G.MinimapCluster
-  if type(cl) == "table" then
-    add(cl.ZoneTextButton)
-    if type(cl.MinimapContainer) == "table" then add(cl.MinimapContainer.PlayerCoords) end
-  end
+  if type(cl) == "table" then add(cl.ZoneTextButton) end
+  local pc = coordsFrame()
+  if pc then out[#out + 1] = pc end
   return out
 end
 local function overlapsAny(rect)
@@ -1090,12 +1259,14 @@ local function setInterval(sec)
   end
 end
 
--- CHAT_MSG_MONSTER_SAY / YELL only near a dock whose dockmaster announces.
+-- The NPC chat events only near a dock whose dockmaster announces.
+local MONSTER_EVENTS = { CHAT_MSG_MONSTER_SAY = true, CHAT_MSG_MONSTER_YELL = true, CHAT_MSG_MONSTER_EMOTE = true,
+                         CHAT_MSG_RAID_BOSS_EMOTE = true }
 local function listen(on)
   local f = B.eventFrame
   if on == D.listening or type(f) ~= "table" then return end
   D.listening = on
-  for _, ev in ipairs({ "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL" }) do
+  for ev in pairs(MONSTER_EVENTS) do
     if on then pcall(f.RegisterEvent, f, ev) else pcall(f.UnregisterEvent, f, ev) end
   end
 end
@@ -1217,11 +1388,11 @@ local function onAddonMessage(prefix, text, ch, sender)
     end
     return
   end
-  local p, j, T, sg, src, P = smatch(text, "^A1|(%d+)|(%d)|(%d+%.?%d?)|(%d+)|([RLTAM])|(%d+%.%d+)$")
+  local p, j, T, sg, src, P, v = smatch(text, "^A1|(%d+)|(%d)|(%d+%.?%d?)|(%d+)|([RLTAM])|(%d+%.%d+)|(%x%x%x%x%x%x)$")
   local rt = p and byPath[tonumber(p)]
   j, T, sg, P = tonumber(j), tonumber(T), tonumber(sg), tonumber(P)
-  if not (rt and j and T and sg and P) or j < 1 or j > #rt.stops or sg < 1 or sg > 30
-     or T < now - MAX_AGE or T > now + rt.P + 5 or abs(P - rt.P) > rt.P * 0.005 then
+  if not (rt and j and T and sg and P) or v ~= rt.ver or j < 1 or j > #rt.stops or sg < 1 or sg > 30
+     or T < now - MAX_AGE or T > now + rt.P + 5 or abs(P - rt.P) > rt.gate then
     B.stats.dropped = B.stats.dropped + 1
     return
   end
@@ -1239,32 +1410,56 @@ end
 B.OnAddonMessage = onAddonMessage
 
 ---------------------------------------------------------------------------
--- /gl boat now, a click on the line, /gl boats on|off|status
+-- /gl boat now, a click on the line, /gl boats [on|off|all]
 ---------------------------------------------------------------------------
+-- Seconds from the timer's nearest arrival at stop st to now (+: it arrived that long ago).
+local function fromArrival(st, kind, sec)
+  if kind == "docked" then return st.wait - sec end
+  if kind == "coming" then
+    local since = st.rt.P - sec
+    if since < sec then return since end
+    return -sec
+  end
+  return nil
+end
+
+-- "The boat docks now": when the timer already says so (to within max(5 s, twice its
+-- error)), that agrees; else it is a sighting (a better timer that agrees stays).
 local function boatNow(st, now)
   local rt = st.rt
-  local kind, _, sg = stopState(rt, st.i, now)
-  if kind == "docked" and sg <= 10 then
+  local kind, sec, sg = stopState(rt, st.i, now)
+  local off = fromArrival(st, kind, sec)
+  local res
+  if off and sg <= 10 and abs(off) <= max(5, 2 * sg) then
     local rec = anchorOf(rt, now)
-    rec.ok = (tonumber(rec.ok) or 0) + 1   -- it already says docked: that agrees
+    rec.ok = (tonumber(rec.ok) or 0) + 1
+    res = "kept"
   else
-    observe(rt, st.i, now, 4, "M")
+    res = observe(rt, st.i, now, 4, "M")
   end
-  say("boat timer set: the " .. slower(rt.kind) .. " to " .. st.to .. " docks now.")
+  local what = "the " .. slower(rt.kind) .. " to " .. st.to
+  if res == "kept" then
+    say("boat timer kept: it already had " .. what .. " docking now.")
+  else
+    say("boat timer set: " .. what .. " docks now.")
+  end
   wake()
 end
 
--- A click: like /gl boat now, but when the timer is good and says the boat is not near, a
--- second click within 5 s is needed (a stray click must not spoil a good timer).
+-- A click: like /gl boat now, but when the timer is good and says the boat is not near (more
+-- than 20 s from docking), a second click within 5 s is needed (a stray click must not spoil
+-- a good timer).
 function B.Click(st)
   local now = serverNow()
   if not now or not isOn() then return end
   local kind, sec, sg = stopState(st.rt, st.i, now)
-  local far = kind == "coming" and sg <= EXACT_S and sec > 20 and st.rt.P - sec > st.wait + 20
+  local off = fromArrival(st, kind, sec)
+  local far = off and sg <= EXACT_S and abs(off) > 20
   local c = UI.confirm
   if far and not (c and c.st == st and now - c.at <= 5) then
     UI.confirm = { st = st, at = now }
-    say("the timer says this " .. slower(st.rt.kind) .. " comes in " .. clockText(sec) .. ". Click again if it is docking now.")
+    local said = kind == "docked" and ("docked " .. clockText(off) .. " ago") or ("comes in " .. clockText(sec))
+    say("the timer says this " .. slower(st.rt.kind) .. " " .. said .. ". Click again if it is docking now.")
     return
   end
   UI.confirm = nil
@@ -1278,40 +1473,53 @@ local function sourceText(src)
   return "a guild or group member"
 end
 
-local function playerSide()
-  local f = callG("UnitFactionGroup", "player")
-  if f == "Alliance" then return "A" end
-  if f == "Horde" then return "H" end
-  return nil
+-- The nearest dock on this continent, how far, and its boats, in one line.
+local function nearestText(now)
+  local x, y, inst = pos()
+  if not x then return nil end
+  local st, d = nearestDock(x, y, inst)
+  if not st then return nil end
+  local list = docksHere(st.x, st.y, st.inst, 0)
+  local parts = {}
+  for i, e in ipairs(list) do
+    local head, value = lineParts(e.st, now)
+    parts[i] = #list > 1 and (e.st.to .. " " .. value) or (head .. ": " .. value)
+  end
+  return sformat("nearest dock: %s, %d yd. %s", st.place, floor(d + 0.5), tconcat(parts, "; "))
 end
 
-local function status(all)
+-- /gl boats: two lines (on or off, and the nearest dock with its boats).
+local function status()
+  if not isOn() then
+    say("boat timers are off. /gl boats on turns them on.")
+    return
+  end
+  say("boat timers are on. /gl boats all lists every route.")
+  local now = serverNow()
+  local t = now and nearestText(now)
+  if t then say(t) end
+end
+
+-- /gl boats all: every route, what is known about it, and the nearest dock.
+local function listAll()
   say("boat timers are " .. (isOn() and "on: at a dock, a line under the minimap says when the boat comes." or "off. /gl boats on turns them on."))
   local now = serverNow()
   if not now then return end
-  local side, others = playerSide(), 0
   for _, rt in ipairs(R) do
     local rec = anchorOf(rt, now)
-    if all or rec or rt.side == "N" or not side or rt.side == side then
-      local P = period(rt)
-      local what = "unknown (ride it, or /gl boat now when it docks)"
-      if rec then
-        local sg = sigma(rt, rec, rec.obs, now)
-        local age = type(ns.AgeText) == "function" and ns.AgeText(now - rec.seen) or ""
-        what = (sg <= ABOUT_S and sformat("known to %d s", floor(sg + 0.999)) or "too old to trust")
-          .. " (" .. sourceText(rec.src) .. ", " .. age .. ")"
-      end
-      say(sformat("%s (%s round trip): %s", rt.name, clockText(P), what))
-    else
-      others = others + 1
+    local P = period(rt)
+    local what = "unknown (ride it, or /gl boat now when it docks)"
+    if rec then
+      local sg = sigma(rt, rec, rec.obs, now)
+      local age = type(ns.AgeText) == "function" and ns.AgeText(now - rec.seen) or ""
+      what = (sg <= ABOUT_S and sformat("known to %d s", floor(sg + 0.999))
+              or (store().resetKeeps == false and beforeReset(rec, now) and "unknown since the weekly reset" or "too old to trust"))
+        .. " (" .. sourceText(rec.src) .. ", " .. age .. ")"
     end
+    say(sformat("%s (%s round trip): %s", rt.name, clockText(floor(P + 0.5)), what))
   end
-  if others > 0 then say(others .. " routes of the other faction: /gl boats all") end
-  local x, y, inst = pos()
-  if x then
-    local st, d = nearestDock(x, y, inst)
-    if st then say(sformat("nearest dock: %s (%s to %s), %d yd", st.place, slower(st.rt.kind), st.to, floor(d + 0.5))) end
-  end
+  local t = nearestText(now)
+  if t then say(t) end
 end
 
 local function boatsCommand(rest)
@@ -1325,12 +1533,14 @@ local function boatsCommand(rest)
     S.boats = false
     stopAll()
     say("boat timers are off. /gl boats on brings them back.")
-  elseif rest == "" or rest == "status" or rest == "all" then
-    status(rest == "all")
+  elseif rest == "" or rest == "status" then
+    status()
+  elseif rest == "all" then
+    listAll()
   elseif rest == "now" then
     B.BoatNow()
   else
-    say("unknown choice. Use /gl boats on, /gl boats off or /gl boats status.")
+    say("unknown choice. Use /gl boats on, /gl boats off or /gl boats all.")
   end
 end
 
@@ -1369,7 +1579,7 @@ function ns.HandleSlash(msg)
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "help" or cmd == "?" then
-    say("/gl boats : at a dock, when the boat comes (on, off, status); /gl boat now as a boat docks sets its timer")
+    say("/gl boats : at a dock, when the boat comes (on, off, all); /gl boat now as a boat docks sets its timer")
   end
 end
 
@@ -1388,11 +1598,15 @@ if type(_G.CreateFrame) == "function" then
       local okE, err = pcall(function()
         if event == "CHAT_MSG_ADDON" then
           onAddonMessage(a1, a2, a3, a4)
-        elseif event == "CHAT_MSG_MONSTER_SAY" or event == "CHAT_MSG_MONSTER_YELL" then
+        elseif MONSTER_EVENTS[event] then
           onMonsterChat(a1, a2)
         elseif event == "LOADING_SCREEN_ENABLED" or event == "PLAYER_LEAVING_WORLD" then
           leavingWorld()
         elseif event == "PLAYER_ENTERING_WORLD" then
+          if not B.enteredOnce then
+            B.enteredOnce = true
+            if a2 ~= true then newLogin() end
+          end
           enteredWorld(a1 == true, a2 == true)
           wake()
         elseif event == "PLAYER_LOGIN" then
