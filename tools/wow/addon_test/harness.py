@@ -2922,7 +2922,7 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "SKILL_LINES_CHANGED", "TRADE_SKILL_SHOW", "TRADE_SKILL_LIST_UPDATE", "TRADE_SKILL_CLOSE",
   "TRADE_SKILL_DATA_SOURCE_CHANGED", "NEW_RECIPE_LEARNED", "LEARNED_SPELL_IN_SKILL_LINE",
   "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
-  "PLAYER_CONTROL_GAINED",
+  "PLAYER_CONTROL_GAINED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
   "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
   "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
   "CHAT_MSG_RAID_BOSS_EMOTE"}
@@ -2932,7 +2932,7 @@ M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "AUCTION_OWNED_LIST_UPDATE", "AUCTION_BIDDER_LIST_UPDATE", "PLAYER_INTERACTION_MANAGER_FRAME_SHOW",
   "PLAYER_INTERACTION_MANAGER_FRAME_HIDE", "MODIFIER_STATE_CHANGED", "GET_ITEM_INFO_RECEIVED", "BAG_UPDATE" , "BAG_UPDATE_DELAYED", "QUEST_LOG_UPDATE", "PLAYER_LEVEL_UP", "MERCHANT_SHOW", "MERCHANT_CLOSED", "PLAYER_MONEY",
   "CHARACTER_POINTS_CHANGED", "PLAYER_TALENT_UPDATE", "SKILL_LINES_CHANGED", "TAXIMAP_OPENED", "TAXIMAP_CLOSED", "PLAYER_CONTROL_LOST",
-  "PLAYER_CONTROL_GAINED",
+  "PLAYER_CONTROL_GAINED", "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED",
   "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
   "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
   "CHAT_MSG_RAID_BOSS_EMOTE"}
@@ -4580,32 +4580,48 @@ def partial_term(ref, name):
 # ===========================================================================
 # Scenarios
 # ===========================================================================
-MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime", "UnitAffectingCombat")
+MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime", "UnitAffectingCombat",
+             "IsInInstance", "IsInGuild", "IsInGroup", "IsInRaid", "GetUnitSpeed", "IsFalling")
+# The mocks' deliberate second definitions: the Blizzard bags (M.InstallBlizzardBags) put the
+# game's own bag functions over the plain mock's.
+MOCK_OVERRIDES = {n: ["MOCK_LUA", "MOCK_LUA"] for n in ("OpenAllBags", "CloseAllBags", "ToggleAllBags", "ToggleBackpack", "ToggleBag")}
 
 
 def mock_defs():
-    """Every game function or table the Lua mocks (the *_LUA chunks) define at column 0, as
+    """Every game function or table the Lua mocks (the *_LUA chunks) define at column 0, and
+    every global function they define indented (inside an install helper), as
     {name: [chunk, ...]}: one mock per API means each name in one chunk, once."""
     out = {}
     for cname, body in sorted(globals().items()):
         if not (cname.endswith("_LUA") and isinstance(body, str)):
             continue
-        for m in re.finditer(r"^(?:function ([A-Za-z_][\w.:]*)\s*\(|([A-Za-z_][\w.]*)\s*=(?!=))", body, re.M):
-            name = m.group(1) or m.group(2)
+        for m in re.finditer(r"^(?:function ([A-Za-z_][\w.:]*)\s*\(|([A-Za-z_][\w.]*)\s*=(?!=)|[ \t]+function ([A-Za-z_]\w*)\s*\()",
+                             body, re.M):
+            name = m.group(1) or m.group(2) or m.group(3)
             if not name.startswith("M.") and name != "M":
                 out.setdefault(name, []).append(cname)
     return out
 
 
+def mock_api_pattern(api):
+    """A definition of api anywhere in this file: function api(, api = function / {, from Python
+    w.g.api = ..., _G["api"] = ..., rawset(_G, "api", ...) (not a test's w.g.api = None)."""
+    a = re.escape(api)
+    return (r"function\s+%(a)s\s*\(|\b%(a)s\s*=\s*(?:function\b|\{)|\.g\.%(a)s\s*=(?!=)(?!\s*None\b)"
+            r"|\[\s*[\"']%(a)s[\"']\s*\]\s*=(?!=)(?!\s*None\b)|rawset\(\s*_G\s*,\s*[\"']%(a)s[\"']" % {"a": a})
+
+
 def sc_static(sc, ref, items):
     """Source checks for text and calls the scenarios cannot reach."""
-    # one mock per API: no game function or table is defined twice in the Lua mocks, and the
-    # player's GUID, spell book, position, taxi, server time and combat are defined once in all of this file
-    twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1)
+    # one mock per API: no game function or table is defined twice in the Lua mocks (but the
+    # deliberate overrides, each exactly as listed), and the player's GUID, spell book, position,
+    # taxi, server time, combat, instance, guild and group, speed and falling are defined once in
+    # all of this file, Lua or Python
+    twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1 and MOCK_OVERRIDES.get(k) != v)
     sc.eq(twice, {}, "mocks: each game API defined once in the Lua mocks")
     me = open(os.path.abspath(__file__), "rb").read().decode("utf-8")
     for api in MOCK_APIS:
-        n = len(re.findall(r"function\s+%s\s*\(|\b%s\s*=\s*(?:function\b|\{)" % (api, api), me))
+        n = len(re.findall(mock_api_pattern(api), me))
         sc.eq(n, 1, "mocks: %s is defined once in the harness" % api)
     files = TOC_FILES + ["GoblinLedger.toc", "GoblinLedger_Forever.toc"]
     for fname in files:
@@ -26843,6 +26859,11 @@ M.pos = nil
 M.speed, M.falling, M.moving, M.inInstance = 0, false, false, false
 M.combat = false
 function UnitAffectingCombat(unit) return unit == "player" and M.combat == true end
+-- M.Fight(on): a fight starts (PLAYER_REGEN_DISABLED, in combat from then on) or ends.
+function M.Fight(on)
+  M.combat = on == true
+  M.fire(on and "PLAYER_REGEN_DISABLED" or "PLAYER_REGEN_ENABLED")
+end
 M.guild, M.party, M.raid = false, false, false
 M.addonSent, M.prefixes, M.sendResult, M.sendCalls, M.prefixResult = {}, {}, 0, 0, 0
 M.realm, M.resetIn = "TestRealm", 3 * 86400
@@ -29041,8 +29062,10 @@ def sc_boats_x(sc, ref, items):
 # --- boats: the big timer in the upper middle of the screen (the default) ---
 # The screens: the game's units are the same for every 16:9 screen (768 high at effective scale
 # 1 whatever its pixels, UIParent 768 / UI scale), so 1920x1080, 2560x1440 and 1280x720 lay out
-# alike; 3440x1440 is wider. ElvUI sets the UI scale to the screen's pixels (768 / height).
-BT_SCREENS = (("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440), ("1280x720", 1280, 720), ("3440x1440", 3440, 1440))
+# alike; 3440x1440 is wider; 1680x1050 (16:10) and 1280x1024 (5:4) narrower: there the quest
+# tracker reaches the middle. ElvUI sets the UI scale to the screen's pixels (768 / height).
+BT_SCREENS = (("1920x1080", 1920, 1080), ("2560x1440", 2560, 1440), ("1280x720", 1280, 720), ("3440x1440", 3440, 1440),
+              ("1680x1050", 1680, 1050), ("1280x1024", 1280, 1024))
 BT_SCALES = (1.0, 0.8, 0.62)
 BT_BIG = {"value": 32, "head": 16, "med": 20, "hint": 13, "sub": 15, "x": 14}
 BT_SMALL_GAME_FONT = 10   # the small line's font in the game: GameFontHighlightSmall (SystemFont_Shadow_Small, 10)
@@ -29099,8 +29122,9 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
     """The big timer shows (the small lines do not), where the addon worked out, centred, on
     screen, at its place: "middle" (its top 290 below the screen's top or 30% down, under the top
     messages, above the character) or "top" (above the timer bars); it covers none of the top
-    messages, the timer bars' and flight bar's spot, the character, nor extra; its words inside
-    it; the X (14 px) just after line 1, at its top, clear of all of them; nothing of it but the X
+    messages, the timer bars' and flight bar's spot, the character, the minimap's parts and the
+    quest trackers (what the small line avoids: at either place), nor extra; its words inside it;
+    the X (14 px) just after line 1, at its top, clear of all of them; nothing of it but the X
     takes the mouse. Returns its rectangle."""
     B = w.ns.Boats
     G = B.ui.big
@@ -29128,6 +29152,7 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
         sc.check(r[3] <= H - 15 * es + 0.6 and r[1] >= H - 100 * es + 0.5,
                  "%s: above the timer bars (%.1f to %.1f from the top)" % (label, (H - r[3]) / es, (H - r[1]) / es))
     others = bt_top_parts(w) + [("the character", bt_character(w))] + list(extra)
+    others += [(n, w.rect(o)) for n, o in bt_minimap_parts(w) if o is not None and o.IsVisible(o)]
     for name, q in others:
         if q is not None:
             sc.check(not bt_overlap(r, q), "%s: does not cover %s (%s vs %s)" % (label, name, [round(v) for v in r], [round(v) for v in q]))
@@ -29155,6 +29180,25 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
     return r
 
 
+def bt_tracker_way(sc, w, label, free):
+    """Where the big timer has to be with the quest trackers up: with them hidden it is at free
+    (the middle: "middle", or "middle joined" for three boats at UI scale 1); with them back that
+    place, unless the timer there would cover one of the minimap's parts or a tracker: then above
+    the timer bars ("top"). (The rectangle is the addon's, the choice the harness's.)"""
+    G = w.ns.Boats.ui.big
+    trackers = [o for o in (w.g.ObjectiveTrackerFrame, w.g.Questie_BaseFrame) if o is not None and o.IsShown(o)]
+    for o in trackers:
+        o.Hide(o)
+    w.settle(1.1)
+    sc.eq(G.mode, free, "%s: with the quest trackers hidden: %s" % (label, free))
+    r = w.rect(G.holder)
+    for o in trackers:
+        o.Show(o)
+    w.settle(1.1)
+    hit = [n for n, o in bt_minimap_parts(w) if o is not None and o.IsVisible(o) and bt_overlap(r, w.rect(o))]
+    return "top" if hit else free
+
+
 def bt_big_words(w):
     """Every word the big timer shows (colour codes off), for the hint count."""
     return [strip_codes(t) for _, t in bt_big_texts(w)]
@@ -29179,7 +29223,10 @@ def sc_boats_big_place(sc, ref, items):
     character, at 1920x1080, 2560x1440, 1280x720 and 3440x1440, UI scales 1.0, 0.8 and 0.62 and
     ElvUI's pixel scales, with the game's minimap and ElvUI's (and its X); one boat (unknown and
     known), two and three (one line for the other two where three lines do not fit); with the
-    breath and fatigue bars up. The countdown 32, outlined, in the game's font (3.2 times the small
+    breath and fatigue bars up. Never over the minimap or a quest tracker: where the tracker
+    reaches the middle (16:10 and 5:4 at UI scale 1, ElvUI's tracker at 16:9 for three boats, the
+    tracker moved in Edit Mode, Questie's) above the timer bars; with the game's UI on 16:9 and
+    wider, always the middle. The countdown 32, outlined, in the game's font (3.2 times the small
     line's 10), the route 16 before it. A UI scale over 1, or the raid warnings moved over it:
     above the timer bars (under the top widgets); no room anywhere: the small line."""
     tx, ty, tinst = bt_stop("menethil_theramore", 1)    # Theramore: one boat
@@ -29188,32 +29235,82 @@ def sc_boats_big_place(sc, ref, items):
     arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
     runs = [(sname, pw, ph, s, elv) for sname, pw, ph in BT_SCREENS for s in BT_SCALES for elv in (False, True)]
     runs += [("1920x1080", 1920, 1080, 768 / 1080.0, True), ("2560x1440", 2560, 1440, 768 / 1440.0, True)]
+    tops = []
     for sname, pw, ph, s, elv in runs:
         lab = "big %s %.2f%s" % (sname, s, " elvui" if elv else "")
         w = boat_world(ref, items, elvui=elv, elvui_addon=elv, screen=bt_screen(pw, ph, s), style="big")
         B = w.ns.Boats
+        wide = pw * 9 >= ph * 16
+
+        def way(what, free):
+            want = bt_tracker_way(sc, w, "%s %s" % (lab, what), free)
+            if want == "top":
+                tops.append("%s %s" % (lab, what))
+            if wide and not elv:
+                sc.eq(want, free, "%s %s: the game's UI on a 16:9 or wider screen: the tracker is not in the way" % (lab, what))
+            return want
         bt_at(w, tx, ty, tinst)
         w.settle(1.1)
-        bt_big_ok(sc, w, lab + " Theramore unknown")
+        bt_big_ok(sc, w, lab + " Theramore unknown", where=way("Theramore unknown", "middle"))
         bt_set(w, 292, B.Now() - 200 - arr2, s=1.0, src="R", obs=2)
         B.Step()
-        bt_big_ok(sc, w, lab + " Theramore")
+        bt_big_ok(sc, w, lab + " Theramore", where=way("Theramore", "middle"))
         if elv:
             x = B.ui.big.x
             sc.eq((x.glLook, x.GetWidth(x)), ("elvui", BT_BIG["x"]), "%s: ElvUI's own X" % lab)
         bt_at(w, mx, my, minst)
         w.settle(1.1)
-        bt_big_ok(sc, w, lab + " Menethil")
-        sc.eq((len(bt_lines(w)), B.ui.big.mode), (2, "middle"), "%s: Menethil: two lines" % lab)
+        want = way("Menethil", "middle")
+        bt_big_ok(sc, w, lab + " Menethil", where=want)
+        sc.eq((len(bt_lines(w)), B.ui.big.mode), (2, want), "%s: Menethil: two lines" % lab)
         bt_at(w, ax + 4, ay + 4, ainst)
         w.settle(1.1)
-        bt_big_ok(sc, w, lab + " Auberdine")
         # Three lines fit under the messages at UI scales under 1; at 1.0 the other two join.
-        sc.eq(B.ui.big.mode, "middle joined" if s >= 1 else "middle", "%s: Auberdine's three boats" % lab)
-        sc.eq(len(bt_lines(w)), 2 if s >= 1 else 3, "%s: Auberdine's lines" % lab)
+        # Above the timer bars there is room for all three.
+        want = way("Auberdine", "middle joined" if s >= 1 else "middle")
+        bt_big_ok(sc, w, lab + " Auberdine", where=want.split(" ")[0])
+        sc.eq(B.ui.big.mode, want, "%s: Auberdine's three boats" % lab)
+        sc.eq(len(bt_lines(w)), 2 if want == "middle joined" else 3, "%s: Auberdine's lines" % lab)
         w.M.ShowMirrorTimers(3)   # breath, fatigue, feign death all up
-        bt_big_ok(sc, w, lab + " timer bars", extra=[("timer bar %d" % i, w.rect(w.M.mirrorTimers[i])) for i in (1, 2, 3)])
+        bt_big_ok(sc, w, lab + " timer bars", where=want.split(" ")[0],
+                  extra=[("timer bar %d" % i, w.rect(w.M.mirrorTimers[i])) for i in (1, 2, 3)])
         sc.clean(w, lab)
+    # (Where the tracker was in the way: some cases at 16:10 and 5:4, so the check above has teeth.)
+    print("      [big timer] above the timer bars for the quest tracker: %d of %d cases (%s ...)" % (
+        len(tops), 4 * len(runs), "; ".join(tops[:3])))
+    sc.check(any(t.startswith("big 1680x1050 1.00 ") for t in tops) and any(t.startswith("big 1280x1024 1.00 ") for t in tops),
+             "big: at 16:10 and 5:4, UI scale 1, the tracker moves the timer above the timer bars (%d cases)" % len(tops))
+    # The game's tracker moved toward the middle in Edit Mode, and Questie's tracker there (its
+    # frame can be dragged anywhere): above the timer bars, clear of it; moved back: the middle.
+    for questie in (False, True):
+        lab = "big tracker moved%s" % (" (Questie)" if questie else "")
+        w = boat_world(ref, items, questie=questie, screen=bt_screen(1920, 1080, 1.0), style="big")
+        ot = w.g.Questie_BaseFrame if questie else w.g.ObjectiveTrackerFrame
+        bt_at(w, tx, ty, tinst)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab + ": before")
+        ot.ClearAllPoints(ot)
+        ot.SetPoint(ot, "TOPRIGHT", w.g.UIParent, "TOPRIGHT", -420, -250)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab, where="top")
+        ot.ClearAllPoints(ot)
+        ot.SetPoint(ot, "TOPRIGHT", w.g.UIParent, "TOPRIGHT", -110, -275)
+        w.settle(1.1)
+        bt_big_ok(sc, w, lab + ": back")
+        sc.clean(w, lab)
+    # 5:4 at UI scale 1: the Southshore boat's long line fits neither in the middle (the tracker)
+    # nor above the timer bars (the minimap): the small line under the minimap, over neither.
+    w = boat_world(ref, items, screen=bt_screen(1280, 1024, 1.0), style="big")
+    B = w.ns.Boats
+    sx, sy, sinst = bt_stop("menethil_southshore_auberdine", 1)
+    bt_at(w, sx + 4, sy + 4, sinst)
+    w.settle(1.1)
+    sc.check(B.ui.style == "small" and not B.ui.big.holder.IsVisible(B.ui.big.holder),
+             "big 5:4 Southshore: no room clear of the tracker and the minimap: the small line (%s, %s)" % (B.ui.style, B.ui.big.mode))
+    bt_rect_ok(sc, w, "big 5:4 Southshore", bt_minimap_parts(w))
+    sc.eq(bt_lines(w), ["Boat to Auberdine, Menethil: unknown, every %s - /gl boat now when it docks" % bt_period("menethil_southshore_auberdine")],
+          "big 5:4 Southshore: its words")
+    sc.clean(w, "big 5:4 Southshore")
     # The sizes, at 1920x1080 and UI scale 1.0 and 0.62.
     for s in (1.0, 0.62):
         lab = "big size %.2f" % s
@@ -29698,23 +29795,53 @@ def sc_boats_big_steady(sc, ref, items):
 
 def sc_boats_big_busy(sc, ref, items):
     """In a fight or on a flight the middle of the screen is for that: the small line under the
-    minimap instead; the big timer again a second after."""
+    minimap instead, at once (as the fight starts, PLAYER_REGEN_DISABLED, or the flight,
+    PLAYER_CONTROL_LOST; not at the next second's update); the big timer again as it ends. Away
+    from the docks those events do nothing."""
     tx, ty, tinst = bt_stop("menethil_theramore", 1)
     w = boat_world(ref, items, style="big")
     B, M = w.ns.Boats, w.M
     bt_at(w, tx, ty, tinst)
     w.settle(1.1)
     bt_big_ok(sc, w, "busy: before")
-    for what, attr in (("in a fight", "combat"), ("on a flight", "onTaxi")):   # (the main mock's UnitOnTaxi: M.onTaxi)
-        setattr(M, attr, True)
+
+    def small_now():
+        return (B.ui.style == "small" and w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats)
+                and not B.ui.big.holder.IsVisible(B.ui.big.holder))
+
+    def big_now():
+        return B.ui.style == "big" and B.ui.big.holder.IsVisible(B.ui.big.holder) and not w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats)
+    for what in ("in a fight", "on a flight"):
+        w.settle(0.5)   # (half way to the next second's update)
+        if what == "in a fight":
+            M.Fight(True)
+        else:   # (the main mock's UnitOnTaxi: M.onTaxi; the flight starts as in TakeTaxiNode)
+            M.onTaxi = True
+            M.fire("PLAYER_CONTROL_LOST")
+        sc.check(small_now(), "busy: %s: the small line at once (%s)" % (what, B.ui.style))
         w.settle(1.1)
-        sc.check(B.ui.style == "small" and w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats)
-                 and not B.ui.big.holder.IsVisible(B.ui.big.holder), "busy: %s: the small line (%s)" % (what, B.ui.style))
+        sc.check(small_now(), "busy: %s: the small line (%s)" % (what, B.ui.style))
         sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "busy: %s: its words" % what)
         bt_rect_ok(sc, w, "busy " + what, bt_minimap_parts(w))
-        setattr(M, attr, False)
+        w.settle(0.5)
+        if what == "in a fight":
+            M.Fight(False)
+        else:
+            M.Land()
+        sc.check(big_now(), "busy: after %s: the big timer at once (%s)" % (what, B.ui.style))
         w.settle(1.1)
         bt_big_ok(sc, w, "busy: after %s" % what)
+    # Away from the docks a fight or a flight is nothing to the boat timers (no update for it).
+    bt_at(w, tx + 3000, ty + 3000, tinst)
+    w.settle(2.5)
+    sc.check(not B.ui.shown, "busy: away from the docks nothing shows")
+    n = B.stats.steps
+    M.Fight(True)
+    M.Fight(False)
+    M.onTaxi = True
+    M.fire("PLAYER_CONTROL_LOST")
+    M.Land()
+    sc.eq(B.stats.steps, n, "busy: away from the docks, a fight or a flight starting or ending: no update")
     sc.clean(w, "busy")
 
 

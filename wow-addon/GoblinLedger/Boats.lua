@@ -1483,13 +1483,14 @@ local function bigPlace(hw, hh, where)
 end
 
 -- On screen, above the character (the camera looks at its head at the screen centre) and
--- clear of everything bigObstacles lists; at the top also of what the small line avoids (the
--- minimap, the quest tracker, the buffs).
+-- clear of everything bigObstacles lists and of what the small line avoids (the minimap, the
+-- quest tracker, the buffs): on a narrower screen (16:10, 4:3) or with the tracker moved in Edit
+-- Mode, the tracker reaches the middle too.
 local function bigFits(rect, top)
   local sl, sb, sr, st = rectOf(_G.UIParent)
   if not sl then return true end
   if rect[1] < sl - 0.5 or rect[3] > sr + 0.5 or rect[2] < st - BIG.char * (st - sb) then return false end
-  if top and overlapsAny(rect) then return false end
+  if overlapsAny(rect) then return false end
   for _, q in ipairs(bigObstacles(top)) do
     if rect[1] < q[3] - 0.5 and rect[3] > q[1] + 0.5 and rect[2] < q[4] - 0.5 and rect[4] > q[2] + 0.5 then return false end
   end
@@ -2026,7 +2027,8 @@ if type(_G.CreateFrame) == "function" then
   if ok and type(f) == "table" then
     B.eventFrame = f
     for _, ev in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS",
-                          "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON" }) do
+                          "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON",
+                          "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED" }) do
       pcall(f.RegisterEvent, f, ev)   -- an event this client does not have is skipped
     end
     pcall(f.SetScript, f, "OnEvent", function(_, event, a1, a2, a3, a4)
@@ -2047,6 +2049,11 @@ if type(_G.CreateFrame) == "function" then
         elseif event == "PLAYER_LOGIN" then
           registerPrefix()
           wake()
+        elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_CONTROL_LOST"
+            or event == "PLAYER_CONTROL_GAINED" then
+          -- A fight or a flight starts or ends: at a dock, the small line or the big timer at once
+          -- (not at the next second's update); anywhere else nothing to do.
+          if UI.shown then B.Step() end
         else
           wake()
         end
