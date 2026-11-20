@@ -34,9 +34,14 @@ The fixes from the recipe check (recipes_verify.md) are applied here:
   4. required skill: the recipe item's RequiredSkillRank, Era's (marked E) when Forever has no row.
   5. junk names (NYI, DEPRECATED, OLD, UNUSED, [PH], DNT) on products, mats and recipe items.
   6. vendor mats: the Alliance vendor price only when Alliance vendors with spawns sell it and
-     the stock is not limited or rotating (no Darkmoon Faire only, no limited_suspect).
+     the stock is not limited or rotating (no Darkmoon Faire only, no limited_suspect, no herbs:
+     the herb vendors sell a few at a time).
   7. random-suffix products are flagged (S): no profit claims for them.
   8. product bonding (B: bind on pickup or quest; U: not known and never seen on the AH).
+Also: a recipe item with no row in either export never clears the gates the other recipe item
+has (Girdle of the Dawn's duplicate plan); the trainer recipes only a specialization's trainer
+teaches get that spec (SPEC_TRAINER) and quest-taught ones are not trainer ones (QUEST_TAUGHT);
+a recipe with a cooldown (SpellCooldowns, hours) carries it as a 12th field.
 Kept: recipes whose product or a mat is on the AH (seen in the last 7 days), plus every recipe
 a recipe item (Plans, Pattern, Formula, Schematic, Recipe, Manual) teaches.
 """
@@ -59,6 +64,21 @@ JUNK = re.compile(r"\bNYI\b|DEPRECATED|Deprecated|\bOLD\b|\(old\)|UNUSED|\bUnuse
 ALLY_BITS = (0, 2, 3, 6, 32)
 HORDE_BITS = (1, 4, 5, 7, 33)
 LOCKED = -42000   # Hated with no way up: that race can never earn the standing
+# Trainer recipes only a specialization's trainer teaches (the client tables do not say which
+# trainer teaches what): recipe spell -> the specialization spell. Classic's lists.
+SPEC_TRAINER = {
+    10619: 10656, 10650: 10656, 24654: 10656, 24655: 10656,   # Dragonscale Leatherworking
+    10630: 10658, 10632: 10658,                               # Elemental: Gauntlets of the Sea, Helm of Fire
+    10621: 10660, 10647: 10660,                               # Tribal: Wolfshead Helm, Feathered Breastplate
+    12715: 20222, 23486: 20222,                               # Goblin: Rocket Fuel Recipe, Dimensional Ripper
+    12895: 20219, 23489: 20219,                               # Gnomish: Inlaid Mithril Cylinder Plans, Ultrasafe Transporter
+}
+# Recipes a quest teaches (no trainer has them): never "may be known" before a scan.
+QUEST_TAUGHT = {
+    14891,          # Smelt Dark Iron (Black Forge, the quest in Blackrock Depths)
+    22813, 22815,   # Gordok Ogre Suit (Dire Maul)
+}
+HERB = (7, 9)       # item class Trade Goods, subclass Herb: herb vendors sell a few at a time (limited supply)
 
 
 def I(x, d=0):
@@ -150,7 +170,8 @@ def name_of(x, fsp, esp):
 def build(recipes, fsp, esp, factions):
     rows, names, vendor, ritems = {}, {}, {}, {}
     stats = {"in": len(recipes), "junk": 0, "no_evidence": 0, "not_relevant": 0, "retired": 0, "kept": 0,
-             "spec": 0, "rep": 0, "side_A": 0, "side_H": 0, "bop": 0, "suffix": 0, "era_rank": 0, "vendor_mats": 0}
+             "spec": 0, "rep": 0, "side_A": 0, "side_H": 0, "bop": 0, "suffix": 0, "era_rank": 0, "vendor_mats": 0,
+             "cooldown": 0}
     for r in recipes:
         sp, sl = r["spell_id"], r["skill_line"]
         if sl not in PROF:
@@ -183,7 +204,7 @@ def build(recipes, fsp, esp, factions):
         learned = r.get("learned_by") or []
         if "starts_known" in learned:
             flags.append("K")
-        if not taught:
+        if not taught and sp not in QUEST_TAUGHT:
             flags.append("T")   # learned from a trainer or with the skill: it may be known before a scan
         # product bonding: Forever's row, else Era's (fix 1)
         pid = p["id"]
@@ -204,16 +225,17 @@ def build(recipes, fsp, esp, factions):
         # gates from the recipe items: spec, reputation, side, required skill (fixes 2-4)
         spec, rep, rank, rank_era = None, None, None, False
         item_sides = []
-        all_spec, all_rep = True, True
+        all_spec, all_rep, seen = True, True, 0
         for x in items:
             src = fsp.get(x["id"])
             era = False
             if src is None:
                 src, era = esp.get(x["id"]), True
             if src is None:
-                all_spec = all_rep = False
-                item_sides.append("")
+                # no row in either export (Forever's duplicate plans 227891-227894): it says
+                # nothing about the gates, so it never clears the other recipe item's
                 continue
+            seen += 1
             ab = src["RequiredAbility"]
             if ab:
                 spec = spec or ab
@@ -231,14 +253,16 @@ def build(recipes, fsp, esp, factions):
             rk = src["RequiredSkillRank"]
             if rk and (rank is None or rk < rank):
                 rank, rank_era = rk, era
-        if not all_spec:
+        if not all_spec or not seen:
             spec = None
-        if not all_rep:
+        if not all_rep or not seen:
             rep = None
+        if sp in SPEC_TRAINER and not taught:
+            spec = SPEC_TRAINER[sp]
         side = ""
-        if items and all(s == "A" for s in item_sides):
+        if item_sides and all(s == "A" for s in item_sides):
             side = "A"
-        elif items and all(s == "H" for s in item_sides):
+        elif item_sides and all(s == "H" for s in item_sides):
             side = "H"
         own = race_side(I(r.get("race_mask")), 32)
         if own:
@@ -260,15 +284,21 @@ def build(recipes, fsp, esp, factions):
         cmin, cmax = int(p.get("count_min") or 1), int(p.get("count_max") or 1)
         mats = ",".join("%d:%d" % (x["id"], x["count"]) for x in rg)
         yellow = (r.get("skill") or {}).get("yellow") or 0
-        rows[sp] = "|".join([str(sl), str(pid), str(cmin), str(cmax), mats, "".join(flags),
-                             str(rank or ""), str(spec or ""), ("%d:%d" % rep) if rep else "",
-                             ",".join(str(x["id"]) for x in items), str(yellow)])
+        fields = [str(sl), str(pid), str(cmin), str(cmax), mats, "".join(flags),
+                  str(rank or ""), str(spec or ""), ("%d:%d" % rep) if rep else "",
+                  ",".join(str(x["id"]) for x in items), str(yellow)]
+        cd = r.get("cooldown_hours")
+        if cd:   # hours between two crafts (Mooncloth 95, transmutes 23): only on those rows
+            fields.append(("%g" % cd))
+            stats["cooldown"] += 1
+        rows[sp] = "|".join(fields)
         names[pid] = p.get("name")
         for x in rg:
             names[x["id"]] = x.get("name")
             v = x.get("vendor") or {}
+            herb = (x.get("class"), x.get("subclass")) == HERB
             if (v.get("alliance_vendors") or 0) > 0 and not v.get("darkmoon_faire_only") and not v.get("limited_suspect") \
-                    and v.get("buy_price_per_unit"):
+                    and v.get("buy_price_per_unit") and not herb:
                 vendor[x["id"]] = max(1, int(round(v["buy_price_per_unit"])))
         for x in items:
             names[x["id"]] = x.get("name")
@@ -284,10 +314,10 @@ def render(rows, names, vendor, ritems, meta):
            "-- Generated by tools/wow/crafts/build_crafts.py from the recipe research (recipes.json: WoW Forever",
            "-- %s client tables, built %s). Do not edit by hand: run the script again." % (meta.get("client_build", "1.60.1.70959"), meta.get("built", "?")),
            "-- R[recipe spell id] = \"skill line|product|count min|count max|mats (id:count,...)|flags|required rank|",
-           "--   spec spell|faction:standing|recipe items|yellow rank\". Flags: K known with the profession, T learned",
-           "--   from a trainer (may be known before the professions window was opened), B product binds on pickup,",
-           "--   U product bonding not known (never on the AH), S random-suffix product, A Alliance only, H Horde only,",
-           "--   E the required rank is Classic Era's (Forever often 25 lower).",
+           "--   spec spell|faction:standing|recipe items|yellow rank[|cooldown hours]\". Flags: K known with the",
+           "--   profession, T learned from a trainer (may be known before the professions window was opened), B product",
+           "--   binds on pickup, U product bonding not known (never on the AH), S random-suffix product, A Alliance only,",
+           "--   H Horde only, E the required rank is Classic Era's (Forever often 25 lower).",
            "local R = {"]
     for sp in sorted(rows):
         out.append("[%d]=%s," % (sp, lua_str(rows[sp])))
@@ -354,7 +384,7 @@ def main(argv):
     print("recipes: %(in)d in, %(kept)d kept; dropped %(junk)d junk, %(retired)d retired, %(no_evidence)d without "
           "evidence, %(not_relevant)d not on the AH; %(spec)d need a spec, %(rep)d a reputation, %(side_A)d Alliance "
           "only, %(side_H)d Horde only, %(bop)d bind on pickup, %(suffix)d random suffix, %(era_rank)d Era ranks, "
-          "%(vendor_mats)d vendor mats" % stats)
+          "%(vendor_mats)d vendor mats, %(cooldown)d with a cooldown" % stats)
     print("names: %d, recipe items: %d, size %d bytes" % (len(names), len(ritems), len(block)))
     return 0
 

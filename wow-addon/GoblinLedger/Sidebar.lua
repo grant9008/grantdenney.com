@@ -723,6 +723,7 @@ local function DayValue(f, fit)
 end
 ns.DayValue = DayValue
 ns.ExpectedSold = ExpectedSold
+ns.DayStats = DayStats   -- Crafts.lua: a made item counts at most DAY_PRICE_CAP x what it sold for
 
 -- The flip ideas the sidebar shows, best first, up to `limit`: the
 -- collector's flips from the latest snapshot first ({ id, data = true, kind,
