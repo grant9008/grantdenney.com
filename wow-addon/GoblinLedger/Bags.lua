@@ -1554,6 +1554,9 @@ local function AuctionUnit(pid, cache)
       end
       -- "unreliable": a few listed far above what a vendor pays. That is one
       -- player's asking price, not money you would get.
+      -- Prices 3 hours old or more (ns.AgeState): rough too ("~", "about"), as
+      -- the tooltip marks them, unless a live listing gave the price.
+      if unit and not live and type(ns.AgeState) == "function" and ns.AgeState() == "stale" then unsure = true end
     end
   end
   cache[pid] = { unit = unit, unsure = unsure }
@@ -2211,7 +2214,7 @@ local function RowTooltip(row)
       tt:AddDoubleLine("A vendor pays", ChatMoney(e.vendor * e.count), 0.8, 0.8, 0.8, 1, 1, 1)
     end
     if e.unsure then
-      tt:AddLine("Rough auction price: few listings, or none right now.", 0.6, 0.6, 0.6, true)
+      tt:AddLine("Rough auction price: few listings, none right now, or old prices.", 0.6, 0.6, 0.6, true)
     end
     if AtMerchant(BP) and e.vendor > 0 then
       tt:AddLine("Click: sell it to this vendor", mu[1], mu[2], mu[3])

@@ -31,7 +31,7 @@ the latest flips per hour in `snapshots/` (small; commit them now and then).
 | Flip ideas (deals) | The deals the sidebar keeps hidden (`DEALS_SHOWN` in Sidebar.lua), as they would show with it on: the same test over 72 hours, since they sell in days. WAIT until 30 distinct deals per gold level have 72 hours after them |
 | Flip filters | Spike-flagged gap flips sell less often than the rest; gap flips relisted <= 1.25x the 24h median and costing <= 20g in all win >= 60% |
 | Badge | At +40% over the 24h median the next day's median falls 20%+ and half go half way back; at -40% there is no rebound |
-| Chart calls | Sell calls were followed by falls, Buy calls never by a rise |
+| Chart calls | "High now: usually falls back" calls were followed by falls, "Low now: still falling" calls never by a rise (FAIL when no call is found) |
 | Craft profit | A green "profit" really pays 2h later >= 90% of the time, and at least as often as a TSM-style claim (SKIP until Crafts.lua is in this checkout, or pass `--crafts`) |
 
 Thresholds sit at the top of `checks.py`. The old rules (Suggested price, "Auction it"
@@ -44,6 +44,9 @@ The plan's numbers rest on 2 days of a falling launch-week market. Run it again 
 flips, so run it once a day for 2-3 days. When "Flip ideas (shown), out of sample"
 fails, turn gap flips off (plan item 1). When it passes, `GAP_COST_CAP` may go up.
 When "Flip ideas (deals)" passes, `DEALS_SHOWN` in Sidebar.lua may be turned on.
+The price-history ideas (buy at Target Buy, sell at the sell target) are hidden too
+(`HISTORY_SHOWN` in Sidebar.lua): no row here tests them, and "Low now: still falling" says
+low prices kept falling over the next day. Add a row for them before turning them on.
 
 The 20g cap is written in these places; change them together:
 - `wow-addon/GoblinLedger/Sidebar.lua`: `GAP_COST_CAP` (the help tip is built from it).
@@ -56,5 +59,5 @@ The 20g cap is written in these places; change them together:
 `run_backtest.py` (the table), `checks.py` (the rules), `dataset.py` (the rows),
 `bt_lib.py` (rebuilds past Data.lua lines), `fwd.py` (would it have sold),
 `flips.py` (snapshots and flip scoring), `crafts.py` (the craft quote),
-`baseline_rec_model.py`, `snapshots/`. `test_checks.py` checks the flip verdicts on
-hand-made rows (no price data needed).
+`baseline_rec_model.py`, `snapshots/`. `test_checks.py` checks the flip and chart verdicts on
+hand-made rows (no price data needed), and that the cap and rule G constants here are the shipped ones.

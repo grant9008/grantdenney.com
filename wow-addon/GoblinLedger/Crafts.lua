@@ -20,10 +20,13 @@ local ADDON_NAME, ns = ...
 --     for a bind-on-pickup item you cannot make, the plans that make it.
 -- Prices: the mats at the cheapest listing (the live one while the auction
 -- house shows it, not your own, or a vendor's when that is cheaper), the item
--- at the price its own tooltip says to sell at (Recommend.lua's ns.SellAt:
--- Sell now, 1c under the cheapest listing, the live one while the auction
--- house shows it, yours matched; or the usual price when Sell now is under 70%
--- of it), after the 5% cut, times the average number one craft makes. A profit is only claimed (green) when it
+-- at what it sells for today: its tooltip's Sell now (Recommend.lua's
+-- ns.SellAt: 1c under the cheapest listing, the live one while the auction
+-- house shows it, yours matched; also while someone dumps it, the yellow
+-- "Sell now (38% under usual)": a day's sales do not fetch the usual price
+-- then; nothing listed: the usual price), but never above its AH value nor 25%
+-- over what it sold for in the last day, after the 5% cut, times the average
+-- number one craft makes. A profit is only claimed (green) when it
 -- is more than 10% of the mats at the cheapest prices (the item at that price),
 -- at AH value (the item at most 25% over what it sold for in the last day) and
 -- at the 7-day averages (the smallest of the three is the one shown), and the made
@@ -6660,37 +6663,43 @@ local function buyAt(p, basis)
   return x, false
 end
 
--- The price the item's own tooltip says to sell it at, from the one rule for it (Recommend.lua's
--- ns.SellAt, which the tooltip's ns.SellPrices uses too) with the live listing the tooltip uses
--- (p: pricesOf; the AH code's ns.LivePrice is the listing Core.lua's Sell now (live) follows):
--- Sell now, 1c under the cheapest listing (yours: matched), or the usual price when Sell now is
--- under 70% of it (the yellow "Sell now (38% under usual)" and its "Sell at"); nothing listed:
--- the usual price. When the tooltip gives none because the price may be one player's guess (a
--- few units far above what a vendor pays: "Few listed"), its Sell now before that doubt and
--- true: a profit is never claimed at it. nil when there is neither.
+-- What the made item sells for today, from the item tooltip's own rule (Recommend.lua's ns.SellAt,
+-- which its ns.SellPrices uses too) with the live listing the tooltip uses (p: pricesOf; the AH
+-- code's ns.LivePrice is the listing Core.lua's Sell now (live) follows): its Sell now, 1c under
+-- the cheapest listing (yours: matched), also while someone dumps it (the yellow "Sell now (38%
+-- under usual)": the usual price on its "Sell at" line is what to wait for, not what a day's
+-- sales bring); nothing listed: the usual price. When the tooltip gives none because the price
+-- may be one player's guess (a few units far above what a vendor pays: "Few listed"), its Sell
+-- now before that doubt and true: a profit is never claimed at it. nil when there is neither.
 local function tooltipSellAt(id, p)
   local f = ns.SellAt
   if type(f) ~= "function" then return nil end
   local ok, P = pcall(f, id, p.live and p.lo or nil, p.own == true)
   if not ok or type(P) ~= "table" then return nil end
-  local at = plain(P.at)
+  local at = plain(P.now) or plain(P.at)
   if at and at > 0 then return at, false end
   local raw = P.atWhy == "unreliable" and plain(P.raw) or nil
   if raw and raw > 0 then return raw, true end
   return nil
 end
 
--- What the made item sells for each on a basis: at the cheapest prices, the tooltip's own
--- price to sell at (so the profit follows the Sell now / Sell at lines above it); at AH value
--- that, but never 25% over what it sold for in the last day; the 7-day average.
+-- What the made item sells for each on a basis: at the cheapest prices what it sells for today
+-- (tooltipSellAt), never above its AH value (the tooltip's: the live cheapest while the open
+-- auction house shows one, else the data's); at AH value that value; the 7-day average. The first
+-- two never 25% over what it sold for in the last day.
 local function sellAt(p, basis)
-  if basis == "lo" then return p.at end
-  if basis == "mkt" then
-    local s = p.mkt
-    if s and p.cap and s > p.cap then s = p.cap end
-    return s
+  local s
+  if basis == "lo" then
+    s = p.at
+    local cap = p.live and p.lo or p.mkt
+    if s and cap and s > cap then s = cap end
+  elseif basis == "mkt" then
+    s = p.mkt
+  else
+    return p.avg
   end
-  return p.avg
+  if s and p.cap and s > p.cap then s = p.cap end
+  return s
 end
 
 local function soldPerDay(item)

@@ -55,6 +55,12 @@ local DEAL_EVERY = 5         -- one place in every 5 flip ideas is kept for a de
 -- Deals stay hidden: none of the ones shown made money within a day in the
 -- backtest, and it cannot check 2-3 days yet. Turn on only when its deal row passes.
 local DEALS_SHOWN = false
+-- The price-history ideas (buy at or under Target Buy, sell at the sell
+-- target) stay hidden too: the backtest found the chart's low prices kept
+-- falling over the next day ("Low now: still falling"), it does not test these
+-- ideas, and they were not kept as small as the gap flips. Turn on only when a
+-- backtest row for them passes (and size them as GapFit sizes gap flips).
+local HISTORY_SHOWN = false
 -- What a collector flip can really make within about a day (see DayValue).
 local DAY_SHARE = 0.5        -- share of a day's sales one seller can expect at the relist price
 local DAY_HOUR_CAP = 3       -- an hour's sales count at most 3x a typical hour (and at least 1)
@@ -788,7 +794,10 @@ ns.DayStats = DayStats   -- Crafts.lua: a made item counts at most DAY_PRICE_CAP
 -- sold), so is one costing over GAP_COST_CAP, and one is bought only as far as
 -- GapFit allows (a capped fit, gold or not). Items with no name yet are left
 -- out. Deals are skipped while DEALS_SHOWN is off (a price-history idea for
--- the item may still show).
+-- the item may still show). The price-history ideas are left out while
+-- HISTORY_SHOWN is off: the reason for none is then what HistoryIdeas says
+-- before its advice pass ("history" while sales are still being measured,
+-- "nosales" when nothing sells enough yet), else "none".
 -- A gap or vendor flip stays only when DayValue says it can make at least
 -- DAY_MIN_PROFIT within about a day (on what the gold buys); they rank by
 -- that (most first, then the one that sells soonest, then the collector's
@@ -877,6 +886,12 @@ function ns.FlipIdeas(limit, gold)
     out[#out + 1] = x
   end
   if #out >= limit then return out end
+  if not HISTORY_SHOWN then
+    if #out > 0 then return out end
+    if poor then return out, "gold" end
+    if SalesHours() < MIN_SALES_HOURS then return out, "history" end
+    return out, (#Candidates() == 0) and "nosales" or "none"
+  end
   -- Enough price-history ideas to fill the places left after skipping the items
   -- already shown and the ones whose collector flip was dropped.
   local hist, why = HistoryIdeas(limit + #out + ndropped, gold or false)
@@ -1457,7 +1472,8 @@ function SB:Build(parent)
   local helpText = "Experimental. Flips your gold can buy now, ranked by the profit you can expect within a day. "
     .. "Until a week of sales is checked, only flips costing " .. Money(GAP_COST_CAP) .. " or less show, "
     .. "each using at most " .. floor(100 * GAP_GOLD_SHARE + 0.5) .. "% of your gold. "
-    .. "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
+    .. (HISTORY_SHOWN and "Then items to buy under the Target Buy price and sell at the sell price, from the price history. " or "")
+    .. "Crafts from your own recipes are sized to your gold and a day's sales. "
     .. "Profits are after the 5% auction cut. Treat these as ideas, not promises. Hover a row for the details."
   SimpleTip(flipHelp, "Flip ideas", helpText)
   -- "experimental" at the right of the section title: only two days of prices back these ideas.
@@ -1469,7 +1485,7 @@ function SB:Build(parent)
   tagHelp:SetAllPoints(self.flipTag)
   tagHelp:EnableMouse(true)
   SimpleTip(tagHelp, "Experimental", "Flip ideas lost money in our first test on two days of prices, except small ones. "
-    .. "So only small ones show until a week of sales is checked.")
+    .. "So only small flips show until a week of sales is checked.")
   local goldHelp = CreateFrame("Frame", nil, F)
   goldHelp:SetAllPoints(self.flipGold)
   goldHelp:EnableMouse(true)
@@ -1808,9 +1824,14 @@ function SB:RefreshHeader()
     txt = "No price data yet"
   else
     local house = type(ns.HouseLabel) == "function" and ns.HouseLabel() or "Alliance AH"
+    house = house:gsub(" Auction House$", " AH")   -- room for "- /reload" on one line
     local a = type(ns.AgeText) == "function" and ns.AgeText(age) or ""
+    -- As the tooltip and the chart say it: over 80 minutes old a newer file is most likely
+    -- waiting ("- /reload", yellow); stale prices (3 hours or more) yellow too.
+    local hint = type(ns.ReloadHint) == "function" and ns.ReloadHint(age)
+    local stale = type(ns.AgeState) == "function" and ns.AgeState(age) == "stale"
+    if hint or stale then a = Paint(a .. (hint and " - /reload" or ""), "warn") end
     txt = house .. ", " .. a
-    if type(ns.AgeState) == "function" and ns.AgeState(age) == "stale" then txt = Paint(txt, "neg") end
   end
   -- At another market (Horde, a goblin AH, Hardcore) say so in a few words;
   -- hovering the line gives the full reason.

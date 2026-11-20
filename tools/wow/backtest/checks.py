@@ -363,27 +363,44 @@ def check_badge(c):
 
 
 # ---------------------------------------------------------------- 5. chart calls
+def chart_side(v):
+    """Which side of the chart check a verdict is on: the shipped calls (rec_model CALL_HIGH,
+    "High now: usually falls back", and CALL_LOW, "Low now: still falling"), or the old
+    Sell / Buy words of older rows; None for Hold."""
+    v = str(v)
+    if v in (B.RM.CALL_HIGH, "Sell", "Strong Sell"):
+        return "Sell"
+    if v in (B.RM.CALL_LOW, "Buy", "Strong Buy"):
+        return "Buy"
+    return None
+
+
 def check_chart(c):
     tset = c.set24
     if not tset:
-        return [("Chart calls", "next 24h after a Buy or Sell call", "needs 24h after a decision hour", "WAIT")]
+        return [("Chart calls", "next 24h after a High now or Low now call", "needs 24h after a decision hour", "WAIT")]
     agg = defaultdict(list)
+    calls = 0
     for r in c.rows:
         if r["T"] not in tset or r["hi"] <= 0 or r["sid"] >= 1000000:
             continue
-        v = str(r["verdict"])
-        side = "Sell" if v in ("Sell", "Strong Sell") else "Buy" if v in ("Buy", "Strong Buy") else None
+        side = chart_side(r["verdict"])
         if not side:
             continue
+        calls += 1
         _, nxt = c.F.after(r["sid"], r["T"], 24)
         his = [p[2] for p in nxt if p[2] > 0]
         if len(his) < 12:
             continue
         g = "gear" if r["gear"] else ("stacks 5+/day" if (r["perDay"] or 0) >= 5 else "stacks <5/day")
         agg[(side, g)].append(statistics.median(his) / r["hi"] - 1)
+    # no call at all: the verdict words changed under this check (a row that vanished would hide it)
+    if not calls:
+        return [("Chart calls", "High now / Low now calls in the 24h set",
+                 "no chart calls found (verdict words this check does not know?)", "FAIL")]
     out = []
-    for side, lim, words in (("Sell", CHART_SELL_MAX, "followed by a fall (\"usually falls back\")"),
-                             ("Buy", CHART_BUY_MAX, "never followed by a rise (so never \"good time to buy\")")):
+    for side, lim, words in (("Sell", CHART_SELL_MAX, "\"High now\" calls followed by a fall (\"usually falls back\")"),
+                             ("Buy", CHART_BUY_MAX, "\"Low now\" calls never followed by a rise (no buy claim)")):
         parts, bad = [], False
         for g in ("stacks 5+/day", "gear", "stacks <5/day"):
             xs = agg.get((side, g))
@@ -392,7 +409,9 @@ def check_chart(c):
                 parts.append("%s %+.1f%%" % (g, 100 * m))
                 bad = bad or m > lim
         if parts:
-            out.append(("Chart calls", "%s calls %s" % (side, words), ", ".join(parts), "FAIL" if bad else "PASS"))
+            out.append(("Chart calls", words, ", ".join(parts), "FAIL" if bad else "PASS"))
+        else:
+            out.append(("Chart calls", words, "fewer than 100 calls in every group", "WAIT"))
     return out
 
 

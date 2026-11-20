@@ -473,8 +473,9 @@ end
 -- ns.SellAt(itemID [, liveCheapest, own]): ns.SellPrices's prices (now, at,
 -- under, usual, live, own, nowVendor, atVendor ...) without the advice
 -- (no rec): the same numbers from the same rule, for many items at once
--- (Crafts.lua sells what a craft makes at `at`, so its profit line follows
--- the tooltip's Sell now / Sell at). nil without the item.
+-- (Crafts.lua counts what a craft makes at `now`, the tooltip's Sell now,
+-- also while someone dumps it; with nothing listed at `at`). nil without
+-- the item.
 function ns.SellAt(itemID, liveCheapest, own)
   if type(ns.GetItem) ~= "function" then return nil end
   local item = ns.GetItem(itemID)

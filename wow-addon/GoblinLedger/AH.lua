@@ -313,9 +313,13 @@ AH.StoreLive = StoreLive
 
 -- The cheapest listing the open auction house is showing for an item (or a
 -- version's id), and whether that listing is yours. nil when it has not
--- loaded (or the AH is closed).
+-- loaded (or the AH is closed), and at another market (ns.MarketMismatch: a
+-- goblin or other-faction auction house, Hardcore), whose listings do not mix
+-- with the data's prices (Sell now, the bag panel, the craft and consumable
+-- prices all follow this; the sell buttons hide there).
 function ns.LiveCheapest(itemID)
   if not AH.open then return nil end
+  if type(ns.MarketMismatch) == "function" and ns.MarketMismatch() then return nil end
   local r = AH.live[tonumber(itemID) or -1]
   if r then return r.price, r.own end
   return nil
@@ -415,7 +419,7 @@ local function SellAdvice(id, isCommodity, ver)
     local now = PriceForFrame(r.own and p or (p - 1), isCommodity)
     if not now then return nil, nil, "suffix" end
     return now, nil, { live = p, matched = r.own == true, age = age, mode = "unknown", ver = ver,
-                       nowVendor = VendorPaysMore(id, now) }
+                       nowVendor = VendorPaysMore(id, now), rounded = now ~= (r.own and p or (p - 1)) }
   end
   local pid = ver.vid or id
   local lp, own = ns.LiveCheapest(pid)
@@ -442,7 +446,8 @@ local function SellAdvice(id, isCommodity, ver)
   end
   return now, at, { live = lp, matched = P.own == true, age = age, P = P, rec = P.rec, mode = ver.mode, ver = ver,
                     noLive = noLive, under = (not noLive) and P.under or nil, usual = P.usual,
-                    nowVendor = VendorPaysMore(pid, now), atVendor = VendorPaysMore(pid, at) }
+                    nowVendor = VendorPaysMore(pid, now), atVendor = VendorPaysMore(pid, at),
+                    rounded = now ~= nil and now ~= P.now }
 end
 AH.SellAdvice = SellAdvice
 
@@ -473,6 +478,10 @@ end
 -- The tooltip of the Sell now button.
 local function NowText(info, postWord)
   local lines = { "Fills the price box with 1 copper under the cheapest listing, so yours is the cheapest." }
+  -- gear: the price box takes whole silver (PriceForFrame), so it says what it really fills
+  if info and info.rounded then
+    lines[1] = "Fills the price box just under the cheapest listing, rounded down to whole silver, so yours is the cheapest."
+  end
   lines[#lines + 1] = BasisText(info)
   lines[#lines + 1] = VersionText(info)
   local rec = info and info.rec

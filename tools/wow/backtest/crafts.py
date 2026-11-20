@@ -1,11 +1,12 @@
 """The craft profit rule (Crafts.lua's quote) on smelting and Blacksmithing recipes at
 past hours, checked 2 hours later: mats bought at T, the made item sold at T+2h's
 price. A port of the quote (prices, the 10% robust share over cheapest, market and
-average, the thin rule, the 1.25x sold-at cap on the market basis), with mats bought
-(no own sub-recipes) and no live prices: what a player sees right after a /reload.
-At the cheapest prices the made item sells at its tooltip's price to sell at (rule G:
-the shipped advice model's Sell at, as Crafts.lua asks ns.SellAt), or, when the
-tooltip doubts its price, at Sell now with no profit claim.
+average, the thin rule, the 1.25x sold-at cap), with mats bought (no own sub-recipes)
+and no live prices: what a player sees right after a /reload. At the cheapest prices
+the made item sells for what it fetches today: its tooltip's Sell now (the shipped
+advice model, as Crafts.lua asks ns.SellAt), also while someone dumps it; nothing
+listed: the usual price; never above the AH value; when the tooltip doubts its price,
+Sell now with no profit claim.
 Needs Crafts.lua (the crafts build); without it the test is skipped."""
 import math
 import os
@@ -65,11 +66,14 @@ def quote(view, r, vendor):
 
     def sell_at(p, b):
         if b == "lo":
-            return p.get("at")
-        if b == "mkt":
+            s = p.get("at")
+            if s and p.get("mkt") and s > p["mkt"]:
+                s = p["mkt"]
+        elif b == "mkt":
             s = p.get("mkt")
-            return p["cap"] if s and p.get("cap") and s > p["cap"] else s
-        return p.get("avg")
+        else:
+            return p.get("avg")
+        return p["cap"] if s and p.get("cap") and s > p["cap"] else s
 
     cost = {b: 0 for b in BASES}
     for mid, n in r["mats"]:
@@ -85,9 +89,10 @@ def quote(view, r, vendor):
     st = day_stats(view, r["product"])
     if st and st["soldAt"]:
         pp["cap"] = math.floor(1.25 * st["soldAt"])
-    # the tooltip's price to sell at (ns.SellAt: rule G); a doubted price: Sell now, never green
+    # what it sells for today (ns.SellAt's Sell now, else rule G's Sell at with nothing listed);
+    # a doubted price: Sell now, never green
     _, sp, _ = B.advice(pp["item"], view.salesHours)
-    pp["at"], doubt = sp["at"], False
+    pp["at"], doubt = sp["now"] or sp["at"], False
     if not pp["at"] and sp["atWhy"] == "unreliable" and sp.get("raw"):
         pp["at"], doubt = sp["raw"], True
     prof, net = {}, {}

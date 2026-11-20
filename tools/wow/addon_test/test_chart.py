@@ -15,7 +15,8 @@ from lupa import lua51
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.abspath(os.path.join(HERE, "..", "..", ".."))
-ADDON = os.path.join(ROOT, "wow-addon", "GoblinLedger")
+# FAH_ADDON_DIR: a copy of the addon to test (deliberate-break checks), as the harness takes it.
+ADDON = os.environ.get("FAH_ADDON_DIR") or os.path.join(ROOT, "wow-addon", "GoblinLedger")
 LOCAL_DATA = os.path.join(ROOT, "goblin-ledger", "prices", "_localdata", "ForeverAH_Data.lua")
 
 # ---------------------------------------------------------------------------

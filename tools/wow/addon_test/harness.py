@@ -1715,7 +1715,8 @@ end
 
 function GetCursorPosition() return M.cursorX, M.cursorY end
 function GetTime() return M.t end
-function GetServerTime() return M.now end
+-- The server's clock: M.now, or with M.sbase (the boat worlds) moving with GetTime from it.
+function GetServerTime() if M.sbase then return math.floor(M.sbase + M.t) end return M.now end
 function time(t) if t then return os_time(t) end return M.now end
 function date(fmt, t) return os_date(fmt, t or M.now) end
 function difftime(a, b) return a - b end
@@ -2760,11 +2761,27 @@ end
 -- MirrorTimerContainer: Edit Mode's Timer Bars (MirrorTimer.xml: TOP, y -100).
 M.taxi = { open = false, nodes = {}, mapID = 1463, taken = {}, early = 0, delay = 0.3 }
 -- M.guid: the one player GUID of the whole mock (flights keep your pace and Crafts.lua the recipes under it).
-M.onTaxi, M.pos, M.spells, M.guid = false, nil, {}, "Player-1-0000ABCD"
+-- M.onTaxi: on a flight master's flight (flights and boats). M.inInstance: UnitPosition gives nothing (as
+-- the game in an instance); M.pos may carry a 3rd and 4th value (the boats' instance id), else 0.
+M.onTaxi, M.pos, M.spells, M.guid, M.inInstance = false, nil, {}, "Player-1-0000ABCD", false
 function UnitGUID(unit) if unit == "player" then return M.guid end end
 function UnitOnTaxi(unit) return unit == "player" and M.onTaxi == true end
-function UnitPosition(unit) if unit == "player" and M.pos then return M.pos[1], M.pos[2], 0, 0 end end
-C_SpellBook = { IsSpellKnown = function(id, bank) return M.spells[id] == true end }
+function UnitPosition(unit)
+  if unit ~= "player" or not M.pos or M.inInstance then return nil end
+  local p = M.pos
+  return p[1], p[2], p[3] or 0, p[4] or 0
+end
+-- C_SpellBook, one for every client: M.spells (the flights' Frequent Flier) and M.knownSpells (the
+-- recipes Crafts.lua asks about) answer; M.spellMode "works", "false" (always no) or "errors" (raises);
+-- M.spellCalls counts the calls. CRAFTS_MOCK_LUA adds the modern client's IsSpellInSpellBook to it.
+M.knownSpells, M.spellMode, M.spellCalls = {}, "works", 0
+function M.spellAnswer(id)
+  M.spellCalls = M.spellCalls + 1
+  if M.spellMode == "errors" then error("C_SpellBook: bad spell") end
+  if M.spellMode == "false" then return false end
+  return M.knownSpells[id] == true or M.spells[id] == true
+end
+C_SpellBook = { IsSpellKnown = function(id, bank) return M.spellAnswer(id) end }
 local function taxiNode(i) return M.taxi.open and M.taxi.nodes[i] or nil end
 function NumTaxiNodes() return M.taxi.open and #M.taxi.nodes or 0 end
 function TaxiNodeName(i) local n = taxiNode(i); return n and n.name or "INVALID" end
@@ -3570,6 +3587,10 @@ class World:
         M._sandbox()
         if before_addon:   # e.g. ElvUI, which loads before GoblinLedger
             before_addon(self)
+        guid_of = self.g.UnitGUID   # one player GUID, M.guid, for flights and crafts alike
+        if guid_of is not None and guid_of("player") != M.guid:
+            raise RuntimeError("UnitGUID('player') is %r, not M.guid %r: set M.guid, never a second UnitGUID"
+                               % (guid_of("player"), M.guid))
         if auctionator:   # loads before GoblinLedger (alphabetical), its ADDON_LOADED fires before ours
             self.loader(ATR_LUA, "@Interface/AddOns/Auctionator/Mock.lua")
             M.loaded["Auctionator"] = True
@@ -3589,6 +3610,10 @@ class World:
                 if DEALS_SWITCH[0] not in src:
                     raise RuntimeError("Sidebar.lua has no %r to turn the deals on with" % DEALS_SWITCH[0])
                 src = src.replace(DEALS_SWITCH[0], DEALS_SWITCH[1], 1)
+            if fname == "Sidebar.lua" and HISTORY_ON:   # the price-history ideas it keeps hidden (history_shown)
+                if HISTORY_SWITCH[0] not in src:
+                    raise RuntimeError("Sidebar.lua has no %r to turn the price-history ideas on with" % HISTORY_SWITCH[0])
+                src = src.replace(HISTORY_SWITCH[0], HISTORY_SWITCH[1], 1)
             ok = M.LoadChunk(src, "@Interface/AddOns/%s/%s" % (ADDON_NAME, fname), ADDON_NAME, self.ns)
             if not ok:
                 self.load_errors.append(fname)
@@ -4532,8 +4557,33 @@ def partial_term(ref, name):
 # ===========================================================================
 # Scenarios
 # ===========================================================================
+MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime")
+
+
+def mock_defs():
+    """Every game function or table the Lua mocks (the *_LUA chunks) define at column 0, as
+    {name: [chunk, ...]}: one mock per API means each name in one chunk, once."""
+    out = {}
+    for cname, body in sorted(globals().items()):
+        if not (cname.endswith("_LUA") and isinstance(body, str)):
+            continue
+        for m in re.finditer(r"^(?:function ([A-Za-z_][\w.:]*)\s*\(|([A-Za-z_][\w.]*)\s*=(?!=))", body, re.M):
+            name = m.group(1) or m.group(2)
+            if not name.startswith("M.") and name != "M":
+                out.setdefault(name, []).append(cname)
+    return out
+
+
 def sc_static(sc, ref, items):
     """Source checks for text and calls the scenarios cannot reach."""
+    # one mock per API: no game function or table is defined twice in the Lua mocks, and the
+    # player's GUID, spell book, position, taxi and server time are defined once in all of this file
+    twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1)
+    sc.eq(twice, {}, "mocks: each game API defined once in the Lua mocks")
+    me = open(os.path.abspath(__file__), "rb").read().decode("utf-8")
+    for api in MOCK_APIS:
+        n = len(re.findall(r"function\s+%s\s*\(|\b%s\s*=\s*(?:function\b|\{)" % (api, api), me))
+        sc.eq(n, 1, "mocks: %s is defined once in the harness" % api)
     files = TOC_FILES + ["GoblinLedger.toc", "GoblinLedger_Forever.toc"]
     for fname in files:
         raw = open(os.path.join(ADDON, fname), "rb").read()
@@ -5040,13 +5090,38 @@ def sc_stale(sc, ref, items):
     w.slash("/gl chart " + N(R.LINEN))
     sc.eq(w.ns.ChartPanel.age._text, "Data: |c%s7h ago|r \u00b7 %s" % (TT_WARN, ref.houseName),
           "chart footer shows 7h, in yellow, no /reload (the game read them that old: it would not help)")
+    # the bag cleanup: a stack worth more at auction is rough too ("~" in the panel, "about" in /gl bags,
+    # the hover says why), as the tooltip marks its prices
+    pick = next((i for i in (R.RUNE, R.LINEN, R.ARCANE, R.LOTUS) if bag_value(w, ref, i, 20)[2] == "auction"), None)
+    if sc.check(pick is not None, "stale bags: a stack worth more at auction"):
+        w.put_bag(0, 1, pick, 20)
+        s = ns.BagScan()
+        mine = [s.drop[i] for i in range(1, len(s.drop) + 1) if s.drop[i].bag == 0 and s.drop[i].slot == 1]
+        value, unsure, source = bag_value(w, ref, pick, 20)
+        sc.check(len(mine) == 1 and (mine[0].value, bool(mine[0].unsure), mine[0].source) == (value, True, "auction"),
+                 "stale bags: the stack's auction value is rough (%s)" % [(e.value, e.unsure, e.source) for e in mine])
+        out = [strip_codes(o) for o in w.slash("/gl bags")]
+        sc.check(any("about " in o and "(auction)" in o for o in out), "stale bags: /gl bags says about (%s)" % out)
+    # the sidebar header: the age in yellow, as the chart footer (no /reload: it would not help)
+    w.open_ah_modern()
+    SB = w.ns.SidebarPanel
+    SB.RefreshHeader(SB)
+    sc.eq(SB.age._text, "%s, |c%s7h ago|r" % (ref.houseName.replace(" Auction House", " AH"), TT_WARN),
+          "stale: the sidebar header's age in yellow, no /reload")
+    w.close_ah_modern()
     sc.clean(w)
     # Fresh when the game read them, stale since (a long session): /reload loads the newer file.
     w2 = World(ref, items)
     tt2 = w2.g.GameTooltip
+    w2.open_ah_modern()
+    SB2 = w2.ns.SidebarPanel
     for a, state in ((80 * 60, "fresh"), (80 * 60 + 1, "old"), (3 * 3600 - 1, "old"), (3 * 3600, "stale"), (4 * 3600 + 30, "stale")):
         w2.M.now = ref.updated + a
         sc.eq(w2.ns.AgeState(), state, "age %d: AgeState %s" % (a, state))
+        # the sidebar header says the age as the chart footer does: "- /reload" in yellow over 80 minutes
+        SB2.RefreshHeader(SB2)
+        sc.eq(SB2.age._text, "%s, %s" % (ref.houseName.replace(" Auction House", " AH"), chart_age(a)),
+              "age %d: the sidebar header" % a)
         tt2.SetItemByID(tt2, R.LINEN)
         lines = w2.lines(tt2)
         sc.eq(lines, expected_tooltip(ref, R.LINEN, a), "age %d: tooltip" % a)
@@ -5057,6 +5132,7 @@ def sc_stale(sc, ref, items):
             sc.check(not any(l.startswith("Prices are ") for l, _ in lines) and not any("~" in (r or "") for _, r in lines),
                      "age %d: no stale line, no ~ (%s)" % (a, lines))
     w2.M.now = w2.now
+    w2.close_ah_modern()
     sc.clean(w2)
 
 
@@ -6260,10 +6336,10 @@ def sc_price_arrows(sc, ref, items):
     sc.check(all(b.IsVisible(b) for v in arrows.values() for b in v), "commodity: all six arrows show with the sell frame")
     sc.check(not any(b.IsVisible(b) for c in ("gold", "silver", "copper") for b in first[("item price", c)]),
              "commodity: the item frame's arrows stay hidden with it")
-    now_btn, best_btn = find_sell_buttons(csf)
+    now_btn, at_btn = find_sell_buttons(csf)
     arrow_layout_ok(sc, w, "commodity", mif, avoid=(
         ("the label", pin.Label), ("the quantity box", csf.QuantityInput.InputBox), ("Max", csf.QuantityInput.MaxButton),
-        ("Post", csf.PostButton), ("Sell now", now_btn), ("Suggested", best_btn)))
+        ("Post", csf.PostButton), ("Sell now", now_btn), ("Sell at", at_btn)))
 
     # The game's own arrow art (no new files): just the arrow part, down turned over
     for coin, (u, d) in arrows.items():
@@ -6914,6 +6990,35 @@ def with_deals(fn):
     return run
 
 
+# Sidebar.lua keeps the price-history ideas hidden too (HISTORY_SHOWN false: the backtest
+# found low prices kept falling over the next day, and it does not test these ideas).
+# history_shown() turns them on for a test of their code, as deals_shown() does the deals.
+HISTORY_SWITCH = ("local HISTORY_SHOWN = false", "local HISTORY_SHOWN = true")
+HISTORY_ON = False
+
+
+class history_shown(object):
+    """with history_shown(): ... the price-history ideas on, in the model and in each World made inside."""
+    def __enter__(self):
+        global HISTORY_ON
+        self.was, HISTORY_ON = HISTORY_ON, True
+        return self
+
+    def __exit__(self, *exc):
+        global HISTORY_ON
+        HISTORY_ON = self.was
+        return False
+
+
+def with_history(fn):
+    """A scenario of the price-history ideas' code, run with them on (history_shown)."""
+    def run(sc, ref, items):
+        with history_shown():
+            return fn(sc, ref, items)
+    run.__doc__ = fn.__doc__
+    return run
+
+
 def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     """The collector's part of ns.FlipIdeas: (ideas, seen, gone, poor). With gold
     (copper; None = the game does not say: no sizing) each flip gets a fit and
@@ -6987,6 +7092,14 @@ def ref_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     out, seen, gone, poor = ref_collector_flips(ref, limit, hidden, gold, dropped)
     if len(out) >= limit:
         return out, None
+    if not HISTORY_ON:   # the price-history ideas hidden (Sidebar.lua HISTORY_SHOWN): why as they would say it
+        if out:
+            return out, None
+        if poor:
+            return out, "gold"
+        if rec_model.sales_hours_of(ref.salesHours) < 3:
+            return out, "history"
+        return out, ("none" if ref_history_cands(ref) else "nosales")
     # every history idea: the places left take the best ones not shown or dropped
     hist, why = ref_history_flips_why(ref, None, hidden, gold)
     for x in hist:
@@ -7003,17 +7116,10 @@ def ref_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     return out, why
 
 
-def ref_history_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD):
-    """Python model of the history-based ideas (Sidebar.lua HistoryIdeas): rank
-    by money traded, full advice on the top 60, filter, rank by a day's profit.
-    An item whose versions differ is left out (its prices mix them). With gold,
-    each idea gets a fit (a day's flip, or what the gold buys of it), the ones
-    the gold cannot buy are left out before the cut to `limit`, and they rank
-    by the profit on what the gold buys, best first (the contract's item 4),
-    however fast they sell. Without gold, items selling 60+ a day come first,
-    each group by a day's profit. "thin": sells under 60 a day. limit None: all."""
-    if rec_model.sales_hours_of(ref.salesHours) < 3:
-        return [], "history"
+def ref_history_cands(ref):
+    """Sidebar.lua Candidates: the items trading the most money (market x a day's sales), sorted, each
+    as (-that, id): selling 15+ a day, 2+ listed, 3+ listings, not far over the vendor price, not an
+    item whose versions differ."""
     cand = []
     for iid, it in ref.items.items():
         if iid in ref.variants:
@@ -7025,6 +7131,21 @@ def ref_history_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD):
                 and not thin and not vfar):
             cand.append((-(it["market"] * min(sold, 200)), iid))
     cand.sort()
+    return cand
+
+
+def ref_history_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD):
+    """Python model of the history-based ideas (Sidebar.lua HistoryIdeas): rank
+    by money traded, full advice on the top 60, filter, rank by a day's profit.
+    An item whose versions differ is left out (its prices mix them). With gold,
+    each idea gets a fit (a day's flip, or what the gold buys of it), the ones
+    the gold cannot buy are left out before the cut to `limit`, and they rank
+    by the profit on what the gold buys, best first (the contract's item 4),
+    however fast they sell. Without gold, items selling 60+ a day come first,
+    each group by a day's profit. "thin": sells under 60 a day. limit None: all."""
+    if rec_model.sales_hours_of(ref.salesHours) < 3:
+        return [], "history"
+    cand = ref_history_cands(ref)
     if not cand:
         return [], "nosales"
     ideas = []
@@ -8672,13 +8793,44 @@ def old_badge(lines):
     return [(a, pat.sub(r"\1", b) if isinstance(b, str) else b) for a, b in lines]
 
 
-# 1.0.0's own sell price lines: they come from its advice model (not this harness's any more).
-OLD_SELL_LINES = ("Sell now", "Suggested price", "Few listed", "This stack")
+_BRM = []
 
 
-def old_lines(lines):
-    """What 1.0.0 showed, its badge as old_badge gives it, without its sell price lines."""
-    return [x for x in old_badge(lines) if not (x[0] or "").startswith(OLD_SELL_LINES)]
+def baseline_model():
+    """tools/wow/backtest/baseline_rec_model.py: the frozen advice of 19 Nov 2026 (what 1.0.0 and
+    main shipped before rule G: the Suggested price, "Auction it" at 110%), loaded once."""
+    if not _BRM:
+        import importlib.util
+        path = os.path.join(ROOT, "tools", "wow", "backtest", "baseline_rec_model.py")
+        spec = importlib.util.spec_from_file_location("baseline_rec_model", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        _BRM.append(mod)
+    return _BRM[0]
+
+
+def old_advice(ref, iid, age):
+    """1.0.0's own advice for one exact item (full mode, one item), from its frozen model
+    (baseline_model): (its call (left, right) or None, its sell price lines ("Sell now",
+    "Suggested price", "Few listed: ..."), and whether a "Vendor pays" line follows the call)."""
+    BRM = baseline_model()
+    it = ref.items[iid]
+
+    def windows(key):
+        w = ref.window(iid, key)
+        return w["cheap"], w["market"]
+    rec = BRM.recommend(it, windows, "1D", None, sales_hours=ref.salesHours)
+    P = BRM.sell_prices(rec, None, False, it["vendor"])
+    V = BRM.sell_verdict(it, P, rec, ref.salesHours)
+    sell = []
+    if P["now"] is not None:
+        sell.append(("Sell now", money_icons(P["now"])))
+    if P["best"] is not None:
+        sell.append(("Suggested price", money_icons(P["best"])))
+    if (P["nowWhy"] == "unreliable" or P["bestWhy"] == "unreliable") and not (V and V["right"] == "few listed"):
+        sell.append(("Few listed: the price may not be reliable", None))
+    vend = bool(V and V["kind"] == "vendor" and age <= 6 * 3600 and it["vendor"] > 0)
+    return ((V["left"], V["right"]) if V else None), sell, vend
 
 
 def old_vs_average(value, avg):
@@ -8690,16 +8842,20 @@ def old_vs_average(value, avg):
     return "0%" if p < 1 else ("+%d%%" % p if value > avg else "-%d%%" % p)
 
 
-def old_tooltip(ref, iid, age, cover, call=None):
-    """Goblin Ledger 1.0.0's tooltip lines (full mode, fresh prices, one item) as old_lines
-    gives them: the header, its call (call: the (left, right) 1.0.0 shows, e.g. "Maybe auction",
-    "none listed now" with nothing listed; None: no call, as for prices covering every version),
-    the AH value with its badge against the average, the N-day average ("7-day average", fewer
-    days while the data has fewer) and the cover line."""
+def old_tooltip(ref, iid, age, cover, advice=None):
+    """Goblin Ledger 1.0.0's tooltip lines (full mode, fresh prices, one item) as old_badge
+    gives them: the header, its call, the AH value with its badge against the average, the
+    N-day average ("7-day average", fewer days while the data has fewer), its sell price lines
+    and the cover line. advice: old_advice for one exact item (its call, e.g. "Maybe auction",
+    "none listed now" with nothing listed, and its Suggested price); None: no call and no sell
+    price, as for prices covering every version."""
     it = ref.items[iid]
     out = [("Goblin Ledger", age_text(age))]
+    call, sell, vend = advice if advice else (None, [], False)
     if call:
         out.append(call)
+    if vend:
+        out.append(("Vendor pays", money_icons(it["vendor"])))
     if it["market"] and it["market"] > 0:
         vs = old_vs_average(it["market"], it["avg7"])
         out.append(("AH value", money_icons(it["market"]) + ("  " + vs if vs else "")))
@@ -8710,6 +8866,7 @@ def old_tooltip(ref, iid, age, cover, call=None):
         if days < 1 or days > 7:
             days = 7
         out.append(("%d-day average" % days, money_icons(it["avg7"])))
+    out += sell
     if cover == "version":
         out.append(("Prices for this version only", None))
     elif cover == "all":
@@ -8767,14 +8924,17 @@ def sc_old_release(sc, ref, items):
     w.put_bag(2, 2, base, 1, bonus=keys[1])
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 2, 1)
-    # 1.0.0's call with nothing listed now: "Maybe auction: none listed now", when it has a
-    # price to judge (its Suggested price; Sell now needs a listing)
+    # 1.0.0's own advice (its frozen model): with nothing listed now its call is "Maybe auction:
+    # none listed now" and its Suggested price is the one sell price line
     raw = w.lines(tt)
     sc.check(not (r3.items[v1]["market"] or 0) > 0, "old release: nothing listed now for the version")
-    call = ("Maybe auction", "none listed now") if any(l == "Suggested price" for l, _ in raw) else None
-    sc.eq(old_lines(raw), old_tooltip(r3, v1, age, "version", call), "old release: tooltip of the version without hourly prices")
+    adv = old_advice(r3, v1, age)
+    if R.SIM:   # (the simulated version has the history for a Suggested price; a real one may not)
+        sc.eq((adv[0], [l for l, _ in adv[1]]), (("Maybe auction", "none listed now"), ["Suggested price"]),
+              "old release: the frozen model's call and sell price for the version")
+    sc.eq(old_badge(raw), old_tooltip(r3, v1, age, "version", adv), "old release: tooltip of the version without hourly prices")
     tt.SetBagItem(tt, 2, 2)
-    sc.eq(old_lines(w.lines(tt)), old_tooltip(r3, base, age, "all"), "old release: tooltip of the left-out version (the item's prices)")
+    sc.eq(old_badge(w.lines(tt)), old_tooltip(r3, base, age, "all"), "old release: tooltip of the left-out version (the item's prices)")
     # chart: the hourly timeframes say nothing was listed, the daily ones draw
     for tf in TFS:
         ns.SetChartTF(tf)
@@ -10928,11 +11088,18 @@ def flip_help(w):
     return None
 
 
-FLIP_HELP = ("Experimental. Flips your gold can buy now, ranked by the profit you can expect within a day. "
-             "Until a week of sales is checked, only flips costing %s or less show, each using at most %d%% of your gold. "
-             "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
-             "Profits are after the 5%% auction cut. Treat these as ideas, not promises. Hover a row for the details."
-             % (money_text(GAP_COST_CAP), round(100 * GAP_GOLD_SHARE)))
+FLIP_HELP_HISTORY = "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
+
+
+def flip_help_text():
+    """The FLIP IDEAS help tip (Sidebar.lua, built from GAP_COST_CAP and GAP_GOLD_SHARE); the price-history
+    ideas named only while they show (HISTORY_ON)."""
+    return ("Experimental. Flips your gold can buy now, ranked by the profit you can expect within a day. "
+            "Until a week of sales is checked, only flips costing %s or less show, each using at most %d%% of your gold. "
+            % (money_text(GAP_COST_CAP), round(100 * GAP_GOLD_SHARE))
+            + (FLIP_HELP_HISTORY if HISTORY_ON else "")
+            + "Crafts from your own recipes are sized to your gold and a day's sales. "
+            "Profits are after the 5% auction cut. Treat these as ideas, not promises. Hover a row for the details.")
 
 
 def sc_flip_day_first_snapshot(sc, ref, items):
@@ -10954,8 +11121,8 @@ def sc_flip_day_first_snapshot(sc, ref, items):
     sc.eq(w.ns.FLIP_MESSAGES.none, "No flips likely to sell within a day right now. Check back after the next update.",
           "the no-ideas words")
     sc.eq(FLIP_MESSAGES["none"], w.ns.FLIP_MESSAGES.none, "the model's no-ideas words")
-    sc.eq(flip_help(w), ["Flip ideas", FLIP_HELP], "the FLIP IDEAS help tip")
-    sc.check(FLIP_HELP.find("ranked by the profit you can expect within a day") > 0, "the help tip says how they rank")
+    sc.eq(flip_help(w), ["Flip ideas", flip_help_text()], "the FLIP IDEAS help tip")
+    sc.check(flip_help_text().find("ranked by the profit you can expect within a day") > 0, "the help tip says how they rank")
     w.close_ah_modern()
     sc.clean(w, "salesHours 0")
     # 2g buys 2 of A's 4 and none of C's deal: neither could show with any gold yet,
@@ -11121,7 +11288,7 @@ def tip_over(w, fs):
 
 
 EXPERIMENTAL_TIP = ("Flip ideas lost money in our first test on two days of prices, except small ones. "
-                    "So only small ones show until a week of sales is checked.")
+                    "So only small flips show until a week of sales is checked.")
 
 
 def sc_flip_experimental(sc, ref, items):
@@ -11209,7 +11376,7 @@ def sc_flip_experimental(sc, ref, items):
         sc.check(pts is not None and len(pts) == 1 and pts[1][1] == "TOPRIGHT" and w.same(pts[1][2], w.g.ForeverAHSidebar),
                  lab + ": at the top right of the flip area")
         sc.eq(tip_over(w, SB.flipTag), ["Experimental", EXPERIMENTAL_TIP], lab + ": its hover says why")
-        sc.eq(flip_help(w), ["Flip ideas", FLIP_HELP], lab + ": the help tip says only flips of up to 20g show")
+        sc.eq(flip_help(w), ["Flip ideas", flip_help_text()], lab + ": the help tip says only flips of up to 20g show")
         sc.check(w.ns.RISK_TEXT.slow is None and w.ns.RISK_TEXT.suffix == SUFFIX_TEXT, lab + ": no words for slow")
         out = [strip_codes(o) for o in w.slash("/gl flips")]
         sc.check(out and "flip ideas (experimental)" in out[0], lab + ": /gl flips says experimental (%s)" % out[:1])
@@ -11236,6 +11403,43 @@ def sc_flip_experimental(sc, ref, items):
         sc.eq((len(want), why), (0, "history"), lab + ": no ideas, and not for lack of gold")
         w.close_ah_modern()
         sc.clean(w, lab)
+
+
+def sc_flip_history_hidden(sc, ref, items):
+    """The price-history ideas (buy at or under Target Buy, sell at the sell target) stay hidden as
+    the addon ships (Sidebar.lua HISTORY_SHOWN false): the backtest found the chart's low prices kept
+    falling over the next day ("Low now: still falling"), it does not test these ideas, and they were
+    not kept as small as the help tip says flips are. With ideas in the price history
+    (ns.HistoryFlipIdeas has them), the sidebar, /gl flips and ns.FlipIdeas show none of them, and
+    the help tip does not name them; the collector's flips still show, and with no idea at all the
+    sidebar says why as before (still collecting sales: "nosales")."""
+    src = open(os.path.join(ADDON, "Sidebar.lua"), "rb").read().decode("ascii")
+    sc.check(HISTORY_SWITCH[0] in src and HISTORY_SWITCH[1] not in src,
+             "history hidden: Sidebar.lua ships with the price-history ideas off")
+    sc.check(not HISTORY_ON, "history hidden: the model too")
+    with history_shown():
+        hist = [x["id"] for x in ref_history_flips_why(ref, None, (), MOCK_GOLD)[0]]
+        shown_on = [x["id"] for x in ref_flips(ref, gold=MOCK_GOLD)]
+    w = World(ref, items)
+    res = w.ns.HistoryFlipIdeas(60, MOCK_GOLD)
+    lua_hist = [x.id for x in lua_list(res[0] if isinstance(res, tuple) else res)]
+    sc.check(len(hist) > 0 and sorted(lua_hist) == sorted(hist),
+             "history hidden: the price history has ideas (model %s, Lua %s)" % (hist[:5], lua_hist[:5]))
+    sc.check(any(i in hist for i in shown_on), "history hidden: with them on they would show (%s)" % shown_on)
+    w.open_ah_modern()
+    want, why = check_sidebar_flips(sc, w, ref, "history hidden")
+    sc.check(all(x.get("data") for x in want), "history hidden: only the collector's flips (%s)" % [x["id"] for x in want])
+    rows = shown_rows(w.ns.SidebarPanel, "flipRows")
+    sc.check(all(r.idea.data or r.idea.kind == "craft" for r in rows), "history hidden: no price-history row")
+    res = w.ns.FlipIdeas(10, MOCK_GOLD)
+    got = lua_list(res[0] if isinstance(res, tuple) else res)
+    sc.check(all(x.data or x.kind == "craft" for x in got), "history hidden: ns.FlipIdeas has none (%s)" % [x.id for x in got])
+    slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(ref, limit=10, gold=w.gold), ref, items, w.gold, "history hidden")
+    help_tip = flip_help(w)
+    sc.check(help_tip and not any("Target Buy" in l or "price history" in l for l in help_tip),
+             "history hidden: the help tip does not name them (%s)" % help_tip)
+    w.close_ah_modern()
+    sc.clean(w, "history hidden")
 
 
 def sc_flip_deals_hidden(sc, ref, items):
@@ -12117,8 +12321,12 @@ def bag_auction_unit(ref, iid):
 
 
 def bag_value(w, ref, iid, count, bound=False):
+    """Bags.lua's value of a stack: (value, rough, "auction" / "vendor"). An auction price from prices
+    3 hours old or more (stale) is rough too, as the tooltip marks it "~" (this model has no live price)."""
     vendor = int(w.M["items"][iid].vendor or 0)
     unit, unsure = (None, False) if bound else bag_auction_unit(ref, iid)
+    if unit and w.M.now - ref.updated >= STALE_SECONDS:
+        unsure = True
     v_total, a_total = vendor * count, (rec_model.stack_after_cut(unit, count) if unit else 0)
     return max(v_total, a_total), (unsure and a_total > v_total), ("auction" if a_total > v_total else "vendor")
 
@@ -23044,7 +23252,7 @@ def sc_consumes_budget_rule(sc, ref, items):
 # --- consumes: end ---
 
 
-# --- empty searches, live prices, data age, the "vs avg" badge: ---
+# --- empty searches, live prices, data age, the "vs usual" badge: ---
 # Made-up items (ids and names no real item has) for the searches that find
 # nothing at the auction house. Each: id -> (name, lo, hi, listed, sold24, avg7, H (cheap, market, sold), D).
 ES_SPUR, ES_PLANS, ES_SABER, ES_SABER_V = 991101, 991102, 991103, 991103001
@@ -23823,7 +24031,7 @@ def sc_live_price(sc, ref, items):
 
 def sc_tooltip_live(sc, ref, items):
     """The tooltip while the AH shows a live price: "AH value (live)" and the badge compare that
-    price with the average, and Sell now, Suggested price and the verdict follow the same price
+    price with the usual price, and Sell now, Sell at and the verdict follow the same price
     (a browse row with one of yours: matched, not undercut). Never at another market, never with
     the AH closed."""
     w = World(ref, items)
@@ -23895,6 +24103,22 @@ def sc_tooltip_live(sc, ref, items):
     sc.check(bool(ns.AHState.otherHouse), "goblin auction house: another market")
     lines = hover()
     sc.eq(lines, expected_tooltip(ref, R.LINEN, age, count=20, verdict=False, live_value=None), "goblin AH: no live AH value")
+    # its loaded listings too (ns.LiveCheapest): never this market's Sell now (live), nor the bag panel's value
+    gob = max(2, it["market"] // 2)
+    w.set_commodity_results(R.LINEN, [(gob, 50, False), (gob + 100, 100, False)])
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
+    w.settle(0.3)
+    sc.eq(ns.LiveCheapest(R.LINEN), None, "goblin AH: its loaded listings are not a live price here")
+    lines = hover()
+    sc.eq(lines, expected_tooltip(ref, R.LINEN, age, count=20, verdict=False, live_value=None),
+          "goblin AH: loaded listings: still the data's prices")
+    sc.check(not any(l.startswith("Sell now (live") for l, _ in lines), "goblin AH: no Sell now (live) (%s)" % lines)
+    s = ns.BagScan()
+    mine = [s.drop[i] for i in range(1, len(s.drop) + 1) if s.drop[i].bag == 0 and s.drop[i].slot == 1]
+    if sc.check(len(mine) == 1, "goblin AH: the Linen stack is in the bag panel's list"):
+        value, unsure, source = bag_value(w, ref, R.LINEN, 20)
+        sc.eq((mine[0].value, bool(mine[0].unsure), mine[0].source), (value, unsure, source),
+              "goblin AH: the bag panel values the stack at the data's prices")
     w.close_ah_modern()
     M.npc, M.subzone = None, None
     sc.eq(hover(), expected_tooltip(ref, R.LINEN, age, count=20), "AH closed: the data's AH value again")
@@ -24286,6 +24510,9 @@ def sc_verdict_edges(sc, ref, items):
     sc.eq(pair[0]._text, "|c%sSell now: %s|r" % (TT_NEG, money_icons(500)), "gearround: Sell now is red")
     sc.check("A vendor pays more than this after the 5% cut." in (pair[0].tipBody or ""),
              "gearround: its tooltip says a vendor pays more (%s)" % pair[0].tipBody)
+    sc.check((pair[0].tipBody or "").startswith("Fills the price box just under the cheapest listing, rounded down to "
+                                                "whole silver") and "1 copper under" not in (pair[0].tipBody or ""),
+             "gearround: its tooltip says it fills whole silver, not 1 copper under (%s)" % pair[0].tipBody)
     tt.SetItemByID(tt, gr)
     sc.check(("Sell now", money_icons(599)) in w.lines(tt), "gearround: the tooltip's Sell now is 5s 99c (%s)" % w.lines(tt))
     # a live dump: one bracket, "Sell now (live, 40% under usual)"
@@ -24429,7 +24656,7 @@ def sc_empty_search_real(sc, ref, items):
     sc.clean(w)
 
 
-# --- empty searches, live prices, data age, the "vs avg" badge: end ---
+# --- empty searches, live prices, data age, the "vs usual" badge: end ---
 
 
 # ===========================================================================
@@ -25467,23 +25694,17 @@ BOAT_GEN = os.path.join(ROOT, "tools", "wow", "boats")
 BOAT_MOCK_LUA = r'''
 local M = MOCK
 M.pos = nil
-M.speed, M.falling, M.moving, M.taxi, M.inInstance = 0, false, false, false, false
+-- (UnitPosition, UnitOnTaxi with M.onTaxi, and GetServerTime from M.sbase are the main mock's.)
+M.speed, M.falling, M.moving, M.inInstance = 0, false, false, false
 M.guild, M.party, M.raid = false, false, false
 M.addonSent, M.prefixes, M.sendResult, M.sendCalls, M.prefixResult = {}, {}, 0, 0, 0
 M.realm, M.resetIn = "TestRealm", 3 * 86400
 M.sbase = M.now - M.t
-function GetServerTime() return math.floor(M.sbase + M.t) end
 function M.serverNow() return M.sbase + M.t end
-function UnitPosition(unit)
-  if unit ~= "player" or not M.pos or M.inInstance then return nil end
-  local p = M.pos
-  return p[1], p[2], p[3], p[4]
-end
 function GetUnitSpeed(unit) if unit == "player" then return M.speed, 7, 7, 4.72 end return 0, 7, 7, 4.72 end
 function IsFalling() return M.falling end
 function IsPlayerMoving() return M.moving end
 function IsFlying() return false end
-function UnitOnTaxi(unit) return unit == "player" and M.taxi end
 function IsInInstance() return M.inInstance, M.inInstance and "party" or "none" end
 function IsInGuild() return M.guild end
 function IsInGroup() return M.party or M.raid end
@@ -26968,9 +27189,9 @@ def sc_boats_ride_end(sc, ref, items):
         t0d = bt_now(w9) - 70
         fx, fy, fi = bt_track_pos(r, 70)
         bt_at(w9, fx, fy, fi)
-        M9.taxi = taxi
+        M9.onTaxi = taxi
         bt_ride(w9, key, t0d, t0d + 100, dx=0, dy=0)
-        M9.taxi = False
+        M9.onTaxi = False
         a = bt_anchor(w9, 292)
         if taxi:
             sc.eq(a, None, "ride end: a taxi flight along the track is no boat")
@@ -27539,19 +27760,9 @@ local floor, max, min = math.floor, math.max, math.min
 -- The character's GUID (Crafts.lua keeps the recipes it learned about under it): M.guid and UnitGUID
 -- come from the main mock, shared with the flight timers.
 
--- C_SpellBook: M.spellMode "works" (M.knownSpells answers, and the flight mock's M.spells, e.g. Frequent
--- Flier), "false" (always no), "errors" (raises).
-M.knownSpells, M.spellMode, M.spellCalls = {}, "works", 0
-local function spellAnswer(id)
-  M.spellCalls = M.spellCalls + 1
-  if M.spellMode == "errors" then error("C_SpellBook: bad spell") end
-  if M.spellMode == "false" then return false end
-  return M.knownSpells[id] == true or M.spells[id] == true
-end
-C_SpellBook = {
-  IsSpellInSpellBook = function(id, bank, includeOverrides) return spellAnswer(id) end,
-  IsSpellKnown = function(id, bank) return spellAnswer(id) end,
-}
+-- C_SpellBook is the main mock's (M.knownSpells, M.spellMode, M.spellCalls, and the flights' M.spells);
+-- the modern client also has IsSpellInSpellBook, answered the same way.
+C_SpellBook.IsSpellInSpellBook = function(id, bank, includeOverrides) return M.spellAnswer(id) end
 
 -- C_TradeSkillUI as the Professions window uses it. M.ts: open, skill (its line, 164 / 186 ...),
 -- child (Forever's child line), rank, ids (the window's recipe list), idset, learned[id], filter (the ids
@@ -27946,32 +28157,41 @@ def cr_buy(p, b):
 
 
 def cr_tooltip_sell_at(w, iid, ctx):
-    """Crafts.lua tooltipSellAt: (price, doubt). The price the item's own tooltip says to sell at
-    (rule G: Recommend.lua ns.SellAt, with the live listing the tooltip uses; yours: matched),
-    doubt False; when the tooltip has none because the price may be one player's guess ("Few
-    listed"), its Sell now before that doubt, doubt True; else (None, None)."""
+    """Crafts.lua tooltipSellAt: (price, doubt). What the made item sells for today: its tooltip's
+    Sell now (Recommend.lua ns.SellAt, with the live listing the tooltip uses; yours: matched), also
+    while someone dumps it (never the usual price then: a day's sales do not fetch it); nothing
+    listed: the usual price (rule G's Sell at), doubt False; when the tooltip has none because the
+    price may be one player's guess ("Few listed"), its Sell now before that doubt, doubt True;
+    else (None, None)."""
     ref = w.cr_ref
     if iid not in ref.items:
         return None, None
     sp = ref_sell_prices(ref, iid, "1D", ctx.live.get(iid), iid in ctx.own)
-    if sp["at"] and sp["at"] > 0:
-        return sp["at"], False
+    at = sp["now"] or sp["at"]
+    if at and at > 0:
+        return at, False
     if sp["atWhy"] == "unreliable" and sp["raw"]:
         return sp["raw"], True
     return None, None
 
 
 def cr_sell(p, b):
-    """What the made item sells for each: at the cheapest prices the tooltip's price to sell at
-    (p["at"]), at AH value at most 25% over what it sold for in the last day, the 7-day average."""
+    """What the made item sells for each: at the cheapest prices what it sells for today (p["at"],
+    cr_tooltip_sell_at), never above the AH value the tooltip shows (the live cheapest while there
+    is one); at AH value; the 7-day average. The first two at most 25% over what it sold for in the
+    last day."""
     if b == "lo":
-        return p["at"]
-    if b == "mkt":
+        s = p["at"]
+        cap = p["lo"] if p["live"] else p["mkt"]
+        if s is not None and cap is not None and s > cap:
+            s = cap
+    elif b == "mkt":
         s = p["mkt"]
-        if s and p["cap"] and s > p["cap"]:
-            s = p["cap"]
-        return s
-    return p["avg"]
+    else:
+        return p["avg"]
+    if s and p["cap"] and s > p["cap"]:
+        s = p["cap"]
+    return s
 
 
 def cr_q(w, sp, ctx, depth=0):
@@ -28914,19 +29134,20 @@ def sc_crafts_robust(sc, ref, items):
              ("under 10% at the 7-day average", {12359: ("Thorium Bar", 2490, 2490, 2495, 121, 1810, 600)}, None),
              ("losing at every price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)},
               {12359: steady_series(1500)}),
-             # listed at 15s under its usual 24s 90c (under 70%): sold at the usual price, as the tooltip's
-             # Sell at says, so it pays at the cheapest prices and loses at the others: about even
+             # listed at 15s under its usual 24s 90c (under 70%): counted at what it sells for today, Sell now
+             # 14s 99c (the usual price on the tooltip's Sell at line is what to wait for, not what a day's
+             # sales bring), so it loses at every price, as without the dump
              ("dumped under its usual price", {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 1500, 600)}, None))
     for label, fix, series in cases:
         w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix=fix, series=series)
         ctx = CrCtx(ranks={CR_SMELT: 300})
         cr_know(w, ctx, [CR_THORIUM])
         q = cr_q(w, CR_THORIUM, ctx)
-        want = {"losing at every price": "loss", "not selling": "thin"}.get(label, "even")
+        want = {"losing at every price": "loss", "dumped under its usual price": "loss", "not selling": "thin"}.get(label, "even")
         sc.eq(q["verdict"], want, "robust: %s (model: %s)" % (label, q["profit"]))
         if label.startswith("dumped"):
-            sc.eq((q["sell"]["lo"], w.ns.Crafts.Quote(CR_THORIUM).sellUnit.lo), (2490, 2490),
-                  "robust: dumped: the bar counts at its usual 24s 90c (model, Crafts.lua)")
+            sc.eq((q["sell"]["lo"], w.ns.Crafts.Quote(CR_THORIUM).sellUnit.lo), (1499, 1499),
+                  "robust: dumped: the bar counts at Sell now 14s 99c, not its usual 24s 90c (model, Crafts.lua)")
         cr_tip_ok(sc, w, "byid", 10620, ctx, "robust: Thorium Ore, %s" % label)
         cr_tip_ok(sc, w, "byid", 12359, ctx, "robust: Thorium Bar, %s" % label)
         sc.clean(w)
@@ -28993,11 +29214,10 @@ def sc_crafts_live(sc, ref, items):
     sc.eq(cr_q(w, CR_THORIUM, ctx.copy(live={12359: 3000}))["sell"]["lo"], 2999,
           "live: above the data's AH value, 1c under the live listing (model)")
     q4 = cr_q(w, CR_THORIUM, ctx.copy(live={12359: 4000}))
-    sc.eq((q4["sell"]["lo"], q4["sell"]["mkt"]), (3999, 2490),
-          "live: listed at 40s: at the cheapest prices 1c under it, as Sell now (live) says; at AH value the data's "
-          "24s 90c (never 25% over what it sold for in the last day, 31s 12c) (model)")
-    sc.eq(cr_q(w, CR_SPURS, ctx)["sell"]["lo"], 3499,
-          "no live listing: 1c under the cheapest 35s, as the tooltip's Sell now (above the data's AH value 34s 80c) (model)")
+    sc.eq((q4["sell"]["lo"], q4["sell"]["mkt"]), (3112, 2490),
+          "live: listed at 40s: never 25% over what it sold for in the last day (31s 12c, not Sell now (live) "
+          "39s 99c); at AH value the data's 24s 90c (model)")
+    sc.eq(cr_q(w, CR_SPURS, ctx)["sell"]["lo"], 3480, "no live listing: never above the data's AH value (34s 80c, cheapest 35s) (model)")
     t = w.to_lua({10620: 2000})
     w.ns.LivePrice = mk(t)
     w.settle(1)   # nothing else pending that would make it quote again
@@ -29072,7 +29292,7 @@ def sc_crafts_window(sc, ref, items, elvui=False):
     cr_open(w, CR_BS, [CR_SPURS, CR_OFFICER, CR_HGS], [CR_SPURS, CR_OFFICER, CR_HGS], select=CR_SPURS, ctx=ctx)
     sc.check(C.attached, "%s: attached when Blizzard_Professions loads" % label)
     sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_SPURS, ctx), ctx), "%s: Mithril Spurs" % label)
-    sc.eq(strip_codes(cr_line(w)), "Mats 79s 64c - sells 34s 99c - loses 46s 40c after AH cut", "%s: the words" % label)
+    sc.eq(strip_codes(cr_line(w)), "Mats 79s 64c - sells 34s 80c - loses 46s 58c after AH cut", "%s: the words" % label)
     cr_layout_ok(sc, w, "%s: Mithril Spurs (2 reagents)" % label)
     cr_select(w, CR_OFFICER)
     sc.eq(cr_line(w), cr_pw_want(w, cr_q(w, CR_OFFICER, ctx), ctx), "%s: picks Officer's Boots: updated" % label)
@@ -29248,7 +29468,8 @@ def sc_crafts_sidebar(sc, ref, items):
         sc.eq(got, cr_merge_ref(base, want, limit), "sidebar: FlipIdeas(%d) with the craft idea in its place" % limit)
         sc.check(len(got) <= limit, "sidebar: FlipIdeas(%d) gives at most %d (%d)" % (limit, limit, len(got)))
         sc.eq(sum(1 for y in lua_ideas(w, limit, MOCK_GOLD) if y.kind == "craft"), 1, "sidebar: one craft idea of %d" % limit)
-    sc.check(len(lua_ideas(w, 3, MOCK_GOLD)) == 3 and len(plain3) == 3, "sidebar: (the test data fills 3 places, so one is given up)")
+    if R.SIM:   # (real data may not fill 3 places now that the price-history ideas are hidden)
+        sc.check(len(lua_ideas(w, 3, MOCK_GOLD)) == 3 and len(plain3) == 3, "sidebar: (the test data fills 3 places, so one is given up)")
     # the gold: a little buys less; too little, none
     for gold in (20000, 100000, 1000):
         ws = cr_ideas_ref(w, ctx, gold)
@@ -29827,8 +30048,8 @@ def sc_crafts_slash(sc, ref, items):
 
 def sc_crafts_thin(sc, ref, items):
     """A made item behind 1 or 2 listings, or selling under 3 a day: no green profit ("unsure") on the
-    tooltips, in the window, on its mats or in the ideas. At AH value a sale counts at most 25% over
-    what it sold for in the last day (at the cheapest prices it is the tooltip's own Sell now)."""
+    tooltips, in the window, on its mats or in the ideas. A sale counts at most 25% over what it sold
+    for in the last day (also when the tooltip's Sell now is higher)."""
     cases = (("1 listing at 50g", {7969: ("Mithril Spurs", 500000, 500000, 1, 1, 500000, 250, 1)}, "listings", "unsure, 1 listing"),
              ("2 listings", {7969: ("Mithril Spurs", 500000, 500000, 2, 200, 500000, 250, 2)}, "listings", "unsure, 2 listings"),
              # none sold in the measured hours (any sold scales up to a day, 6 from 1 in 4 hours)
@@ -29855,16 +30076,16 @@ def sc_crafts_thin(sc, ref, items):
         cr_close(w)
         sc.check(not any(x.recipe == CR_SPURS for x in lua_list(C.Ideas(MOCK_GOLD))), "thin: %s: never a craft idea" % label)
         sc.clean(w)
-    # Thorium Bar sold at 24s 90c all day, listed at 40s now: at AH value it counts at 31s 12c (1.25 x
-    # 24s 90c); at the cheapest prices at the tooltip's Sell now, 39s 99c
+    # Thorium Bar sold at 24s 90c all day, listed at 40s now: it counts at 31s 12c (1.25 x 24s 90c), now
+    # and at AH value, though its tooltip's Sell now says 39s 99c
     w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix={12359: ("Thorium Bar", 4000, 4000, 2495, 121, 4000, 600)})
     ctx = CrCtx(ranks={CR_SMELT: 300})
     cr_know(w, ctx, [CR_THORIUM])
     q = cr_q(w, CR_THORIUM, ctx)
-    sc.eq((q["sell"]["lo"], q["sell"]["mkt"], q["sell"]["avg"]), (3999, 3112, 4000),
-          "thin: counted at Sell now 39s 99c, at AH value 31s 12c, the 7-day average as it is (model)")
+    sc.eq((q["sell"]["lo"], q["sell"]["mkt"], q["sell"]["avg"]), (3112, 3112, 4000),
+          "thin: counted at 31s 12c now and at AH value, the 7-day average as it is (model)")
     lq = w.ns.Crafts.Quote(CR_THORIUM)
-    sc.eq((lq.sellUnit.lo, lq.sellUnit.mkt, lq.sellUnit.avg), (3999, 3112, 4000), "thin: Crafts.lua counts it so")
+    sc.eq((lq.sellUnit.lo, lq.sellUnit.mkt, lq.sellUnit.avg), (3112, 3112, 4000), "thin: Crafts.lua counts it at 31s 12c")
     cr_tip_ok(sc, w, "byid", 10620, ctx, "thin: Thorium Ore, the bar listed over what it sold for")
     cr_tip_ok(sc, w, "byid", 12359, ctx, "thin: Thorium Bar, listed over what it sold for")
     sc.clean(w)
@@ -30107,29 +30328,29 @@ def sc_crafts_yield(sc, ref, items):
     sc.clean(w)
 
 
-def tip_sell_price(lines):
-    """The price a tooltip says to sell at: its Sell at line, else its Sell now (...) line, or None."""
-    for left, right in lines:
-        if left == "Sell at":
-            return right
-    for left, right in lines:
-        if (left or "").startswith("Sell now"):
+def tip_sell_price(lines, left="Sell now"):
+    """The price on a tooltip's first line starting with `left` ("Sell now": its Sell now (...)
+    line; "Sell at"), or None."""
+    for l, right in lines:
+        if (l or "").startswith(left):
             return right
     return None
 
 
 def sc_crafts_sell_rule(sc, ref, items):
-    """A made item sells at the price its own tooltip says to sell at (Recommend.lua ns.SellAt, the
-    rule the tooltip's ns.SellPrices uses): Sell now; while someone dumps (Sell now under 70% of the
-    usual price) the yellow line's Sell at, the usual price; the live listing (Sell now (live), yours
-    matched, a live dump too). The tooltip is Core's lines in their order, then the craft lines, no
-    line twice; the Professions window says the same price. A price the tooltip doubts (a few units
-    far above what a vendor pays) is never a green profit: "unsure, few listed"."""
+    """A made item counts at what it sells for today, the price on its tooltip's Sell now line
+    (Recommend.lua ns.SellAt, the rule the tooltip's ns.SellPrices uses): 1c under the cheapest; the
+    live listing (Sell now (live), yours matched); while someone dumps it (Sell now under 70% of the
+    usual price) the yellow "Sell now (N% under usual)" price too, never the usual price on the Sell at
+    line under it (a day's sales do not fetch that: a craft idea relists at Sell now). The tooltip is
+    Core's lines in their order, then the craft lines, no line twice; the Professions window says the
+    same price. A price the tooltip doubts (a few units far above what a vendor pays) is never a green
+    profit: "unsure, few listed"."""
     usual = 2490   # Thorium Bar: a steady last day at 24s 90c (CR_SERIES)
     cases = (("listed at 26s", 2600, None, False, 2599, None),
-             ("dumped at 15s (39% under usual)", 1500, None, False, usual, 39),
+             ("dumped at 15s (39% under usual)", 1500, None, False, 1499, 39),
              ("live at 20s", 2490, 2000, False, 1999, None),
-             ("live dump at 16s (35% under usual)", 2490, 1600, False, usual, 35),
+             ("live dump at 16s (35% under usual)", 2490, 1600, False, 1599, 35),
              ("your live listing at 26s", 2490, 2600, True, 2600, None))
     for label, cheap, live, own, want, under in cases:
         fix = {12359: ("Thorium Bar", cheap, cheap, 2495, 121, 2400, 600)}
@@ -30150,7 +30371,9 @@ def sc_crafts_sell_rule(sc, ref, items):
               % (label, money_text(want)))
         tt = cr_show(w, "byid", 12359)
         lines = w.lines(tt)
-        sc.eq(tip_sell_price(lines), money_icons(want), "sell rule: %s: the tooltip says to sell at that price" % label)
+        sc.eq(tip_sell_price(lines), money_icons(want), "sell rule: %s: the tooltip's Sell now says that price" % label)
+        sc.eq(tip_sell_price(lines, "Sell at"), money_icons(usual) if under else None,
+              "sell rule: %s: the usual price only on the Sell at line of a dump, not counted" % label)
         nows = [l for l, _ in lines if (l or "").startswith("Sell now")]
         if under:
             word = ("Sell now (live, %d%% under usual)" if live else "Sell now (%d%% under usual)") % under
@@ -30188,13 +30411,33 @@ def sc_crafts_sell_rule(sc, ref, items):
           "sell rule: doubted price: unsure (model, Crafts.lua)")
     sc.eq(lq.sellUnit.lo, 499999, "sell rule: doubted price: counted at its Sell now before the doubt")
     lines = w.lines(cr_show(w, "byid", 7969))
-    sc.check("Few listed: the price may not be reliable" in [l for l, _ in lines] and tip_sell_price(lines) is None,
+    sc.check("Few listed: the price may not be reliable" in [l for l, _ in lines] and tip_sell_price(lines) is None
+             and tip_sell_price(lines, "Sell at") is None,
              "sell rule: doubted price: the tooltip says Few listed and gives no price (%s)" % lines)
     got = cr_tip_ok(sc, w, "byid", 7969, ctx, "sell rule: Mithril Spurs, doubted price")
     sc.eq(got[-1][1] if got else None, "Profit: unsure, few listed", "sell rule: doubted price: Profit: unsure, few listed")
     sc.check(not any(x.recipe == CR_SPURS for x in lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))),
              "sell rule: doubted price: never a craft idea")
     sc.clean(w, "sell rule: doubted price")
+    # a dump that still pays at Sell now (ore at 8s, the bar dumped at 15s, usual 24s 90c): the craft
+    # idea relists at Sell now 14s 99c and counts its day there, never at the usual price (only about
+    # 1 in 4 sold within a day at it, the sell button says)
+    fix = {12359: ("Thorium Bar", 1500, 1500, 2495, 121, 2400, 600), 10620: ("Thorium Ore", 800, 800, 2418, 121, 800, 250)}
+    w = cr_world(ref, items, ranks={CR_SMELT: 300}, fix=fix)
+    ctx = CrCtx(ranks={CR_SMELT: 300})
+    cr_know(w, ctx, [CR_THORIUM])
+    q = cr_q(w, CR_THORIUM, ctx)
+    sc.eq((q["verdict"], q["sell"]["lo"]), ("profit", 1499), "sell rule: dump that pays: green at Sell now (model)")
+    want = cr_ideas_ref(w, ctx, MOCK_GOLD)
+    got = lua_list(w.ns.Crafts.Ideas(MOCK_GOLD))
+    sc.eq([x.recipe for x in got], [x["recipe"] for x in want], "sell rule: dump that pays: the craft ideas (model)")
+    th = [x for x in got if x.recipe == CR_THORIUM]
+    if sc.check(len(th) == 1, "sell rule: dump that pays: a Thorium Bar idea (%s)" % [x.recipe for x in got]):
+        x = th[0]
+        sc.eq((x.countAt, strip_codes(x.sub2Text)), (1499, "Sell 14s 99c each"),
+              "sell rule: dump that pays: the idea relists at Sell now 14s 99c, not the usual 24s 90c")
+        sc.check(", sell at 14s 99c, " in (x.line or ""), "sell rule: dump that pays: /gl flips says 14s 99c (%s)" % x.line)
+    sc.clean(w, "sell rule: dump that pays")
 
 
 def sc_crafts_stale(sc, ref, items):
@@ -30346,15 +30589,15 @@ SCENARIOS = [
     ("old-release-data", sc_old_release),
     ("login-gc", sc_login_gc),
     ("collector-flips", sc_data_flips),
-    ("flip-gold-sizing", sc_flip_gold),
+    ("flip-gold-sizing", with_history(sc_flip_gold)),
     ("flip-deals", with_deals(sc_flip_deals)),
     ("flip-deal-room", with_deals(sc_flip_deal_room)),
     ("flip-deal-words", with_deals(sc_flip_deal_words)),
-    ("flip-history-rank", sc_flip_history_rank),
-    ("flip-no-gold-api", sc_flip_no_gold),
+    ("flip-history-rank", with_history(sc_flip_history_rank)),
+    ("flip-no-gold-api", with_history(sc_flip_no_gold)),
     ("flip-day-stats", sc_flip_day_stats),
     ("flip-day-value", sc_flip_day_value),
-    ("flip-day-drops", sc_flip_day_drops),
+    ("flip-day-drops", with_history(sc_flip_day_drops)),
     ("flip-day-expected", sc_flip_day_expected),
     ("flip-day-deals", with_deals(sc_flip_day_deals)),
     ("flip-day-place", with_deals(sc_flip_day_place)),
@@ -30366,8 +30609,9 @@ SCENARIOS = [
     ("flip-day-model", sc_flip_day_model),
     ("flip-day-live", sc_flip_day_live),
     ("flip-experimental", sc_flip_experimental),
-    ("flip-deals-hidden", sc_flip_deals_hidden),
-    ("old-data-format", sc_old_format),
+    ("flip-deals-hidden", with_history(sc_flip_deals_hidden)),
+    ("flip-history-hidden", sc_flip_history_hidden),
+    ("old-data-format", with_history(sc_old_format)),
     ("stack-verdicts", sc_stack_verdicts),
     ("tooltip-verdicts", sc_tooltip_verdicts),
     ("tooltip-fonts", sc_tooltip_fonts),

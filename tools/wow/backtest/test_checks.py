@@ -7,6 +7,9 @@ price data needed.  python tools/wow/backtest/test_checks.py
 - Each gold level is judged on its own, with a 95% range.
 - Out of sample says WAIT until 2 new days and 30 distinct flips at every gold level.
 - The hidden deals are judged over 72 hours, WAIT until 30 distinct deals have them.
+- The chart calls are judged under the words the addon ships ("High now", "Low now"); no call
+  at all is a FAIL row.
+- The backtest's constants (20g cap, rule G's 70%) are the ones Sidebar.lua and Recommend.lua ship.
 - Without the package lupa the run still prints its table (the Lua rows SKIP)."""
 import os
 import subprocess
@@ -89,6 +92,72 @@ check(dl[3] == "PASS" and "50g: 40 flips, won 100%" in dl[2], "deals: 72 hours a
 
 check(abs(C.wilson(12, 19)[0] - 41.0) < 1 and abs(C.wilson(12, 19)[1] - 81.0) < 1, "the 95%% range of 12 of 19 is about 41-81%% (%s)"
       % (C.wilson(12, 19),))
+
+# the chart calls (checks.check_chart) on hand-made rows: the shipped words, "High now: usually
+# falls back" and "Low now: still falling", are on the Sell and Buy sides (they once matched no
+# row and the check printed nothing); no call at all is a FAIL row, not a missing one
+class FakeFwd(object):
+    def __init__(self, nxt):
+        self.nxt = nxt
+
+    def after(self, sid, T, H):
+        return None, [(0, 0, p) for p in self.nxt[sid]]
+
+
+class FakeCtx(object):
+    pass
+
+
+def chart_ctx(calls, rise):
+    c = FakeCtx()
+    c.set24, c.rows, nxt = {T0}, [], {}
+    sid = 0
+    for v, mult in calls:
+        for g in ("gear", "fast", "slow"):
+            for _ in range(120):
+                sid += 1
+                c.rows.append({"T": T0, "hi": 1000, "sid": sid, "verdict": v, "gear": g == "gear",
+                               "perDay": 10 if g == "fast" else 1})
+                nxt[sid] = [int(1000 * (mult + rise))] * 20
+    c.F = FakeFwd(nxt)
+    return c
+
+
+RM = C.B.RM
+got = C.check_chart(chart_ctx([(RM.CALL_HIGH, 0.9), (RM.CALL_LOW, 0.98), ("Hold", 1.5)], 0))
+check([x[3] for x in got] == ["PASS", "PASS"] and "High now" in got[0][1] and "Low now" in got[1][1]
+      and "stacks 5+/day -10.0%" in got[0][2], "chart: High now fell 10%%, Low now fell 2%%: 2 PASS rows (%s)" % (got,))
+got = C.check_chart(chart_ctx([(RM.CALL_HIGH, 0.9), (RM.CALL_LOW, 0.98)], 0.15))
+check([x[3] for x in got] == ["FAIL", "FAIL"], "chart: both followed by a rise: 2 FAIL rows (%s)" % (got,))
+got = C.check_chart(chart_ctx([("Hold", 1.0), ("Some new words", 0.5)], 0))
+check(len(got) == 1 and got[0][3] == "FAIL" and "no chart calls" in got[0][2],
+      "chart: no call the check knows: one FAIL row, never no row (%s)" % (got,))
+
+# the shipped constants the checks measure: the 20g gap flip cap and rule G's 70% (Sidebar.lua,
+# Recommend.lua, the harness and rec_model), so the backtest never quietly tests a rule that is not shipped
+import re  # noqa: E402
+ROOT = os.path.dirname(os.path.dirname(os.path.dirname(HERE)))
+ADDON = os.environ.get("FAH_ADDON_DIR") or os.path.join(ROOT, "wow-addon", "GoblinLedger")
+
+
+def lua_const(fname, name):
+    m = re.search(r"^local %s = ([0-9.]+)" % name, open(os.path.join(ADDON, fname), encoding="ascii").read(), re.M)
+    return float(m.group(1)) if m else None
+
+
+cap = lua_const("Sidebar.lua", "GAP_COST_CAP")
+hcap = re.search(r"^GAP_COST_CAP = (\d+)", open(os.path.join(ROOT, "tools", "wow", "addon_test", "harness.py"),
+                                                 encoding="utf-8").read(), re.M)
+check(cap == C.GAP_COST and hcap and int(hcap.group(1)) == C.GAP_COST,
+      "the 20g cap: checks.GAP_COST %s, Sidebar.lua GAP_COST_CAP %s, harness %s" % (C.GAP_COST, cap, hcap and hcap.group(1)))
+dump = lua_const("Recommend.lua", "DUMP_PCT")
+check(dump == round(C.G_DUMP * 100) == RM.DUMP_PCT,
+      "rule G's 70%%: checks.G_DUMP %s, Recommend.lua DUMP_PCT %s, rec_model %s" % (C.G_DUMP, dump, RM.DUMP_PCT))
+share = lua_const("Sidebar.lua", "GAP_GOLD_SHARE")
+hshare = re.search(r"^GAP_GOLD_SHARE = ([0-9.]+)", open(os.path.join(ROOT, "tools", "wow", "addon_test", "harness.py"),
+                                                          encoding="utf-8").read(), re.M)
+check(share is not None and hshare and float(hshare.group(1)) == share,
+      "the 10%% gold share: Sidebar.lua %s, harness %s" % (share, hshare and hshare.group(1)))
 
 # no lupa: the table still prints, the Lua rows SKIP (on the cached rows; skipped without a cache)
 cache = os.path.join(HERE, "cache")
