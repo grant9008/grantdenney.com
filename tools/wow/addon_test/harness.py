@@ -8229,6 +8229,14 @@ def export_release(commit=OLD_RELEASE):
     return tmp
 
 
+def old_badge(lines):
+    """The % badge after the AH value without its colour and " vs avg": 1.0.0 shows it red/green,
+    the current addon grey/yellow with " vs avg"; the old-release checks compare the prices, not that."""
+    import re as _re
+    pat = _re.compile(r"\|c[0-9a-fA-F]{8}([+-]?[0-9]+%)(?: vs avg)?\|r")
+    return [(a, pat.sub(r"\1", b) if isinstance(b, str) else b) for a, b in lines]
+
+
 def sc_old_release(sc, ref, items):
     """Goblin Ledger 1.0.0 (what friends run) on a data file with an idle version (two empty
     hours as H, its hourly prices packed in an 11th field 1.0.0 does not read) and a version
@@ -8280,9 +8288,11 @@ def sc_old_release(sc, ref, items):
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 2, 1)
     got, exp = w.lines(tt), expected_tooltip(r3, v1, age, count=1, cover="version")
+    got, exp = old_badge(got), old_badge(exp)
     sc.eq(got[:len(exp)], exp, "old release: tooltip of the version without hourly prices")
     tt.SetBagItem(tt, 2, 2)
     got, exp = w.lines(tt), expected_tooltip(r3, base, age, count=1, cover="all")
+    got, exp = old_badge(got), old_badge(exp)
     sc.eq(got[:len(exp)], exp, "old release: tooltip of the left-out version (the item's prices)")
     # chart: the hourly timeframes say nothing was listed, the daily ones draw
     for tf in TFS:

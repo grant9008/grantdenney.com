@@ -908,8 +908,7 @@ end
 
 -- True when item a (with s1 sold and a name l1 long) ranks before item b.
 local function ranksBefore(a, s1, l1, b, s2, l2)
-  local baseOf = variants().baseOf
-  local va, vb = baseOf[a] ~= nil, baseOf[b] ~= nil
+  local va, vb = baseOf(a) ~= nil, baseOf(b) ~= nil
   if va ~= vb then return vb end
   if s1 ~= s2 then return s1 > s2 end
   if l1 ~= l2 then return l1 < l2 end
