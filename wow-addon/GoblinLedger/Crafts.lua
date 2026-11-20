@@ -14,14 +14,15 @@ local ADDON_NAME, ns = ...
 --   - the Professions window: one line by the Create button for the recipe
 --     you picked;
 --   - the auction house sidebar: one flip idea from your own recipes;
---   - an empty auction house search for a recipe item or something you can
---     craft: its mats and what they cost (when the AH code asks, see
---     ns.EmptySearchLines).
+--   - an empty auction house search for a recipe item, or for something you
+--     can make: what it makes and its mats with their cost, under the AH
+--     code's own lines (ns.EmptySearchLines; they say whether it is listed).
 -- Prices: the mats at the cheapest listing (the live one while the auction
 -- house shows it, not your own, or a vendor's when that is cheaper), the item
 -- at 1c under its cheapest listing (yours: matched) but never above its AH
--- value nor 25% over what it sold for in the last day, after the 5% cut, times
--- the average number one craft makes. A profit is only claimed (green) when it
+-- value (the tooltip's: the live cheapest while the auction house shows one,
+-- so it sells at Sell now (live)) nor 25% over what it sold for in the last
+-- day, after the 5% cut, times the average number one craft makes. A profit is only claimed (green) when it
 -- is more than 10% of the mats at the cheapest prices, at AH value and at the
 -- 7-day averages (the smallest of the three is the one shown), and the made
 -- item has 3 or more listings and sells 3 or more a day ("unsure" when not).
@@ -6239,7 +6240,7 @@ local THIN_AUCTIONS = 3       -- the made item behind fewer separate listings th
 local THIN_SOLD = 3           -- ... or fewer sold a day than this: no profit claim ("unsure")
 local SOLD_CAP = 1.25         -- a sale counts at most 25% over what it sold for in the last day (as the flip ideas count it)
 local MATS_SHOWN = 2          -- 4 or more mats: a tooltip names the 2 dearest ("+3 others"; all of them with Shift)
-local LIVE = { "LivePrice", "LiveCheapest" }   -- the live cheapest listing: the AH code's, else the open AH's own
+local LIVE = { "LivePrice", "LiveCheapest" }   -- the live cheapest listing: the AH code's, or without it the open AH's own
 local MEMO_TTL = 2            -- seconds a quote is reused (the Professions window redraws its tooltip every frame)
 local SCAN_GAP = 1            -- at most one look at the open Professions window a second
 local IDEA_SHARE = 0.5        -- one seller can expect half of a day's sales (as the flip ideas count it)
@@ -6600,7 +6601,9 @@ C.CanMake = function(sp) return canMake(getRecipe(sp)) end
 -- Prices and the sums
 ---------------------------------------------------------------------------
 -- The live cheapest listing the open auction house showed (per unit), and whether it is
--- yours; nil when there is none.
+-- yours; nil when there is none. The AH code's ns.LivePrice answers for itself: its nil (no
+-- listing, or another market whose prices do not mix with the data's) is not asked again of
+-- the open AH's own listings, which are only for an AH code without it.
 local function liveOf(id)
   for _, name in ipairs(LIVE) do
     local f = ns[name]
@@ -6608,6 +6611,7 @@ local function liveOf(id)
       local ok, p, own = pcall(f, id)
       p = ok and plain(p) or nil
       if p and p > 0 then return floor(p), not isSecret(own) and own == true end
+      return nil
     end
   end
   return nil
@@ -6655,12 +6659,15 @@ local function buyAt(p, basis)
 end
 
 -- What the made item sells for each on a basis: 1c under the cheapest listing (yours: matched),
--- never above AH value, nor 25% over what it sold for in the last day.
+-- never above AH value, nor 25% over what it sold for in the last day. The AH value is the one
+-- the tooltip shows (Core.lua): the live cheapest while the open auction house shows one (then
+-- this is its Sell now (live)), else the data's.
 local function sellAt(p, basis)
   local s
   if basis == "lo" then
     local lo = p.lo and (p.own and p.lo or p.lo - 1)
-    if lo and p.mkt then s = min(lo, p.mkt) else s = lo or p.mkt end
+    local cap = p.live and p.lo or p.mkt
+    if lo and cap then s = min(lo, cap) else s = lo or cap end
   elseif basis == "mkt" then
     s = p.mkt
   else
@@ -6870,8 +6877,10 @@ local function matsText(q, withCost, all)
 end
 C.MatsText = matsText
 
--- "1g 23s", or "1g 23s + 2 more" when some mats have no price.
+-- "1g 23s", or "1g 23s + 2 more" when some mats have no price, "price unknown" when none has
+-- one (never "0c").
 local function totalText(q, plainMoney)
+  if not q.cost.lo and (q.partial or 0) <= 0 then return "price unknown" end
   local fn = plainMoney and moneyText or money
   local t = fn(roundCopper(q.cost.lo or q.partial or 0))
   if q.missing > 0 then t = t .. " + " .. q.missing .. " more" end
@@ -7580,18 +7589,23 @@ end
 ---------------------------------------------------------------------------
 -- An empty auction house search (the AH code calls ns.EmptySearchLines)
 ---------------------------------------------------------------------------
-local nameIndex
+local nameIndex, nameByID
 -- "Plans: Officer's Boots" -> "plans officers boots" (so "officers boots" finds it too)
 local function norm(s)
   return (sgsub(sgsub(sgsub(slower(s or ""), "'", ""), "[^%w]+", " "), "^%s*(.-)%s*$", "%1"))
 end
 
+-- Every recipe item and crafted item by name (shortest first), and by id.
 local function names()
   if nameIndex then return nameIndex end
-  local idx, list = getIndex(), {}
+  local idx, list, byID = getIndex(), {}, {}
   local function add(id, kind)
     local n = N[id]
-    if n then list[#list + 1] = { id = id, kind = kind, name = n, key = norm(n) } end
+    if n then
+      local e = { id = id, kind = kind, name = n, key = norm(n) }
+      list[#list + 1] = e
+      byID[id] = e
+    end
   end
   for id in pairs(idx.byItem) do add(id, "recipe") end
   for id in pairs(idx.byProduct) do
@@ -7601,7 +7615,7 @@ local function names()
     if #a.key ~= #b.key then return #a.key < #b.key end
     return a.id < b.id
   end)
-  nameIndex = list
+  nameIndex, nameByID = list, byID
   return list
 end
 
@@ -7613,59 +7627,149 @@ local function firstRecipe(list)
   return nil
 end
 
--- One line for a recipe item or a craftable item nobody lists.
-local function searchLine(e)
-  local idx = getIndex()
-  local r = firstRecipe(e.kind == "recipe" and idx.byItem[e.id] or idx.byProduct[e.id])
-  if not r then return nil end
-  local q = quote(r)
-  local name = nameOf(e.id)
-  local how
-  if e.kind == "recipe" and RI[e.id] == "B" then
-    how = "bind on pickup, never on the AH."
-  elseif e.kind == "product" and r.bop then
-    how = "bind on pickup, never on the AH."
-  else
-    how = "none listed right now."
-  end
-  local makes = ""
-  if e.kind == "recipe" then makes = " Makes " .. countPrefix(r) .. nameOf(r.product) .. "." end
-  return name .. " - " .. how .. makes .. " Mats: " .. matsText(q, false) .. " = " .. totalText(q, true)
+-- The recipe a line is about: a recipe item's (the first one for your faction), a crafted
+-- item's only when you know it or may know it (productRecipe). nil: no line for it.
+local function entryRecipe(e)
+  if e.kind == "recipe" then return firstRecipe(getIndex().byItem[e.id]) end
+  return (productRecipe(e.id, nil))
 end
 
-local function emptySearch(text)
-  if not isOn() or not hasData() or type(text) ~= "string" or isSecret(text) then return nil end
+-- "Mats: 4 Steel Bar, 4 Heavy Grinding Stone, 4 Jade = 1g 18s"; no total while a mat has no
+-- price (a part of the cost is not the cost, and never "0c").
+local function searchMats(q)
+  local t = "Mats: " .. matsText(q, false)
+  if q.missing == 0 and q.cost.lo then t = t .. " = " .. moneyText(roundCopper(q.cost.lo)) end
+  return t
+end
+
+-- What making it takes, for the item the AH code's lines are about (they already say whether
+-- it is listed or binds on pickup): "Makes Officer's Boots. Mats: ...", or for a crafted item
+-- "You can make it. Mats: ..." ("You can make it (5 a craft). ..."). bop: the item binds on
+-- pickup and those lines could not say so (the game has not loaded that name): "Bind on
+-- pickup. Makes ...".
+local function entryBop(e, r)
+  if e.kind == "recipe" then return RI[e.id] == "B" end
+  return r.bop == true
+end
+
+-- "make it (5 a craft). Mats: ...", for "You can ..." / "Iron Bar - you can ...".
+local function makeItText(r)
+  local n = countPrefix(r)
+  return "make it" .. (n ~= "" and (" (" .. n .. "a craft)") or "") .. ". " .. searchMats(quote(r))
+end
+
+local function aboutLine(e, r, bop)
+  local lead = bop and entryBop(e, r) and "Bind on pickup. " or ""
+  if e.kind == "recipe" then
+    return lead .. "Makes " .. countPrefix(r) .. nameOf(r.product) .. ". " .. searchMats(quote(r))
+  end
+  return lead .. "You can " .. makeItText(r)
+end
+
+-- Another match, by name: "Plans: Officer's Belt (bind on pickup) - Mats: ...", "Iron Bar -
+-- you can make it. Mats: ...". What a recipe item makes only when its name does not say it
+-- ("Recipe: Transmute Arcanite - makes Arcanite Bar. Mats: ...").
+local function namedLine(e, r)
+  local name = nameOf(e.id) .. (entryBop(e, r) and " (bind on pickup)" or "")
+  if e.kind == "product" then return name .. " - you can " .. makeItText(r) end
+  local prod, n = nameOf(r.product), countPrefix(r)
+  local makes = ""
+  if n ~= "" or slower(nameOf(e.id)):sub(-#prod) ~= slower(prod) then makes = "makes " .. n .. prod .. ". " end
+  return name .. " - " .. makes .. searchMats(quote(r))
+end
+
+-- The game knows an item by that name (only items it has loaded): true and its id.
+local function gameKnows(text)
+  local CI = _G.C_Item
+  for _, f in ipairs({ type(CI) == "table" and CI.GetItemInfo or false, _G.GetItemInfo or false }) do
+    if type(f) == "function" then
+      local ok, name, link = pcall(f, text)
+      if ok and type(name) == "string" and not isSecret(name) then
+        local id = type(link) == "string" and not isSecret(link) and tonumber(smatch(link, "item:(%d+)")) or nil
+        return true, id
+      end
+    end
+  end
+  return false
+end
+
+-- A search for recipe items: a word of it starts Plans, Pattern, Recipe ... (4 letters or more).
+local RECIPE_WORDS = { "plans", "pattern", "recipe", "schematic", "formula", "blueprint", "manual" }
+local function recipeSearch(words)
+  for _, w in ipairs(words) do
+    if #w >= 4 then
+      for _, k in ipairs(RECIPE_WORDS) do
+        if sfind(k, w, 1, true) == 1 then return true end
+      end
+    end
+  end
+  return false
+end
+
+-- The lines under the AH code's own for a search that found nothing (itemID: the priced item
+-- its lines are about, or nil when it found none), 2 entries at most, one per recipe:
+--   - that item, or else the one the game knows by the text, when it is a recipe item or
+--     something you can make (aboutLine);
+--   - a recipe item or a crafted item you can make that the text names exactly: by name
+--     (namedLine), or as above when the AH code's lines are about the text and none came first;
+--   - only when the AH code found no priced item, the game knows no item by the text and no
+--     name is the text: the recipe items and the items you can make with a word starting with
+--     each word of it, by name, and for a recipe search ("plans officer") "6 more match: type
+--     more of the name."
+-- Nothing for an item that is not listed and is neither (Linen Cloth, Iron Ore), nor for
+-- other items that only share its words. Not at another market (its prices are not these).
+local SEARCH_SHOWN = 2
+local function emptySearch(text, itemID)
+  if not isOn() or not hasData() or mismatch() or type(text) ~= "string" or isSecret(text) then return nil end
   local key = norm(text)
   if #key < 3 then return nil end
+  names()
+  -- The AH code's lines are about its priced item, else about the text (the item the game knows by it).
+  local subject = plain(itemID)
+  if subject and type(ns.BaseItemID) == "function" then subject = ns.BaseItemID(subject) or subject end
+  local priced, known = subject ~= nil, subject ~= nil
+  if not priced then known, subject = gameKnows(text) end
+  local out, used, count = {}, {}, 0
+  local function add(e, about)
+    local r = entryRecipe(e)
+    if not r or used[r.id] then return end
+    used[r.id] = true
+    count = count + 1
+    if count <= SEARCH_SHOWN then out[#out + 1] = about and aboutLine(e, r, not known) or namedLine(e, r) end
+  end
+  local e = subject and nameByID[subject]
+  if e then add(e, true) end
+  local exact = {}
+  for _, x in ipairs(nameIndex) do
+    if #x.key > #key then break end
+    if x.key == key and x ~= e then exact[#exact + 1] = x end
+  end
+  for _, x in ipairs(exact) do add(x, not priced and count == 0) end
+  if known or #exact > 0 then return #out > 0 and out or nil end
+  -- Every word of the text starts a word of the name ("plans officer": Plans: Officer's
+  -- Boots), not only inside one (Copper Ore is not Copper Claymore).
   local words = {}
   for w in sgmatch(key, "%S+") do words[#words + 1] = w end
-  local hits = {}
-  for _, e in ipairs(names()) do
+  for _, x in ipairs(nameIndex) do
     local all = true
     for _, w in ipairs(words) do
-      if not sfind(e.key, w, 1, true) then
+      if sfind(x.key, w, 1, true) ~= 1 and not sfind(x.key, " " .. w, 1, true) then
         all = false
         break
       end
     end
-    if all and firstRecipe(e.kind == "recipe" and getIndex().byItem[e.id] or getIndex().byProduct[e.id]) then
-      if e.key == key then tinsert(hits, 1, e) else hits[#hits + 1] = e end
-    end
+    if all then add(x, false) end
   end
-  if #hits == 0 then return nil end
-  local out = {}
-  for i = 1, min(2, #hits) do
-    local ln = searchLine(hits[i])
-    if ln then out[#out + 1] = ln end
+  if count > SEARCH_SHOWN and recipeSearch(words) then
+    out[#out + 1] = (count - SEARCH_SHOWN) .. " more match: type more of the name."
   end
-  if #hits > 2 then out[#out + 1] = (#hits - 2) .. " more match: type more of the name." end
   return #out > 0 and out or nil
 end
 C.EmptySearch = emptySearch
 
 ns.EmptySearchLines = ns.EmptySearchLines or {}
-tinsert(ns.EmptySearchLines, function(text)
-  local ok, r = pcall(emptySearch, text)
+tinsert(ns.EmptySearchLines, function(text, itemID)
+  local ok, r = pcall(emptySearch, text, itemID)
   if not ok then
     C.lastError = r
     return nil
