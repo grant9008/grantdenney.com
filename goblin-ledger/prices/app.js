@@ -477,7 +477,9 @@ function deleteFavoriteListLocal(listId) {
 /* -- Auto lists ------------------------------------------------------------
    Read-only lists at the bottom of the same FAVORITES dropdown, worked out
    from the data the page already has and redone on every refresh:
-     Flip picks    the items of the latest flips (flips.json), best first
+     Flip picks    the items of the latest flips (flips.json) that pass the
+                   addon's experimental flip rules (flipPickOk), best first,
+                   the deals (they sell in days) after the gap flips
      Greens/Blues/Epics   the items of that quality with the most gold traded
                    a day (market price x sold per day)
    At most AUTO_FAV_MAX each. As in every other list, an item whose listings
@@ -489,7 +491,7 @@ function deleteFavoriteListLocal(listId) {
 const AUTO_FAV_MAX = 25;
 const AUTO_FAV_KEY = 'ge_autoFavList';
 const AUTO_FAV_LISTS = [
-  { id: 'auto:flips', name: 'Flip picks (auto)', hint: 'The best flips in the latest prices.', none: 'No flips in the latest prices.' },
+  { id: 'auto:flips', name: 'Flip picks (experimental)', hint: 'Experimental: small gap flips first, then deals, which sell in days.', none: 'No flips in the latest prices.' },
   { id: 'auto:greens', name: 'Greens (auto)', quality: 'UNCOMMON', hint: 'Greens with the most gold traded a day.', none: 'No greens sold in the last day.' },
   { id: 'auto:blues', name: 'Blues (auto)', quality: 'RARE', hint: 'Blues with the most gold traded a day.', none: 'No blues sold in the last day.' },
   { id: 'auto:epics', name: 'Epics (auto)', quality: 'EPIC', hint: 'Epics with the most gold traded a day.', none: 'No epics sold in the last day.' }
@@ -512,17 +514,46 @@ function showAutoFavList(id) {
   setAutoFavList(id);
   renderWatchlist();
 }
+/* Flip picks follow the addon's experimental flip rules (Sidebar.lua DayValue,
+   GapFit and FlipIdeas; the backtest in tools/wow/backtest backs them): a gap
+   flip flagged "spike" is left out (they rarely sold); one is counted at most at
+   FLIP_GAP_PRICE_CAP x its usual price and must make FLIP_GAP_MIN_GAIN% over
+   its Buy up to price there after the 5% cut, with Buy up to not over the usual
+   price; one whose units cost over FLIP_GAP_COST_CAP each is left out (the
+   addon buys a gap flip for at most that). The usual price here is the 24h
+   average market price (24h.json), standing in for the addon's median of the
+   last day. A deal the collector is unsure of is left out. day24: 24h.json's
+   data. Other kinds (and rows without one) pass. */
+const FLIP_GAP_PRICE_CAP = 1.25;
+const FLIP_GAP_MIN_GAIN = 15;
+const FLIP_GAP_COST_CAP = 200000;   // 20g
+function flipPickOk(f, day24) {
+  if (!f) return false;
+  const risk = Array.isArray(f.risk) ? f.risk : [];
+  if (f.kind === 'deal') return !risk.includes('unsure');
+  if (f.kind !== 'gap') return true;
+  if (risk.includes('spike')) return false;
+  const buy = Number(f.buyMax) || 0, relist = Number(f.relist) || 0;
+  const units = Math.max(1, Number(f.units) || 1), cost = Number(f.cost) || buy * units;
+  const node = day24 ? day24[String(f.id)] : null;
+  const usual = node ? Number(node.avgHighPrice) || 0 : 0;
+  if (!(usual > 0) || !(buy > 0) || buy > usual || cost / units > FLIP_GAP_COST_CAP) return false;
+  const net = Math.floor(Math.min(relist, Math.floor(FLIP_GAP_PRICE_CAP * usual)) * 95 / 100);
+  return net > buy && net * 100 >= buy * (100 + FLIP_GAP_MIN_GAIN);
+}
 /* The ids an auto list shows, best first. Everything comes in as arguments
    (rows: the mapping entries on offer, latestData: latest.data, volOf(id):
    sold per day, lumped(id): an item made of versions, flips: flips.json's
-   rows), so it is the same function the page and the tests run. */
-function autoFavIds(list, rows, latestData, volOf, lumped, flips) {
+   rows, day24: 24h.json's data), so it is the same function the page and the
+   tests run. */
+function autoFavIds(list, rows, latestData, volOf, lumped, flips, day24) {
   if (!list) return [];
   const byId = new Map();
   for (const m of rows || []) if (m && m.id != null) byId.set(String(m.id), m);
   const out = [];
   if (list.id === 'auto:flips') {
-    for (const f of Array.isArray(flips) ? flips : []) {
+    const ok = (Array.isArray(flips) ? flips : []).filter((f) => flipPickOk(f, day24));
+    for (const f of ok.filter((x) => x.kind !== 'deal').concat(ok.filter((x) => x.kind === 'deal'))) {
       const id = f && f.id != null ? String(f.id) : '';
       if (!id || !byId.has(id) || out.includes(id)) continue;
       out.push(id);
@@ -4606,7 +4637,8 @@ function renderWatchlist() {
   let autoItems = [];
   if (autoList) {
     if (autoList.id === 'auto:flips') loadAutoFlips();
-    autoItems = autoFavIds(autoList, activeItems, latest && latest.data, dailyVolume, wowIsLumped, autoFlips)
+    autoItems = autoFavIds(autoList, activeItems, latest && latest.data, dailyVolume, wowIsLumped, autoFlips,
+      past24h && past24h.data)
       .map(id => favsById.get(id)).filter(Boolean);
   }
   const shownFavs = autoList ? autoItems : favs;

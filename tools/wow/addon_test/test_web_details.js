@@ -294,10 +294,26 @@ function expectedQualityIds(quality) {
   rows.sort((a, b) => b[1] - a[1] || b[2] - a[2] || Number(a[0]) - Number(b[0]));
   return rows.slice(0, 25).map((r) => r[0]);
 }
+/* The flips Flip picks shows, worked out apart from app.js: the addon's experimental
+   rules (a gap flip: no spike, Buy up to at most the 24h average market, its units at
+   most 20g each, and 15% over Buy up to at min(relist, 1.25x that average) after the
+   5% cut; no unsure deal), the gap flips before the deals. */
+function flipPasses(f, day) {
+  const risk = f.risk || [];
+  if (f.kind === 'deal') return risk.indexOf('unsure') < 0;
+  if (f.kind !== 'gap') return true;
+  const usual = day[String(f.id)] ? day[String(f.id)].avgHighPrice : 0;
+  if (risk.indexOf('spike') >= 0 || !usual || f.buyMax > usual || f.cost > 200000 * f.units) return false;
+  const at = Math.min(f.relist, Math.floor(usual * 5 / 4));
+  const net = Math.floor(at * 0.95);
+  return net > f.buyMax && 20 * net >= 23 * f.buyMax;
+}
 function expectedFlipIds() {
   const ids = new Set(load('mapping.json').map((m) => String(m.id)));
+  const day = load('24h.json').data;
   const out = [];
-  for (const f of load('flips.json').flips) {
+  const pass = load('flips.json').flips.filter((f) => flipPasses(f, day));
+  for (const f of pass.filter((x) => x.kind !== 'deal').concat(pass.filter((x) => x.kind === 'deal'))) {
     const id = String(f.id);
     if (ids.has(id) && !out.includes(id)) out.push(id);
     if (out.length >= 25) break;
@@ -494,8 +510,8 @@ function expectedFlipIds() {
   check(env3.host.hidden && env3.host.innerHTML === '' && env3.errors.length === 0, 'no details file: block hidden, no errors');
 
   /* ---- the pure helpers on hand-made data ---- */
-  const ids = (list, rows, latest, vols, lumped, flips) =>
-    env.ctx.autoFavIds(env.run('AUTO_FAV_LISTS').find((l) => l.id === list), rows, latest, (id) => vols[id] || 0, (id) => lumped.has(String(id)), flips);
+  const ids = (list, rows, latest, vols, lumped, flips, day24) =>
+    env.ctx.autoFavIds(env.run('AUTO_FAV_LISTS').find((l) => l.id === list), rows, latest, (id) => vols[id] || 0, (id) => lumped.has(String(id)), flips, day24);
   const rows = [];
   const latest = {}, vols = {};
   for (let i = 1; i <= 40; i++) {
@@ -518,6 +534,34 @@ function expectedFlipIds() {
   const f = ids('auto:flips', rows, latest, vols, new Set(), fl);
   check(f.length === 25 && JSON.stringify(f.slice(0, 3)) === '["903","902001","904"]', 'flips: best first, one row per item, only listed items, max 25 ' + f.slice(0, 4).join(','));
   check(JSON.stringify(ids('auto:flips', rows, latest, vols, new Set(), null)) === '[]', 'flips: none loaded yet');
+  /* the addon's experimental flip rules (usual price: the 24h average market) */
+  const d24 = {};
+  for (let i = 101; i <= 110; i++) d24[i] = { avgHighPrice: 10000 };
+  d24[109] = { avgHighPrice: 300000 };
+  const pick = (f) => env.ctx.flipPickOk(f, d24);
+  const gap = (id, buyMax, relist, more) => Object.assign({ id, kind: 'gap', buyMax, relist, units: 2, cost: buyMax * 2, risk: [] }, more || {});
+  check(pick(gap(101, 9000, 20000)), 'flip picks: a gap flip making 15%+ at 1.25x its usual price (1g 18s 75c on 90s) is in');
+  check(pick(gap(102, 10000, 12106)), 'flip picks: exactly 15% over Buy up to after the cut is in (11500 on 10000)');
+  check(!pick(gap(102, 10000, 12100)), 'flip picks: just under 15% is out (11495 on 10000)');
+  check(!pick(gap(103, 9000, 20000, { risk: ['thin', 'spike'] })), 'flip picks: a gap flip flagged spike is out');
+  check(!pick(gap(104, 10001, 20000)), 'flip picks: Buy up to over the usual price is out');
+  check(!pick(gap(105, 9500, 11000)), 'flip picks: a relist that nets under 15% (1g 4s 50c on 95s) is out');
+  check(pick(gap(109, 200000, 400000)) && !pick(gap(109, 200001, 400000)), 'flip picks: units up to 20g each are in, dearer ones out');
+  d24[110] = { avgHighPrice: 10 };
+  check(!pick(gap(110, 10, 20)) && pick(gap(110, 9, 20)),
+    'flip picks: counted at most at 1.25x the usual price (10c: 12c, nets 11c, under 15% over 10c; over 9c it is 22%)');
+  d24[110] = { avgHighPrice: 10000 };
+  check(!pick(gap(777, 9000, 20000)), 'flip picks: a gap flip with no 24h price is out');
+  check(pick({ id: 106, kind: 'deal', risk: ['spike'] }) && !pick({ id: 107, kind: 'deal', risk: ['slow', 'unsure'] }),
+    'flip picks: a deal is out only when the collector is unsure of it');
+  check(pick({ id: 108, kind: 'vendor' }), 'flip picks: a vendor flip passes');
+  const mixed = [{ id: 106, kind: 'deal', risk: [] }, gap(101, 9000, 20000), gap(103, 9000, 20000, { risk: ['spike'] }),
+    { id: 107, kind: 'deal', risk: ['unsure'] }, gap(110, 5000, 9000), { id: 104, kind: 'deal', risk: ['slow'] }];
+  check(JSON.stringify(ids('auto:flips', rows, latest, vols, new Set(), mixed, d24)) === '["101","110","106","104"]',
+    'flip picks: the gap flips that pass, then the deals (they sell in days), each in flips.json order '
+    + JSON.stringify(ids('auto:flips', rows, latest, vols, new Set(), mixed, d24)));
+  check(/experimental/i.test(env.run('AUTO_FAV_LISTS')[0].name) && /sell in days/.test(env.run('AUTO_FAV_LISTS')[0].hint),
+    'flip picks: named experimental, the hint says deals sell in days');
 
   const L = (m, chunk) => env.ctx.wowDetailLines(m, chunk);
   const ch = { 5: [['Binds when equipped', 'w'], ['Chest', 'w', 'Mail'], ['208 Armor', 'w'], ['+10 Strength', 'w'], ['+7 Stamina', 'x'],
