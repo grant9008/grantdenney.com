@@ -1309,10 +1309,20 @@ M.RunTimers()
 ahf:SendBrowseQuery("runecloth")
 M.RunTimers()
 check(ns.ChartItem() == 14047, "search finds Runecloth through ns.FindItemID")
+-- Sell now and Best price show with a live listing only (the live-prices build):
+-- the auction house lists Runecloth at 1g 23s 45c, and the buttons price from it.
+C_AuctionHouse.GetNumCommoditySearchResults = function(id) return id == 14047 and 1 or 0 end
+C_AuctionHouse.GetCommoditySearchResultInfo = function(id, i)
+  if id == 14047 and i == 1 then return { unitPrice = 12345, quantity = 20 } end
+end
 ahf:SetPostItem({ itemID = 14047, commodity = true })
+M.Fire("COMMODITY_SEARCH_RESULTS_UPDATED", 14047)
+M.RunTimers()
+check(ns.LiveCheapest(14047) == 12345, "the live listing is read")
 local cUse = M.FindChild(ahf.CommoditiesSellFrame, function(c) return c.kind == "now" end)
 local cBest = M.FindChild(ahf.CommoditiesSellFrame, function(c) return c.kind == "best" end)
-local sp = ns.SellPrices(14047, "1D")
+local sp = ns.SellPrices(14047, "1D", ns.LiveCheapest(14047))
+check(sp.live == true, "the buttons' prices come from the live listing")
 M.fireScript(cUse, "OnClick")
 check(ahf.CommoditiesSellFrame.PriceInput.amount == sp.now, "Sell now writes the real Sell now price")
 if sp.best then

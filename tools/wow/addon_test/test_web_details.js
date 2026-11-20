@@ -251,7 +251,7 @@ async function boot(opts) {
     await tick(5);
     let ready = false;
     try { ready = env.run('!!(selected && mapping && mapping.length)'); } catch (e) {}
-    if (ready && !env.run('autoFlipsBusy')) break;
+    if (ready) break;
   }
   await tick(20);
   return env;
@@ -294,17 +294,6 @@ function expectedQualityIds(quality) {
   rows.sort((a, b) => b[1] - a[1] || b[2] - a[2] || Number(a[0]) - Number(b[0]));
   return rows.slice(0, 25).map((r) => r[0]);
 }
-function expectedFlipIds() {
-  const ids = new Set(load('mapping.json').map((m) => String(m.id)));
-  const out = [];
-  for (const f of load('flips.json').flips) {
-    const id = String(f.id);
-    if (ids.has(id) && !out.includes(id)) out.push(id);
-    if (out.length >= 25) break;
-  }
-  return out;
-}
-
 (async function main() {
   console.log('app.js under test: ' + APP);
   check(fs.existsSync(path.join(DATA, 'details')), 'goblin-ledger/prices/_localdata has details chunks (run sim_fetch.py)');
@@ -422,8 +411,9 @@ function expectedFlipIds() {
   const title = favTitleHtml(env);
   check(/fls-name">Favorites</.test(title), 'title: the player\'s list');
   const autoRows = (title.match(/data-auto-id="auto:[a-z]+"/g) || []).map((s) => s.slice(14, -1));
-  check(JSON.stringify(autoRows) === JSON.stringify(['auto:flips', 'auto:greens', 'auto:blues', 'auto:epics']),
-    'dropdown: the four auto lists under the player\'s ' + JSON.stringify(autoRows));
+  check(JSON.stringify(autoRows) === JSON.stringify(['auto:greens', 'auto:blues', 'auto:epics']),
+    'dropdown: the three auto lists under the player\'s, no flip list ' + JSON.stringify(autoRows));
+  check(!/Flip picks/.test(title), 'dropdown: no Flip picks (the page cannot follow the addon\'s flip rules)');
   check(/fls-menu-head">Auto lists</.test(title) && title.indexOf('data-list-id="fl-x"') < title.indexOf('Auto lists'),
     'dropdown: an "Auto lists" heading after the player\'s lists');
   check(!/data-auto-id="auto:[a-z]+"[^>]*>[^<]*<\/span>\s*<button/.test(title), 'auto rows have no rename or delete');
@@ -451,20 +441,14 @@ function expectedFlipIds() {
     'greens include versions ("of the Bear"), not their lumped item (' + greens.join(',') + ')');
   check(!greens.includes(String(cloak.id)), 'the lumped Archer\'s Cloak is not in Greens');
 
+  /* no flip list any more: asking for it (an old link or button) leaves the player's list on show */
   env.ctx.showAutoFavList('auto:flips');
-  for (let i = 0; i < 40; i++) { await tick(5); if (!env.run('autoFlipsBusy')) break; }
   await tick(10);
-  const wantF = expectedFlipIds();
-  const gotF = favRows(env).map((r) => r.id);
-  check(wantF.length > 0 && JSON.stringify(gotF) === JSON.stringify(wantF), 'Flip picks: flips.json order, one row per item ' + JSON.stringify(gotF) + ' want ' + JSON.stringify(wantF));
-  check(env.fetched.filter((u) => /flips\.json$/.test(u)).length === 1, 'flips.json read once');
-  env.ctx.renderWatchlist();
+  check(favRows(env).length === 3 && /fls-name">Favorites</.test(favTitleHtml(env)) && !('ge_autoFavList' in env.ls),
+    'auto:flips is no list: the player\'s list shows, nothing saved');
+  check(!env.fetched.some((u) => /flips\.json$/.test(u)), 'flips.json is never read');
+  env.ctx.showAutoFavList('auto:greens');
   await tick(10);
-  check(env.fetched.filter((u) => /flips\.json$/.test(u)).length === 1, 'a re-render within 4 minutes does not read flips.json again');
-  env.run('autoFlipsAt = Date.now() - AUTO_FLIPS_TTL_MS - 1');
-  env.ctx.renderWatchlist();
-  for (let i = 0; i < 40; i++) { await tick(5); if (!env.run('autoFlipsBusy')) break; }
-  check(env.fetched.filter((u) => /flips\.json$/.test(u)).length === 2, 'the 5-minute refresh reads flips.json again once it is old');
 
   /* back to the player's list (the one that was active all along) */
   env.ctx.switchFavoriteList('default');
@@ -475,6 +459,11 @@ function expectedFlipIds() {
     'auto choice forgotten, the player\'s lists exactly as they were');
   check(env.doc.getElementById('btnClearFavs').hidden === false, '"Clear this list" back for the player\'s list');
   check(env.errors.length === 0, 'no errors: ' + env.errors.slice(0, 3).join(' | '));
+
+  /* a page saved on the old Flip picks list opens on the player's list */
+  const envF = await boot({ storage: { ge_favoriteLists: savedLists, ge_activeFavoriteList: 'fl-x', ge_autoFavList: 'auto:flips', ge_lastItem: String(blade.id) } });
+  check(/fls-name">Long holds</.test(favTitleHtml(envF)) && !/wl-auto-hint/.test(favHtml(envF)) && envF.errors.length === 0
+    && !envF.fetched.some((u) => /flips\.json$/.test(u)), 'reload on the old Flip picks: the player\'s list, no flips.json, no errors');
 
   /* a reload remembers the auto list; the star still saves to the player's list */
   const env2 = await boot({ storage: { ge_favoriteLists: savedLists, ge_activeFavoriteList: 'fl-x', ge_autoFavList: 'auto:greens', ge_lastItem: String(blade.id) } });
@@ -494,8 +483,8 @@ function expectedFlipIds() {
   check(env3.host.hidden && env3.host.innerHTML === '' && env3.errors.length === 0, 'no details file: block hidden, no errors');
 
   /* ---- the pure helpers on hand-made data ---- */
-  const ids = (list, rows, latest, vols, lumped, flips) =>
-    env.ctx.autoFavIds(env.run('AUTO_FAV_LISTS').find((l) => l.id === list), rows, latest, (id) => vols[id] || 0, (id) => lumped.has(String(id)), flips);
+  const ids = (list, rows, latest, vols, lumped) =>
+    env.ctx.autoFavIds(env.run('AUTO_FAV_LISTS').find((l) => l.id === list), rows, latest, (id) => vols[id] || 0, (id) => lumped.has(String(id)));
   const rows = [];
   const latest = {}, vols = {};
   for (let i = 1; i <= 40; i++) {
@@ -513,11 +502,10 @@ function expectedFlipIds() {
   check(g.every((id) => !['103', '106', '109'].includes(id)), 'greens: nothing that sold 0');
   check(JSON.stringify(ids('auto:epics', rows, latest, vols, new Set(), null)) === '["905"]', 'epics: the cheapest listing when there is no market value');
   check(JSON.stringify(ids('auto:blues', rows, latest, vols, new Set(), null)) === '["900"]', 'blues');
-  const fl = [{ id: 903 }, { id: 902001 }, { id: 903 }, { id: 77777 }, { id: null }, { id: 904 }];
-  for (let i = 1; i <= 40; i++) fl.push({ id: 100 + i });
-  const f = ids('auto:flips', rows, latest, vols, new Set(), fl);
-  check(f.length === 25 && JSON.stringify(f.slice(0, 3)) === '["903","902001","904"]', 'flips: best first, one row per item, only listed items, max 25 ' + f.slice(0, 4).join(','));
-  check(JSON.stringify(ids('auto:flips', rows, latest, vols, new Set(), null)) === '[]', 'flips: none loaded yet');
+  check(JSON.stringify(ids('auto:flips', rows, latest, vols, new Set())) === '[]'
+    && JSON.stringify(env.ctx.autoFavIds({ id: 'auto:flips' }, rows, latest, () => 1, () => false)) === '[]',
+    'flips: no such list, and a list without a quality gives nothing');
+  check(env.run("typeof flipPickOk === 'undefined' && typeof loadAutoFlips === 'undefined'"), 'flips: no flip pick code left');
 
   const L = (m, chunk) => env.ctx.wowDetailLines(m, chunk);
   const ch = { 5: [['Binds when equipped', 'w'], ['Chest', 'w', 'Mail'], ['208 Armor', 'w'], ['+10 Strength', 'w'], ['+7 Stamina', 'x'],

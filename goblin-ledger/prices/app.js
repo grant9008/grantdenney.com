@@ -477,9 +477,12 @@ function deleteFavoriteListLocal(listId) {
 /* -- Auto lists ------------------------------------------------------------
    Read-only lists at the bottom of the same FAVORITES dropdown, worked out
    from the data the page already has and redone on every refresh:
-     Flip picks    the items of the latest flips (flips.json), best first
      Greens/Blues/Epics   the items of that quality with the most gold traded
                    a day (market price x sold per day)
+   No flip list: the page cannot follow the addon's flip rules (they need each
+   item's sales hour by hour), and the flips only it would pick lost money in
+   the backtest (tools/wow/backtest). It comes back when the collector writes
+   the addon's own flip ideas.
    At most AUTO_FAV_MAX each. As in every other list, an item whose listings
    are versions ("of the Bear") is shown as its versions, never lumped.
    Showing one never touches the player's own lists: `favorites` and
@@ -489,7 +492,6 @@ function deleteFavoriteListLocal(listId) {
 const AUTO_FAV_MAX = 25;
 const AUTO_FAV_KEY = 'ge_autoFavList';
 const AUTO_FAV_LISTS = [
-  { id: 'auto:flips', name: 'Flip picks (auto)', hint: 'The best flips in the latest prices.', none: 'No flips in the latest prices.' },
   { id: 'auto:greens', name: 'Greens (auto)', quality: 'UNCOMMON', hint: 'Greens with the most gold traded a day.', none: 'No greens sold in the last day.' },
   { id: 'auto:blues', name: 'Blues (auto)', quality: 'RARE', hint: 'Blues with the most gold traded a day.', none: 'No blues sold in the last day.' },
   { id: 'auto:epics', name: 'Epics (auto)', quality: 'EPIC', hint: 'Epics with the most gold traded a day.', none: 'No epics sold in the last day.' }
@@ -514,22 +516,13 @@ function showAutoFavList(id) {
 }
 /* The ids an auto list shows, best first. Everything comes in as arguments
    (rows: the mapping entries on offer, latestData: latest.data, volOf(id):
-   sold per day, lumped(id): an item made of versions, flips: flips.json's
-   rows), so it is the same function the page and the tests run. */
-function autoFavIds(list, rows, latestData, volOf, lumped, flips) {
+   sold per day, lumped(id): an item made of versions), so it is the same
+   function the page and the tests run. */
+function autoFavIds(list, rows, latestData, volOf, lumped) {
   if (!list) return [];
   const byId = new Map();
   for (const m of rows || []) if (m && m.id != null) byId.set(String(m.id), m);
   const out = [];
-  if (list.id === 'auto:flips') {
-    for (const f of Array.isArray(flips) ? flips : []) {
-      const id = f && f.id != null ? String(f.id) : '';
-      if (!id || !byId.has(id) || out.includes(id)) continue;
-      out.push(id);
-      if (out.length >= AUTO_FAV_MAX) break;
-    }
-    return out;
-  }
   const scored = [];
   for (const [id, m] of byId) {
     if (String(m.quality || '').toUpperCase() !== list.quality || m.unknownName || lumped(id)) continue;
@@ -542,28 +535,8 @@ function autoFavIds(list, rows, latestData, volOf, lumped, flips) {
   for (const r of scored.slice(0, AUTO_FAV_MAX)) out.push(r[0]);
   return out;
 }
-/* flips.json for Flip picks: read when that list is shown, again once it is
-   AUTO_FLIPS_TTL_MS old (the 5-minute price refresh re-renders the list,
-   which is what asks), and the list re-renders when it lands. */
-const AUTO_FLIPS_TTL_MS = 240000;
-let autoFlips = null, autoFlipsAt = 0, autoFlipsBusy = false;
-function loadAutoFlips() {
-  if (autoFlipsBusy || (autoFlipsAt && Date.now() - autoFlipsAt < AUTO_FLIPS_TTL_MS)) return;
-  autoFlipsBusy = true;
-  jget(WOW_DATA + '/flips.json').then(j => {
-    const list = j && Array.isArray(j.flips) ? j.flips : (Array.isArray(j) ? j : null);
-    if (list) autoFlips = list;
-  }).catch(() => {}).then(() => {
-    autoFlipsBusy = false;
-    autoFlipsAt = Date.now();
-    if (autoFavListId === 'auto:flips') renderWatchlist();
-  });
-}
 /* What an empty auto list says. */
 function autoFavEmptyText(list) {
-  if (list.id === 'auto:flips') {
-    if (autoFlips == null) return (autoFlipsBusy || !autoFlipsAt) ? 'Loading the latest flips...' : 'Flips start with the next price update.';
-  }
   return list.none;
 }
 
@@ -4605,8 +4578,7 @@ function renderWatchlist() {
   const autoList = activeAutoList();
   let autoItems = [];
   if (autoList) {
-    if (autoList.id === 'auto:flips') loadAutoFlips();
-    autoItems = autoFavIds(autoList, activeItems, latest && latest.data, dailyVolume, wowIsLumped, autoFlips)
+    autoItems = autoFavIds(autoList, activeItems, latest && latest.data, dailyVolume, wowIsLumped)
       .map(id => favsById.get(id)).filter(Boolean);
   }
   const shownFavs = autoList ? autoItems : favs;
