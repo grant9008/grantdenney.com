@@ -2,6 +2,7 @@
 corrections in critic.md), each tested on the backtest rows with the thresholds the
 plan uses. Every check returns result rows: (rule, test, what came out, status),
 status PASS, FAIL, WAIT (not enough data yet), SKIP or INFO."""
+import math
 import statistics
 from collections import defaultdict
 
@@ -26,7 +27,9 @@ MIN_ROWS = 30                 # a band with fewer item-hours is not judged
 FLIP_WON = 0.60
 FLIP_RATIO = 2.0
 FLIP_OUT_DAYS = 2             # the out-of-sample re-test needs snapshots of this many new days ...
-FLIP_OUT_MIN = 10             # ... and at least this many ideas
+FLIP_OUT_MIN = 30             # ... and this many distinct flips (an item once a day) at every gold level
+DEAL_HOURS = 72               # deals sell in days: judged on what happened within 72 hours
+GAP_COST = 200000             # 20g: Sidebar.lua GAP_COST_CAP, the most a gap flip may cost (the filter below)
 # The % badge (plan item 5): at +40% or more over the 24h median the next day falls back.
 BADGE_AT = 0.40
 BADGE_FALL = -0.20            # the next day's median market at least 20% under today's
@@ -212,44 +215,90 @@ def check_thresholds(c):
 
 
 # ---------------------------------------------------------------- 3. flips
+def wilson(k, n, z=1.96):
+    """The 95% range of a share k of n (Wilson), in percent."""
+    if not n:
+        return 0.0, 100.0
+    p = k / float(n)
+    d = 1 + z * z / n
+    c = (p + z * z / (2 * n)) / d
+    h = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return 100 * max(0.0, c - h), 100 * min(1.0, c + h)
+
+
+def distinct(xs):
+    """Each (item, UTC day) once: hourly snapshots find the same flip again and
+    again, so only its first showing that day counts."""
+    seen = {}
+    for x in sorted(xs, key=lambda x: (x["T"], x["id"])):
+        seen.setdefault((x["id"], B.fmt_t(x["T"])[:6]), x)
+    return list(seen.values())
+
+
+def judge_ideas(xs):
+    """(status, text) for one list of distinct ideas: won (counting unsold stock)
+    >= FLIP_WON, and the predicted profit within FLIP_RATIO of the real one."""
+    n = len(xs)
+    won = sum(1 for x in xs if x["mtm"] > 0)
+    real, pred = sum(x["mtm"] for x in xs), sum(x["pred"] for x in xs)
+    ratio_ok = real > 0 and pred / real <= FLIP_RATIO and real / max(pred, 1e-9) <= FLIP_RATIO
+    lo, hi = wilson(won, n)
+    text = "%d flips, won %s (95%% range %.0f-%.0f%%), real %+.0fg vs predicted %+.0fg" % (
+        n, pct(won, n), lo, hi, real / 1e4, pred / 1e4)
+    return ("PASS" if n and won >= FLIP_WON * n and ratio_ok else "FAIL"), text
+
+
+def gold_levels(xs):
+    return sorted(set(x["gold"] for x in xs), key=lambda g: int(g[:-1]))
+
+
 def flip_rows(fl):
+    """The gap ideas the sidebar shows, counted once per item and day and judged at
+    each gold level on its own (the levels can show the same flips). In sample
+    (the snapshots the rules were fitted on) the count is small, so the range is
+    wide; out of sample needs FLIP_OUT_DAYS new days and FLIP_OUT_MIN distinct
+    flips at every gold level before it says PASS or FAIL. The deals the addon
+    keeps hidden are judged the same way over DEAL_HOURS."""
     out = []
-
-    def judge(label, xs, gate):
-        gaps = [x for x in xs if x["kind"] == "gap"]
-        n = len(gaps)
-        if gate is not None:
-            out.append(("Flip ideas (shown)", label, gate, "WAIT"))
-            return
-        if not n:
-            out.append(("Flip ideas (shown)", label, "no gap ideas shown", "WAIT"))
-            return
-        won = sum(1 for x in gaps if x["mtm"] > 0)
-        real, pred = sum(x["mtm"] for x in gaps), sum(x["pred"] for x in gaps)
-        ratio_ok = real > 0 and pred / real <= FLIP_RATIO and real / max(pred, 1e-9) <= FLIP_RATIO
-        status = "PASS" if won >= FLIP_WON * n and ratio_ok else "FAIL"
-        by = []
-        for g in sorted(set(x["gold"] for x in gaps), key=lambda g: int(g[:-1])):
-            xs = [x for x in gaps if x["gold"] == g]
-            by.append("%s %s %+.0fg" % (g, pct(sum(1 for x in xs if x["mtm"] > 0), len(xs)), sum(x["mtm"] for x in xs) / 1e4))
-        out.append(("Flip ideas (shown)", label + ": won >= %d%%, predicted within %gx" % (100 * FLIP_WON, FLIP_RATIO),
-                    "%d ideas, won %s, real %+.0fg vs predicted %+.0fg (%s)" % (n, pct(won, n), real / 1e4, pred / 1e4,
-                                                                             ", ".join(by)), status))
-
-    ins = [x for x in fl["shown"] if x["inSample"]]
-    oos = [x for x in fl["shown"] if not x["inSample"]]
-    judge("in sample (the 4 snapshots the rules were fitted on)", ins, None)
-    days = sorted(set(B.fmt_t(x["T"])[:6] for x in oos))
-    gate = None
-    if len(days) < FLIP_OUT_DAYS or len([x for x in oos if x["kind"] == "gap"]) < FLIP_OUT_MIN:
-        gate = "%d new days, %d gap ideas so far (needs %d days, %d ideas): run this again on later days" % (
-            len(days), len([x for x in oos if x["kind"] == "gap"]), FLIP_OUT_DAYS, FLIP_OUT_MIN)
-    judge("out of sample (snapshots after 19 Nov 03:00)", oos, gate)
-    deals = [x for x in fl["shown"] if x["kind"] == "deal"]
-    if deals:
-        out.append(("Flip ideas (shown)", "deals (they sell in days): result within 24h incl. unsold",
-                    "%d deals, won %s, %+.0fg" % (len(deals), pct(sum(1 for x in deals if x["mtm"] > 0), len(deals)),
-                                                   sum(x["mtm"] for x in deals) / 1e4), "INFO"))
+    gaps = [x for x in fl["shown"] if x["kind"] == "gap"]
+    for label, xs in (("in sample (the 4 snapshots the rules were fitted on)", [x for x in gaps if x["inSample"]]),
+                      ("out of sample (snapshots after 19 Nov 03:00)", [x for x in gaps if not x["inSample"]])):
+        test = label + ": won >= %d%%, predicted within %gx, per gold, each flip once a day" % (100 * FLIP_WON, FLIP_RATIO)
+        by = dict((g, distinct([x for x in xs if x["gold"] == g])) for g in gold_levels(xs))
+        if not xs:
+            out.append(("Flip ideas (shown)", test, "no gap ideas shown yet", "WAIT"))
+            continue
+        res = dict((g, judge_ideas(v)) for g, v in by.items())
+        got = "; ".join("%s: %s" % (g, res[g][1]) for g in by)
+        if not label.startswith("in sample"):
+            days = sorted(set(B.fmt_t(x["T"])[:6] for x in xs))
+            few = min(len(v) for v in by.values())
+            if len(days) < FLIP_OUT_DAYS or few < FLIP_OUT_MIN:
+                out.append(("Flip ideas (shown)", test, "%d new days, at least %d distinct flips per gold so far (needs %d "
+                            "days, %d flips): run this again on later days. %s" % (len(days), few, FLIP_OUT_DAYS,
+                                                                                  FLIP_OUT_MIN, got), "WAIT"))
+                continue
+        out.append(("Flip ideas (shown)", test, got,
+                    "PASS" if all(r[0] == "PASS" for r in res.values()) else "FAIL"))
+    # the deals the sidebar keeps hidden (DEALS_SHOWN), as they would show: they sell in days
+    deals = fl.get("deals") or []
+    test = ("deals (hidden in the addon until this passes): won >= %d%% within %dh, predicted within %gx, per gold"
+            % (100 * FLIP_WON, DEAL_HOURS, FLIP_RATIO))
+    if not deals:
+        out.append(("Flip ideas (deals)", test, "no deals would have shown yet", "WAIT"))
+    else:
+        full = [x for x in deals if x["hz"] >= DEAL_HOURS]
+        by = dict((g, distinct([x for x in full if x["gold"] == g])) for g in gold_levels(deals))
+        few = min(len(v) for v in by.values())
+        early = dict((g, distinct([x for x in deals if x["gold"] == g])) for g in gold_levels(deals))
+        sofar = "; ".join("%s: %s" % (g, judge_ideas(v)[1]) for g, v in early.items())
+        if few < FLIP_OUT_MIN:
+            out.append(("Flip ideas (deals)", test, "%d distinct deals per gold with %dh after them so far (needs %d). "
+                        "Within the hours they had: %s" % (few, DEAL_HOURS, FLIP_OUT_MIN, sofar), "WAIT"))
+        else:
+            res = dict((g, judge_ideas(v)) for g, v in by.items())
+            out.append(("Flip ideas (deals)", test, "; ".join("%s: %s" % (g, res[g][1]) for g in by),
+                        "PASS" if all(r[0] == "PASS" for r in res.values()) else "FAIL"))
     # the filters behind the rules, on every collector gap flip (the wf40 evidence)
     gaps = [x for x in fl["all"] if x["kind"] == "gap" and x["med24"]]
     spike = [x for x in gaps if "spike" in x["risk"]]
@@ -260,11 +309,14 @@ def flip_rows(fl):
                     "first unit sold %s of %d vs %s of %d" % (pct(a * len(spike), len(spike)), len(spike),
                                                               pct(b * len(rest), len(rest)), len(rest)),
                     "PASS" if a < b else "FAIL"))
-    small = [x for x in gaps if x["relist"] <= 1.25 * x["med24"] and x["cost"] <= 200000]
+    small = [x for x in gaps if x["relist"] <= 1.25 * x["med24"] and x["cost"] <= GAP_COST]
     if small:
         won = sum(1 for x in small if x["mtm"] > 0)
-        out.append(("Flip filters", "gap flips relisted <= 1.25x the 24h median and costing <= 20g: won >= %d%%" % (100 * FLIP_WON),
-                    "%d flips, won %s, %+.0fg" % (len(small), pct(won, len(small)), sum(x["mtm"] for x in small) / 1e4),
+        lo, hi = wilson(won, len(small))
+        out.append(("Flip filters", "gap flips relisted <= 1.25x the 24h median and costing <= %dg in all: won >= %d%%"
+                    % (GAP_COST // 10000, 100 * FLIP_WON),
+                    "%d flips, won %s (95%% range %.0f-%.0f%%), %+.0fg" % (len(small), pct(won, len(small)), lo, hi,
+                                                                         sum(x["mtm"] for x in small) / 1e4),
                     "PASS" if won >= FLIP_WON * len(small) else "FAIL"))
     return out
 
@@ -299,13 +351,13 @@ def check_badge(c):
             m, back = statistics.median(x[1]), x[2] / float(x[0])
             out.append(("Badge (spike)", "%s at +%d%% vs the 24h median: next %dh median <= %d%%, half way back >= %d%%"
                         % (g, 100 * BADGE_AT, H, 100 * BADGE_FALL, 100 * BADGE_BACK),
-                        "%d item-hours, %+.0f%%, %s back" % (x[0], 100 * m, pct(x[2], x[0])),
+                        "%d item-hours, %+.1f%%, %.1f%% back" % (x[0], 100 * m, 100.0 * back),
                         "PASS" if m <= BADGE_FALL and back >= BADGE_BACK else "FAIL"))
         y = bk.get((g, "dropped"))
         if y and y[0] >= MIN_ROWS:
             m = statistics.median(y[1])
             out.append(("Badge (dropped)", "%s at -%d%%: no rebound (next %dh median <= +%d%%), so never a buy word"
-                        % (g, 100 * BADGE_AT, H, 100 * BADGE_DROPPED_MAX), "%d item-hours, %+.0f%%" % (y[0], 100 * m),
+                        % (g, 100 * BADGE_AT, H, 100 * BADGE_DROPPED_MAX), "%d item-hours, %+.1f%%" % (y[0], 100 * m),
                         "PASS" if m <= BADGE_DROPPED_MAX else "FAIL"))
     return out
 

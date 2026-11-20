@@ -3351,6 +3351,10 @@ class World:
                 src = latest_src
             else:
                 src = open(os.path.join(ADDON, fname), "rb").read().decode("utf-8")
+            if fname == "Sidebar.lua" and DEALS_ON:   # a test of the deals the sidebar keeps hidden (deals_shown)
+                if DEALS_SWITCH[0] not in src:
+                    raise RuntimeError("Sidebar.lua has no %r to turn the deals on with" % DEALS_SWITCH[0])
+                src = src.replace(DEALS_SWITCH[0], DEALS_SWITCH[1], 1)
             ok = M.LoadChunk(src, "@Interface/AddOns/%s/%s" % (ADDON_NAME, fname), ADDON_NAME, self.ns)
             if not ok:
                 self.load_errors.append(fname)
@@ -6337,8 +6341,8 @@ DAY_SALE_HOURS = 2          # sales must show in at least 2 different hours of t
 DAY_PRICE_CAP = 1.25        # a deal's relist counts at most 25% over the price it sold at
 GAP_PRICE_CAP = 1.25        # a gap flip's relist counts at most 25% over its usual price (median of the last day)
 GAP_MIN_GAIN = 15           # and the dearest unit bought must make 15% there after the cut
-GAP_COST_CAP = 200000       # experimental: a gap flip spends at most 20g ...
-GAP_GOLD_SHARE = 0.10       # ... or 10% of the gold when that is less
+GAP_COST_CAP = 200000       # experimental: a gap flip costing over 20g is left out ...
+GAP_GOLD_SHARE = 0.10       # ... and one spends at most 10% of the gold
 GAP_DAY_SHARE = 0.25        # and buys at most a quarter of a day's sales (at least 1)
 USUAL_POINTS = 4            # the usual price needs 4+ market prices in the last day
 DAY_DEPOSIT = 0.30          # a unit left unsold loses a deposit of 30% of the vendor price
@@ -6467,9 +6471,12 @@ def day_value(ref, f, fit):
 
 
 def gap_fit(ref, f, gold=None):
-    """Sidebar.lua GapFit: what an experimental gap flip may buy: what GAP_COST_CAP
-    buys (GAP_GOLD_SHARE of the gold when that is less), at most GAP_DAY_SHARE of
-    a day's sales (at least 1); "capped" when that left some out. None: not one fits."""
+    """Sidebar.lua GapFit: what an experimental gap flip may buy: None when the whole
+    flip costs over GAP_COST_CAP, else what GAP_GOLD_SHARE of the gold buys (no
+    gold: all of it), at most GAP_DAY_SHARE of a day's sales (at least 1);
+    "capped" when that left some out. None: not one fits."""
+    if f["cost"] > GAP_COST_CAP:
+        return None
     budget = GAP_COST_CAP
     if gold is not None:
         budget = min(budget, int(math.floor(gold * GAP_GOLD_SHARE)))
@@ -6482,6 +6489,33 @@ def gap_fit(ref, f, gold=None):
 
 
 DEAL_EVERY = 5              # Sidebar.lua: one place in every 5 flip ideas is kept for a deal
+# Sidebar.lua keeps the deals hidden (DEALS_SHOWN false) until the backtest can check
+# them. deals_shown() turns them on for a test of the deal code: the model, and every
+# World made inside it (its Sidebar.lua with the switch on).
+DEALS_SWITCH = ("local DEALS_SHOWN = false", "local DEALS_SHOWN = true")
+DEALS_ON = False
+
+
+class deals_shown(object):
+    """with deals_shown(): ... the deals on, in the model and in each World made inside."""
+    def __enter__(self):
+        global DEALS_ON
+        self.was, DEALS_ON = DEALS_ON, True
+        return self
+
+    def __exit__(self, *exc):
+        global DEALS_ON
+        DEALS_ON = self.was
+        return False
+
+
+def with_deals(fn):
+    """A scenario of the deal code, run with the deals on (deals_shown)."""
+    def run(sc, ref, items):
+        with deals_shown():
+            return fn(sc, ref, items)
+    run.__doc__ = fn.__doc__
+    return run
 
 
 def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
@@ -6490,9 +6524,10 @@ def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
     what the gold cannot buy is left out; poor when one of those would show with
     enough gold (day_value keeps it bought in full: whole, a gap flip as far as
     gap_fit allows). A gap flip is bought only as far as gap_fit allows (a
-    capped fit, gold or not); one flagged "spike", one whose cheapest unit is
-    over GAP_COST_CAP, and an item with no name are dropped, and a deal the
-    collector is "unsure" of is skipped (not dropped). A flip stays only when
+    capped fit, gold or not); one flagged "spike", one costing over
+    GAP_COST_CAP, and an item with no name are dropped, and a deal is skipped
+    (not dropped) while the deals are off (DEALS_ON), or when the collector is
+    "unsure" of it. A flip stays only when
     day_value keeps it (on what the gold buys); a dropped one (its id in gone)
     is not shown and its item gets no history idea, but another flip of the
     same item is still judged (dropped, when given a dict, gets id -> why).
@@ -6508,7 +6543,7 @@ def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
             dropped[fid] = why
     for f in ref.flips:
         gap = f["kind"] == "gap"
-        if f["id"] in hidden or f["id"] in seen or (f["kind"] == "deal" and "unsure" in f["risk"]):
+        if f["id"] in hidden or f["id"] in seen or (f["kind"] == "deal" and (not DEALS_ON or "unsure" in f["risk"])):
             continue
         if gap and "spike" in f["risk"]:
             drop(f["id"], "spike")
@@ -6525,7 +6560,7 @@ def ref_collector_flips(ref, limit=5, hidden=(), gold=MOCK_GOLD, dropped=None):
             else:
                 fit = full if (full and full["capped"]) else None
         if full is None:
-            drop(f["id"], "dear")
+            drop(f["id"], "cost")
             continue
         if gold is not None and fit is None:
             poor = poor or day_value(ref, f, full)[0] is not None
@@ -8398,7 +8433,7 @@ def data_flip_tip(x, ref):
             ", but it has been selling for less: buy it and relist it at the price below." if capped
             else ": buy it and relist it at the price below, about what it has been selling for."))
     else:
-        out.append("Buy the cheap listings, then relist them a little over its usual price. | ")
+        out.append("Buy the cheap listings, then relist them near its usual price. | ")
     out.append("Buy up to (each) | " + money_text(x["buyMax"]))
     out.append("That buys %s, costing | %s" % (count_text(x["units"]), money_text(x["cost"])))
     gap = x["kind"] == "gap"
@@ -9406,7 +9441,9 @@ def sc_flip_day_drops(sc, ref, items):
     counted at (a gap flip: makes under 15% there), when a gap flip's Buy up to is
     over its usual price (the median of the last day: 1g 10s here), when it is
     flagged "spike", when its sales show in only one hour or none, or when it
-    makes under 20s in a day. Another collector flip of the same item (a vendor
+    makes under 20s in a day. Three more sit on the best price-history items, so
+    those ideas must go too: one flagged "spike", one on an item with no name
+    and one costing 20g 1c. Another collector flip of the same item (a vendor
     flip) is still judged and shows. The control, counted at 1.25 x its usual
     price (1g 37s), shows 2 of its 4 with +75s 87c; a flip making exactly 20s in
     a day shows. Dropped items among the best price-history ideas cost no
@@ -9433,14 +9470,30 @@ def sc_flip_day_drops(sc, ref, items):
               M: steady_series(3158, vendor=0)}
     text, r2 = day_data(ref, flips, series)
     want_why = {A: "dear", B: "loses", D1: "onehour", D2: "nosales", D3: "small", E: "loses", S: "spike"}
-    # an item shown as a price-history idea, then given a collector flip that cannot pay
-    hist = [x["id"] for x in ref_flips(r2, gold=None) if not x.get("data")]
+    # items shown as price-history ideas, then given a collector flip that cannot pay,
+    # one flagged spike, one costing 20g 1c and one on the item with its name taken away
+    taken = set(series)
+    hist = [x["id"] for x in ref_history_flips_why(r2, None, (), None)[0] if x["id"] not in taken]
     H = hist[0] if hist else None
     sc.check(H is not None or not R.SIM, "day drops: a price-history idea to drop with its item (%s)" % hist)
+    more = hist[1:4] if len(hist) >= 4 else []
+    sc.check(more or not R.SIM, "day drops: three more price-history ideas to drop (%s)" % hist)
+    nameless = dict(items)
     if H is not None:
         hb = max(1, ref.items[H]["cheapest"], ref.items[H]["market"])
         flips.append("%d|gap|%d|1|%d|%d|1|1||0" % (H, hb, hb, hb))      # relist at the buy price: it cannot pay
+        if more:
+            H2, H3, H4 = more
+            flips += ["%d|gap|1000|1|1000|3158|2000|2000|spike|0" % H2,     # a spike: left out
+                      "%d|gap|1000|1|1000|3158|2000|2000||0" % H3,          # no name: left out
+                      "%d|gap|50001|4|200001|80000|103999|520||0" % H4]     # 20g 1c: left out
+            want_why.update({H2: "spike", H3: "noname", H4: "cost"})
+            nameless.pop(str(H3), None)
         text, r2 = day_data(ref, flips, series)
+        if more:
+            text = rewrite_items(text, lambda iid, f: (["Item %d" % iid] + f[1:]) if iid == H3 else None)
+            r2 = RefData(text=text)
+    r2.game_items = nameless
     dropped = {}
     want, why = ref_flips_why(r2, gold=None, dropped=dropped)
     if H is not None:
@@ -9449,9 +9502,10 @@ def sc_flip_day_drops(sc, ref, items):
     sc.eq(dropped, want_why, "day drops: the model drops each, for its reason")
     sc.eq([(x["id"], x["kind"]) for x in want if x.get("data")], [(P, "gap"), (M, "gap"), (A, "vendor")],
           "day drops: only the control, the 20s flip and the vendor flip of a dropped item are shown")
-    w = World(r2, items, data_src=text, gold=None)
+    w = World(r2, nameless, data_src=text, gold=None)
     for f in lua_list(w.ns.DataFlips()):
-        if f.id in want_why and f.kind != "vendor" and want_why[f.id] != "spike":   # a spike never reaches DayValue
+        # a spike, a nameless or a dear one never reaches DayValue
+        if f.id in want_why and f.kind != "vendor" and want_why[f.id] not in ("spike", "noname", "cost"):
             res = w.ns.DayValue(f, w.to_lua({"units": f.units, "cost": f.cost, "profit": f.profit}))
             sc.eq(res, (None, want_why[f.id]), "day drops: DayValue leaves out %d (%s)" % (f.id, want_why[f.id]))
     w.open_ah_modern()
@@ -9473,7 +9527,7 @@ def sc_flip_day_drops(sc, ref, items):
     out = [strip_codes(o) for o in w.slash("/gl flips")]
     ideas = ref_flips(r2, limit=10, gold=None)
     slash_flips_ok(sc, w.slash("/gl flips"), ideas, r2, items, None, "day drops")
-    names = [item_name(r2, items, i) for i in gone]
+    names = [item_name(r2, nameless, i) for i in gone]
     sc.check(not any(n and (". " + n + ":") in o for n in names for o in out), "day drops: /gl flips names none of them")
     w.close_ah_modern()
     sc.clean(w, "day drops")
@@ -9527,7 +9581,9 @@ def sc_flip_day_deals(sc, ref, items):
     20c) sell in days: no within-a-day numbers, the profit once both sell.
     Relisted at 22g it is solid (sold there), one seller can expect 1 a day, +11g
     80s once sold. Relisted at 30g it is counted at 27g 50s (1.25 x 22g), +22g 25s,
-    and is not solid. A deal the collector is unsure of is not shown."""
+    and is not solid. A deal the collector is unsure of is not shown, nor one that
+    makes under 20s once sold (19s 99c: relist 1g 26s 31c on a 1g buy), while one
+    making exactly 20s (relist 1g 26s 32c) shows."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day deals: enough items to test with"):
         return
@@ -9560,24 +9616,35 @@ def sc_flip_day_deals(sc, ref, items):
              "day deals, unsure: not shown")
     w.close_ah_modern()
     sc.clean(w, "day deals, unsure")
+    S19, S20 = p[3], p[4]
+    text, r2 = day_data(ref, ["%d|deal|10000|1|10000|12631|1999|199||30000" % S19, "%d|deal|10000|1|10000|12632|2000|200||30000" % S20],
+                        {S19: steady_series(12631, vendor=0), S20: steady_series(12632, vendor=0)})
+    w = World(r2, items, data_src=text, gold=None)
+    w.open_ah_modern()
+    mine, _ = check_sidebar_flips(sc, w, r2, "day deals, 20s")
+    got = [(int(x.id), x.later) for x in lua_ideas(w, 10, None) if x.data]
+    sc.eq(got, [(S20, 2000)], "day deals, 20s: the one making 20s once sold shows, the 19s 99c one does not")
+    sc.eq([(x["id"], x["later"]) for x in mine if x.get("data")], got, "day deals, 20s: the model too")
+    w.close_ah_modern()
+    sc.clean(w, "day deals, 20s")
 
 
 def sc_flip_day_place(sc, ref, items):
     """The kept deal place goes to a deal the collector is sure of. Five gap flips
-    (2 of 4 each: +7g 58s 84c down to +6g 92s 31c in a day), an unsure deal U and
-    the solid deal C (+11g 80s once sold): the sidebar shows gaps 1 to 4, then C; U
-    is left out. /gl flips (10): the 5 gaps, C, then price-history ideas. With C
+    (2 of 4 each, costing 17g to 17g 80s whole: +3g 79s 41c down to +3g 46s 14c
+    in a day), an unsure deal U and the solid deal C (+11g 80s once sold): the
+    sidebar shows gaps 1 to 4, then C; U is left out. /gl flips (10): the 5 gaps, C, then price-history ideas. With C
     hidden the 5 gaps fill the sidebar, and with C gone from the data U is not
     given its place."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "deal place: enough items to test with"):
         return
     C, U, gaps = p[2], p[3], p[4:9]
-    a10 = ([v * 10 for v in DAY_A[0]], DAY_A[1], 15, 0)
-    gl = ["%d|gap|90000|4|%d|200000|%d|0|thin,slow|125000" % (g, cost, 4 * 190000 - cost)
-          for g, cost in zip(gaps, (340000, 344000, 348000, 352000, 356000))]
+    a5 = ([v * 5 for v in DAY_A[0]], DAY_A[1], 15, 0)
+    gl = ["%d|gap|45000|4|%d|100000|%d|0|thin,slow|62500" % (g, cost, 4 * 95000 - cost)
+          for g, cost in zip(gaps, (170000, 172000, 174000, 176000, 178000))]
     fu = "%d|deal|120000|2|240000|220000|178000|741|thin,slow,unsure|220000" % U
-    series = dict((g, a10) for g in gaps)
+    series = dict((g, a5) for g in gaps)
     series[C] = series[U] = DAY_C
     text, r2 = day_data(ref, gl + [fu, DAY_FC % C], series)
     w = World(r2, items, data_src=text, gold=None)
@@ -9585,7 +9652,7 @@ def sc_flip_day_place(sc, ref, items):
     want, _ = check_sidebar_flips(sc, w, r2, "deal place")
     sc.eq([x["id"] for x in want], gaps[:4] + [C], "deal place: gaps 1 to 4, then the solid deal C (U is left out)")
     top = [(x["id"], flip_profit(x), x["solid"]) for x in ref_collector_flips(r2, 10, gold=None)[0]]
-    sc.eq(top, [(g, v, False) for g, v in zip(gaps, (75884, 74221, 72557, 70894, 69231))] + [(C, 118000, True)],
+    sc.eq(top, [(g, v, False) for g, v in zip(gaps, (37941, 37109, 36278, 35446, 34614))] + [(C, 118000, True)],
           "deal place: the model's profits in a day (the deal's once sold), by hand")
     sc.eq([(int(x.id), x.later if x.kind == "deal" else x.dayProfit, bool(x.solid)) for x in lua_ideas(w, 10, None) if x.data],
           top, "deal place: the addon's")
@@ -9634,19 +9701,24 @@ def sc_flip_day_prices(sc, ref, items):
     price that fell to 1g 60s only for its last 6 hours, so the 2g 50s relist; 1g
     60s for one that has been 1g 60s most of the day: 2g), whatever the
     collector's 7-day usual price (1g 20s); a deal at most 1.25 x the price it sold
-    at (2g 50s, the relist), whatever its market price lately or its usual price."""
+    at (2g 50s, the relist), whatever its market price lately or its usual price:
+    D3 sold at 2g but was 1g 60s most of the day (its median), so it is still
+    counted at its 2g 50s relist, not at 1.25 x 1g 60s."""
     p = day_picks(ref, items)
     if not sc.check(p is not None, "day prices: enough items to test with"):
         return
-    G1, D1, G2, D2, G3 = p[0], p[1], p[2], p[3], p[4]
+    G1, D1, G2, D2, G3, D3 = p[0], p[1], p[2], p[3], p[4], p[5]
     fell = ([20000] * 18 + [16000] * 6, [0] * 7 + [3] * 11 + [0] * 6, 33, 0)
     low = ([20000] * 6 + [16000] * 18, [0] * 7 + [3] * 11 + [0] * 6, 33, 0)
+    rose = ([16000] * 14 + [20000] * 10, [0] * 14 + [3] * 10, 30, 0)
     lines = ["%d|gap|10000|1|10000|25000|13750|1375||0" % G1, "%d|deal|10000|1|10000|25000|13750|1375||30000" % D1,
              "%d|gap|10000|1|10000|25000|13750|1375||12000" % G2, "%d|deal|10000|1|10000|25000|13750|1375||12000" % D2,
-             "%d|gap|10000|1|10000|25000|13750|1375||0" % G3]
-    text, r2 = day_data(ref, lines, {G1: fell, D1: fell, G2: steady_series(20000), D2: steady_series(20000), G3: low})
-    sc.eq([(day_stats(r2, i)["soldAt"], day_stats(r2, i)["usual"]) for i in (G1, G2, G3)],
-          [(20000, 20000), (20000, 20000), (16000, 16000)], "day prices: sold at 2g, usual 2g; or both 1g 60s")
+             "%d|gap|10000|1|10000|25000|13750|1375||0" % G3, "%d|deal|10000|1|10000|25000|13750|1375||30000" % D3]
+    text, r2 = day_data(ref, lines, {G1: fell, D1: fell, G2: steady_series(20000), D2: steady_series(20000), G3: low,
+                                     D3: rose})
+    sc.eq([(day_stats(r2, i)["soldAt"], day_stats(r2, i)["usual"]) for i in (G1, G2, G3, D3)],
+          [(20000, 20000), (20000, 20000), (16000, 16000), (20000, 16000)],
+          "day prices: sold at 2g, usual 2g; or both 1g 60s; D3 sold at 2g, its median 1g 60s")
     w = World(r2, items, data_src=text, gold=None)
     w.open_ah_modern()
     check_sidebar_flips(sc, w, r2, "day prices")
@@ -9659,6 +9731,11 @@ def sc_flip_day_prices(sc, ref, items):
         r = rows.get(iid)
         if sc.check(r is not None, "day prices: a row for %s" % what):
             sc.eq((r.idea.countAt, strip_codes(r.sub2._text), bool(r.idea.solid)), (at, sub2, solid), "day prices: " + what)
+    d3 = [x for x in lua_ideas(w, 10, None) if x.data and int(x.id) == D3]
+    m3 = [x for x in ref_flips(r2, limit=10, gold=None) if x.get("data") and x["id"] == D3]
+    if sc.check(d3 and m3, "day prices: D3 among the 10 ideas"):
+        sc.eq((d3[0].countAt, bool(d3[0].solid), m3[0]["countAt"], m3[0]["solid"]), (25000, True, 25000, True),
+              "day prices: a deal sold at 2g, its median 1g 60s: 1.25 x what it sold at")
     w.close_ah_modern()
     sc.clean(w, "day prices")
 
@@ -9718,7 +9795,7 @@ def sc_flip_day_hover(sc, ref, items):
         flat = hover_flat(w, rows[0])
         sc.eq(flip_lines(flat), [
             "Flip idea from the latest prices | ",
-            "Buy the cheap listings, then relist them a little over its usual price. | ",
+            "Buy the cheap listings, then relist them near its usual price. | ",
             "Buy up to (each) | 90s",
             "That buys 4, costing | 3g 40s",
             "Relist at (each) | 1g 37s 50c",
@@ -9887,10 +9964,10 @@ def flip_help(w):
 
 
 FLIP_HELP = ("Experimental. Flips your gold can buy now, ranked by the profit you can expect within a day. "
-             "Gap flips stay small (20g, or 10% of your gold) until a week of sales is checked. "
-             "The best green, blue or epic listed well under its usual price keeps a row: it sells in days. "
+             "Until a week of sales is checked, only flips costing %s or less show, each using at most %d%% of your gold. "
              "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
-             "Profits are after the 5% auction cut. Treat these as ideas, not promises. Hover a row for the details.")
+             "Profits are after the 5%% auction cut. Treat these as ideas, not promises. Hover a row for the details."
+             % (money_text(GAP_COST_CAP), round(100 * GAP_GOLD_SHARE)))
 
 
 def sc_flip_day_first_snapshot(sc, ref, items):
@@ -10078,76 +10155,169 @@ def tip_over(w, fs):
     return None
 
 
-EXPERIMENTAL_TIP = ("Flip ideas lost money in our first test on two days of prices, except small gap flips. "
-                    "So they stay small until a week of sales is checked.")
+EXPERIMENTAL_TIP = ("Flip ideas lost money in our first test on two days of prices, except small ones. "
+                    "So only small ones show until a week of sales is checked.")
 
 
 def sc_flip_experimental(sc, ref, items):
     """Flip ideas are experimental (the backtest in tools/wow/backtest): the flip
     area says so in a word at the right of its title, with a hover saying why. A
-    gap flip spends at most 20g, or 10% of your gold when that is less, and buys
-    at most a quarter of a day's sales, gold or not, and its row says how many of
-    how many; the hover says it is kept small. A gap flip flagged "spike" (see
-    day drops) is left out, a deal flagged "spike" is not (only "unsure" leaves a
-    deal out). An item with no name (the data's "Item 12345", and the game does
-    not know it) is left out. The collector's "slow" has no words any more.
-    X: 10 at up to 5g (50g), relist 8g, selling 121 a day: 20g buys 4 (+10g 40s
-    in a day, all 4 sell); 100g on hand (10%: 10g) buys 2 (+5g 20s). Y: 3 at up
-    to 5g selling 8 a day: at most 2 (one seller 4 a day, behind 1 cheaper one:
-    1.670319 likely to sell, +4g 34s 28c)."""
+    gap flip costing over 20g is left out whatever the gold (the backtest backed
+    only whole flips of up to 20g); one spends at most 10% of your gold and buys
+    at most a quarter of a day's sales, gold or not, and its row then says how
+    many of how many and the hover that it is kept small. A gap flip flagged
+    "spike" (see day drops) is left out. The deals stay hidden (DEALS_SHOWN off,
+    see flip deals hidden), a deal flagged "spike" too. An item with no name (the
+    data's "Item 12345", and the game does not know it) is left out, and so is a
+    version with none ("Item 12345 (version 2)"). The collector's "slow" has no
+    words any more.
+    X: 4 at up to 5g (20g, the most a gap flip may cost), relist 8g, selling 121
+    a day: all 4 (+10g 40s in a day); 100g on hand (10%: 10g) buys 2 (+5g 20s).
+    BIG: the same at 20g 1c, left out. Y: 3 at up to 5g selling 8 a day: at most
+    2 (one seller 4 a day, behind 1 cheaper one: 1.670319 likely to sell, +4g 34s
+    28c).
+    G (2 hours of sales measured, so no price-history ideas yet): 8 at 1g selling
+    4 a day would make 20s in a day bought whole, but a quarter of a day's sales
+    is 1, which makes under 20s: so with too little gold for even one, the reason
+    for no ideas is still the history being collected, not a lack of gold."""
     p = day_picks(ref, items)
-    if not sc.check(p is not None, "experimental: enough items to test with"):
+    vid = next((v for v in sorted(ref.base_of) if v in ref.items), None)
+    if not sc.check(p is not None and vid is not None, "experimental: enough items and a version to test with"):
         return
-    X, Y, W, Z = p[0], p[1], p[2], p[3]
-    lines = ["%d|gap|50000|10|500000|80000|260000|520||0" % X, "%d|gap|50000|3|150000|80000|78000|520||0" % Y,
-             "%d|deal|50000|1|50000|80000|26000|520|spike|100000" % W, "%d|gap|5000|1|5000|8000|2600|520||0" % Z]
+    X, Y, W, Z, BIG, G = p[0], p[1], p[2], p[3], p[4], p[5]
+    VN, VB = vid, ref.base_of[vid]
+    lines = ["%d|gap|50000|4|200000|80000|104000|520||0" % X, "%d|gap|50000|3|150000|80000|78000|520||0" % Y,
+             "%d|deal|50000|1|50000|80000|26000|520|spike|100000" % W, "%d|gap|5000|1|5000|8000|2600|520||0" % Z,
+             "%d|gap|50001|4|200001|80000|103999|520||0" % BIG, "%d|gap|5000|1|5000|8000|2600|520||0" % VN]
     text, r2 = day_data(ref, lines, {X: steady_series(80000, vendor=0), Y: ([80000] * 11, [0] * 3 + [1] * 8, 8, 0),
-                                     W: steady_series(80000, vendor=0), Z: steady_series(8000, vendor=0)})
-    # Z has no name in the data, and the game does not know it either
-    text = rewrite_items(text, lambda iid, f: (["Item %d" % iid] + f[1:]) if iid == Z else None)
+                                     W: steady_series(80000, vendor=0), Z: steady_series(8000, vendor=0),
+                                     BIG: steady_series(80000, vendor=0), VN: steady_series(8000, vendor=0)})
+    # Z has no name in the data, and the game does not know it either; nor does it
+    # know the version VN, which has no name in the data (nor its item VB in the game)
+    text = rewrite_items(text, lambda iid, f: (["Item %d" % iid] + f[1:]) if iid == Z
+                         else ([""] + f[1:]) if iid == VN else None)
     r2 = RefData(text=text)
     nameless = dict(items)
-    nameless.pop(str(Z), None)
-    kept4 = "Kept small while flips are tested: buy 4 of 10, costing 20g | "
-    for gold, xrow, xday, kept in ((RICH_GOLD, ("Buy up to 5g (4 of 10)", "Relist 8g", "+10g 40s", "~61/day"), 104000, kept4),
-                                   (1000000, ("Buy up to 5g (2 of 10)", "Relist 8g", "+5g 20s", "~61/day"), 52000,
-                                    "Kept small while flips are tested: buy 2 of 10, costing 10g | "),
-                                   (None, ("Buy up to 5g (4 of 10)", "Relist 8g", "+10g 40s", "~61/day"), 104000, kept4)):
+    for i in (Z, VN, VB):
+        nameless.pop(str(i), None)
+    vname = "Item %d (version %d)" % (VB, VN - VB * 1000)
+    kept2 = "Kept small while flips are tested: buy 2 of 4, costing 10g | "
+    for gold, xrow, xday, kept in ((RICH_GOLD, ("Buy up to 5g (4)", "Relist 8g", "+10g 40s", "~61/day"), 104000,
+                                    "Your gold covers all of it. | "),
+                                   (1000000, ("Buy up to 5g (2 of 4)", "Relist 8g", "+5g 20s", "~61/day"), 52000, kept2),
+                                   (None, ("Buy up to 5g (4)", "Relist 8g", "+10g 40s", "~61/day"), 104000, None)):
         lab = "experimental, %s" % (("gold " + money_text(gold)) if gold is not None else "no gold API")
         w = World(r2, nameless, data_src=text, gold=gold)
         w.open_ah_modern()
         SB = w.ns.SidebarPanel
+        sc.eq(w.ns.ItemName(VN), vname, lab + ": the nameless version's name, as the addon makes it")
         dropped = {}
         want, _ = check_sidebar_flips(sc, w, r2, lab)
         ref_flips_why(r2, gold=gold, dropped=dropped)
-        sc.eq([(x["id"], x["kind"]) for x in want if x.get("data")], [(X, "gap"), (Y, "gap"), (W, "deal")],
-              lab + ": the two gap flips, then the deal flagged spike; the nameless one left out")
-        sc.eq(dropped.get(Z), "noname", lab + ": the model drops the nameless one")
+        sc.eq([(x["id"], x["kind"]) for x in want if x.get("data")], [(X, "gap"), (Y, "gap")],
+              lab + ": the two gap flips of up to 20g; the 20g 1c one, the deal and the nameless ones left out")
+        sc.eq((dropped.get(Z), dropped.get(VN), dropped.get(BIG), W in dropped), ("noname", "noname", "cost", False),
+              lab + ": the model drops the nameless ones and the dear one, and skips the deal")
         rows = {r.itemID: r for r in shown_rows(SB, "flipRows")}
-        sc.check(Z not in rows, lab + ": no row for an item with no name")
-        if sc.check(X in rows and Y in rows and W in rows, lab + ": rows for X, Y and W"):
-            sc.eq(row_texts(rows[X])[1:], xrow, lab + ": X kept small")
-            sc.eq((rows[X].idea.fit.capped, rows[X].idea.dayProfit), (True, xday), lab + ": X's fit is capped")
+        sc.check(not any(i in rows for i in (Z, VN, BIG, W)),
+                 lab + ": no row for the nameless ones, the 20g 1c one or the deal")
+        if sc.check(X in rows and Y in rows, lab + ": rows for X and Y"):
+            sc.eq(row_texts(rows[X])[1:], xrow, lab + ": X")
+            sc.eq((bool(rows[X].idea.fit and rows[X].idea.fit.capped), rows[X].idea.dayProfit), (gold == 1000000, xday),
+                  lab + ": X's fit is capped only by the 10% of the gold")
             sc.eq(row_texts(rows[Y])[1:], ("Buy up to 5g (2 of 3)", "Relist 8g", "+4g 34s", "~4/day"),
                   lab + ": Y, a quarter of its 8 a day")
             sc.eq((rows[Y].idea.fit.units, round(rows[Y].idea.day, 6), rows[Y].idea.dayProfit), (2, 1.670319, 43428),
                   lab + ": Y's numbers")
-            sc.eq(row_texts(rows[W])[3:], ("+2g 60s", "in days"), lab + ": W, a deal, sells in days")
             fx = flip_lines(hover_flat(w, rows[X]))
-            sc.check(kept in fx and not any(f.startswith(("With your gold", "Your gold covers")) for f in fx),
-                     lab + ": X's hover says it is kept small (%s)" % fx[-9:])
+            if kept:
+                sc.check(kept in fx, lab + ": X's hover says what the gold buys (%s)" % fx[-9:])
+            else:
+                sc.check(not any(f.startswith(("With your gold", "Your gold covers", "Kept small")) for f in fx),
+                         lab + ": X's hover has no gold line (%s)" % fx[-9:])
+            fy = flip_lines(hover_flat(w, rows[Y]))
+            sc.check("Kept small while flips are tested: buy 2 of 3, costing 10g | " in fy,
+                     lab + ": Y's hover says it is kept small (%s)" % fy[-9:])
         sc.eq(SB.flipTag._text, "experimental", lab + ": the flip area says experimental")
         sc.check(SB.flipTag._shown, lab + ": and shows it")
         pts = SB.flipTag._points
         sc.check(pts is not None and len(pts) == 1 and pts[1][1] == "TOPRIGHT" and w.same(pts[1][2], w.g.ForeverAHSidebar),
                  lab + ": at the top right of the flip area")
         sc.eq(tip_over(w, SB.flipTag), ["Experimental", EXPERIMENTAL_TIP], lab + ": its hover says why")
+        sc.eq(flip_help(w), ["Flip ideas", FLIP_HELP], lab + ": the help tip says only flips of up to 20g show")
         sc.check(w.ns.RISK_TEXT.slow is None and w.ns.RISK_TEXT.suffix == SUFFIX_TEXT, lab + ": no words for slow")
         out = [strip_codes(o) for o in w.slash("/gl flips")]
         sc.check(out and "flip ideas (experimental)" in out[0], lab + ": /gl flips says experimental (%s)" % out[:1])
-        sc.check(not any("Item %d" % Z in o for o in out), lab + ": /gl flips leaves out the nameless one")
+        sc.check(not any(("Item %d" % Z) in o or vname in o for o in out), lab + ": /gl flips leaves out the nameless ones")
+        slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(r2, limit=10, gold=gold), r2, nameless, gold, lab)
         w.close_ah_modern()
         sc.clean(w, lab)
+    # G: the reason for no ideas is "gold" only when more gold would show one, judged
+    # on what a gap flip may buy (a quarter of a day's sales), not on the whole flip
+    text, r2 = day_data(ref, ["%d|gap|10000|8|80000|20000|72000|900||0" % G],
+                        {G: ([16000] * 24, [0] * 22 + [2, 2], 4, 0)}, 2)
+    w = World(r2, items, data_src=text, gold=RICH_GOLD)
+    f = lua_list(w.ns.DataFlips())[0]
+    whole = w.ns.DayValue(f, w.to_lua({"units": 8, "cost": 80000, "profit": 72000}))
+    sc.check(not isinstance(whole, tuple) and whole is not None and whole.dayValue >= DAY_MIN_PROFIT,
+             "experimental, G: bought whole it would make 20s in a day")
+    sc.eq(w.ns.DayValue(f, w.to_lua({"units": 1, "cost": 10000, "profit": 9000})), (None, "small"),
+          "experimental, G: one (a quarter of its 4 a day) makes under 20s")
+    for gold in (RICH_GOLD, 5000):
+        lab = "experimental, G, gold %s" % money_text(gold)
+        w = World(r2, items, data_src=text, gold=gold)
+        w.open_ah_modern()
+        want, why = check_sidebar_flips(sc, w, r2, lab)
+        sc.eq((len(want), why), (0, "history"), lab + ": no ideas, and not for lack of gold")
+        w.close_ah_modern()
+        sc.clean(w, lab)
+
+
+def sc_flip_deals_hidden(sc, ref, items):
+    """Deals stay hidden as the addon ships (Sidebar.lua DEALS_SHOWN false): none
+    of the deals the sidebar showed made money within a day in the backtest, and
+    it cannot check 2-3 days yet. A deal gets no row, no /gl flips line and keeps
+    no place: the other ideas fill the sidebar. It is skipped, not dropped, so a
+    price-history idea for its item still shows. The help tip says nothing about
+    deals."""
+    src = open(os.path.join(ADDON, "Sidebar.lua"), "rb").read().decode("ascii")
+    sc.check(DEALS_SWITCH[0] in src and DEALS_SWITCH[1] not in src, "deals hidden: Sidebar.lua ships with the deals off")
+    sc.check(not DEALS_ON, "deals hidden: the model too")
+    made = deal_data(ref, items)
+    if not sc.check(made is not None, "deals hidden: enough items and a version to test with"):
+        return
+    (text_a, ra), _ = made[0]
+    w = World(ra, items, data_src=text_a)
+    w.open_ah_modern()
+    want, _ = check_sidebar_flips(sc, w, ra, "deals hidden")
+    rows = shown_rows(w.ns.SidebarPanel, "flipRows")
+    sc.check(ra.flips and all(f["kind"] == "deal" for f in ra.flips) and not any(x.get("data") for x in want),
+             "deals hidden: no collector idea (the collector found only deals)")
+    sc.check(not any(r.idea.data and r.idea.kind == "deal" for r in rows), "deals hidden: no deal row")
+    hist = [x["id"] for x in ref_history_flips_why(ra, None, (), w.gold)[0]]
+    sc.eq([x["id"] for x in want], hist[:5], "deals hidden: the price-history ideas fill every row")
+    out = [strip_codes(o) for o in w.slash("/gl flips")]
+    sc.check(not any("once sold" in o or "sells in days" in o for o in out), "deals hidden: no deal in /gl flips (%s)" % out)
+    slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(ra, limit=10, gold=w.gold), ra, items, w.gold, "deals hidden")
+    help_tip = flip_help(w)
+    sc.check(help_tip and not any("deal" in l or "in days" in l or "green, blue or epic" in l for l in help_tip),
+             "deals hidden: the help tip says nothing about deals (%s)" % help_tip)
+    w.close_ah_modern()
+    sc.clean(w, "deals hidden")
+    # a deal on the best price-history item: skipped, so its history idea still shows
+    if not sc.check(len(hist) > 0, "deals hidden: a price-history idea to give a deal"):
+        return
+    H = hist[0]
+    hb = max(2, ref.items[H]["cheapest"] // 2)
+    text = set_table(ref.text, "flips", [lua_quote("%d|deal|%d|1|%d|%d|%d|500||%d" % (H, hb, hb, hb * 3, hb, hb * 4))])
+    r2 = RefData(text=text)
+    w = World(r2, items, data_src=text)
+    w.open_ah_modern()
+    want, _ = check_sidebar_flips(sc, w, r2, "deals hidden, on a price-history item")
+    sc.check(any(x["id"] == H and not x.get("data") for x in want),
+             "deals hidden: the item's price-history idea still shows (%s)" % [x["id"] for x in want])
+    w.close_ah_modern()
+    sc.clean(w, "deals hidden, on a price-history item")
 
 
 def old_format_text(ref):
@@ -22471,25 +22641,26 @@ SCENARIOS = [
     ("gear-versions", sc_versions),
     ("collector-flips", sc_data_flips),
     ("flip-gold-sizing", sc_flip_gold),
-    ("flip-deals", sc_flip_deals),
-    ("flip-deal-room", sc_flip_deal_room),
-    ("flip-deal-words", sc_flip_deal_words),
+    ("flip-deals", with_deals(sc_flip_deals)),
+    ("flip-deal-room", with_deals(sc_flip_deal_room)),
+    ("flip-deal-words", with_deals(sc_flip_deal_words)),
     ("flip-history-rank", sc_flip_history_rank),
     ("flip-no-gold-api", sc_flip_no_gold),
     ("flip-day-stats", sc_flip_day_stats),
     ("flip-day-value", sc_flip_day_value),
     ("flip-day-drops", sc_flip_day_drops),
     ("flip-day-expected", sc_flip_day_expected),
-    ("flip-day-deals", sc_flip_day_deals),
-    ("flip-day-place", sc_flip_day_place),
-    ("flip-day-prices", sc_flip_day_prices),
-    ("flip-day-rows", sc_flip_day_rows),
-    ("flip-day-hover", sc_flip_day_hover),
-    ("flip-day-slash", sc_flip_day_slash),
+    ("flip-day-deals", with_deals(sc_flip_day_deals)),
+    ("flip-day-place", with_deals(sc_flip_day_place)),
+    ("flip-day-prices", with_deals(sc_flip_day_prices)),
+    ("flip-day-rows", with_deals(sc_flip_day_rows)),
+    ("flip-day-hover", with_deals(sc_flip_day_hover)),
+    ("flip-day-slash", with_deals(sc_flip_day_slash)),
     ("flip-day-first-snapshot", sc_flip_day_first_snapshot),
     ("flip-day-model", sc_flip_day_model),
     ("flip-day-live", sc_flip_day_live),
     ("flip-experimental", sc_flip_experimental),
+    ("flip-deals-hidden", sc_flip_deals_hidden),
     ("old-data-format", sc_old_format),
     ("stack-verdicts", sc_stack_verdicts),
     ("tooltip-verdicts", sc_tooltip_verdicts),

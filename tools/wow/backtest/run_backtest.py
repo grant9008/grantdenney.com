@@ -27,6 +27,15 @@ import crafts as CR  # noqa: E402
 import dataset as DS  # noqa: E402
 import flips as FL  # noqa: E402
 
+# The model check, the flip ideas and the craft quote run the addon's real Lua, which
+# needs the Python package lupa. Without it those rows say SKIP and the rest still runs.
+try:
+    import lupa  # noqa: F401,E402
+    HAVE_LUA = True
+except ImportError:
+    HAVE_LUA = False
+NO_LUA = "needs the Python package lupa: install it with  python -m pip install lupa"
+
 
 def say(msg):
     print(msg, flush=True)
@@ -53,6 +62,8 @@ def main(argv=None):
     t0 = time.time()
     src = B.Source(a.data)
     say("Goblin Ledger backtest, data from %s" % src.path)
+    if not HAVE_LUA:
+        say("Note: the model check, the flip ideas and the craft profit are left out: " + NO_LUA)
     say("Saving today's flips for later re-tests ...")
     FL.save_latest(src, say)
     say("Reading the price history (cached after the first run) ...")
@@ -64,19 +75,27 @@ def main(argv=None):
     data = DS.load(src, hist, hours, a.max_hours, say, a.keep_cache)
     c = C.Ctx(data, hist)
     rows = []
-    if not a.quick:
+    if not HAVE_LUA:
+        rows.append(("Backtest model", "the Python advice equals the addon's Lua", NO_LUA, "SKIP"))
+    elif not a.quick:
         say("Checking the backtest's advice model against the addon's Lua ...")
         rows += C.check_port(src, hist, hours, say)
     say("Testing the rules ...")
     rows += C.check_sell(c)
     rows += C.check_thresholds(c)
-    say("Scoring flip ideas at the saved snapshots (the addon's real Lua) ...")
-    fl = FL.run(src, hist, hours, (a.snapshots,) if a.snapshots else (), say)
-    rows += C.flip_rows(fl)
+    if HAVE_LUA:
+        say("Scoring flip ideas at the saved snapshots (the addon's real Lua) ...")
+        fl = FL.run(src, hist, hours, (a.snapshots,) if a.snapshots else (), say)
+        rows += C.flip_rows(fl)
+    else:
+        fl = {"snaps": []}
+        rows.append(("Flip ideas (shown)", "the sidebar's flip ideas made money", NO_LUA, "SKIP"))
     rows += C.check_badge(c)
     rows += C.check_chart(c)
     crafts = a.crafts or CR.DEFAULT_CRAFTS
-    if os.path.exists(crafts):
+    if not HAVE_LUA:
+        rows.append(("Craft profit", "green really pays 2h later", NO_LUA, "SKIP"))
+    elif os.path.exists(crafts):
         say("Testing the craft profit rule with %s ..." % crafts)
         try:
             rows += C.craft_rows(CR.run(src, hist, hours, crafts, say))

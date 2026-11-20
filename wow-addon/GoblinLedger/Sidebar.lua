@@ -13,11 +13,11 @@ local ADDON_NAME, ns = ...
 --                history (buy under Target Buy, sell at the sell target),
 --                each item once. They are sized to the gold on this
 --                character: what it cannot afford is left out, and an idea it
---                can afford only part of says how many it can buy. One row is
---                kept for the best deal it can afford (a green, blue or epic
---                item listed well under its usual price), which sells in days,
---                not within a day. Experimental: gap flips stay small and
---                spikes are left out (see GAP_* and the backtest).
+--                can afford only part of says how many it can buy.
+--                Experimental: only small gap flips show and spikes are left
+--                out (see GAP_* and the backtest); the deals (greens, blues
+--                and epics listed well under their usual price) stay hidden
+--                (DEALS_SHOWN) until the backtest can check them.
 --   Watchlist  : a starter list of staple trade goods that you add to and trim
 -- Clicking a row searches that item in the game's auction house, so the
 -- listings and the price chart come up as if you had typed it yourself.
@@ -52,6 +52,9 @@ local MIN_AUCTIONS = 3       -- prices behind fewer separate listings are not tr
 local VENDOR_FAR = 200       -- nor a market price over 200x what a vendor pays
 local VENDOR_FAR_UNITS = 10  -- ... with fewer units than this listed (dust sells far above vendor)
 local DEAL_EVERY = 5         -- one place in every 5 flip ideas is kept for a deal (see ns.FlipIdeas)
+-- Deals stay hidden: none of the ones shown made money within a day in the
+-- backtest, and it cannot check 2-3 days yet. Turn on only when its deal row passes.
+local DEALS_SHOWN = false
 -- What a collector flip can really make within about a day (see DayValue).
 local DAY_SHARE = 0.5        -- share of a day's sales one seller can expect at the relist price
 local DAY_HOUR_CAP = 3       -- an hour's sales count at most 3x a typical hour (and at least 1)
@@ -62,8 +65,8 @@ local DAY_PRICE_CAP = 1.25   -- a deal counts its relist at most 25% above what 
 -- on its first two days. Re-run it before loosening any of these.
 local GAP_PRICE_CAP = 1.25   -- a gap flip counts its relist at most 25% above its usual price
 local GAP_MIN_GAIN = 15      -- and must make 15% over its Buy up to price, after the cut
-local GAP_COST_CAP = 200000  -- 20g: the most a gap flip spends (until a week of sales is checked) ...
-local GAP_GOLD_SHARE = 0.10  -- ... or 10% of your gold when that is less
+local GAP_COST_CAP = 200000  -- 20g: a gap flip costing more is left out (until a week of sales is checked)
+local GAP_GOLD_SHARE = 0.10  -- one spends at most 10% of your gold
 local GAP_DAY_SHARE = 0.25   -- and it buys at most a quarter of a day's sales
 local USUAL_POINTS = 4       -- the usual price: the median market price of the last day's 4+ hourly prices
 local DAY_DEPOSIT = 0.30     -- listing deposit per unit, as a share of the vendor price, lost when it expires
@@ -740,11 +743,13 @@ local function DayValue(f, fit)
   return { countAt = at, ref = ref, day = day, dayValue = v, dayProfit = floor(v), rate = rate, deposit = dep, stats = st }
 end
 
--- What a gap flip may buy while gap flips are experimental: what GAP_COST_CAP
--- buys (GAP_GOLD_SHARE of `gold` when that is less; nil gold: the cap alone),
--- at most GAP_DAY_SHARE of a day's sales (at least 1). A FitFlip fit, capped
--- when the cap left some out; nil when not even one fits.
+-- What a gap flip may buy while gap flips are experimental: nil when the whole
+-- flip costs over GAP_COST_CAP (the backtest backed only whole flips of up to
+-- that; a slice of a big one rarely sold), else what GAP_GOLD_SHARE of `gold`
+-- buys (nil gold: all of it), at most GAP_DAY_SHARE of a day's sales (at least
+-- 1). A FitFlip fit, capped when that left some out; nil when not even one fits.
 local function GapFit(f, gold)
+  if f.cost > GAP_COST_CAP then return nil end
   local budget = GAP_COST_CAP
   if gold then budget = min(budget, floor(gold * GAP_GOLD_SHARE)) end
   local st = DayStats(f.id)
@@ -767,17 +772,19 @@ ns.ExpectedSold = ExpectedSold
 -- gets a fit (see FitFlip) and the ones it cannot buy are left out (the
 -- reason for none is "gold" only when one of them would show with more gold).
 -- Gap flips are experimental: one flagged "spike" is left out (they rarely
--- sold) and one is bought only as far as GapFit allows (a capped fit, gold or
--- not). Items with no name yet are left out.
+-- sold), so is one costing over GAP_COST_CAP, and one is bought only as far as
+-- GapFit allows (a capped fit, gold or not). Items with no name yet are left
+-- out. Deals are skipped while DEALS_SHOWN is off (a price-history idea for
+-- the item may still show).
 -- A gap or vendor flip stays only when DayValue says it can make at least
 -- DAY_MIN_PROFIT within about a day (on what the gold buys); they rank by
 -- that (most first, then the one that sells soonest, then the collector's
 -- order), still before the price-history ideas.
--- Deals (a green, blue or epic item listed well under its usual price, not
--- "unsure") sell in days, so they are not ranked with those: they come after
--- them, most profit once sold first, with one place in every DEAL_EVERY (1 of
--- the sidebar's 5 rows, 2 of the 10 /gl flips lines) kept for them, and they
--- fill the places the other collector flips leave.
+-- With DEALS_SHOWN on, deals (a green, blue or epic item listed well under its
+-- usual price, not "unsure") sell in days, so they are not ranked with those:
+-- they come after them, most profit once sold first, with one place in every
+-- DEAL_EVERY (1 of the sidebar's 5 rows, 2 of the 10 /gl flips lines) kept for
+-- them, and they fill the places the other collector flips leave.
 function ns.FlipIdeas(limit, gold)
   limit = limit or MAX_FLIPS
   if not HasData() then return {}, "nodata" end
@@ -792,8 +799,8 @@ function ns.FlipIdeas(limit, gold)
   local flips = type(ns.DataFlips) == "function" and ns.DataFlips() or {}
   for _, f in ipairs(flips) do
     local gap, risk, name = f.kind == "gap", f.risk or {}, ItemName(f.id)
-    if hidden[f.id] or seen[f.id] or (f.kind == "deal" and HasWord(risk, "unsure")) then
-      -- hidden, shown already, or a deal whose usual price may be one player's guess
+    if hidden[f.id] or seen[f.id] or (f.kind == "deal" and (not DEALS_SHOWN or HasWord(risk, "unsure"))) then
+      -- hidden, shown already, a deal while deals are off, or one whose usual price may be one player's guess
     elseif (gap and HasWord(risk, "spike")) or not KnownName(name) or name:match("^Item %d+ %(version %d+%)$") then
       -- a spike (relisted far over the usual price: they rarely sold), or no name yet ("Item 12345")
       drop(f.id)
@@ -805,7 +812,7 @@ function ns.FlipIdeas(limit, gold)
         if gold then fit = GapFit(f, gold) elseif full and full.capped then fit = full else fit = nil end
       end
       if not full then
-        drop(f.id)   -- a gap flip whose cheapest one costs over GAP_COST_CAP
+        drop(f.id)   -- a gap flip costing over GAP_COST_CAP
       elseif gold and not fit then
         -- Not even one is affordable. The reason for no ideas is "gold" only when
         -- more gold would show it: when it pays bought in full (a flip that pays
@@ -1131,7 +1138,7 @@ local function DataFlipTooltip(tt, idea)
       .. (capped and ", but it has been selling for less: buy it and relist it at the price below."
         or ": buy it and relist it at the price below, about what it has been selling for."), 0.8, 0.8, 0.8, true)
   else
-    tt:AddLine("Buy the cheap listings, then relist them a little over its usual price.", 0.8, 0.8, 0.8, true)
+    tt:AddLine("Buy the cheap listings, then relist them near its usual price.", 0.8, 0.8, 0.8, true)
   end
   tt:AddDoubleLine("Buy up to (each)", Money(idea.buy), 0.8, 0.8, 0.8, 1, 1, 1)
   tt:AddDoubleLine("That buys " .. Count(idea.units) .. ", costing", Money(idea.cost), 0.8, 0.8, 0.8, 1, 1, 1)
@@ -1427,8 +1434,8 @@ function SB:Build(parent)
   flipHelp:SetAllPoints(self.flipTitle)
   flipHelp:EnableMouse(true)
   local helpText = "Experimental. Flips your gold can buy now, ranked by the profit you can expect within a day. "
-    .. "Gap flips stay small (20g, or 10% of your gold) until a week of sales is checked. "
-    .. "The best green, blue or epic listed well under its usual price keeps a row: it sells in days. "
+    .. "Until a week of sales is checked, only flips costing " .. Money(GAP_COST_CAP) .. " or less show, "
+    .. "each using at most " .. floor(100 * GAP_GOLD_SHARE + 0.5) .. "% of your gold. "
     .. "Then items to buy under the Target Buy price and sell at the sell price, from the price history. "
     .. "Profits are after the 5% auction cut. Treat these as ideas, not promises. Hover a row for the details."
   SimpleTip(flipHelp, "Flip ideas", helpText)
@@ -1440,8 +1447,8 @@ function SB:Build(parent)
   local tagHelp = CreateFrame("Frame", nil, F)
   tagHelp:SetAllPoints(self.flipTag)
   tagHelp:EnableMouse(true)
-  SimpleTip(tagHelp, "Experimental", "Flip ideas lost money in our first test on two days of prices, except small gap flips. "
-    .. "So they stay small until a week of sales is checked.")
+  SimpleTip(tagHelp, "Experimental", "Flip ideas lost money in our first test on two days of prices, except small ones. "
+    .. "So only small ones show until a week of sales is checked.")
   local goldHelp = CreateFrame("Frame", nil, F)
   goldHelp:SetAllPoints(self.flipGold)
   goldHelp:EnableMouse(true)

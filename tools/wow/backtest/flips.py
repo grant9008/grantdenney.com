@@ -7,7 +7,9 @@ flipped items: what the sidebar's ns.FlipIdeas reads). The first four (18 Nov 17
 19 Nov 03:00 UTC) are the ones the flip rules were fitted on; every run of the backtest
 adds the collector's latest file, and the ones after 19 Nov 03:00 are the
 out-of-sample re-test. The ideas come from the addon's real Lua (the test harness),
-so the test follows Sidebar.lua as it ships."""
+so the test follows Sidebar.lua as it ships. The deals the sidebar keeps hidden
+(DEALS_SHOWN) are scored as they would show with the switch on, over DEAL_HORIZON
+hours: they sell in days."""
 import os
 import re
 import statistics
@@ -19,6 +21,7 @@ IN_SAMPLE_UNTIL = 1795057200      # 19 Nov 03:00 UTC: the last snapshot the flip
 GOLDS = (("50g", 500000), ("500g", 5000000), ("5000g", 50000000))
 HORIZON = 24                      # hours to sell in
 MIN_AFTER = 12                    # a snapshot needs this many hours of history after it to be scored
+DEAL_HORIZON = 72                 # deals (hidden in the addon) are given this many hours to sell
 FLIP_DEPOSIT = 0.30               # Sidebar.lua DAY_DEPOSIT: a unit left unsold loses 30% of its vendor price
 NAME_RE = re.compile(r"flips-(\d{8}-\d{4})\.lua$")
 
@@ -115,13 +118,15 @@ def lua_list(t):
 
 def run(src, hist, hours, extra=(), log=print):
     """Score every stored snapshot with enough history after it. Returns {"shown":
-    [...], "all": [...], "snaps": [(name, T, hours after, in sample)]}: the sidebar's
-    collector ideas (from the real Lua at 50g, 500g and 5000g) and every collector flip."""
+    [...], "deals": [...], "all": [...], "snaps": [(name, T, hours after, in sample)]}:
+    the sidebar's collector ideas (from the real Lua at 50g, 500g and 5000g), the
+    deals it would show with DEALS_SHOWN on (scored over up to DEAL_HORIZON hours,
+    with "hz" the hours they had) and every collector flip."""
     import harness as H     # the addon's real Lua (lupa); loaded only for this test
     from fwd import Fwd
     F, last = Fwd(hist, hours), hours[-1]
     items_path = src.file("items.json")
-    out = {"shown": [], "all": [], "snaps": []}
+    out = {"shown": [], "deals": [], "all": [], "snaps": []}
     for path in snapshots(extra):
         text = open(path, "rb").read().decode("utf-8")
         ref = H.RefData(text=text)
@@ -139,19 +144,26 @@ def run(src, hist, hours, extra=(), log=print):
                                "relist": f.get("relist") or 0, "cost": f["cost"], "med24": med24_at(hist, f["id"], T),
                                "first": first, "cash": cash, "mtm": mtm, "inSample": ins})
         items = H.load_items(items_path, ref)
+        dz = min(DEAL_HORIZON, (last - T) // 3600)
         for gname, gold in GOLDS:
-            w = H.World(ref, items, data_src=text, gold=gold)
-            for x in lua_list(w.ns.FlipIdeas(5, gold)):
-                if not x.data or str(x.kind) == "vendor":
-                    continue
-                iid = int(x.id)
-                fit = x.fit
-                units = int(fit.units) if fit is not None else int(x.units)
-                cost = int(fit.cost) if fit is not None else int(x.cost)
-                vendor = (ref.items.get(iid) or {}).get("vendor") or 0
-                first, cash, mtm = score(F, iid, T, units, cost, int(x.countAt), vendor, hz)
-                pred = float(x.dayProfit) if str(x.kind) == "gap" else float(x.later or 0)
-                out["shown"].append({"T": T, "id": iid, "kind": str(x.kind), "gold": gname, "first": first,
-                                     "cash": cash, "mtm": mtm, "pred": pred, "inSample": ins})
+            for deals_on in (False, True):
+                if deals_on:
+                    with H.deals_shown():
+                        w = H.World(ref, items, data_src=text, gold=gold)
+                else:
+                    w = H.World(ref, items, data_src=text, gold=gold)
+                for x in lua_list(w.ns.FlipIdeas(5, gold)):
+                    if not x.data or str(x.kind) == "vendor" or (str(x.kind) == "deal") != deals_on:
+                        continue
+                    iid = int(x.id)
+                    fit = x.fit
+                    units = int(fit.units) if fit is not None else int(x.units)
+                    cost = int(fit.cost) if fit is not None else int(x.cost)
+                    vendor = (ref.items.get(iid) or {}).get("vendor") or 0
+                    first, cash, mtm = score(F, iid, T, units, cost, int(x.countAt), vendor, dz if deals_on else hz)
+                    pred = float(x.later or 0) if deals_on else float(x.dayProfit)
+                    out["deals" if deals_on else "shown"].append({
+                        "T": T, "id": iid, "kind": str(x.kind), "gold": gname, "first": first, "cash": cash,
+                        "mtm": mtm, "pred": pred, "inSample": ins, "hz": dz if deals_on else hz})
         log("  %s: %d collector flips, %d hours after" % (B.fmt_t(T), len(ref.flips), hz))
     return out
