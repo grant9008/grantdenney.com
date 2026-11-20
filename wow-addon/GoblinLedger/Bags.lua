@@ -1535,7 +1535,7 @@ local function AuctionUnit(pid, cache)
     local ok, sp = pcall(ns.SellPrices, pid, "1D", live, own)
     if ok and type(sp) == "table" then
       -- Listed now: the same price per item the tooltip's verdict judges
-      -- (List At, never over the AH value). Totals can still differ by a few
+      -- (the price to sell at, ns.SellPrices). Totals can still differ by a few
       -- copper: the panel takes the 5% cut per item, the tooltip's stack line
       -- on the whole stack.
       local it = type(ns.GetItem) == "function" and ns.GetItem(pid) or nil

@@ -565,7 +565,7 @@ local function HistoryIdeas(limit, gold)
       if r and not r.history then noHistory = noHistory + 1 end
       if r and r.history and r.advice ~= false and (r.margin or 0) > 0 and (r.buy or 0) > 0
         and (r.marginPct or 0) >= MIN_MARGIN_PCT
-        and not r.far and not r.vendorBetter and r.verdict ~= "Sell" and r.verdict ~= "Strong Sell" then
+        and not r.far and not r.vendorBetter and r.verdict ~= ns.CALL_HIGH then
         local sold = Num(r.soldPerDay) or 0
         local idea = {
           id = id, buy = r.buy, sell = r.sell, profit = r.margin,
@@ -759,6 +759,8 @@ ns.DayStats = DayStats   -- Crafts.lua: a made item counts at most DAY_PRICE_CAP
 function ns.FlipIdeas(limit, gold)
   limit = limit or MAX_FLIPS
   if not HasData() then return {}, "nodata" end
+  -- Stale prices (3 hours or more, ns.AgeState): the cheap listings are often gone.
+  if type(ns.AgeState) == "function" and ns.AgeState() == "stale" then return {}, "stale" end
   if gold == nil then gold = ns.PlayerGold() end
   local hidden = HiddenIdeas()
   local ranked, seen, dropped, order, poor, deals, ndropped = {}, {}, {}, {}, false, 0, 0
@@ -851,6 +853,7 @@ local FLIP_MESSAGES = {
   nosales = "Collecting sales history. Flip ideas show up after a few hourly price updates.",
   none = "No flips likely to sell within a day right now. Check back after the next update.",
   gold = "Not enough gold on this character for the current flip ideas.",
+  stale = "Prices are 3 hours old or more: no flip ideas until newer ones load (type /gl to see how).",
 }
 ns.FLIP_MESSAGES = FLIP_MESSAGES
 
@@ -1683,16 +1686,13 @@ function SB:RefreshWatch()
       else
         r.change:SetText("")
       end
-      -- Edge colour: gold when the cheapest listing is a buy, blue when it is a sell.
+      -- Edge colour: blue when the price is high now (it usually fell back).
+      -- None when it is low: low prices often kept falling, so that is no buy.
       local rec = it and Advice(id, tf)
       local v = rec and rec.history and rec.advice ~= false and rec.verdict
-      if v == "Strong Buy" or v == "Buy" then
-        local c = Col("buy")
-        r.accent:SetColorTexture(c[1], c[2], c[3], v == "Strong Buy" and 1 or 0.6)
-        r.accent:Show()
-      elseif v == "Strong Sell" or v == "Sell" then
+      if v == ns.CALL_HIGH then
         local c = Col("sell")
-        r.accent:SetColorTexture(c[1], c[2], c[3], v == "Strong Sell" and 1 or 0.6)
+        r.accent:SetColorTexture(c[1], c[2], c[3], 0.8)
         r.accent:Show()
       else
         r.accent:Hide()
@@ -1727,7 +1727,7 @@ function SB:RefreshHeader()
     local house = type(ns.HouseLabel) == "function" and ns.HouseLabel() or "Alliance AH"
     local a = type(ns.AgeText) == "function" and ns.AgeText(age) or ""
     txt = house .. ", " .. a
-    if age and type(ns.STALE_SECONDS) == "number" and age > ns.STALE_SECONDS then txt = Paint(txt, "neg") end
+    if type(ns.AgeState) == "function" and ns.AgeState(age) == "stale" then txt = Paint(txt, "neg") end
   end
   -- At another market (Horde, a goblin AH, Hardcore) say so in a few words;
   -- hovering the line gives the full reason.
@@ -1991,6 +1991,8 @@ function ns.HandleSlash(msg)
         Print("no price data yet. Type /gl to see how to get it.")
       elseif why == "history" then
         Print(FLIP_MESSAGES.history)
+      elseif why == "stale" then
+        Print("no flip ideas from prices this old. " .. (type(ns.StaleText) == "function" and (ns.StaleText() or "") or "") .. ".")
       elseif why == "nosales" then
         Print("still collecting sales history: flip ideas show up after a few hourly price updates.")
       elseif why == "gold" then

@@ -356,16 +356,7 @@ def pct(sorted_vals, p):
     return math.floor(v + 0.5)
 
 
-def verdict_for(score):
-    if score >= 60:
-        return "Strong Buy"
-    if score >= 25:
-        return "Buy"
-    if score > -25:
-        return "Hold"
-    if score > -60:
-        return "Sell"
-    return "Strong Sell"
+verdict_for = rec_model.verdict_for   # the chart's call: high, Hold or low (never a buy claim)
 
 
 def ref_recommend(ref, iid, tf, live=None):
@@ -2685,8 +2676,21 @@ function CAH.GetItemSearchResultInfo(itemKey, i)
                      itemLink = M.ItemLink(itemKey.itemID, nil, r.bonus), containsOwnerItem = r.own == true, containsAccountItem = false,
                      containsSocketedItem = false, buyoutAmount = r.buyout, bidAmount = nil } end
 end
-function CAH.CalculateCommodityDeposit(itemID, duration, quantity) return 15 * quantity end
-function CAH.CalculateItemDeposit(loc, duration, quantity) return 30 end
+-- A Classic-like deposit: a share of the vendor price for each unit by listing time (M.depositRates),
+-- rounded down, at least M.depositMin per listing. M.depositCalls counts the calls.
+M.depositRates, M.depositMin, M.depositCalls = { 0.05, 0.20, 0.60 }, 100, 0
+local function mockDeposit(vendor, duration, quantity)
+  M.depositCalls = M.depositCalls + 1
+  local r = M.depositRates[duration]
+  if not r or not vendor then return nil end
+  return math.max(M.depositMin, math.floor(vendor * quantity * r))
+end
+function CAH.CalculateCommodityDeposit(itemID, duration, quantity)
+  return mockDeposit(select(11, C_Item.GetItemInfo(itemID)), duration, quantity)
+end
+function CAH.CalculateItemDeposit(loc, duration, quantity)
+  return mockDeposit(select(11, C_Item.GetItemInfo(C_Item.GetItemLink(loc))), duration, quantity)
+end
 function CAH.GetCancelCost() return 0 end
 function CAH.GetNumBids() return 0 end
 
@@ -3037,6 +3041,10 @@ local function makeSellFrame(ah, key, isCommodity)
   sf.PriceInput:SetPoint("TOPLEFT", sf, "TOPLEFT", 11, -152)
   sf.Duration = CreateFrame("Frame", nil, sf)
   sf.Duration.Dropdown = CreateFrame("Frame", nil, sf.Duration)
+  -- AuctionHouseSellFrameMixin: the listing time (1 to 3) and OnDurationUpdated when it changes
+  function sf:GetDuration() return self.durationIndex or M.durationIndex or 3 end
+  function sf:SetDuration(i) self.durationIndex = i; self:OnDurationUpdated() end
+  function sf:OnDurationUpdated() self:UpdatePostState() end
   sf.PostButton = CreateFrame("Button", nil, sf, "UIPanelButtonTemplate")
   sf.PostButton:SetSize(194, 22)
   sf.PostButton:SetPoint("BOTTOM", sf, "BOTTOM", 0, 40)
@@ -3837,9 +3845,15 @@ class Scenario:
 
 
 def ref_sell_prices(ref, iid, tf="1D", live=None, own=False):
-    """rec_model.sell_prices for an item: what ns.SellPrices gives (Sell now, Best price)."""
-    rec = ref_recommend(ref, iid, tf, live)
+    """rec_model.sell_prices for an item: what ns.SellPrices gives (Sell now, Sell at, the usual
+    price). tf is ignored, as ns.SellPrices ignores the chart's timeframe (its advice is 1D)."""
+    rec = ref_recommend(ref, iid, "1D", live)
     return rec_model.sell_prices(rec, live, own, ref.items[iid]["vendor"])
+
+
+def ref_usual(ref, iid):
+    """ns.UsualPrice: the middle of the last 24 hourly market prices (1W window), at least 4."""
+    return rec_model.usual_price(ref.window(iid, "1W")["market"])
 
 
 def week_range(ref, iid):
@@ -3859,59 +3873,73 @@ RELOAD_SECONDS = 80 * 60   # Core.lua ns.RELOAD_SECONDS: older data gets the "/r
 VS_LOUD = 40               # Core.lua ns.VS_LOUD: the badge is yellow from 40% either way
 
 
-def vs_average(value, avg):
-    """Core.lua vsAverage: how far the AH value is from the average, "+92% vs avg" /
-    "-44% vs avg" (whole percent, rounded toward 0), yellow from 40% either way,
-    grey under that (never green or red), a grey "0% vs avg" under 1%, None with
-    no average."""
-    if value <= 0 or avg <= 0:
+def vs_usual(value, usual):
+    """Core.lua vsUsual: how far the AH value is from the usual price, "+12% vs usual"
+    (whole percent, rounded toward 0), grey, and from 40% either way yellow with a word:
+    "+88% vs usual: spike" / "-45% vs usual: dropped" (never green or red), a grey
+    "0% vs usual" under 1%, None with no usual price."""
+    if not value or not usual or value <= 0 or usual <= 0:
         return None
-    p = math.floor(abs(value - avg) * 100 / avg)
-    t = "0%" if p < 1 else ("+%d%%" % p if value > avg else "-%d%%" % p)
-    return "|c%s%s vs avg|r" % (TT_WARN if p >= VS_LOUD else TT_MUTED, t)
+    p = math.floor(abs(value - usual) * 100 / usual)
+    t = "0%" if p < 1 else ("+%d%%" % p if value > usual else "-%d%%" % p)
+    word = (": spike" if value > usual else ": dropped") if p >= VS_LOUD else ""
+    return "|c%s%s vs usual%s|r" % (TT_WARN if p >= VS_LOUD else TT_MUTED, t, word)
 
 
-def reload_hint(age):
-    """Core.lua ns.ReloadHint: over 80 minutes old, a newer file is most likely waiting."""
-    return age > RELOAD_SECONDS
+STALE_SECONDS = 3 * 3600   # Core.lua ns.STALE_SECONDS: ns.AgeState "stale" from here
 
 
-def header_age(age):
-    """The full tooltip header's right side and its colour: "25m ago" grey, or
-    "2h ago - /reload" yellow once the data is over 80 minutes old."""
-    if reload_hint(age):
+def stale_text(age, loaded_age=None):
+    """Core.lua ns.StaleText: what to do about stale prices. loaded_age: how old they were
+    when the game read Data.lua (None: 25 minutes, the age a World starts at)."""
+    la = 25 * 60 if loaded_age is None else loaded_age
+    if la < STALE_SECONDS:
+        return "Prices are %dh old: type /reload for newer ones" % (age // 3600)
+    return "Prices are %dh old: run Install-Goblin-Ledger.bat again, then /reload" % (age // 3600)
+
+
+def reload_hint(age, loaded_age=None):
+    """Core.lua ns.ReloadHint: over 80 minutes old, a newer file is most likely waiting; not when
+    the prices are stale and were already stale when the game read them (loaded_age: None = the
+    25 minutes a World starts at)."""
+    la = 25 * 60 if loaded_age is None else loaded_age
+    return age > RELOAD_SECONDS and not (age >= 3 * 3600 and la >= 3 * 3600)
+
+
+def header_age(age, loaded_age=None):
+    """The full tooltip header's right side and its colour: "25m ago" grey, or "2h ago - /reload"
+    yellow once the data is over 80 minutes old (stale prices the game read already stale: the
+    yellow age alone, the last line says what to do)."""
+    if reload_hint(age, loaded_age):
         return age_text(age) + " - /reload", "warn"
-    return age_text(age), "muted"
+    return age_text(age), ("warn" if age >= 3 * 3600 else "muted")
 
 
-def compact_age(age):
+def compact_age(age, loaded_age=None):
     """Compact mode's age: nothing while fresh, else a short grey "  (2h old - /reload)"."""
-    if not reload_hint(age):
+    if not reload_hint(age, loaded_age):
         return ""
     return "  |c%s(%s old - /reload)|r" % (TT_MUTED, age_text(age)[:-len(" ago")])
 
 
-def chart_age(age):
-    """The chart footer's age: "2h ago", or a yellow "2h ago - /reload"."""
-    if reload_hint(age):
+def chart_age(age, loaded_age=None):
+    """The chart footer's age: "2h ago", a yellow "2h ago - /reload", or stale prices the game read
+    already stale: a yellow "7h ago"."""
+    if reload_hint(age, loaded_age):
         return "|c%s%s - /reload|r" % (TT_WARN, age_text(age))
+    if age >= 3 * 3600:
+        return "|c%s%s|r" % (TT_WARN, age_text(age))
     return age_text(age)
 
 
-def average_label(ref, iid):
-    """Core.lua averageLabel: "7-day average", or "3-day average" with prices for fewer days."""
-    days = ref.items[iid]["D"]["n"]
-    if days < 1 or days > 7:
-        days = 7
-    return "%d-day average" % days
-
-
-def ref_verdict(ref, iid, tf="1D", live=None, own=False):
-    """rec_model.sell_verdict for an item: what ns.SellVerdict gives (None = no verdict)."""
-    rec = ref_recommend(ref, iid, tf, live)
+def ref_verdict(ref, iid, tf="1D", live=None, own=False, count=None, deposit=None):
+    """rec_model.sell_verdict for a bag stack of count (None: not from the bags): what
+    ns.SellVerdict gives (None = no verdict).
+    Like ns.SellPrices it judges the 1D advice, whatever tf is."""
+    rec = ref_recommend(ref, iid, "1D", live)
     it = ref.items[iid]
     sp = rec_model.sell_prices(rec, live, own, it["vendor"])
-    return rec_model.sell_verdict(it, sp, rec, ref.salesHours)
+    return rec_model.sell_verdict(it, sp, rec, ref.salesHours, count, deposit)
 
 
 # Core.lua ns.COLORS, by name; "white" is the plain 1, 1, 1 and "gold" the
@@ -3922,16 +3950,19 @@ TT_RGB = {"sell": (0.22, 0.74, 0.97), "muted": (0.55, 0.51, 0.45), "text": (0.90
 
 
 def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None, own=False, tf="1D", cover="auto",
-                     verdict=True, styles=False, live_value="auto"):
+                     verdict=True, styles=False, live_value="auto", loaded_age=None, deposit=None):
     """The Goblin Ledger lines of an item tooltip. mult > 1: Shift held on a stack of
     that many (count defaults to it). cover: "version", "all", None, or "auto"
     (plain link: "all" for an item whose versions the data lists). verdict=False:
     a bound item or another market (no verdict, no stack line). live: the open
     AH's loaded cheapest listing (ns.LiveCheapest: Sell now and the verdict);
     live_value: ns.LivePrice, the price the AH value line shows as "AH value
-    (live)" ("auto": the same as live; None: no live AH value).
+    (live)" ("auto": the same as live; None: no live AH value). The chart's
+    timeframe (tf) never changes the tooltip. Stale prices (3 hours or more)
+    keep the verdict and its size; each price from the file gets a "~" and the
+    last line says how old and what to do (stale_text with loaded_age). deposit: the saved deposit readings (None: the defaults).
     styles=True gives (lines, [(left colour, right colour, big)]) with TT_RGB
-    names; big is True for a line shown bigger (fresh data, full mode): "Auction it"
+    names; big is True for a line shown bigger (full mode): "Auction it"
     and the AH value, or "Vendor it" and the "Vendor pays" line under it (never
     our last line: a line made after it would copy its Font)."""
     it = ref.items.get(iid)
@@ -3940,6 +3971,7 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
         cl, cc = cr_expect_plain(ref, iid, age, compact)
         lines, st = lines + cl, st + [(a, b, False) for a, b in cc]
         return (lines, st) if styles else lines
+    in_bags = count is not None or mult > 1    # a bag stack: the call judges that many
     if count is None:
         count = mult if mult > 1 else 1
     if cover == "auto":
@@ -3948,25 +3980,30 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
     if live_value == "auto":
         live_value = live
     shown = live_value if live_value else it["market"]
+    stale = age >= STALE_SECONDS
 
     def ah_label(base):   # "AH value (x20)", "AH value (live)", "AH value (live, x20)"
         if live_value:
             return base + (" (live, x%d)" % mult if mult > 1 else " (live)")
         return base + tag
 
-    def m(v):
-        return money_icons(v * mult) if v > 0 else None
+    def m(v, from_file=True):
+        return (("~" if stale and from_file else "") + money_icons(v * mult)) if v and v > 0 else None
+
+    def ah_money():
+        return m(shown, not live_value)
     out = []
 
     def add(left, right, lc, rc, big=False):
         out.append(((left, right), (lc, rc, big)))
-    vs = vs_average(shown, it["avg7"])
+    usual = ref_usual(ref, iid)
+    vs = vs_usual(shown, usual)
     # the prices mix versions that sell for different prices: nothing to sell at, no verdict
     P = None if cover == "all" else ref_sell_prices(ref, iid, tf, live, own)
-    V = ref_verdict(ref, iid, tf, live, own) if (P is not None and verdict) else None
+    V = ref_verdict(ref, iid, tf, live, own, count if in_bags else None, deposit) if (P is not None and verdict) else None
     if compact:
-        mk = m(shown)
-        old = "" if live_value else compact_age(age)   # a live price is from now
+        mk = ah_money()
+        old = "" if (live_value or stale) else compact_age(age, loaded_age)   # a live price is from now; stale ones say their age
         if V:
             if mk:
                 add("%s: %s" % (V["left"], V["right"]), "%s %s" % (ah_label("AH"), mk)
@@ -3977,37 +4014,46 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
             add((("%s: %s" % (ah_label("AH value"), mk) + ("  " + vs if vs else "")) if mk else "AH value: none listed now") + old,
                 None, "text", None)
     else:
-        ha, hc = header_age(age)
+        ha, hc = header_age(age, loaded_age)
         add("Goblin Ledger", ha, "sell", hc)
-        clear_cut = V is not None and V["kind"] in ("auction", "vendor") and age <= 6 * 3600
+        clear_cut = V is not None and V["kind"] in ("auction", "vendor")
         if V:
             add(V["left"], V["right"], V["lc"], V["rc"], clear_cut)
-        if clear_cut and V["kind"] == "vendor" and m(it["vendor"]):
-            add("Vendor pays" + tag, m(it["vendor"]), "text", "white", True)
-        mk = m(shown)
+        if clear_cut and V["kind"] == "vendor" and m(it["vendor"], False):
+            add("Vendor pays" + tag, m(it["vendor"], False), "text", "white", True)
+        mk = ah_money()
         if mk:
             add(ah_label("AH value"), mk + ("  " + vs if vs else ""), "text", "white", clear_cut and V["kind"] == "auction")
         else:
             add("AH value", "none listed", "text", "muted")
-        if m(it["avg7"]):
-            add(average_label(ref, iid) + tag, m(it["avg7"]), "text", "white")
+        under = P["under"] if (P is not None and P["now"] is not None) else None
+        at_line = P is not None and P["at"] is not None and (under is not None or P["now"] is None)
+        if not at_line and m(usual):
+            add("Usual price" + tag, m(usual), "text", "white")
         if P is not None:
             if P["now"] is not None:
-                add(("Sell now (live)" if P["live"] else "Sell now") + tag, m(P["now"]), "text",
-                    "neg" if P["nowVendor"] else "white")
-            if P["best"] is not None:
-                add("Suggested price" + tag, m(P["best"]), "text", "neg" if P["bestVendor"] else "white")
-            if (P["nowWhy"] == "unreliable" or P["bestWhy"] == "unreliable") and not (V and V["right"] == "few listed"):
+                label = "Sell now (live)" if P["live"] else "Sell now"
+                if under is not None:
+                    label = ("Sell now (live, %d%% under usual)" if P["live"] else "Sell now (%d%% under usual)") % under
+                    add(label + tag, m(P["now"], not P["live"]), "warn", "neg" if P["nowVendor"] else "warn")
+                else:
+                    add(label + tag, m(P["now"], not P["live"]), "text", "neg" if P["nowVendor"] else "white")
+            if at_line:
+                add("Sell at" + tag, m(P["at"], not (P["live"] and P["at"] == P["now"])), "text",
+                    "neg" if P["atVendor"] else "white")
+            rec = ref_recommend(ref, iid, "1D", live)
+            if (rec["vendorFar"] or rec["thinListings"]) and not (V and V["right"] == "few listed"):
                 add("Few listed: the price may not be reliable", None, "muted", None)
             if V and V["unit"] and count > 1 and V["kind"] in ("auction", "close"):
-                add("This stack (%d), after AH cut" % count, money_icons(rec_model.stack_after_cut(V["unit"], count)),
-                    "text", "white")
+                ff = stale and not (P["live"] and V["unit"] == P["now"])
+                add("This stack (%d), after AH cut" % count,
+                    ("~" if ff else "") + money_icons(rec_model.stack_after_cut(V["unit"], count)), "text", "white")
     if cover == "version":
         add("Prices for this version only", None, "muted", None)
     elif cover == "all":
         add("Price covers all versions of this item", None, "muted", None)
-    if age > 6 * 3600:
-        add("Prices are %dh old: run Install-Goblin-Ledger.bat, then /reload" % (age // 3600), None, "muted", None)
+    if stale:
+        add(stale_text(age, loaded_age), None, "muted", None)
     if out and out[-1][1][2]:
         out[-1] = (out[-1][0], (out[-1][1][0], out[-1][1][1], False))
     # then Crafts.lua's: for a player with no professions, a recipe item's (Makes, mats, profit)
@@ -4061,14 +4107,14 @@ def tooltip_style_ok(sc, w, tt, want_styles, label, base_size=12):
     sc.eq(others, [], "%s: every other line at the normal size" % label)
 
 
-def verdict_line_ok(sc, ref, iid, lines, label, tf="1D", live=None, own=False, cover="auto", verdict=True):
-    """The verdict and the stack line against the model (wording aside, the price the
-    verdict judges and the stack's value after the cut). No verdict for prices that
-    mix versions (cover "all"; "auto": an item whose versions the data lists) or
-    with verdict=False (a bound item, another market)."""
+def verdict_line_ok(sc, ref, iid, lines, label, tf="1D", live=None, own=False, cover="auto", verdict=True, count=None):
+    """The verdict for count of the item and the stack line against the model (wording
+    aside, the price the verdict judges and the stack's value after the cut). No verdict
+    for prices that mix versions (cover "all"; "auto": an item whose versions the data
+    lists) or with verdict=False (a bound item, another market)."""
     if cover == "auto":
         cover = "all" if iid in ref.variants else None
-    V = ref_verdict(ref, iid, tf, live, own) if (verdict and cover != "all") else None
+    V = ref_verdict(ref, iid, tf, live, own, count) if (verdict and cover != "all") else None
     texts = [l for l, _ in lines]
     if V is None:
         sc.check(not any(t in ("Auction it", "Vendor it", "Close call", "Maybe auction") for t in texts),
@@ -4083,32 +4129,35 @@ def verdict_line_ok(sc, ref, iid, lines, label, tf="1D", live=None, own=False, c
 
 def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=False):
     """Value-level check, independent of wording: every price on the tooltip
-    equals the data file (AH value, the average) or the model (Sell now,
-    Suggested price, and the stack at the verdict's price after the 5% cut,
-    never multiplied by Shift)."""
+    equals the data file (AH value) or the model (the usual price, Sell now,
+    Sell at, and the stack at the verdict's price after the 5% cut, never
+    multiplied by Shift)."""
     it = ref.items[iid]
     P = ref_sell_prices(ref, iid, tf, live, own)
-    want = {"AH value": it["market"], average_label(ref, iid): it["avg7"], "Vendor pays": it["vendor"],
-            "Sell now": P["now"], "Sell now (live)": P["now"], "Suggested price": P["best"], "AH value (live)": live}
+    want = {"AH value": it["market"], "Usual price": ref_usual(ref, iid), "Vendor pays": it["vendor"],
+            "Sell now": P["now"], "Sell now (live)": P["now"], "Sell at": P["at"], "AH value (live)": live}
     seen = set()
     for left, right in lines:
         base = (left or "").split(" (x")[0]
-        coins = (right or "").split("  ")[0]        # the AH value's "+3%" comes after two spaces
+        if base.startswith("Sell now (") and "% under usual)" in base:
+            base = "Sell now (live)" if base.startswith("Sell now (live)") else "Sell now"
+        coins = (right or "").split("  ")[0].split(", ")[0].lstrip("~")   # "+3% vs usual" after two spaces; "~", ", 3h old"
         if base in want and coins and parse_coins(coins) is not None:
             seen.add(base)
             sc.eq(parse_coins(coins), display_copper((want[base] or 0) * mult), "%s %s value" % (label, base))
         elif (left or "").startswith("This stack (") and left.endswith("), after AH cut"):
-            V = ref_verdict(ref, iid, tf, live, own)
             n = int(left[len("This stack ("):-len("), after AH cut")])
+            V = ref_verdict(ref, iid, tf, live, own, n)
             sc.check(V is not None and V["unit"] is not None and V["kind"] in ("auction", "close"),
                      "%s: a stack line only under Auction it or Close call (%s)" % (label, V and V["kind"]))
             if V and V["unit"]:
-                sc.eq(parse_coins(right), display_copper(rec_model.stack_after_cut(V["unit"], n)),
+                sc.eq(parse_coins(right.lstrip("~")), display_copper(rec_model.stack_after_cut(V["unit"], n)),
                       "%s stack of %d at the verdict's price" % (label, n))
     if it["market"] > 0 or live:
         sc.check(("AH value (live)" if live else "AH value") in seen, "%s: AH value shown (%s)" % (label, sorted(seen)))
-    if it["avg7"] > 0:
-        sc.check(average_label(ref, iid) in seen, "%s: the average shown (%s)" % (label, sorted(seen)))
+    at_line = P["at"] is not None and (P["now"] is None or P["under"] is not None)
+    if ref_usual(ref, iid) and not at_line:
+        sc.check("Usual price" in seen, "%s: the usual price shown (%s)" % (label, sorted(seen)))
 
 
 def check_series_and_recommend(sc, w, ref, ids=None, tfs=TFS):
@@ -4178,19 +4227,29 @@ def chart_check(sc, w, ref, iid, tf, label, saved_tf=None):
         sc.eq(C.change._text, "%+.1f%% %s" % (p, tf), "%s: header change" % label)
     ahs0 = ns.AHState
     mixed = iid not in ref.base_of and (iid in ref.variants or (ahs0 is not None and bool(ahs0.suffix[iid])))
+    # Sell at: the tooltip's and the sell buttons' price (ns.SellPrices, the same in every timeframe)
+    lv = w.ns.LiveCheapest(iid)
+    own = bool(lv[1]) if isinstance(lv, tuple) and len(lv) > 1 else False
+    P = ref_sell_prices(ref, iid, tf, live, own)
+    at = P["at"] or 0
     if mixed:
         # the whole item of gear whose versions differ: its targets would mix them
         want = dict(want, buy=0, listAt=0, sell=0, margin=0, notes=[])
+        at = 0
     why = "Depends on the version" if mixed else no_advice_text(want)
     sc.eq(C.buyBox.value._text, why or (money_icons(want["buy"]) if want["buy"] > 0 else "-"), "%s: Target Buy box" % label)
-    sc.eq(C.listBox.value._text, why or (money_icons(want["listAt"]) if want["listAt"] > 0 else "-"), "%s: List At box" % label)
+    sc.eq(C.listBox.value._text, sell_at_box(ref, iid, at, mixed), "%s: Sell at box" % label)
     muted = (abs(C.buyBox.value._textColor[1] - 0.55) < 0.01) if C.buyBox.value._textColor else False
-    sc.eq(muted, why is not None, "%s: target boxes grey only without advice" % label)
+    sc.eq(muted, why is not None, "%s: Target Buy grey only without advice" % label)
+    lmuted = (abs(C.listBox.value._textColor[1] - 0.55) < 0.01) if C.listBox.value._textColor else False
+    sc.eq(lmuted, mixed or at <= 0, "%s: Sell at grey only without a price" % label)
     cheap_now = live if live else it["cheapest"]
     sc.eq(C.buyBox.sub._text, "Cheapest: " + ((money_icons(cheap_now) + (" (live)" if live else "")) if cheap_now > 0 else "none listed"),
           "%s: Target Buy sub" % label)
-    sc.eq(C.listBox.sub._text, "Market: " + (money_icons(it["market"]) if it["market"] > 0 else "none listed"),
-          "%s: List At sub" % label)
+    usual = ref_usual(ref, iid)
+    under = P["under"] if P["now"] is not None and not mixed else None
+    sc.eq(C.listBox.sub._text, ("|c%sSell now %d%% under usual|r" % (TT_WARN, under)) if under is not None
+          else "Usual: " + (money_icons(usual) if usual else "not known yet"), "%s: Sell at sub" % label)
     mismatch = expected_mismatch(w, ref)
     if mismatch:
         sc.eq(C.verdict._text or "", "", "%s: no verdict for another market" % label)
@@ -4203,9 +4262,16 @@ def chart_check(sc, w, ref, iid, tf, label, saved_tf=None):
         sc.check(not C.meter._shown, "%s: no verdict meter without advice" % label)
     else:
         sc.eq(C.verdict._text, want["verdict"], "%s: verdict" % label)
-        mtxt = "Margin after 5% cut: " + ("+" if want["margin"] >= 0 else "") + money_text(want["margin"]) + \
-            (" (%+.1f%%)" % (want["marginPct"] * 100))
-        sc.eq(C.margin._text, mtxt, "%s: margin text" % label)
+        sc.check(want["verdict"] in (rec_model.CALL_HIGH, "Hold", rec_model.CALL_LOW) and "Buy" not in C.verdict._text,
+                 "%s: the call never says buy (%s)" % (label, C.verdict._text))
+        # the margin between the two boxes; the % only while a listing is within 5% of Target Buy
+        if want["buy"] > 0 and at > 0:
+            mg = math.floor(at * 0.95) - want["buy"]
+            pct_txt = (" (%+.1f%%)" % (mg * 100 / want["buy"])) if 0 < cheap_now and cheap_now * 100 <= want["buy"] * 105 else ""
+            mtxt = "Margin after 5% cut: " + ("+" if mg >= 0 else "") + money_text(mg) + pct_txt
+        else:
+            mtxt = ""
+        sc.eq(C.margin._text or "", mtxt, "%s: margin text" % label)
     sc.eq(C.volume._text, "%s \u00b7 %s listed" % (rec_model.sold_text(it["sold24"], ref.salesHours), commas(it["listed"])),
           "%s: volume text" % label)
     notes = [mismatch] if mismatch else list(want["notes"])
@@ -4214,14 +4280,17 @@ def chart_check(sc, w, ref, iid, tf, label, saved_tf=None):
         notes.append("Price covers all versions of this item")
     sc.eq(C.notes._text or "", ". ".join(notes), "%s: notes" % label)
     narrow = C.frame._w < 650
-    sc.check(C.change._shown != narrow and C.volume._shown != narrow,
-             "%s: change and volume %s at width %s" % (label, "hidden" if narrow else "shown", C.frame._w))
+    sc.check(C.change._shown != narrow, "%s: change %s at width %s" % (label, "hidden" if narrow else "shown", C.frame._w))
+    fits = footer_fits(C, C.frame._w)
+    sc.check(C.volume._shown == (not narrow and fits),
+             "%s: volume %s at width %s" % (label, "shown" if not narrow and fits else "hidden", C.frame._w))
     compact = (C.panelH or 260) < 230
     sc.check(C.buyBox._shown and C.listBox._shown, "%s: boxes shown at height %s" % (label, C.panelH))
     sc.check(C.buyBox._h == (18 if compact else 40) and C.listBox._h == C.buyBox._h,
              "%s: boxes %s at height %s (%s)" % (label, "are one-line chips" if compact else "full", C.panelH, C.buyBox._h))
     sc.check(C.plot._points[1][5] == -(58 if compact else 86), "%s: the plot starts under the boxes" % label)
-    sc.eq(C.age._text, "Data: %s \u00b7 %s" % (chart_age(w.now - ref.updated), ref.houseName), "%s: age" % label)
+    sc.eq(C.age._text, "Data: %s \u00b7 %s" % (chart_age(w.now - ref.updated, w.now - ref.updated), ref.houseName),
+          "%s: age" % label)
     pools = C.pools
     # The box whose dashed line is on is lit (tinted background, border), the other is not.
     line = ns.settings.chartLine
@@ -4298,14 +4367,14 @@ def chart_check(sc, w, ref, iid, tf, label, saved_tf=None):
     # Dashed target lines: only the one picked with the boxes (none by default),
     # on a short panel too (its chips switch it). Labels carry the advice numbers.
     show_buy = line == "buy" and want["buy"] > 0
-    show_list = line == "sell" and want["listAt"] > 0
+    show_list = line == "sell" and at > 0
     tags = [pools.tag["items"][k]._text for k in range(1, int(pools.tag.used) + 1)]
-    sc.eq(sorted(t.split(" ")[0] for t in tags), sorted((["Target"] if show_buy else []) + (["List"] if show_list else [])),
+    sc.eq(sorted(t.split(" ")[0] for t in tags), sorted((["Target"] if show_buy else []) + (["Sell"] if show_list else [])),
           "%s: target lines shown for chartLine=%s (%s)" % (label, line, tags))
     if show_buy:
         sc.check("Target Buy " + money_text(want["buy"]) in tags, "%s: buy line label (%s)" % (label, tags))
     if show_list:
-        sc.check("List At " + money_text(want["listAt"]) in tags, "%s: list line label (%s)" % (label, tags))
+        sc.check("Sell at " + money_text(at) in tags, "%s: Sell at line label (%s)" % (label, tags))
     sc.eq(int(pools.dash.used) > 0, show_buy or show_list, "%s: dashes drawn only for a shown line" % label)
     # Sold bars
     sold = win["sold"]
@@ -4680,7 +4749,7 @@ def sc_tooltip(sc, ref, items):
     want, want_st = expected_tooltip(ref, R.LINEN, age, count=20, styles=True)
     sc.eq(lines, want, "2589 bag tooltip lines")
     tooltip_values_ok(sc, ref, R.LINEN, lines, 1, "2589")
-    verdict_line_ok(sc, ref, R.LINEN, lines, "2589")
+    verdict_line_ok(sc, ref, R.LINEN, lines, "2589", count=20)
     tooltip_style_ok(sc, w, tt, want_st, "2589 bag")
     # Post call fires a second time without a clear: no duplicates
     for fn_i in range(1, len(w.M.postCalls[0]) + 1):
@@ -4716,7 +4785,7 @@ def sc_tooltip(sc, ref, items):
     want, want_st = expected_tooltip(ref, R.LINEN, age, mult=20, styles=True)
     sc.eq(lines, want, "2589 shift x20 tooltip")
     tooltip_values_ok(sc, ref, R.LINEN, lines, 20, "2589 x20")
-    verdict_line_ok(sc, ref, R.LINEN, lines, "2589 x20 (Shift changes neither the verdict nor the stack line)")
+    verdict_line_ok(sc, ref, R.LINEN, lines, "2589 x20 (Shift changes neither the verdict nor the stack line)", count=20)
     tooltip_style_ok(sc, w, tt, want_st, "2589 shift x20")
     # Shift held on a single item (by id): no multiplier
     tt.SetItemByID(tt, R.RUNE)
@@ -4737,8 +4806,8 @@ def sc_tooltip(sc, ref, items):
         sc.eq(lines, want, "tooltip %d" % iid)
         verdict_line_ok(sc, ref, iid, lines, "tooltip %d" % iid)
         tooltip_style_ok(sc, w, tt, want_st, "tooltip %d" % iid)
-    # The chart's timeframe (S.chartTF) picks the price window: the verdict, its stack
-    # line and the Suggested price follow it
+    # The chart's timeframe (S.chartTF) changes only the chart: the verdict, its stack
+    # line and the price to sell at stay the same (one advice basis, 1D)
     differ = 0
     for tf in ("1M", "5D"):
         w.ns.SetChartTF(tf)
@@ -4755,11 +4824,10 @@ def sc_tooltip(sc, ref, items):
         lines = w.lines(tt)
         sc.eq(lines, want, "2589 bag x20 %s" % tf)
         tooltip_values_ok(sc, ref, R.LINEN, lines, 1, "2589 bag x20 %s" % tf, tf=tf)
-        verdict_line_ok(sc, ref, R.LINEN, lines, "2589 bag x20 %s (the stack line)" % tf, tf=tf)
+        verdict_line_ok(sc, ref, R.LINEN, lines, "2589 bag x20 %s (the stack line)" % tf, tf=tf, count=20)
         tooltip_style_ok(sc, w, tt, want_st, "2589 bag x20 %s" % tf)
     w.ns.SetChartTF("1D")
-    if R.SIM:
-        sc.check(differ > 0, "the test data has tooltips that change with the timeframe (%d)" % differ)
+    sc.eq(differ, 0, "no tooltip changes with the chart's timeframe")
     out = w.slash("/gl compact")
     sc.check(any("one line" in l for l in out), "/gl compact message")
     for iid in ids:
@@ -4807,32 +4875,37 @@ def sc_tooltip(sc, ref, items):
     tt.ProcessInfo(tt, info)
     sc.eq(w.lines(tt), [], "excludeLines tooltip gets nothing")
     sc.clean(w)
-    # The average says how many days of prices it covers (up to 7), and the AH value how far
-    # it sits from it, said plainly ("+45% vs avg"): yellow from 40% either way, grey under that
-    # (never green or red: up is dear to a buyer, good to a seller).
-    cases = {R.LINEN: (3, 1450, 1000, "+45%"), R.RUNE: (9, 900, 1000, "-10%"), R.ARCANE: (9, 1000, 1004, "0%")}
+    # The usual price (the middle of the last 24 hourly market prices) has its own line, and the
+    # AH value says how far it sits from it ("+12% vs usual"): grey, from 40% either way yellow
+    # with a word ("spike", "dropped"; never green or red: up is dear to a buyer, good to a seller).
+    # The data's multi-day average (avg7) is no longer shown.
+    cases = {R.LINEN: (1450, 1000, "+45%", ": spike"), R.RUNE: (900, 1000, "-10%", ""),
+             R.ARCANE: (1000, 1004, "0%", ""), R.LOTUS: (550, 1000, "-45%", ": dropped")}
 
     def fn(iid, f):
         if iid in cases:
             f = f + [""] * (10 - len(f))
-            days, mk, avg, _ = cases[iid]
-            f[2], f[5] = str(mk), str(avg)
-            f[8] = enc_series([avg] * days, [avg] * days, [1] * days)
+            mk, usual, _, _ = cases[iid]
+            f[1], f[2], f[5] = str(mk), str(mk), "777"
+            f[7] = enc_series([usual] * 24, [usual] * 24, [1] * 24)
         return f
     text = rewrite_items(ref.text, fn)
     r2 = RefData(text=text)
     w2 = World(r2, items, data_src=text)
     tt2 = w2.g.GameTooltip
-    for iid, (days, mk, avg, pct_txt) in cases.items():
+    for iid, (mk, usual, pct_txt, word) in cases.items():
         tt2.SetItemByID(tt2, iid)
         lines = w2.lines(tt2)
-        sc.eq(lines, expected_tooltip(r2, iid, w2.now - r2.updated), "average test %d" % iid)
-        label = "%d-day average" % min(days, 7)
-        sc.check(any(a == label for a, _ in lines), "%d: a %r line (%s)" % (iid, label, lines))
+        sc.eq(lines, expected_tooltip(r2, iid, w2.now - r2.updated), "usual test %d" % iid)
+        sc.eq(ref_usual(r2, iid), usual, "%d: the model's usual price" % iid)
+        sc.check(("Usual price", money_icons(usual)) in lines or any(a == "Sell at" for a, _ in lines),
+                 "%d: a Usual price line, or Sell at the usual price (%s)" % (iid, lines))
+        sc.check(not any(a.endswith("-day average") for a, _ in lines) and money_icons(777) not in str(lines),
+                 "%d: no average line, the data's average is not shown (%s)" % (iid, lines))
         col = TT_WARN if abs(int(pct_txt.rstrip("%"))) >= VS_LOUD else TT_MUTED
         ahv = [x for x in lines if x[0] == "AH value"]
-        sc.check(len(ahv) == 1 and (ahv[0][1] or "").endswith("  |c%s%s vs avg|r" % (col, pct_txt)),
-                 "%d: AH value %s from the average, in its colour (%s)" % (iid, pct_txt, ahv))
+        sc.check(len(ahv) == 1 and (ahv[0][1] or "").endswith("  |c%s%s vs usual%s|r" % (col, pct_txt, word)),
+                 "%d: AH value %s from the usual price, in its colour, %r (%s)" % (iid, pct_txt, word, ahv))
         sc.check(not any(a.startswith(("7-day low", "7-day high", "Cheapest", "Market", "Listed ", "Best price"))
                          for a, _ in lines), "%d: none of the old lines (%s)" % (iid, lines))
     sc.clean(w2, "average")
@@ -4879,8 +4952,8 @@ def sc_tooltip_legacy_hooks(sc, ref, items):
     want, want_st = expected_tooltip(r2, silk, w2.now - r2.updated, styles=True)
     lines = w2.lines(t2)
     sc.eq(lines, want, "legacy Silk by link")
-    sc.eq(lines[1:6], [("Auction it", "+26% vs vendor"), ("AH value", money_icons(200) + "  " + vs_average(200, 199)),
-                       ("2-day average", money_icons(199)), ("Sell now", money_icons(157)), ("Suggested price", money_icons(200))],
+    sc.eq(lines[1:5], [("Auction it", "+26% vs vendor"), ("AH value", money_icons(200) + "  " + vs_usual(200, 200)),
+                       ("Usual price", money_icons(200)), ("Sell now", money_icons(199))],
           "legacy Silk by link: the spec's lines")
     tooltip_style_ok(sc, w2, t2, want_st, "legacy Silk by link")
     big_at_show_ok(sc, w2, t2, want_st, "legacy Silk by link")
@@ -4914,31 +4987,72 @@ def big_at_show_ok(sc, w, tt, want_st, label):
 
 
 def sc_stale(sc, ref, items):
+    """Prices 3 hours old or more (ns.AgeState "stale", one rule): the verdict stays, at its
+    size; every price from the file is marked "~" (the AH value with its age); the last line
+    says what to do: /reload when the prices went stale while you played, the installer when
+    they were already that old when the game read them; no flip ideas; /gl says it too."""
     w = World(ref, items, now=ref.updated + 7 * 3600 + 120)
+    ns = w.ns
     age = w.now - ref.updated
     tt = w.g.GameTooltip
     tt.SetItemByID(tt, R.LINEN)
     lines = w.lines(tt)
-    want, want_st = expected_tooltip(ref, R.LINEN, age, styles=True)
+    want, want_st = expected_tooltip(ref, R.LINEN, age, styles=True, loaded_age=age)
     sc.eq(lines, want, "stale tooltip lines")
-    sc.check(lines[-1][0] == "Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload", "stale line text")
-    sc.check(not any(big for _, _, big in want_st), "stale: the model never makes the verdict bigger")
-    tooltip_style_ok(sc, w, tt, want_st, "stale (the verdict at the normal size)")
+    sc.eq(ns.AgeState(), "stale", "7h: AgeState stale")
+    sc.eq(lines[-1][0], "Prices are 7h old: run Install-Goblin-Ledger.bat again, then /reload",
+          "stale line: already old when the game read them, so the installer")
+    V = ref_verdict(ref, R.LINEN)
+    sc.check(V is not None and (V["left"], V["right"]) in lines, "stale: the verdict stays (%s)" % lines[:2])
+    if V and V["kind"] in ("auction", "vendor"):
+        sc.check(any(big for _, _, big in want_st), "stale: the verdict keeps its size")
+    ahv = [r for l, r in lines if l == "AH value"]
+    sc.check(len(ahv) == 1 and ahv[0].startswith("~") and "h old" not in ahv[0],
+             "stale: the AH value with ~, its age said once in the header and once in the last line (%s)" % ahv)
+    sc.eq(sum(1 for l, r in lines if "7h" in (l or "") + (r or "")), 2, "stale: the age is said twice, not three times (%s)" % lines)
+    sc.check(all((r or "").startswith("~") for l, r in lines if l.startswith(("Sell now", "Sell at", "Usual price"))),
+             "stale: every sell price marked ~ (%s)" % lines)
+    tooltip_style_ok(sc, w, tt, want_st, "stale (the verdict keeps its size)")
     for iid in sample_ids(ref, SAMPLE):
         tt.SetItemByID(tt, iid)
-        want, want_st = expected_tooltip(ref, iid, age, styles=True)
+        want, want_st = expected_tooltip(ref, iid, age, styles=True, loaded_age=age)
         sc.eq(w.lines(tt), want, "stale tooltip %d" % iid)
         tooltip_style_ok(sc, w, tt, want_st, "stale tooltip %d" % iid)
     w.slash("/gl compact")
     tt.SetItemByID(tt, R.LINEN)
-    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, compact=True), "stale compact tooltip keeps the stale line")
+    sc.eq(w.lines(tt), expected_tooltip(ref, R.LINEN, age, compact=True, loaded_age=age), "stale compact tooltip keeps the stale line")
+    w.slash("/gl compact")
     out = "\n".join(w.slash("/gl"))
     sc.check("updated 7h ago" in out, "status shows 7h")
-    sc.check("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload." in out, "status stale warning")
+    sc.check("Prices are 7h old: run Install-Goblin-Ledger.bat again, then /reload. Until then flip ideas are off and prices show with a ~."
+             in out, "status: the stale line and what it means (%s)" % out)
+    sc.check("Deleted that folder? Download Goblin Ledger again from grantdenney.com/goblin-ledger and run its "
+             "Install-Goblin-Ledger.bat." in out, "status: where to get the installer again (%s)" % out)
+    ideas, why = ns.FlipIdeas(5, None)
+    sc.eq((len(ideas), why), (0, "stale"), "stale: no flip ideas or deals")
+    out = "\n".join(w.slash("/gl flips"))
+    sc.check("no flip ideas from prices this old" in out and "Install-Goblin-Ledger.bat" in out, "stale: /gl flips says why (%s)" % out)
     w.slash("/gl chart " + N(R.LINEN))
-    sc.eq(w.ns.ChartPanel.age._text, "Data: |c%s7h ago - /reload|r \u00b7 %s" % (TT_WARN, ref.houseName),
-          "chart footer shows 7h, in yellow, with /reload")
+    sc.eq(w.ns.ChartPanel.age._text, "Data: |c%s7h ago|r \u00b7 %s" % (TT_WARN, ref.houseName),
+          "chart footer shows 7h, in yellow, no /reload (the game read them that old: it would not help)")
     sc.clean(w)
+    # Fresh when the game read them, stale since (a long session): /reload loads the newer file.
+    w2 = World(ref, items)
+    tt2 = w2.g.GameTooltip
+    for a, state in ((80 * 60, "fresh"), (80 * 60 + 1, "old"), (3 * 3600 - 1, "old"), (3 * 3600, "stale"), (4 * 3600 + 30, "stale")):
+        w2.M.now = ref.updated + a
+        sc.eq(w2.ns.AgeState(), state, "age %d: AgeState %s" % (a, state))
+        tt2.SetItemByID(tt2, R.LINEN)
+        lines = w2.lines(tt2)
+        sc.eq(lines, expected_tooltip(ref, R.LINEN, a), "age %d: tooltip" % a)
+        if state == "stale":
+            sc.eq(lines[-1][0], "Prices are %dh old: type /reload for newer ones" % (a // 3600), "age %d: stale since the game read them: /reload" % a)
+            sc.eq(w2.ns.FlipIdeas(5, None)[1], "stale", "age %d: no flip ideas" % a)
+        else:
+            sc.check(not any(l.startswith("Prices are ") for l, _ in lines) and not any("~" in (r or "") for _, r in lines),
+                     "age %d: no stale line, no ~ (%s)" % (a, lines))
+    w2.M.now = w2.now
+    sc.clean(w2)
 
 
 def sc_placeholder(sc, ref, items):
@@ -5271,8 +5385,25 @@ def sc_chart_no_setowner_clear(sc, ref, items):
     sc.clean(w)
 
 
+def footer_fits(C, W):
+    """Chart.lua FitFooter: the footer's first line (the call, the 100-wide meter, the margin, the
+    volume, with their gaps and the 10 padding each side) fits in W, at the mock's 6 a byte."""
+    sw = lambda fs: 6 * len(strip_codes(fs._text or "").encode("utf-8"))
+    return 10 + sw(C.verdict) + 8 + 100 + 12 + sw(C.margin) + 14 + sw(C.volume) + 10 <= W
+
+
+def sell_at_box(ref, iid, at, mixed=False):
+    """What the chart's Sell at box says: the price to sell at, "Depends on the version"
+    (mixed versions), "Price not reliable" (a few listed far above the vendor price) or "-"."""
+    if mixed:
+        return "Depends on the version"
+    if at and at > 0:
+        return money_icons(at)
+    return "Price not reliable" if ref_recommend(ref, iid, "1D")["vendorFar"] else "-"
+
+
 def find_sell_buttons(sf):
-    """(Sell now, Best price) buttons on a Blizzard sell frame."""
+    """(Sell now, Sell at) buttons on a Blizzard sell frame (the Sell at one is kind "best")."""
     now = best = None
     for i in range(1, len(sf._children) + 1):
         c = sf._children[i]
@@ -5285,26 +5416,51 @@ def find_sell_buttons(sf):
 
 
 def ref_buttons(ref, iid, tf="1D", live=None, own=False, is_commodity=True, copper_ok=True, stale=False):
-    """The prices the Sell now and Best price buttons show and fill (rounded for
-    the frame), as (now, best); None = that button is hidden. stale: the data is
-    over 6 hours old, so without a live listing there are no buttons."""
+    """The prices the Sell now and Sell at buttons show and fill (rounded for the
+    frame), as (now, at); None = that button is hidden. Sell at only when Sell now
+    is under 70% of the usual price, or nothing is listed (then the usual price),
+    and never the same as Sell now. stale: the data is 3 hours old or more, so
+    without a live listing there are no buttons. The chart's timeframe (tf) never
+    changes them."""
     if stale and not (live and live > 0):
         return None, None
     P = ref_sell_prices(ref, iid, tf, live, own)
     now = price_for_frame(P["now"], is_commodity, copper_ok) if P["now"] else None
-    best = price_for_frame(P["best"], is_commodity, copper_ok) if P["best"] else None
-    return now, best
+    at_p = P["at"] if (P["at"] is not None and (P["under"] is not None or P["now"] is None)) else None
+    at = price_for_frame(at_p, is_commodity, copper_ok) if at_p else None
+    if at is not None and now is not None and at == now:
+        at = None
+    return Buttons(now, at, ref.items[iid]["vendor"])
+
+
+class Buttons(tuple):
+    """(now, at) as ref_buttons gives them, with vendor_more: for each, whether a vendor pays at
+    least as much as that filled price nets after the 5% cut (AH.lua VendorPaysMore: judged at the
+    rounded price, so gear rounded down to whole silver can cross it)."""
+    def __new__(cls, now, at, vendor=0):
+        t = super().__new__(cls, (now, at))
+        t.vendor_more = tuple(bool(p and vendor > 0 and math.floor(p * 0.95) <= vendor) for p in (now, at))
+        return t
 
 
 def buttons_ok(sc, pair, want, label):
-    """The two buttons show exactly the model's prices (or are hidden)."""
+    """The two buttons show exactly the model's prices (or are hidden). A button whose filled
+    price nets no more than a vendor pays is red; else, with both shown (Sell now far under the
+    usual price), Sell now's text is yellow."""
     nb, bb = pair
-    for b, w_, word in ((nb, want[0], "Sell now"), (bb, want[1], "Suggested")):
+    both = want[0] is not None and want[1] is not None
+    vm = getattr(want, "vendor_more", (False, False))
+    for k, (b, w_, word) in enumerate(((nb, want[0], "Sell now"), (bb, want[1], "Sell at"))):
         if not sc.check(b is not None, "%s: %s button exists" % (label, word)):
             continue
         sc.eq(bool(b.IsVisible(b)), w_ is not None, "%s: %s button %s" % (label, word, "shown" if w_ is not None else "hidden"))
         if w_ is not None:
-            sc.eq(b._text, "%s: %s" % (word, money_icons(w_)), "%s: %s text" % (label, word))
+            txt = "%s: %s" % (word, money_icons(w_))
+            if vm[k]:
+                txt = "|c%s%s|r" % (TT_NEG, txt)
+            elif both and word == "Sell now":
+                txt = "|c%s%s|r" % (TT_WARN, txt)
+            sc.eq(b._text, txt, "%s: %s text" % (label, word))
             sc.eq(b.price, w_, "%s: %s fills that price" % (label, word))
 
 
@@ -5777,25 +5933,21 @@ def sc_live_prices(sc, ref, items):
     sc.eq(own[0], livep, "own listing: the model matches it")
     buttons_ok(sc, pair, own, "own listing: matched, not undercut")
     sc.check("That listing is yours" in (b.tipBody or ""), "own listing: tooltip says so (%s)" % b.tipBody)
-    # no live listing: back to the hourly data, and the timeframe changes Best price only
+    # no live listing: back to the hourly data; the chart's timeframe never changes the buttons
     w.set_commodity_results(R.RUNE, [])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
     w.settle(0.3)
     base = ref_buttons(ref, R.RUNE, "1D")
     buttons_ok(sc, pair, base, "no live listing: back to the hourly data")
-    other = next((tf for tf in TFS if ref_buttons(ref, R.RUNE, tf) != base), None)
-    if R.SIM:
-        sc.check(other is not None, "test data has a timeframe with a different Best price")
-    if other:
+    for other in TFS:
         ns.SetChartTF(other)
-        want_o = ref_buttons(ref, R.RUNE, other)
-        sc.eq(want_o[0], base[0], "%s: Sell now does not depend on the timeframe" % other)
-        buttons_ok(sc, pair, want_o, "%s: labels refreshed on timeframe change" % other)
-        if want_o[1] is not None:
+        sc.eq(ref_buttons(ref, R.RUNE, other), base, "%s: the model's buttons do not depend on the timeframe" % other)
+        buttons_ok(sc, pair, base, "%s: the buttons stay the same" % other)
+        if base[1] is not None:
             M.click(bb)
-            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want_o[1], "%s: fill equals the label" % other)
-        ns.SetChartTF("1D")
-        buttons_ok(sc, pair, base, "back to 1D: labels follow")
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), base[1], "%s: fill equals the label" % other)
+    ns.SetChartTF("1D")
+    buttons_ok(sc, pair, base, "back to 1D: the same buttons")
     # timeframe change with a live listing: labels and fills follow the chart's timeframe together
     w.set_commodity_results(R.RUNE, [(livep, 50, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.RUNE)
@@ -6807,7 +6959,7 @@ def ref_history_flips_why(ref, limit=5, hidden=(), gold=MOCK_GOLD):
         if not r["history"]:
             no_history += 1
         if (r["history"] and r["advice"] and r["margin"] > 0 and r["buy"] > 0 and r["marginPct"] >= 0.03
-                and not r["far"] and not r["vendorBetter"] and r["verdict"] not in ("Sell", "Strong Sell")):
+                and not r["far"] and not r["vendorBetter"] and r["verdict"] != rec_model.CALL_HIGH):
             sold = r["soldPerDay"] or 0
             idea = {"id": iid, "buy": r["buy"], "sell": r["sell"], "profit": r["margin"],
                     "perDay": r["margin"] * min(sold, 200), "sold": sold, "early": r["soldEarly"], "fit": None,
@@ -7066,7 +7218,7 @@ def sc_sidebar(sc, ref, items):
             sc.eq(strip_codes(r.change._text), expected_change(ref, iid), lab + ": 24h change")
             rec = ref_recommend(ref, iid, "1D")
             v = rec["verdict"] if rec["history"] and rec["advice"] else None
-            sc.eq(bool(r.accent._shown), v in ("Strong Buy", "Buy", "Sell", "Strong Sell"), lab + ": edge colour shown")
+            sc.eq(bool(r.accent._shown), v == rec_model.CALL_HIGH, lab + ": edge colour only when high (no buy colour)")
         else:
             sc.eq(strip_codes(r.right._text), "no data", lab + ": no data")
     more = len(SIDEBAR_WATCH) - len(rows)
@@ -7413,8 +7565,10 @@ def sc_edge(sc, ref_unused, items_unused):
                          "%s: empty window message (%s)" % (label, C.msg._text))
                 sc.eq(C.verdict._text, "No advice yet" if why else want["verdict"], "%s: verdict" % label)
                 sc.eq(C.buyBox.value._text, why or (money_icons(want["buy"]) if want["buy"] > 0 else "-"), "%s: buy box" % label)
-                sc.eq(C.listBox.value._text, why or (money_icons(want["listAt"]) if want["listAt"] > 0 else "-"),
-                      "%s: list box" % label)
+                ahs0 = ns.AHState
+                mixed = iid not in ref.base_of and (iid in ref.variants or (ahs0 is not None and bool(ahs0.suffix[iid])))
+                sc.eq(C.listBox.value._text, sell_at_box(ref, iid, ref_sell_prices(ref, iid, tf)["at"], mixed),
+                      "%s: Sell at box" % label)
                 sc.eq(int(C.pools.dot.used), 0, "%s: no dots" % label)
                 M.enter(C.plot)
                 w.tick(1)
@@ -7667,8 +7821,9 @@ def sc_one_snapshot(sc, ref, items):
     ns.SetChartTF("1D")
     ns.ShowChart(R.LINEN, "slash")
     C = ns.ChartPanel
-    sc.eq((C.buyBox.value._text, C.listBox.value._text), ("Needs more history", "Needs more history"),
-          "one snapshot: the target boxes say Needs more history")
+    at1 = ref_sell_prices(r2, R.LINEN, "1D")["at"]
+    sc.eq((C.buyBox.value._text, C.listBox.value._text), ("Needs more history", sell_at_box(r2, R.LINEN, at1)),
+          "one snapshot: Target Buy says Needs more history, Sell at shows the tooltip's price")
     sc.eq((C.verdict._text, C.margin._text or "", bool(C.meter._shown)), ("No advice yet", "", False),
           "one snapshot: no verdict, margin or meter")
     sc.check(C.msg._shown and C.msg._text.startswith("Collecting price history. This chart fills in as hourly prices arrive (1 so far)"),
@@ -7693,10 +7848,9 @@ def sc_one_snapshot(sc, ref, items):
     b, bb = pair
     snap = ref_buttons(r2, R.LINEN, "1D")
     sc.eq(snap, (r2.items[R.LINEN]["cheapest"] - 1 if r2.items[R.LINEN]["cheapest"] > 1 else None, None),
-          "one snapshot: the model has Sell now from the snapshot and no Best price")
+          "one snapshot: the model has Sell now from the snapshot and no usual price (one price)")
     buttons_ok(sc, pair, snap, "one snapshot, no live listing")
-    sc.check("not enough price history yet for a suggested price" in (b.tipBody or ""),
-             "one snapshot: Sell now tooltip says why there is no Best price (%s)" % b.tipBody)
+    sc.check("suggested" not in (b.tipBody or "").lower(), "one snapshot: no suggested price anywhere (%s)" % b.tipBody)
     sc.check("live listings have not loaded yet" in (b.tipBody or ""), "one snapshot: and that it used the price data")
     # a live listing above today's market price: 1 copper under it
     lp = max(r2.items[R.LINEN]["cheapest"], r2.items[R.LINEN]["market"]) + 7
@@ -7710,7 +7864,7 @@ def sc_one_snapshot(sc, ref, items):
     sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want[0], "one snapshot: fills that price")
     chart_check(sc, w, r2, R.LINEN, "1D", "one snapshot docked")
     # a live listing far under today's market price: Sell now still undercuts it
-    # (that is what selling now means), and its tooltip says the market is higher
+    # (that is what selling now means); with no usual price yet there is no guard
     mk = r2.items[R.RUNE]["market"]
     w.put_bag(0, 2, R.RUNE, 20)
     w.M.commodityResults[R.RUNE] = None
@@ -7723,9 +7877,9 @@ def sc_one_snapshot(sc, ref, items):
     rec2 = ref_recommend(r2, R.RUNE, "1D", lp2)
     want2 = ref_buttons(r2, R.RUNE, "1D", lp2)
     sc.check(not rec2["advice"] and not rec2["history"] and want2 == (lp2 - 1, None),
-             "one snapshot: the model undercuts the cheap listing, no Best price (%s, market %d)" % (want2, mk))
+             "one snapshot: the model undercuts the cheap listing, no Sell at (%s, market %d)" % (want2, mk))
     buttons_ok(sc, pair, want2, "one snapshot, cheap live listing")
-    sc.check("Today's market price is higher" in (b.tipBody or ""), "one snapshot: tooltip says the market is higher (%s)" % b.tipBody)
+    sc.check("under the usual price" not in (b.tipBody or ""), "one snapshot: no usual price to be under (%s)" % b.tipBody)
     M.click(b)
     sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), want2[0], "one snapshot: fills 1 copper under the listing")
     r = ns.Recommend(R.RUNE, "1D", lp2)
@@ -7825,7 +7979,8 @@ def sc_unreliable(sc, ref, items):
             want = ref_recommend(r2, iid, tf)
             sc.check(note in want["notes"] and not want["advice"], "unreliable %d %s: the model agrees (%s)" % (iid, tf, want["notes"]))
             sc.check(note in (ns.ChartPanel.notes._text or ""), "unreliable %d %s: chart note" % (iid, tf))
-            sc.eq(ns.ChartPanel.listBox.value._text, no_advice_text(want), "unreliable %d %s: no List At" % (iid, tf))
+            sc.eq(ns.ChartPanel.listBox.value._text, sell_at_box(r2, iid, ref_sell_prices(r2, iid, tf)["at"]),
+                  "unreliable %d %s: Sell at is the tooltip's price (none far above the vendor price)" % (iid, tf))
     ns.SetChartTF("1D")
     check_series_and_recommend(sc, w, r2, ids=[R.LINEN, R.RUNE, R.ARCANE, R.LOTUS])
     w.put_bag(0, 1, R.LINEN, 20)
@@ -7839,15 +7994,15 @@ def sc_unreliable(sc, ref, items):
     b, bb = pair
     # 2 listings: Sell now from the snapshot's cheapest, no Best price (not reliable)
     want0 = ref_buttons(r2, R.LINEN, "1D")
-    sc.eq(want0[1], None, "unreliable: the model has no Best price")
+    sc.eq(want0[0], r2.items[R.LINEN]["cheapest"] - 1, "unreliable: the model's Sell now from the snapshot")
     buttons_ok(sc, pair, want0, "unreliable, no live listing")
     lp = r2.items[R.LINEN]["cheapest"] + 5
     w.set_commodity_results(R.LINEN, [(lp, 40, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", R.LINEN)
     w.settle(0.3)
-    buttons_ok(sc, pair, (lp - 1, None), "unreliable: follows the live listing")
-    reason = "not enough price history" if not ref_recommend(r2, R.LINEN, "1D", lp)["history"] else "may not be reliable"
-    sc.check(reason in (b.tipBody or ""), "unreliable: button tooltip says why there is no Best price (%s)" % b.tipBody)
+    buttons_ok(sc, pair, ref_buttons(r2, R.LINEN, "1D", lp), "unreliable: follows the live listing")
+    sc.eq(ref_buttons(r2, R.LINEN, "1D", lp)[0], lp - 1, "unreliable: the model undercuts the live listing")
+    sc.check("may not be reliable" in (b.tipBody or ""), "unreliable: button tooltip says the price may not be reliable (%s)" % b.tipBody)
     # following a listing a vendor pays more for: the button and the chart notes still say so
     w.put_bag(0, 2, R.RUNE, 20)
     w.M.commodityResults[R.RUNE] = None
@@ -7860,16 +8015,20 @@ def sc_unreliable(sc, ref, items):
     want_r = ref_recommend(r2, R.RUNE, "1D", lp_r)
     vend = r2.items[R.RUNE]["vendor"]
     P_r = ref_sell_prices(r2, R.RUNE, "1D", lp_r)
-    sc.check(not want_r["advice"] and want_r["vendorBetter"] and P_r["nowVendor"] and P_r["now"] == lp_r - 1
-             and (lp_r - 1) * 95 // 100 <= vend, "vendor beats the listing: the model warns (%s)" % want_r["notes"])
-    buttons_ok(sc, pair, (lp_r - 1, None), "vendor beats the listing: Sell now follows it")
+    sc.check(not want_r["advice"] and P_r["nowVendor"] and P_r["now"] == lp_r - 1
+             and (lp_r - 1) * 95 // 100 <= vend, "vendor beats the listing: the model warns on Sell now (%s)" % want_r["notes"])
+    # the chart's note judges the price to sell at (the usual price when Sell now is far under it)
+    sc.eq(want_r["vendorBetter"], P_r["at"] is not None and P_r["at"] * 95 // 100 <= vend,
+          "vendor beats the listing: the note judges the price to sell at (%s)" % P_r["at"])
+    buttons_ok(sc, pair, ref_buttons(r2, R.RUNE, "1D", lp_r), "vendor beats the listing: Sell now follows it")
     sc.check("A vendor pays more than this after the 5% cut." in (b.tipBody or ""),
              "vendor beats the listing: button tooltip warns (%s)" % b.tipBody)
     r = ns.Recommend(R.RUNE, "1D", lp_r)
     notes = [r.notes[i] for i in range(1, len(r.notes) + 1)]
     sc.eq(notes, want_r["notes"], "vendor beats the listing: notes match the model")
-    sc.check("A vendor pays more (%s)" % rec_model.money_text(vend) in notes and r.vendorBetter
-             and r.postAt == lp_r - 1, "vendor beats the listing: note and postAt (%s, %s)" % (notes, r.postAt))
+    sc.check(("A vendor pays more (%s)" % rec_model.money_text(vend) in notes) == bool(want_r["vendorBetter"])
+             and bool(r.vendorBetter) == bool(want_r["vendorBetter"]) and r.postAt == lp_r - 1,
+             "vendor beats the listing: note and postAt (%s, %s)" % (notes, r.postAt))
     # a few units far above the vendor price: the live listing is that same silly price, so no buttons
     w.put_bag(0, 3, R.ARCANE, 1)
     w.M.commodityResults[R.ARCANE] = None
@@ -8069,7 +8228,7 @@ def sc_chart_lines(sc, ref, items):
     M.click(C.listBox)
     sc.eq(ns.settings.chartLine, "sell", "lines: List At click switches to the blue line")
     chart_check(sc, w, ref, R.RUNE, "1D", "lines: sell")
-    if rec["listAt"] > 0 and ref.window(R.RUNE, "1D")["n"] >= 2:
+    if (ref_sell_prices(ref, R.RUNE, "1D")["at"] or 0) > 0 and ref.window(R.RUNE, "1D")["n"] >= 2:
         d = C.pools.dash["items"][1]
         sc.eq([round(d._color[k], 3) for k in (1, 2, 3)], [0.22, 0.74, 0.97], "lines: the dashes are blue")
     # the line stays across timeframes
@@ -8275,7 +8434,8 @@ def sell_view(w, ns, iid, tf, live):
     P = ns.SellPrices(iid, tf, live)
     if P is None:
         return None
-    out = dict((k, P[k]) for k in ("now", "best", "nowWhy", "bestWhy", "nowVendor", "bestVendor", "cheapest", "live"))
+    out = dict((k, P[k]) for k in ("now", "at", "under", "usual", "nowWhy", "atWhy", "nowVendor", "atVendor",
+                                   "cheapest", "live"))
     V = ns.SellVerdict(ns.GetItem(iid), P)
     out["verdict"] = V and (V.kind, V.unit, V.left, V.right)
     return out
@@ -8284,7 +8444,7 @@ def sell_view(w, ns, iid, tf, live):
 def sc_trimmed_rows(sc, ref, items):
     """A version nobody listed or bought for 3 days: the collector writes two empty hours as its
     hourly prices (what Goblin Ledger 1.0.0 reads) and the prices themselves packed after the 10
-    fields. This addon reads the packed ones: its series, advice, Suggested price and sell call,
+    fields. This addon reads the packed ones: its series, advice, usual price, Sell at and sell call,
     tooltip and chart are the same as for the line written out in full. A packed field that is
     not usable falls back to the two empty hours."""
     full_text, text, rf, r2, base, vids, keys = trimmed_data(ref, items)
@@ -8316,9 +8476,11 @@ def sc_trimmed_rows(sc, ref, items):
                   "trimmed: %s advice%s" % (tf, " with a live listing" if live else ""))
             sc.eq(sell_view(w, ns, v1, tf, live), sell_view(wf, nf, v1, tf, live),
                   "trimmed: %s sell prices and call%s" % (tf, " with a live listing" if live else ""))
-    best = sell_view(wf, nf, v1, "1D", None)["best"]
-    sc.check(best is not None or not R.SIM, "trimmed: the version keeps its Suggested price from its hourly prices (%s)" % best)
-    # tooltip: the same lines, and as the model says (the version's own line, its Suggested price)
+    sv = sell_view(wf, nf, v1, "1D", None)
+    best = sv["at"]
+    sc.check((best is not None and sv["now"] is None and best == sv["usual"]) or not R.SIM,
+             "trimmed: nothing listed, the version keeps its Sell at (its usual price) from its hourly prices (%s)" % best)
+    # tooltip: the same lines, and as the model says (the version's own line, its Sell at)
     age = w.now - r2.updated
     lines = []
     for x in (w, wf):
@@ -8329,7 +8491,7 @@ def sc_trimmed_rows(sc, ref, items):
         lines.append(x.lines(tt))
     sc.eq(lines[0], lines[1], "trimmed: the tooltip is the same")
     sc.eq(lines[0], expected_tooltip(r2, v1, age, count=1, cover="version"), "trimmed: tooltip of the version")
-    sc.check(best is None or any(l == "Suggested price" for l, _ in lines[0]), "trimmed: the tooltip has a Suggested price")
+    sc.check(best is None or any(l == "Sell at" for l, _ in lines[0]), "trimmed: the tooltip has a Sell at line")
     # chart: every timeframe as the model says, and the same as with the prices written out
     for tf in TFS:
         shown = []
@@ -8418,11 +8580,56 @@ def export_release(commit=OLD_RELEASE):
 
 
 def old_badge(lines):
-    """The % badge after the AH value without its colour and " vs avg": 1.0.0 shows it red/green,
-    the current addon grey/yellow with " vs avg"; the old-release checks compare the prices, not that."""
+    """The % badge after the AH value without its colour (and a " vs avg" some builds had):
+    1.0.0 shows it red/green, "-4%"; the old-release checks compare the numbers, not the colour."""
     import re as _re
     pat = _re.compile(r"\|c[0-9a-fA-F]{8}([+-]?[0-9]+%)(?: vs avg)?\|r")
     return [(a, pat.sub(r"\1", b) if isinstance(b, str) else b) for a, b in lines]
+
+
+# 1.0.0's own sell price lines: they come from its advice model (not this harness's any more).
+OLD_SELL_LINES = ("Sell now", "Suggested price", "Few listed", "This stack")
+
+
+def old_lines(lines):
+    """What 1.0.0 showed, its badge as old_badge gives it, without its sell price lines."""
+    return [x for x in old_badge(lines) if not (x[0] or "").startswith(OLD_SELL_LINES)]
+
+
+def old_vs_average(value, avg):
+    """1.0.0's vsAverage after old_badge: how far the AH value is from the 7-day average,
+    "+3%" / "-5%" (whole percent, rounded toward 0), "0%" under 1%, None with no average."""
+    if not value or value <= 0 or not avg or avg <= 0:
+        return None
+    p = math.floor(abs(value - avg) * 100 / avg)
+    return "0%" if p < 1 else ("+%d%%" % p if value > avg else "-%d%%" % p)
+
+
+def old_tooltip(ref, iid, age, cover, call=None):
+    """Goblin Ledger 1.0.0's tooltip lines (full mode, fresh prices, one item) as old_lines
+    gives them: the header, its call (call: the (left, right) 1.0.0 shows, e.g. "Maybe auction",
+    "none listed now" with nothing listed; None: no call, as for prices covering every version),
+    the AH value with its badge against the average, the N-day average ("7-day average", fewer
+    days while the data has fewer) and the cover line."""
+    it = ref.items[iid]
+    out = [("Goblin Ledger", age_text(age))]
+    if call:
+        out.append(call)
+    if it["market"] and it["market"] > 0:
+        vs = old_vs_average(it["market"], it["avg7"])
+        out.append(("AH value", money_icons(it["market"]) + ("  " + vs if vs else "")))
+    else:
+        out.append(("AH value", "none listed"))
+    if it["avg7"] and it["avg7"] > 0:
+        days = it["D"]["n"]
+        if days < 1 or days > 7:
+            days = 7
+        out.append(("%d-day average" % days, money_icons(it["avg7"])))
+    if cover == "version":
+        out.append(("Prices for this version only", None))
+    elif cover == "all":
+        out.append(("Price covers all versions of this item", None))
+    return out
 
 
 def sc_old_release(sc, ref, items):
@@ -8475,13 +8682,14 @@ def sc_old_release(sc, ref, items):
     w.put_bag(2, 2, base, 1, bonus=keys[1])
     tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
     tt.SetBagItem(tt, 2, 1)
-    got, exp = w.lines(tt), expected_tooltip(r3, v1, age, count=1, cover="version")
-    got, exp = old_badge(got), old_badge(exp)
-    sc.eq(got[:len(exp)], exp, "old release: tooltip of the version without hourly prices")
+    # 1.0.0's call with nothing listed now: "Maybe auction: none listed now", when it has a
+    # price to judge (its Suggested price; Sell now needs a listing)
+    raw = w.lines(tt)
+    sc.check(not (r3.items[v1]["market"] or 0) > 0, "old release: nothing listed now for the version")
+    call = ("Maybe auction", "none listed now") if any(l == "Suggested price" for l, _ in raw) else None
+    sc.eq(old_lines(raw), old_tooltip(r3, v1, age, "version", call), "old release: tooltip of the version without hourly prices")
     tt.SetBagItem(tt, 2, 2)
-    got, exp = w.lines(tt), expected_tooltip(r3, base, age, count=1, cover="all")
-    got, exp = old_badge(got), old_badge(exp)
-    sc.eq(got[:len(exp)], exp, "old release: tooltip of the left-out version (the item's prices)")
+    sc.eq(old_lines(w.lines(tt)), old_tooltip(r3, base, age, "all"), "old release: tooltip of the left-out version (the item's prices)")
     # chart: the hourly timeframes say nothing was listed, the daily ones draw
     for tf in TFS:
         ns.SetChartTF(tf)
@@ -8861,10 +9069,11 @@ def sc_versions(sc, ref, items):
     buttons_ok(sc, pair, (None, None), "versions: no listing of that version: no buttons")
     sc.eq(w.live(v1), None, "versions: a version's live price is dropped with its listings")
     # a version with prices of its own, after the listings loaded with none of it: nothing to undercut,
-    # so no Sell now from the gone listing (Best price, from the history, stays)
+    # so no Sell now from the gone listing (Sell at its usual price, from the history, stays)
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.settle(0.2)
-    want_best = ref_buttons(r2, v1, "1D", is_commodity=False)[1]
+    u1 = ref_usual(r2, v1)
+    want_best = price_for_frame(u1, False) if u1 else None
     buttons_ok(sc, pair, (None, want_best), "versions: version with no listing up: no Sell now")
     if want_best:
         sc.check("No listing of this version is up right now" in (pair[1].tipBody or ""),
@@ -9606,12 +9815,13 @@ def sc_flip_deals(sc, ref, items):
             sc.eq(r.right2._text, "~61/day", "deals B: the note is the sales per day (%s)" % key)
             flat = data_flip_hover_ok(sc, w, r, next(x for x in want if x["id"] == ids[key]), rb, "deals B: hover %s" % key)
             sc.check("Listed well under its usual price: buy it and relist it at the price below, about what it has "
-                     "been selling for. | " in flat and not any(f.startswith("Usual price") for f in flat),
+                     "been selling for. | " in flat and not any(f.startswith("Usual price (last 7 days)") for f in flat),
                      "deals B: the hover without a usual price (%s)" % key)
     r = rows.get(ids["gap10"])
     if r is not None:
         flat = data_flip_hover_ok(sc, w, r, next(x for x in want if x["id"] == ids["gap10"]), rb, "deals B: hover gap")
-        sc.check(not any(f.startswith(("Usual price", "Listed well under")) for f in flat), "deals B: a gap flip says nothing about a usual price")
+        sc.check(not any(f.startswith(("Usual price (last 7 days)", "Listed well under")) for f in flat),
+                 "deals B: a gap flip says nothing about a usual price")
     slash_flips_ok(sc, w.slash("/gl flips"), ref_flips(rb, limit=10, gold=w.gold), rb, items, w.gold, "deals B")
     w.close_ah_modern()
     sc.clean(w, "deals B")
@@ -10779,7 +10989,7 @@ def sc_stack_verdicts(sc, ref, items):
     made = {
         a: "4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200),        # a vendor pays 50s: "Vendor it", "+25% vs AH"
         b_: "1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100),          # a vendor will not buy it: "Auction it", "can't vendor"
-        c: "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300),    # 2s 88c against 2s 50c: "Close call", "AH +9%"
+        c: "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300),    # Sell now 2s 77c against 2s 50c: "Close call", "AH +5%"
         d: "0|0|0|20|0|25|%s|0" % series24(30, 32),                         # nothing listed now: "Maybe auction"
     }
 
@@ -10791,7 +11001,8 @@ def sc_stack_verdicts(sc, ref, items):
     ns, M = w.ns, w.M
     tt = w.g.GameTooltip
     age = w.now - r2.updated
-    kinds = {a: ("vendor",), b_: ("auction",), c: ("close",), d: ("maybe",)}
+    # d: nothing listed now is a maybe, but 4 of them gain only 21c over a vendor: not worth the trip
+    kinds = {a: ("vendor",), b_: ("auction",), c: ("close",), d: ("maybe", "vendor")}
     for slot, (iid, count) in enumerate(((a, 20), (b_, 5), (c, 20), (d, 4), (R.LINEN, 20), (R.RUNE, 1)), start=1):
         w.put_bag(4, slot, iid, count)
         for shift in (False, True):
@@ -10804,9 +11015,9 @@ def sc_stack_verdicts(sc, ref, items):
             lab = "stack %d x%d%s" % (iid, count, " Shift" if shift else "")
             sc.eq(lines, want, lab + " tooltip")
             tooltip_values_ok(sc, r2, iid, lines, mult, lab)
-            verdict_line_ok(sc, r2, iid, lines, lab)
+            verdict_line_ok(sc, r2, iid, lines, lab, count=count)
             tooltip_style_ok(sc, w, tt, want_st, lab)
-            V = ref_verdict(r2, iid)
+            V = ref_verdict(r2, iid, count=count)
             texts = [l for l, _ in lines]
             stack = [r for l, r in lines if l.startswith("This stack")]
             if iid in kinds:
@@ -10818,11 +11029,11 @@ def sc_stack_verdicts(sc, ref, items):
                 sc.eq(stack, [], "%s: no stack line for %s" % (lab, V and V["kind"]))
             sc.check(not any(t.startswith("Vendor it:") for t in texts), "%s: no old 'Vendor it:' line (%s)" % (lab, texts))
         M.shift = False
-    # c is the hand-made close call: 288 x 95 = 27,360 against 250 x 100 = 25,000 (9% more)
+    # c is the hand-made close call: Sell now 277 x 95 = 26,315 against 250 x 100 = 25,000 (5% more)
     tt.SetBagItem(tt, 4, 3)
     lines = w.lines(tt)
-    sc.check(("Close call", "AH +9%") in lines and ("This stack (20), after AH cut", money_icons(5472)) in lines,
-             "stack: Dense Stone's close call and its stack (54s 72c) (%s)" % lines)
+    sc.check(("Close call", "AH +5%, vendor is safer") in lines and ("This stack (20), after AH cut", money_icons(5263)) in lines,
+             "stack: Dense Stone's close call and its stack (52s 63c) (%s)" % lines)
     # with the auction house open, the live listing is used
     w.open_ah_modern()
     lp = r2.items[R.LINEN]["cheapest"] + 11
@@ -10834,59 +11045,79 @@ def sc_stack_verdicts(sc, ref, items):
     want, want_st = expected_tooltip(r2, R.LINEN, age, count=20, live=lp, styles=True)
     sc.eq(w.lines(tt), want, "stack: live listing used for Sell now and the verdict")
     tooltip_values_ok(sc, r2, R.LINEN, w.lines(tt), 1, "stack live", live=lp)
-    verdict_line_ok(sc, r2, R.LINEN, w.lines(tt), "stack live", live=lp)
+    verdict_line_ok(sc, r2, R.LINEN, w.lines(tt), "stack live", live=lp, count=20)
     tooltip_style_ok(sc, w, tt, want_st, "stack live")
     w.close_ah_modern()
     # compact tooltips stay one line
     w.slash("/gl compact")
-    for slot, iid in ((1, a), (2, b_), (3, c), (4, d)):
+    for slot, iid, cnt in ((1, a, 20), (2, b_, 5), (3, c, 20), (4, d, 4)):
         tt.SetBagItem(tt, 4, slot)
-        want, want_st = expected_tooltip(r2, iid, age, compact=True, styles=True)
+        want, want_st = expected_tooltip(r2, iid, age, compact=True, styles=True, count=cnt)
         sc.eq(w.lines(tt), want, "stack %d: compact tooltip is one line, no stack line" % iid)
         tooltip_style_ok(sc, w, tt, want_st, "stack %d compact" % iid)
     sc.clean(w)
 
 
 # The spec's hand-made items for the sell verdict: (key, fields after the name,
-# the verdict as (left, right) or None, a stack and its value after the cut or None).
+# the verdict as (left, right) for one item (not from the bags) or None, a bag
+# stack and its value after the cut or None). The verdict judges the price to
+# sell at (rule G: Sell now, unless under 70% of the usual price, then the usual
+# price). Auction it needs the expected result, at the item's sell chance (92 /
+# 73 / 39% for 10+ / 1-9 / under 1 a day, 24 hours, deposit 60% of the vendor
+# price lost when unsold), to beat vendoring by 5% of it: the AH must net about 1.11 / 1.29 / 2.07x.
+# Between 1.01x and that it is "Close call: AH +N%, vendor is safer".
 VERDICT_FIXTURES = [
-    # Silk Cloth: the cheapest (1s 58c) is a lone dip under the usual 1s 90c; the AH value is 2s, a vendor pays 1s 50c
-    ("silk", "158|200|11850|14202|199|150|%s|%s|418" % (
+    # Silk Cloth: Sell now 1s 99c (cheapest 2s), the AH value 2s, a vendor pays 1s 50c: 18,905 against 15,000
+    ("silk", "200|200|11850|14202|199|150|%s|%s|418" % (
+        enc_series([200] * 24, [200] * 24, [600] * 24), enc_series([200, 200], [198, 200], [14000, 14202])),
+     ("Auction it", "+26% vs vendor"), (20, 3781)),
+    # a lone cheap listing (1s 58c) under the usual 2s is no longer skipped: Sell now 1s 57c is
+    # 78% of the usual price (not under 70%), and nets 1s 49c against a vendor's 1s 50c
+    ("silkdip", "158|200|11850|14202|199|150|%s|%s|418" % (
         enc_series([190] * 23 + [158], [200] * 24, [600] * 24), enc_series([190, 158], [198, 200], [14000, 14202])),
-     ("Auction it", "+26% vs vendor"), (20, 3800)),
+     ("Vendor it", "same as AH"), (20, None)),
+    # someone dumps at 6s against the usual 10s: Sell now 5s 99c is under 70%, so the call (and Sell at) is the usual 10s
+    ("dumped", "600|1000|500|100|1000|300|%s|%s|30" % (
+        enc_series([1000] * 23 + [600], [1000] * 24, [5] * 24), enc_series([1000] * 5, [1000] * 5, [120] * 5)),
+     ("Auction it", "3.1x vendor"), (20, 19000)),
+    # 4c against a vendor's 2c: +90% for one, but a stack of 20 gains only 36c: "not worth the trip"
+    ("trip", "5|5|500|100|5|2|%s|30" % series24(5, 5, 5), ("Auction it", "+90% vs vendor"), (20, None)),
     ("heavy", "389|389|862|13417|367|60|%s|%s|39" % (
         enc_series([340] * 12 + [389] * 12, [370] * 12 + [389] * 12, [500] * 24), enc_series([350] * 7, [367] * 7, [13000] * 7)),
      ("Auction it", "6.1x vendor"), (17, 6266)),
-    ("shiny", "7|7|5000|7254|7|7|%s|323" % series24(7, 7, 300), ("Vendor it", "+5% vs AH"), (20, None)),
-    ("dense", "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300), ("Close call", "AH +9%"), (20, 5472)),
-    ("vendormore", "4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200), ("Vendor it", "+25% vs AH"), (20, None)),
-    ("novendor", "1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100), ("Auction it", "can't vendor"), (20, 20900)),
+    ("shiny", "7|7|5000|7254|7|7|%s|323" % series24(7, 7, 300), ("Vendor it", "+22% vs AH"), (20, None)),
+    # 2s 77c (Sell now) against 2s 50c: 5% more, under the 1.10x a fast seller needs
+    ("dense", "278|288|4000|6976|288|250|%s|209" % series24(278, 288, 300), ("Close call", "AH +5%, vendor is safer"), (20, 5263)),
+    ("vendormore", "4000|4200|50|20|4200|5000|%s|20" % series24(4000, 4200), ("Vendor it", "+31% vs AH"), (20, None)),
+    ("novendor", "1000|1100|50|20|1050|0|%s|20" % series24(1000, 1100), ("Auction it", "can't vendor"), (20, 18981)),
     ("onelisting", "1000|1100|1|30|1050|10|%s|1" % series24(1000, 1100), ("Maybe auction", "few listed"), None),
     ("vendorjunk", "1000|1100|5|30|1050|5|%s|5" % series24(1000, 1100), None, None),
     ("nothingnow", "0|0|0|20|0|25|%s|0" % series24(30, 32), ("Maybe auction", "none listed now"), None),
-    ("even", "21|22|50|20|22|19|%s|20" % series24(21, 22), ("Close call", "tiny gain"), None),
+    ("even", "21|22|50|20|22|19|%s|20" % series24(21, 22), ("Vendor it", "same as AH"), None),
+    # a spike: Sell now 29s 99c is far above the usual 10s 10c, and that is the price to sell at
     ("jumped", "3000|3000|20|50|1000|1000|%s|%s|8" % (
         enc_series([1000] * 23 + [3000], [1010] * 23 + [3000], [2] * 24), enc_series([1000] * 5, [1010] * 5, [50] * 5)),
-     ("Maybe auction", "price jumped"), None),
-    ("boundary", "44|44|500|100|44|38|%s|30" % series24(44, 44, 5), ("Auction it", "+10% vs vendor"), None),
-    ("vendorone", "100|100|500|100|100|96|%s|30" % series24(100, 100, 5), ("Vendor it", "+1% vs AH"), None),
-    ("double", "200|200|500|100|200|95|%s|30" % series24(200, 200, 5), ("Auction it", "2x vendor"), None),
-    ("almost", "199|199|500|100|199|95|%s|30" % series24(199, 199, 5), ("Auction it", "+99% vs vendor"), None),
+     ("Auction it", "2.8x vendor"), None),
+    ("boundary", "44|44|500|100|44|38|%s|30" % series24(44, 44, 5), ("Close call", "AH +7%, vendor is safer"), None),
+    ("vendorone", "100|100|500|100|100|96|%s|30" % series24(100, 100, 5), ("Vendor it", "+2% vs AH"), None),
+    ("double", "200|200|500|100|200|95|%s|30" % series24(200, 200, 5), ("Auction it", "+99% vs vendor"), None),
+    ("almost", "199|199|500|100|199|95|%s|30" % series24(199, 199, 5), ("Auction it", "+98% vs vendor"), None),
     ("ten", "1100|1100|500|100|1100|100|%s|30" % series24(1100, 1100, 5), ("Auction it", "10x vendor"), None),
     ("junk", "1|1|5|20|1|0|%s|5" % series24(1, 1), None, None),
-    ("slow", "500|520|8|0|510|400|%s|8" % series24(500, 520, 0), ("Maybe auction", "sells slowly"), None),
-    ("slowhuge", "500|520|8|0|510|100|%s|8" % series24(500, 520, 0), ("Auction it", "4.9x vendor"), None),
-    ("tiny", "4|4|500|100|4|3|%s|30" % series24(4, 4, 5), ("Close call", "tiny gain"), (20, 76)),
+    # none sold in a measured day: it needs about 2x the vendor price; 1.18x is a close call
+    ("slow", "500|520|8|0|510|400|%s|8" % series24(500, 520, 0), ("Close call", "AH +18%, vendor is safer"), None),
+    ("slowhuge", "500|520|8|0|510|100|%s|8" % series24(500, 520, 0), ("Auction it", "4.7x vendor"), None),
+    ("tiny", "4|4|500|100|4|3|%s|30" % series24(4, 4, 5), ("Vendor it", "+5% vs AH"), (20, None)),
     ("thinvendor", "50|50|1|10|50|60|%s|1" % series24(50, 50), ("Vendor it", "+28% vs AH"), None),
     ("thinnovendor", "30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000), ("Maybe auction", "few listed"), None),
-    # the rule edges: nothing listed and a Suggested price 300x the vendor price (over OLD_FAR, 200x), then 150x
+    # the rule edges: nothing listed and a usual price 300x the vendor price (over OLD_FAR, 200x), then 150x
     ("oldfar", "0|0|0|20|0|1|%s|0" % series24(300, 300), None, None),
     ("oldnear", "0|0|0|20|0|2|%s|0" % series24(300, 300), ("Maybe auction", "none listed now"), None),
-    # the AH nets the same as a vendor (9,500 each), then exactly 1% more (9,595): VENDOR_PCT 101
-    ("tie", "100|100|500|100|100|95|%s|30" % series24(100, 100, 5), ("Vendor it", "same as AH"), (20, None)),
-    ("tieplus", "101|101|500|100|101|95|%s|30" % series24(101, 101, 5), ("Close call", "AH +1%"), (20, 1919)),
-    # 1,900 against 1,700: exactly 2 copper more (MIN_GAIN)
-    ("twocopper", "20|20|500|100|20|17|%s|30" % series24(20, 20, 5), ("Auction it", "+11% vs vendor"), (20, 380)),
+    # Sell now 99c nets 9,405 against a vendor's 9,500; then Sell now 1s nets the same as a vendor (VENDOR_PCT 101)
+    ("tie", "100|100|500|100|100|95|%s|30" % series24(100, 100, 5), ("Vendor it", "+1% vs AH"), (20, None)),
+    ("tieplus", "101|101|500|100|101|95|%s|30" % series24(101, 101, 5), ("Vendor it", "same as AH"), (20, None)),
+    # 19c (Sell now) against 17c: 6% more, a close call
+    ("twocopper", "20|20|500|100|20|17|%s|30" % series24(20, 20, 5), ("Close call", "AH +6%, vendor is safer"), (20, 361)),
     ("nothingvendor", "0|0|0|20|0|50|%s|0" % series24(30, 32), ("Vendor it", "+64% vs AH"), (20, None)),
 ]
 
@@ -10948,7 +11179,7 @@ def sc_tooltip_verdicts(sc, ref, items):
             lines = w.lines(tt)
             want_lines, want_st = expected_tooltip(r2, iid, age, mult=count if shift else 1, count=count, styles=True)
             sc.eq(lines, want_lines, lab)
-            verdict_line_ok(sc, r2, iid, lines, lab)
+            verdict_line_ok(sc, r2, iid, lines, lab, count=count)
             tooltip_style_ok(sc, w, tt, want_st, lab)
             got_stack = [parse_coins(r) for l, r in lines if l.startswith("This stack")]
             if stack and stack[1] is not None:
@@ -10994,9 +11225,9 @@ def sc_tooltip_verdicts(sc, ref, items):
     sc.eq(w.lines(tt), expected_tooltip(r2, silk, age, count=20, verdict=False), "verdicts: a goblin auction house, no verdict")
     w.close_ah_modern()
     M.npc, M.subzone = None, None
-    # TC21 the live cheapest feeds List At and Sell now
+    # TC21 the live cheapest feeds Sell now and the call (your own listing is matched, not undercut)
     w.open_ah_modern()
-    for lp, own, want in ((195, False, "+26% vs vendor"), (210, False, "+32% vs vendor"), (196, True, "+26% vs vendor")):
+    for lp, own, want in ((195, False, "+22% vs vendor"), (210, False, "+32% vs vendor"), (196, True, "+24% vs vendor")):
         w.set_commodity_results(silk, [(lp, 30, own)])
         M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", silk)
         w.settle(0.3)
@@ -11009,14 +11240,13 @@ def sc_tooltip_verdicts(sc, ref, items):
         sc.check(("Auction it", want) in lines, "verdicts: live %d gives %r (%s)" % (lp, want, lines[:2]))
         tooltip_style_ok(sc, w, tt, want_st, "verdicts: live %d" % lp)
     w.close_ah_modern()
-    # TC29 the bag panel values Silk at the verdict's price: 200 x 0.95 = 190 each, 3,800 for 20,
-    # an auction item (at Sell now it was 157 x 0.95 = 149 against a vendor's 150)
+    # TC29 the bag panel values Silk at the verdict's price: Sell now 199, 3,781 for 20 after the cut
     w.put_bag(1, 2, ids["vendorjunk"], 1)
     s = ns.BagScan()
     rows = {(s.drop[i].bag, s.drop[i].slot): s.drop[i] for i in range(1, len(s.drop) + 1)}
     e = rows.get((0, 1))
     got = (e.source, e.auction, e.value) if e else None
-    sc.check(got == ("auction", 190, 3800), "verdicts: the bag panel calls Silk x20 an auction item worth 3,800 (%r)" % (got,))
+    sc.check(got == ("auction", 189, 3781), "verdicts: the bag panel calls Silk x20 an auction item worth 37s 81c (%r)" % (got,))
     e = rows.get((1, 2))
     got = (e.source, e.auction) if e else None
     sc.check(got == ("vendor", None), "verdicts: a few listed far above the vendor price get no auction value (%r)" % (got,))
@@ -11118,8 +11348,8 @@ def sc_tooltip_fonts(sc, ref, items):
     tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
     tt.SetItemByID(tt, silk)
     al = w.all_lines(tt)
-    sc.eq([l for l, _ in al[8:]], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now", "Suggested price",
-                                   " ", "ID: %d" % silk], "fonts: lines 9 to 16")
+    sc.eq([l for l, _ in al[8:]], ["Goblin Ledger", "Auction it", "AH value", "Usual price", "Sell now",
+                                   " ", "ID: %d" % silk], "fonts: lines 9 to 15")
     sc.eq(big_fontstrings(w, tt), [(k, side, "ForeverAHBigFont1", 15) for k in (10, 11) for side in ("left", "right")],
           "fonts: only lines 10 and 11 (the verdict, the AH value) are bigger")
     others = []
@@ -11212,9 +11442,9 @@ def sc_tooltip_big_lines(sc, ref, items):
     compact. A reused tooltip keeps no stale big line; each line is bigger whole
     or not at all, and a second line that cannot be leaves the verdict bigger;
     a clear or a hide puts every line's Font and colour back."""
-    # lastah: an "Auction it" whose AH value is our last line (no average, Sell now or Suggested price)
-    fixtures = VERDICT_FIXTURES + [("lastah", "1|500|50|20|0|10|||20", ("Auction it", "47x vendor"), None)]
-    text, items2, ids = verdict_data(ref, items, fixtures)
+    # (An "Auction it" always has the price it judges, Sell now or Sell at, under the AH value now,
+    # so the AH value is never our last line under it.)
+    text, items2, ids = verdict_data(ref, items)
     r2 = RefData(text=text)
     w = World(r2, items2, data_src=text)
     M, g = w.M, w.g
@@ -11238,7 +11468,8 @@ def sc_tooltip_big_lines(sc, ref, items):
         return (rgb_name(st.left.r, st.left.g, st.left.b), rgb_name(st.right.r, st.right.g, st.right.b))
     # Auction it: the verdict and the AH value, nothing else
     for key, verdict in (("silk", ("Auction it", "+26% vs vendor")), ("heavy", ("Auction it", "6.1x vendor")),
-                         ("novendor", ("Auction it", "can't vendor")), ("double", ("Auction it", "2x vendor"))):
+                         ("novendor", ("Auction it", "can't vendor")), ("double", ("Auction it", "+99% vs vendor")),
+                         ("dumped", ("Auction it", "3.1x vendor")), ("jumped", ("Auction it", "2.8x vendor"))):
         lines = hover(tt, key)
         model_ok(tt, key, lines, "big %s" % key)
         sc.eq((lines[1], lines[2][0]), (verdict, "AH value"), "big %s: the AH value right under the verdict" % key)
@@ -11246,9 +11477,11 @@ def sc_tooltip_big_lines(sc, ref, items):
         sc.check(not any(l.startswith("Vendor pays") for l, _ in lines), "big %s: no Vendor pays line (%s)" % (key, lines))
         sc.eq(colours(tt, int(tt._blz) + 3), ("text", "white"), "big %s: the AH value keeps its colours" % key)
     # Vendor it: the verdict and a Vendor pays line under it with the vendor price; the AH value normal
-    for key, verdict, vendor in (("vendormore", ("Vendor it", "+25% vs AH"), 5000), ("shiny", ("Vendor it", "+5% vs AH"), 7),
-                                 ("tie", ("Vendor it", "same as AH"), 95), ("nothingvendor", ("Vendor it", "+64% vs AH"), 50),
-                                 ("thinvendor", ("Vendor it", "+28% vs AH"), 60)):
+    for key, verdict, vendor in (("vendormore", ("Vendor it", "+31% vs AH"), 5000), ("shiny", ("Vendor it", "+22% vs AH"), 7),
+                                 ("tie", ("Vendor it", "+1% vs AH"), 95), ("nothingvendor", ("Vendor it", "+64% vs AH"), 50),
+                                 ("thinvendor", ("Vendor it", "+28% vs AH"), 60), ("tieplus", ("Vendor it", "same as AH"), 95),
+                                 ("even", ("Vendor it", "same as AH"), 19), ("tiny", ("Vendor it", "+5% vs AH"), 3),
+                                 ("silkdip", ("Vendor it", "same as AH"), 150)):
         lines = hover(tt, key)
         model_ok(tt, key, lines, "big %s" % key)
         sc.eq(lines[1:3], [verdict, ("Vendor pays", money_icons(vendor))], "big %s: Vendor pays right under the verdict" % key)
@@ -11276,7 +11509,7 @@ def sc_tooltip_big_lines(sc, ref, items):
     M.shift = False
     # nothing bigger, no Vendor pays: Close call, Maybe auction, no verdict ("slow" is a Maybe auction only with 6 or
     # more hours of sales measured: a data file with fewer makes it an Auction it, bigger as above)
-    for key in ("dense", "even", "tieplus", "tiny", "onelisting", "nothingnow", "jumped", "slow", "oldnear",
+    for key in ("dense", "boundary", "twocopper", "onelisting", "nothingnow", "slow", "oldnear",
                 "vendorjunk", "junk", "oldfar"):
         lines = hover(tt, key)
         model_ok(tt, key, lines, "big %s" % key)
@@ -11299,18 +11532,13 @@ def sc_tooltip_big_lines(sc, ref, items):
                  "big vendormore %s: no verdict, no Vendor pays (%s)" % (label, lines))
         sc.eq(big_texts(w, tt), [], "big vendormore %s: nothing bigger" % label)
         undo()
-    # The AH value as our last line stays normal (a line made after it would copy its Font): the verdict is still
-    # bigger, and an ElvUI-like post call's lines made after ours (8 game lines first) are at the normal size
-    lines = hover(tt, "lastah")
-    model_ok(tt, "lastah", lines, "big lastah")
-    sc.eq([l for l, _ in lines], ["Goblin Ledger", "Auction it", "AH value"], "big lastah: the AH value is our last line")
-    sc.eq(big_texts(w, tt), ["Auction it"], "big lastah: only the verdict is bigger")
+    # An ElvUI-like post call's lines made after ours (8 game lines first) are at the normal size
     M.extraGameLines = w.to_lua(["stat %d" % i for i in range(3, 8)] + ["Sell Price: 1s"])
     w.lua.execute("""MOCK.bigPost = true
       TooltipDataProcessor.AddTooltipPostCall(Enum.TooltipDataType.Item, function(tt, d)
         if MOCK.bigPost then tt:AddLine(" "); tt:AddDoubleLine("ID: " .. tostring(d.id), "Bags: 30") end
       end)""")
-    for key, want in (("lastah", [10]), ("silk", [10, 11]), ("vendormore", [10, 11])):
+    for key, want in (("silk", [10, 11]), ("vendormore", [10, 11])):
         tt.SetOwner(tt, g.UIParent, "ANCHOR_RIGHT")
         hover(tt, key)
         rows = sorted(set(k for k, _, _, _ in big_fontstrings(w, tt)))
@@ -11399,19 +11627,23 @@ def sc_tooltip_big_lines(sc, ref, items):
         t3.ClearLines(t3)
         sc.eq(big_fontstrings(w3, t3), [], "fail %s: a clear puts it back" % label)
         sc.clean(w3, "fail " + label)
-    # Stale prices (7h) and compact: nothing bigger, no Vendor pays; exactly 6h old is still fresh
-    for hours, fresh in ((7, False), (6, True)):
-        w5 = World(r2, items2, data_src=text, now=r2.updated + hours * 3600 + (0 if fresh else 120))
+    # Stale prices (3 hours or more) keep the call and its size (it rarely changes in a few hours),
+    # and Vendor pays (a vendor's price never gets old); only the prices from the file get a "~"
+    for hours, extra in ((7, 120), (3, 0), (2, 3599)):
+        w5 = World(r2, items2, data_src=text, now=r2.updated + hours * 3600 + extra)
         t5 = w5.g.GameTooltip
+        a5 = w5.now - r2.updated
         for key in ("vendormore", "silk"):
             t5.SetItemByID(t5, ids[key])
             lines = w5.lines(t5)
-            want, want_st = expected_tooltip(r2, ids[key], w5.now - r2.updated, styles=True)
+            want, want_st = expected_tooltip(r2, ids[key], a5, styles=True, loaded_age=a5)
             sc.eq(lines, want, "%dh %s: the lines" % (hours, key))
             tooltip_style_ok(sc, w5, t5, want_st, "%dh %s" % (hours, key))
             has_vp = any(l == "Vendor pays" for l, _ in lines)
-            sc.eq(has_vp, fresh and key == "vendormore", "%dh %s: a Vendor pays line only when fresh" % (hours, key))
-            sc.eq(len(big_texts(w5, t5)), 2 if fresh else 0, "%dh %s: bigger lines only when fresh" % (hours, key))
+            sc.eq(has_vp, key == "vendormore", "%dh %s: a Vendor pays line, fresh or stale" % (hours, key))
+            sc.eq(len(big_texts(w5, t5)), 2, "%dh %s: the call and its price bigger, fresh or stale" % (hours, key))
+            sc.eq(any((r or "").startswith("~") for _, r in lines), a5 >= STALE_SECONDS,
+                  "%dh %s: prices marked ~ only when stale (%s)" % (hours, key, lines))
         sc.clean(w5, "%dh" % hours)
     w.slash("/gl compact")
     for key in ("vendormore", "silk", "dense"):
@@ -15392,7 +15624,9 @@ def evening_day(base, eve):
 
 
 # A drop that lasts (Recommend.lua settledHigh): (key, fields after the name, the
-# Suggested price, List At and Sell now, each worked out by hand).
+# capped sell target, List At and Sell now, each worked out by hand). The capped
+# target now only feeds the chart's call (no Low call after a drop that lasts) and
+# its note; the price to sell at is the same rule everywhere (ns.SellPrices).
 SETTLED_FIXTURES = [
     # Tender Wolf Steak (18045), the real 2026-11-18 6PM CST line: 17s 74c on Tuesday evening, then
     # 3s 95c to 4s 98c since Wednesday 8AM. The 1D 70th percentile is 8s 29c; the last 6 hours
@@ -15433,14 +15667,12 @@ SETTLED_TFS = {"steak": ("1D", "5D", "1W"), "evening25": ("1D",), "fallen": ("1D
 
 
 def sc_settled_drop(sc, ref, items):
-    """A drop that lasts: the tooltip's Suggested price, the sell frame's
-    Suggested button and the chart's List At all use the last 6 hours' high
-    (the steak: 4s 47c, not 8s 29c), while Sell now and the verdict stay as
-    they were; a real evening premium, a rise, thin data and a short dip keep
-    the usual target. Nothing listed now never caps, 5D and 1W wait a quarter
-    of their hours (a day's dip in a steady week stays a dip to buy), and a
-    live listing that lifts the price drops the note and the button line and
-    keeps a Sell verdict."""
+    """A drop that lasts: the chart's advice uses the last 6 hours' high (the steak: 4s 47c,
+    not 8s 29c): its note says the price stayed down and the call is never "Low" then; a real
+    evening premium, a rise, thin data and a short dip keep the usual target. The price to
+    sell at (tooltip, buttons, the chart's Sell at box) is the one rule everywhere and does
+    not depend on it. 5D and 1W wait a quarter of their hours; a live listing that lifts the
+    price drops the note and keeps a high call."""
     ids, iid = {}, 975001
     for key, _, _, _, _ in SETTLED_FIXTURES:
         while iid in ref.items or str(iid) in items:
@@ -15461,51 +15693,63 @@ def sc_settled_drop(sc, ref, items):
     tt = w.g.GameTooltip
     age = w.now - r2.updated
     settled_keys = [k for k, tfs in SETTLED_TFS.items() if "1D" in tfs]
-    for key, _, best, list_at, now in SETTLED_FIXTURES:
+    for key, _, target, list_at, now in SETTLED_FIXTURES:
         i = ids[key]
         rec = ref_recommend(r2, i, "1D")
         sc.eq((rec.get("settled"), rec["listAt"]), (key in settled_keys, list_at), "settled %s: the model's List At" % key)
+        sc.eq(rec["sell"], target, "settled %s: the model's (capped) sell target" % key)
         sp = ref_sell_prices(r2, i, "1D")
-        sc.eq((sp["now"], sp["best"]), (now, best), "settled %s: the model's Sell now and Suggested price" % key)
-        # the tooltip
+        sc.eq(sp["now"], now, "settled %s: the model's Sell now" % key)
+        # the tooltip: the one price to sell at, no other sell price
         tt.SetItemByID(tt, i)
         got = w.lines(tt)
         sc.eq(got, expected_tooltip(r2, i, age), "settled %s: tooltip" % key)
-        sc.eq([r for l, r in got if l == "Suggested price"], [money_icons(best)], "settled %s: tooltip Suggested price" % key)
-        if now is not None:
+        sc.check(not any(l.startswith(("Suggested", "List At")) for l, _ in got), "settled %s: no second sell price (%s)" % (key, got))
+        if now is not None and sp["under"] is None:
             sc.eq([r for l, r in got if l == "Sell now"], [money_icons(now)], "settled %s: tooltip Sell now" % key)
-        # the chart: List At on every hourly timeframe, and the note
+        # the chart: the note on the timeframes that settle; Sell at the same on each
         for tf in ("1D", "5D", "1W"):
             ns.SetChartTF(tf)
             ns.ShowChart(i, "slash")
             chart_check(sc, w, r2, i, tf, "settled %s %s" % (key, tf))
-            if tf == "1D":
-                sc.eq(ns.ChartPanel.listBox.value._text, money_icons(list_at), "settled %s: List At box" % key)
+            sc.eq(ns.ChartPanel.listBox.value._text, sell_at_box(r2, i, sp["at"]), "settled %s %s: Sell at box" % (key, tf))
             sc.eq("stayed down" in (ns.ChartPanel.notes._text or ""), tf in SETTLED_TFS.get(key, ()),
                   "settled %s %s: the note" % (key, tf))
         ns.SetChartTF("1D")
-    # the steak's verdict judges today's price (3s 99c x 95 against 3s x 100: +26%), as before
+    # the steak: Sell now 3s 97c is under 70% of its usual price (the middle of its last 24 hourly
+    # prices still holds Tuesday's 17s 74c evening), so the call judges Sell at the usual price.
+    # Backtest: even after a drop that lasted 6 hours the usual price kept more (0.96 against 0.81
+    # of the AH value, unsold ones relisted) but sold within a day 23% of the time (Sell now 76%):
+    # Sell now stays, in yellow, for speed.
     steak = ids["steak"]
     tt.SetItemByID(tt, steak)
-    sc.check(("Auction it", "+26% vs vendor") in w.lines(tt), "settled steak: the verdict is unchanged (%s)" % w.lines(tt))
+    sl = w.lines(tt)
+    sps = ref_sell_prices(r2, steak, "1D")
+    sc.check(sps["under"] is not None and ("Sell now (%d%% under usual)" % sps["under"], money_icons(397)) in sl
+             and ("Sell at", money_icons(sps["at"])) in sl, "settled steak: the guard, Sell now yellow and Sell at (%s)" % sl)
+    Vs = ref_verdict(r2, steak)
+    sc.check(Vs["kind"] == "auction" and Vs["unit"] == sps["at"] and (Vs["left"], Vs["right"]) in sl,
+             "settled steak: the verdict at Sell at (%s)" % sl)
     r = ns.Recommend(steak, "1D")
-    sc.eq((r.sell, r.margin, r.verdict), (447, 25, "Hold"), "settled steak: sell 4s 47c, margin 25c, a Hold (not Strong Buy)")
-    sc.check(not any("buy it" in r.notes[k] for k in range(1, len(r.notes) + 1)),
-             "settled steak: no \"buy it\" note next to the Hold (the buy target is from the old range)")
-    # nothing listed now: the verdict judges the Suggested 3g 39s (not 1g 68s 74c): a maybe, not "Vendor it"
+    sc.eq((r.sell, r.margin, r.verdict), (447, 25, "Hold"), "settled steak: sell 4s 47c, margin 25c, a Hold (not low)")
+    sc.check(not any("Target Buy" in r.notes[k] for k in range(1, len(r.notes) + 1)),
+             "settled steak: no Target Buy note next to the Hold (the buy target is from the old range)")
+    # nothing listed now: the verdict judges the usual price (the middle of its last 24 prices)
     tt.SetItemByID(tt, ids["gone"])
-    sc.check(("Maybe auction", "none listed now") in w.lines(tt), "settled gone: the verdict (%s)" % w.lines(tt))
-    # the steady week with a 24-hour dip: 1W keeps 1000, buy 700, margin 250: the dip to buy (Strong Buy)
+    Vg = ref_verdict(r2, ids["gone"])
+    sc.check(Vg is not None and (Vg["left"], Vg["right"]) in w.lines(tt) and Vg["kind"] in ("maybe", "close"),
+             "settled gone: the verdict (%s, model %s)" % (w.lines(tt), Vg))
+    # the steady week with a 24-hour dip: 1W keeps 1000, buy 700, margin 250: low now, and no buy claim
     r = ns.Recommend(ids["weekdip"], "1W")
-    sc.eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Strong Buy", False),
+    sc.eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Low now: still falling", False),
           "settled weekdip: 1W keeps the week's target")
     r = ns.Recommend(ids["weekdrop"], "1W")
     sc.eq((r.sell, r.settledHours), (700, 42), "settled weekdrop: 1W settles after 42 hours")
-    # the sell frame's Suggested button: the same price as the tooltip and List At, and it says why
+    # the sell frame's buttons: the same price as the tooltip
     w.open_ah_modern()
     ah = w.g.AuctionHouseFrame
     csf = ah.CommoditiesSellFrame
-    for slot, (key, _, best, _, now) in enumerate(SETTLED_FIXTURES, start=1):
+    for slot, (key, _, _, _, now) in enumerate(SETTLED_FIXTURES, start=1):
         i = ids[key]
         w.put_bag(0, slot, i, 20)
         M.commodityResults[i] = None
@@ -15513,32 +15757,28 @@ def sc_settled_drop(sc, ref, items):
         w.settle(0.2)
         pair = find_sell_buttons(csf)
         want = ref_buttons(r2, i, "1D")
-        sc.eq(want, (now, best), "settled %s: the model's buttons" % key)
+        sc.eq(want[0], now, "settled %s: the model's Sell now button" % key)
         buttons_ok(sc, pair, want, "settled %s" % key)
         if pair[1] is not None:
-            sc.eq(SETTLED_TIP in (pair[1].tipBody or ""), key in settled_keys,
-                  "settled %s: the Suggested button says when it uses the last 6 hours (%s)" % (key, pair[1].tipBody))
-    # the AH shows the steak back at 6s: Suggested follows the listing (1 copper under it)
+            sc.check(SETTLED_TIP not in (pair[1].tipBody or ""), "settled %s: the Sell at button says nothing about 6 hours" % key)
+    # the AH shows the steak back at 6s: Sell now follows the listing (1 copper under it)
     i = ids["steak"]
     ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 1))
     w.set_commodity_results(i, [(600, 50, False)])
     M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", i)
     w.settle(0.3)
     want = ref_buttons(r2, i, "1D", 600)
-    sc.eq(want, (599, 599), "settled steak live 6s: the model follows the listing")
+    sc.eq(want, (599, None), "settled steak live 6s: the model follows the listing")
     pair = find_sell_buttons(csf)
     buttons_ok(sc, pair, want, "settled steak live 6s")
-    # 5s 99c is not the 6 hours' high: the button does not say it is, and the chart has no note
-    if pair[1] is not None:
-        sc.check(SETTLED_TIP not in (pair[1].tipBody or ""), "settled steak live 6s: no 6-hour line (%s)" % pair[1].tipBody)
     ns.SetChartTF("1D")
     ns.ShowChart(i, "slash")
     sc.eq(w.live(i), 600, "settled steak live 6s: the chart uses the live listing")
     chart_check(sc, w, r2, i, "1D", "settled steak live 6s")
     sc.check("stayed down" not in (ns.ChartPanel.notes._text or ""), "settled steak live 6s: no settled note")
-    # a live 12s is over the old range's top: Strong Sell stands (only Buy is held back)
+    # a live 12s is over the old range's top: the high call stands (only the low one is held back)
     r = ns.Recommend(i, "1D", 1200)
-    sc.eq((r.verdict, r.listAt), ("Strong Sell", 1199), "settled steak live 12s: Strong Sell")
+    sc.eq((r.verdict, r.listAt), ("High now: usually falls back", 1199), "settled steak live 12s: high now")
     w.close_ah_modern()
     sc.clean(w)
 
@@ -18268,9 +18508,10 @@ def sc_enchants_modes(sc, ref, items):
         copper = sum(prices[mid] * n for mid, n in EN_M[key])
         sc.eq(r, "~" + money_icons(en_round(copper)), "enchants modes: %s costs its mats (%s)" % (EN_NAMES[key], en_mats(key)))
     w.slash("/gl enchants top2")
-    # Old prices (more than 6 hours): the costs are grey, like the price lines' age warning; fresh again: white.
+    # Old prices (3 hours or more, ns.AgeState): the costs are grey, like the price lines' "~"; fresh again: white.
     up = w.ref.updated
-    for age, stale in ((5 * 3600, False), (3 * 86400, True), (25 * 60, False)):
+    for age, stale in ((2 * 3600, False), (3 * 3600 - 1, False), (3 * 3600, True), (5 * 3600, True), (3 * 86400, True),
+                       (25 * 60, False)):
         w.M.now = up + age
         tt = en_hover(w, "equipped", 990102)
         sc.eq(w.lines(tt), en_want(w, prices, two), "enchants modes: prices %dh old: the same lines" % (age // 3600))
@@ -21035,11 +21276,15 @@ def sc_consumes_prices(sc, ref, items):
     w.close_ah_modern()
     cs_rows_ok(sc, w, prices, 35, "prices: auction house closed", counts={a: 3, b: 20})
     sc.clean(w, "prices")
-    # Over 6 hours old: AH values grey (vendor prices are not).
+    # Stale (3 hours old or more, Core's ns.AgeState): AH values grey (vendor prices are not).
     w = cs_world(ref, items, level=35, now=ref.updated + 7 * 3600)
     cs_open(w)
     cs_rows_ok(sc, w, prices, 35, "prices: 7 hours old", stale=True)
     sc.clean(w, "prices: stale")
+    w = cs_world(ref, items, level=35, now=ref.updated + 3 * 3600)
+    cs_open(w)
+    cs_rows_ok(sc, w, prices, 35, "prices: exactly 3 hours old", stale=True)
+    sc.clean(w, "prices: stale at 3 hours")
     # No price data at all: vendor prices and "no prices", no error.
     w = cs_world(ref, items, level=35, data_src=PLACEHOLDER)
     cs_open(w)
@@ -23222,13 +23467,15 @@ def sc_tooltip_live(sc, ref, items):
     tooltip_style_ok(sc, w, tt, want_st, "live")
     ahv = [x for x in lines if x[0].startswith("AH value")]
     sc.eq(ahv[0][0] if ahv else None, "AH value (live)", "live: the AH value says it is live")
-    if it["avg7"] > 0:
-        sc.eq(ahv[0][1], money_icons(live) + "  " + vs_average(live, it["avg7"]), "live: the badge compares the live price")
-        sc.check(" vs avg|r" in ahv[0][1] and TT_WARN in ahv[0][1], "live: twice the average is yellow (%s)" % ahv[0][1])
+    usual = ref_usual(ref, R.LINEN)
+    if usual:
+        sc.eq(ahv[0][1], money_icons(live) + "  " + vs_usual(live, usual), "live: the badge compares the live price")
+        if live >= usual * 1.4:
+            sc.check(" vs usual: spike|r" in ahv[0][1] and TT_WARN in ahv[0][1], "live: far over the usual price is a yellow spike (%s)" % ahv[0][1])
     sn = [r for l, r in lines if l.startswith("Sell now")]
     sc.eq(sn, [money_icons(live - 1)], "live: Sell now 1 copper under the live price, not the old snapshot's")
     sc.check(any(l == "Sell now (live)" for l, _ in lines), "live: Sell now says it is live (%s)" % [l for l, _ in lines])
-    verdict_line_ok(sc, ref, R.LINEN, lines, "live: the verdict judges the live price", live=live)
+    verdict_line_ok(sc, ref, R.LINEN, lines, "live: the verdict judges the live price", live=live, count=20)
     M.shift = True
     lines = hover()
     sc.eq(lines, expected_tooltip(ref, R.LINEN, age, mult=20, live=live), "live: Shift x20")
@@ -23302,7 +23549,11 @@ def sc_data_age(sc, ref, items):
         lines = w.lines(tt)
         sc.eq(lines, expected_tooltip(ref, R.LINEN, age, compact=True), "age %d: compact" % age)
         txt = (lines[0][1] or lines[0][0]) if lines else ""
-        if hint:
+        if age >= STALE_SECONDS:
+            sc.check("~" in txt and "h old" not in txt and "/reload)" not in txt
+                     and lines[-1][0].startswith("Prices are %dh old" % (age // 3600)),
+                     "age %d: stale compact: the AH value with ~, the age once in the last line (%s / %s)" % (age, txt, lines[-1][0]))
+        elif hint:
             sc.check(txt.endswith("  |c%s(%s old - /reload)|r" % (TT_MUTED, age_text(age)[:-4])),
                      "age %d: compact ends with a grey (... old - /reload) (%s)" % (age, txt))
         else:
@@ -23319,45 +23570,414 @@ def sc_data_age(sc, ref, items):
 
 
 def sc_vs_badge(sc, ref, items):
-    """The badge next to the AH value: "+92% vs avg" / "-44% vs avg", yellow from 40% either way,
-    grey under that and "0% vs avg" under 1%; never green or red. The average keeps its honest label."""
-    cases = {R.LINEN: (3, 1400, 1000, "+40%", "warn"), R.RUNE: (9, 1399, 1000, "+39%", "muted"),
-             R.ARCANE: (9, 600, 1000, "-40%", "warn"), R.LOTUS: (2, 601, 1000, "-39%", "muted")}
+    """The badge next to the AH value compares it with the usual price (the middle of the last 24
+    hourly market prices, not the multi-day average): "+39% vs usual" grey; from 40% either way
+    yellow with a word, "+40% vs usual: spike" / "-40% vs usual: dropped" (backtest: after +40% the
+    next day fell back 22-41%; after -40% stacks stayed down); "0% vs usual" under 1%; never
+    green or red. A thin item's usual price reaches back past 24 hours for its last 24 prices."""
+    cases = {R.LINEN: (1400, 1000, "+40%", "warn", ": spike"), R.RUNE: (1399, 1000, "+39%", "muted", ""),
+             R.ARCANE: (600, 1000, "-40%", "warn", ": dropped"), R.LOTUS: (601, 1000, "-39%", "muted", "")}
     zero = next(i for i in sorted(ref.items) if i not in cases and known_name(ref.items[i]["name"])
                 and i not in ref.base_of and i not in ref.variants)
-    cases[zero] = (5, 1004, 1000, "0%", "muted")
+    cases[zero] = (1004, 1000, "0%", "muted", "")
+    thin = next(i for i in sorted(ref.items) if i not in cases and known_name(ref.items[i]["name"])
+                and i not in ref.base_of and i not in ref.variants)
 
     def fn(iid, f):
         if iid in cases:
             f = f + [""] * (10 - len(f))
-            days, mk, avg, _, _ = cases[iid]
-            f[2], f[5] = str(mk), str(avg)
-            f[8] = enc_series([avg] * days, [avg] * days, [1] * days)
+            mk, usual, _, _, _ = cases[iid]
+            f[2], f[5] = str(mk), "4321"
+            f[7] = enc_series([usual] * 30, [usual] * 30, [1] * 30)
+        elif iid == thin:
+            # a slow seller: priced in 6 of the last 48 hours (800), the 24 hours before at 2000:
+            # its last 24 prices are 18 of 2000 and 6 of 800, the middle 2000
+            f = f + [""] * (10 - len(f))
+            f[2] = "900"
+            mk = [2000] * 24 + [800 if k % 8 == 0 else None for k in range(48)]
+            f[7] = enc_series(mk, mk, [0] * 72)
         return f
     text = rewrite_items(ref.text, fn)
     r2 = RefData(text=text)
     w = World(r2, items, data_src=text)
     tt = w.g.GameTooltip
-    for iid, (days, mk, avg, pct_txt, col) in sorted(cases.items()):
-        badge = "|c%s%s vs avg|r" % (TT_WARN if col == "warn" else TT_MUTED, pct_txt)
-        sc.eq(vs_average(mk, avg), badge, "%d: the model's badge" % iid)
-        sc.eq(w.ns.VsAverage(mk, avg), badge, "%d: VsAverage %s" % (iid, pct_txt))
+    for iid, (mk, usual, pct_txt, col, word) in sorted(cases.items()):
+        badge = "|c%s%s vs usual%s|r" % (TT_WARN if col == "warn" else TT_MUTED, pct_txt, word)
+        sc.eq(ref_usual(r2, iid), usual, "%d: the model's usual price" % iid)
+        sc.eq(w.ns.UsualPrice(iid), usual, "%d: UsualPrice" % iid)
+        sc.eq(vs_usual(mk, usual), badge, "%d: the model's badge" % iid)
+        sc.eq(w.ns.VsUsual(mk, usual), badge, "%d: VsUsual %s" % (iid, pct_txt))
         tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
         tt.SetItemByID(tt, iid)
         lines = w.lines(tt)
         sc.eq(lines, expected_tooltip(r2, iid, w.now - r2.updated), "%d: tooltip lines" % iid)
         ahv = [x for x in lines if x[0] == "AH value"]
-        sc.check(len(ahv) == 1 and ahv[0][1].endswith("  " + badge), "%d: %s vs avg in %s (%s)" % (iid, pct_txt, col, ahv))
-        sc.check(("%d-day average" % min(days, 7), money_icons(avg)) in lines,
-                 "%d: the average keeps its honest label (%d-day) (%s)" % (iid, min(days, 7), lines))
+        sc.check(len(ahv) == 1 and ahv[0][1].endswith("  " + badge), "%d: %s vs usual in %s (%s)" % (iid, pct_txt, col, ahv))
+        sc.check(money_icons(4321) not in str(lines), "%d: the data's multi-day average is not shown (%s)" % (iid, lines))
+    sc.eq(ref_usual(r2, thin), 2000, "thin: the model's usual reaches back for 24 prices")
+    sc.eq(w.ns.UsualPrice(thin), 2000, "thin: UsualPrice reaches back for 24 prices")
     # never green or red, on any item's AH value
     for iid in sample_ids(ref):
         tt.SetItemByID(tt, iid)
         for l, r in w.lines(tt):
             if l.startswith("AH value") or l.startswith("AH"):
                 sc.check(TT_POS not in (r or l) and TT_NEG not in (r or l), "%d: no green or red badge (%s)" % (iid, r))
-    sc.eq(w.ns.VsAverage(0, 1000), None, "no price: no badge")
-    sc.eq(w.ns.VsAverage(1000, 0), None, "no average: no badge")
+    sc.eq(w.ns.VsUsual(0, 1000), None, "no price: no badge")
+    sc.eq(w.ns.VsUsual(1000, 0), None, "no usual price: no badge")
+    sc.eq(w.ns.VsUsual(1000, None), None, "too few prices for a usual price: no badge")
+    sc.clean(w)
+
+
+def sc_one_sell_price(sc, ref, items):
+    """One price to sell at (rule G), the same on every surface: the tooltip (Sell now, or a yellow
+    "Sell now (N% under usual)" and "Sell at" the usual price when Sell now is under 70% of it), the
+    sell buttons (Sell now, yellow then, and Sell at), the chart's Sell at box (in every timeframe)
+    and the bag panel's auction value. The chart's timeframe never changes it."""
+    text, items2, ids = verdict_data(ref, items)
+    r2 = RefData(text=text)
+    w = World(r2, items2, data_src=text)
+    ns, M = w.ns, w.M
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    keys = ("dumped", "silk", "heavy", "jumped", "vendormore", "novendor", "nothingnow")
+    for slot, key in enumerate(keys, start=1):
+        w.put_bag(0, slot, ids[key], 20)
+    P = {key: ref_sell_prices(r2, ids[key]) for key in keys}
+    sc.eq((P["dumped"]["now"], P["dumped"]["at"], P["dumped"]["under"]), (599, 1000, 40),
+          "dumped: Sell now 5s 99c, 40% under the usual 10s: Sell at 10s")
+    sc.eq((P["silk"]["at"], P["silk"]["under"]), (199, None), "silk: Sell now 1s 99c is the price")
+    sc.eq((P["nothingnow"]["now"], P["nothingnow"]["at"]), (None, 32), "nothing listed: Sell at the usual 32c")
+
+    def tip_price(lines):
+        at = [r for l, r in lines if l.startswith("Sell at")]
+        now = [r for l, r in lines if l.startswith("Sell now")]
+        return (at or now or [None])[0]
+    for tf in TFS:
+        ns.SetChartTF(tf)
+        for slot, key in enumerate(keys, start=1):
+            iid = ids[key]
+            tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+            tt.SetBagItem(tt, 0, slot)
+            lines = w.lines(tt)
+            want, want_st = expected_tooltip(r2, iid, age, count=20, styles=True)
+            sc.eq(lines, want, "%s %s: tooltip (the chart's timeframe changes nothing)" % (key, tf))
+            tooltip_style_ok(sc, w, tt, want_st, "%s %s" % (key, tf))
+            sc.eq(tip_price(lines), money_icons(P[key]["at"]), "%s %s: the tooltip's price to sell at" % (key, tf))
+            ns.ShowChart(iid, "slash")
+            sc.eq(ns.ChartPanel.listBox.value._text, money_icons(P[key]["at"]), "%s %s: the chart's Sell at box" % (key, tf))
+    ns.SetChartTF("1D")
+    tt.SetBagItem(tt, 0, 1)
+    dl = w.lines(tt)
+    sc.check(("Sell now (40% under usual)", money_icons(599)) in dl and ("Sell at", money_icons(1000)) in dl,
+             "dumped: the yellow Sell now with how far under, then Sell at (%s)" % dl)
+    sc.check(not any(l.startswith(("Suggested", "List At", "Usual price")) for l, _ in dl), "dumped: no other sell price (%s)" % dl)
+    ns.ShowChart(ids["dumped"], "slash")
+    sc.eq(ns.ChartPanel.listBox.sub._text, "|c%sSell now 40%% under usual|r" % TT_WARN, "dumped: the Sell at box says how far under")
+    ns.ShowChart(ids["silk"], "slash")
+    sc.eq(ns.ChartPanel.listBox.sub._text, "Usual: " + money_icons(200), "silk: the Sell at box shows the usual price under it")
+    # the sell buttons: the same price; a second button only for the dump (and nothing listed: Sell at alone)
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    csf = ah.CommoditiesSellFrame
+    for slot, key in enumerate(keys, start=1):
+        iid = ids[key]
+        M.commodityResults[iid] = None
+        ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, slot))
+        w.settle(0.2)
+        pair = find_sell_buttons(csf)
+        want = ref_buttons(r2, iid)
+        buttons_ok(sc, pair, want, "one price %s" % key)
+        sc.eq(want[1] if want[1] is not None else want[0], P[key]["at"], "%s: the button that fills the price to sell at" % key)
+        if want[1] is not None and want[0] is not None:
+            M.click(pair[1])
+            sc.eq(csf.PriceInput.GetAmount(csf.PriceInput), P[key]["at"], "%s: Sell at fills the usual price" % key)
+            sc.check("under the usual price" in (pair[0].tipBody or "") and "40%" in (pair[0].tipBody or ""),
+                     "%s: Sell now's tooltip says it is 40%% under the usual price (%s)" % (key, pair[0].tipBody))
+    w.close_ah_modern()
+    # the bag panel: worth the same price after the cut
+    s = ns.BagScan()
+    rows = {(s.drop[i].bag, s.drop[i].slot): s.drop[i] for i in range(1, len(s.drop) + 1)}
+    for slot, key in enumerate(keys, start=1):
+        e = rows.get((0, slot))
+        if e is None:
+            continue
+        value, unsure, source = bag_value(w, r2, ids[key], 20)
+        sc.eq((e.value, e.source), (value, source), "%s: the bag panel (model)" % key)
+        if source == "auction":
+            sc.eq(e.value, rec_model.stack_after_cut(P[key]["at"], 20), "%s: the bag panel at the price to sell at" % key)
+    sc.clean(w)
+
+
+def sc_deposit_reading(sc, ref, items):
+    """The deposit, read from the game while an item sits in the sell slot (it sends nothing): the
+    rate per listing time and the per-listing minimum, kept for the call; the listing time picked
+    (Blizzard's dropdown) changes the call through its deposit and sell chance."""
+    fixtures = VERDICT_FIXTURES + [
+        # 1s 37c (Sell now) against a vendor's 1s, 5 sold a day: auctioning pays at 24 hours (+30%, a 73%
+        # sell chance, 60% deposit), not at 2 hours (a 26% sell chance makes even a 5% deposit too costly)
+        ("midband", "138|138|50|5|138|100|%s|20" % series24(138, 138, 0), None, None)]
+    text, items2, ids = verdict_data(ref, items, fixtures)
+    r2 = RefData(text=text)
+    w = World(r2, items2, data_src=text)
+    ns, M = w.ns, w.M
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    sc.eq(tuple(ns.DepositModel()), (24, 600, 100), "defaults: 24 hours, 60% of the vendor price, 1 silver a listing")
+    mid = ids["midband"]
+    w.put_bag(0, 1, mid, 20)
+    w.put_bag(0, 2, ids["dumped"], 20)
+
+    def verdict():
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 0, 1)
+        return w.lines(tt)[1]
+    sc.eq(verdict(), ("Auction it", "+30% vs vendor"), "midband x20, 24 hours: Auction it")
+    dep = {"dur": 3, "rate": {1: 50, 2: 200, 3: 600}, "hours": {1: 2, 2: 8, 3: 24}, "min": 100}
+    sc.eq(ref_verdict(r2, mid, count=20, deposit=dep)["kind"], "auction", "the model agrees at 24 hours")
+    # the game's listing times and a 1 copper minimum (the 10 Nov hotfix); the player picks 2 hours
+    w.lua.execute('AUCTION_DURATION_ONE, AUCTION_DURATION_TWO, AUCTION_DURATION_THREE = "2 Hours", "8 Hours", "24 Hours"')
+    M.depositMin = 1
+    M.durationIndex = 1
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    csf = ah.CommoditiesSellFrame
+    calls = int(M.depositCalls)
+    M.commodityResults[ids["dumped"]] = None
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 2))
+    w.settle(0.2)
+    sc.eq(int(M.depositCalls) - calls, 6, "the sell slot: 3 listing times x (1 and the whole stack)")
+    D = ns.settings.deposit
+    got = (int(D.dur), [int(D.rate[k]) for k in (1, 2, 3)], [int(D.hours[k]) for k in (1, 2, 3)], int(D.min))
+    # 3s x 20 at 5/20/60% = 300 / 1,200 / 3,600 copper: 50 / 200 / 600 per mille; one at 5% is 15c, under no minimum
+    sc.eq(got, (1, [50, 200, 600], [2, 8, 24], 15), "readings: 2 hours picked, the rates, the hours, the minimum is at most 15c")
+    sc.eq(tuple(ns.DepositModel()), (2, 50, 15), "the model for the call: 2 hours, 5%")
+    w.close_ah_modern()
+    dep = {"dur": 1, "rate": {1: 50, 2: 200, 3: 600}, "hours": {1: 2, 2: 8, 3: 24}, "min": 15}
+    want = ref_verdict(r2, mid, count=20, deposit=dep)
+    sc.eq((want["left"], want["right"]), ("Close call", "AH +30%, vendor is safer"), "the model at 2 hours: a close call")
+    sc.eq(verdict(), ("Close call", "AH +30%, vendor is safer"), "midband x20 at 2 hours: a close call")
+    lines, st = expected_tooltip(r2, mid, age, count=20, styles=True, deposit=dep)
+    sc.eq(w.lines(tt), lines, "midband x20 at 2 hours: the whole tooltip (model)")
+    # the player switches to 24 hours in the sell frame: the hook keeps it
+    w.open_ah_modern()
+    csf.SetDuration(csf, 3)
+    sc.eq(int(ns.settings.deposit.dur), 3, "OnDurationUpdated: 24 hours picked")
+    w.close_ah_modern()
+    sc.eq(verdict(), ("Auction it", "+30% vs vendor"), "back at 24 hours: Auction it")
+    # a minimum that binds: 1 silver a listing, read from one cheap unit (2c x 5% = 0, charged 1s)
+    M.depositMin = 100
+    w.put_bag(0, 3, ids["trip"], 20)
+    w.open_ah_modern()
+    M.commodityResults[ids["trip"]] = None
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 3))
+    w.settle(0.2)
+    sc.eq(int(ns.settings.deposit.min), 100, "a deposit for one over its rate is the minimum: 1s")
+    w.close_ah_modern()
+    # bad readings never break the model
+    ns.NoteDeposit(0, 1, w.to_lua({}), 9)
+    ns.NoteDeposit(100, 1, None, 1)
+    sc.eq(tuple(ns.DepositModel())[:2], (24, 600), "a bad listing time or no readings: the saved model stays")
+    sc.clean(w)
+
+
+def _dump_series(now):
+    """24 hourly prices at the usual 10s with the last cheapest at now, and 5 days at 10s."""
+    return "%s|%s" % (enc_series([1000] * 23 + [now], [1000] * 24, [5] * 24), enc_series([1000] * 5, [1000] * 5, [120] * 5))
+
+
+# The lines the backtest drew, with the words fixed here (not only taken from the model): the
+# verdict for one item (not from the bags), or None.
+EDGE_FIXTURES = [
+    # Sell now 6s 90c is 69% of the usual 10s: under 70%, so the price to sell at is 10s (31% under)
+    ("dump69", "691|1000|500|100|1000|300|%s|30" % _dump_series(691), None, None),
+    # Sell now 7s is exactly 70% of it: no dump, Sell now is the price
+    ("dump70", "701|1000|500|100|1000|300|%s|30" % _dump_series(701), None, None),
+    # a dump at 6s: the usual 10s nets 2.1x a vendor's 4s 50c, but at the usual price a listing sold
+    # within a day only 36% of the time while the cheap ones were up (92% normally): a close call
+    ("dumpclose", "600|1000|500|100|1000|450|%s|30" % _dump_series(600), ("Close call", "AH +111%, vendor is safer"), None),
+    # the same dump, a vendor's 6s 20c: Sell now 5s 99c nets less than that, so its price stays red
+    ("dumpvendor", "600|1000|500|100|1000|620|%s|30" % _dump_series(600), ("Close call", "AH +53%, vendor is safer"), None),
+    # none sold in a measured day: 2s (1.90x the vendor's 1s after the cut) is a close call, 2s 20c (2.09x) pays
+    ("slownear", "201|201|8|0|201|100|%s|8" % series24(201, 201, 0), ("Close call", "AH +90%, vendor is safer"), None),
+    ("slowover", "221|221|8|0|221|100|%s|8" % series24(221, 221, 0), ("Auction it", "2x vendor"), None),
+    # a slow cheap seller: 11c against 5c pays for one, but 20 in the bags share the 1 silver per listing
+    ("minstack", "12|12|500|0|12|5|%s|30" % series24(12, 12, 0), ("Auction it", "2x vendor"), None),
+    # 25c against 10c, 5 sold a day: auction a stack of 20 (and still after an expensive item's deposit)
+    ("cheapmid", "26|26|500|5|26|10|%s|30" % series24(26, 26, 0), ("Auction it", "2.3x vendor"), None),
+    # a 5g gear piece (its deposit is read at the rate), and gear whose Sell now 5s 99c rounds down to
+    # 5s, under what a vendor's 5s 50c is worth after the cut
+    ("gear5g", "60000|60000|10|2|60000|50000|%s|10" % series24(60000, 60000, 0), None, None),
+    ("gearround", "600|600|10|2|600|550|%s|10" % series24(600, 600, 0), None, None),
+    # a price that swings over the day, at its top now: the chart's long call and a long margin line
+    ("swing", "200000|205000|12345|1200|150000|1000|%s|%s|300" % (
+        enc_series([100000, 120000, 140000, 160000, 180000, 200000] * 4, [105000, 125000, 145000, 165000, 185000, 205000] * 4,
+                   [50] * 24), enc_series([150000] * 5, [155000] * 5, [1200] * 5)), None, None),
+]
+
+
+def sc_verdict_edges(sc, ref, items):
+    """The edges of the sell rules, with fixed words: the dump guard at exactly 70% of the usual
+    price; the call while someone dumps (judged at the usual price with the dump's sell chances, and
+    Sell now still red when a vendor pays more); a slow seller either side of the 2x it needs; the
+    4-hour slow-seller rule; the 1 silver per listing on a cheap bag stack; the deposit minimum never
+    raised by an expensive item's reading; a gear button rounded under what a vendor pays; the chart's
+    footer on a mid-width panel, its meter and box help."""
+    text, items2, ids = verdict_data(ref, items, EDGE_FIXTURES)
+    r2 = RefData(text=text)
+    w = World(r2, items2, data_src=text)
+    ns, M = w.ns, w.M
+    tt = w.g.GameTooltip
+    age = w.now - r2.updated
+    # the dump guard: under 70% of the usual price, not at it
+    P = ns.SellPrices(ids["dump69"])
+    sc.eq((P.now, P.at, P.under), (690, 1000, 31), "Sell now 69% of usual: Sell at the usual 10s, 31% under")
+    P = ns.SellPrices(ids["dump70"])
+    sc.eq((P.now, P.at, P.under), (700, 700, None), "Sell now exactly 70% of usual: Sell now is the price")
+    for key in ("dump69", "dump70"):
+        m = ref_sell_prices(r2, ids[key])
+        sc.eq((m["now"], m["at"], m["under"]), ((690, 1000, 31) if key == "dump69" else (700, 700, None)), "%s: the model agrees" % key)
+    # the fixed calls for one item, and the whole tooltip against the model
+    for key, _, want, _ in EDGE_FIXTURES:
+        iid = ids[key]
+        tt.SetItemByID(tt, iid)
+        lines = w.lines(tt)
+        want_lines, want_st = expected_tooltip(r2, iid, age, styles=True)
+        sc.eq(lines, want_lines, "edges %s: tooltip (model)" % key)
+        tooltip_style_ok(sc, w, tt, want_st, "edges %s" % key)
+        if want:
+            sc.eq(lines[1], want, "edges %s: the call" % key)
+    tt.SetItemByID(tt, ids["dumpvendor"])
+    lines, st, off = w.lines(tt), tooltip_styles(w, tt), int(tt._blz)
+    k = [i for i, (l, _) in enumerate(lines) if l.startswith("Sell now")]
+    sc.check(len(k) == 1 and lines[k[0]] == ("Sell now (40% under usual)", money_icons(599)) and tuple(st[off + k[0]][:2]) == ("warn", "neg"),
+             "dump, a vendor pays more than Sell now: a yellow label, its price red (%s %s)" % (lines, st))
+    # bag stacks of 20: the 1 silver per listing on a slow cheap stack, none on a busier one
+    w.put_bag(0, 1, ids["minstack"], 20)
+    w.put_bag(0, 2, ids["cheapmid"], 20)
+
+    def bag_call(slot):
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 0, slot)
+        return w.lines(tt)[1]
+    sc.eq(bag_call(1), ("Close call", "AH +109%, vendor is safer"), "minstack x20: the 1 silver listing minimum makes it a close call")
+    sc.eq(bag_call(2), ("Auction it", "2.3x vendor"), "cheapmid x20: auction it")
+    for slot, key in ((1, "minstack"), (2, "cheapmid")):
+        tt.SetBagItem(tt, 0, slot)
+        sc.eq(w.lines(tt), expected_tooltip(r2, ids[key], age, count=20), "%s x20: tooltip (model)" % key)
+    # an expensive gear piece in the sell slot first: its deposit (25s for 2 hours) is its rate, not a
+    # per-listing minimum, so the cheap stacks' calls stay
+    gear = ids["gear5g"]
+    M["items"][gear].commodity = False
+    w.put_bag(0, 3, gear, 1)
+    M.depositMin = 1
+    M.durationIndex = 3
+    w.open_ah_modern()
+    ah = w.g.AuctionHouseFrame
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 3))
+    w.settle(0.2)
+    D = ns.settings.deposit
+    sc.check(D is not None and [int(D.rate[d] or -1) for d in (1, 2, 3)] == [50, 200, 600], "the 5g gear piece: rates read")
+    sc.eq(tuple(ns.DepositModel()), (24, 600, 100), "the 5g gear piece: the per-listing minimum stays 1 silver (not 25s)")
+    w.close_ah_modern()
+    sc.eq(bag_call(2), ("Auction it", "2.3x vendor"), "cheapmid x20 after reading the gear piece: still auction it")
+    sc.eq(bag_call(1), ("Close call", "AH +109%, vendor is safer"), "minstack x20 after reading the gear piece: unchanged")
+    ns.NoteDeposit(50000, 1, w.to_lua({1: {"one": 2500, "many": 2500}, 2: {"one": 10000, "many": 10000},
+                                       3: {"one": 30000, "many": 30000}}), 3)
+    sc.eq(tuple(ns.DepositModel())[2], 100, "NoteDeposit at the rate: never raises the minimum")
+    ns.NoteDeposit(300, 20, w.to_lua({1: {"one": 15, "many": 300}}), 3)
+    sc.eq(tuple(ns.DepositModel())[2], 15, "NoteDeposit at the rate, under it: lowers the minimum to at most 15c")
+    ns.NoteDeposit(2, 20, w.to_lua({1: {"one": 100, "many": 100}}), 3)
+    sc.eq(tuple(ns.DepositModel())[1:], (600, 100), "1s for one 2c item, far over its rate: that is the minimum (no rate from it)")
+    ns.settings.deposit = None
+    M.depositMin = 100
+    # gear rounded down to whole silver: 5s nets 4s 75c, under a vendor's 5s 50c: that button is red and says so
+    gr = ids["gearround"]
+    M["items"][gr].commodity = False
+    w.put_bag(0, 4, gr, 1)
+    w.open_ah_modern()
+    ah.SetPostItem(ah, w.g.ItemLocation.CreateFromBagAndSlot(w.g.ItemLocation, 0, 4))
+    w.settle(0.2)
+    pair = find_sell_buttons(ah.ItemSellFrame)
+    want = ref_buttons(r2, gr, is_commodity=False)
+    sc.eq((tuple(want), want.vendor_more), ((500, None), (True, False)), "gearround: the model fills 5s, a vendor pays more")
+    buttons_ok(sc, pair, want, "gearround")
+    sc.eq(pair[0]._text, "|c%sSell now: %s|r" % (TT_NEG, money_icons(500)), "gearround: Sell now is red")
+    sc.check("A vendor pays more than this after the 5% cut." in (pair[0].tipBody or ""),
+             "gearround: its tooltip says a vendor pays more (%s)" % pair[0].tipBody)
+    tt.SetItemByID(tt, gr)
+    sc.check(("Sell now", money_icons(599)) in w.lines(tt), "gearround: the tooltip's Sell now is 5s 99c (%s)" % w.lines(tt))
+    # a live dump: one bracket, "Sell now (live, 40% under usual)"
+    dc = ids["dumpclose"]
+    w.set_commodity_results(dc, [(600, 30, False)])
+    M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", dc)
+    w.settle(0.3)
+    tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+    tt.SetItemByID(tt, dc)
+    lines = w.lines(tt)
+    sc.check(("Sell now (live, 40% under usual)", money_icons(599)) in lines, "live dump: one bracket (%s)" % lines)
+    sc.eq(lines, expected_tooltip(r2, dc, age, live=600), "live dump: tooltip (model)")
+    w.close_ah_modern()
+    # the chart: the long call, the meter's low end grey, Target Buy's help makes no buy claim
+    ns.SetChartTF("1D")
+    ns.ShowChart(ids["swing"], "slash")
+    C = ns.ChartPanel
+    sc.eq(C.verdict._text, rec_model.CALL_HIGH, "swing: the chart's long call")
+    for W in (800, 760, 700, 660):
+        C.frame.SetWidth(C.frame, W)
+        C.Redraw(C)
+        fits = footer_fits(C, W)
+        sc.eq(bool(C.volume._shown), fits, "chart %d wide: the volume %s" % (W, "shown" if fits else "hidden"))
+        if C.volume._shown:
+            rv, rf = w.rect(C.volume), w.rect(C.frame)
+            sc.check(rv is not None and rf is not None and rv[2] <= rf[2], "chart %d wide: the volume ends inside the panel (%s %s)" % (W, rv, rf))
+    sc.check(footer_fits(C, 800) and not footer_fits(C, 660),
+             "the long call's footer fits at 800, not at 660 (%s / %s / %s)" % (C.verdict._text, C.margin._text, C.volume._text))
+    segs = [rgb_name(*[C.meter.segs[i]._color[j] for j in (1, 2, 3)]) for i in range(1, 6)]
+    sc.eq((segs[0], segs[2:]), ("sell", ["muted", "muted", "muted"]), "the meter: blue at the high end, grey to the low end (%s)" % segs)
+    M.fireScript(C.buyBox, "OnEnter")
+    tip = " ".join(str(l or "") + " " + str(r or "") for l, r in w.all_lines(w.g.GameTooltip))
+    sc.check("Target Buy" in tip and "good price to buy" not in tip and "Not a buy signal" in tip,
+             "Target Buy's help: no buy claim (%s)" % tip)
+    M.fireScript(C.buyBox, "OnLeave")
+    sc.clean(w)
+    # the slow-seller rule from 4 measured hours: none sold in 5 hours is slow, in 3 not known yet
+    for hours, want in ((5, ("Close call", "AH +90%, vendor is safer")), (3, ("Auction it", "+90% vs vendor"))):
+        t2 = set_header(text, "salesHours", hours)
+        r3 = RefData(text=t2)
+        w3 = World(r3, items2, data_src=t2)
+        tt3 = w3.g.GameTooltip
+        tt3.SetItemByID(tt3, ids["slownear"])
+        sc.eq(w3.lines(tt3)[1], want, "slownear, none sold in %d measured hours" % hours)
+        sc.eq(w3.lines(tt3), expected_tooltip(r3, ids["slownear"], w3.now - r3.updated), "slownear, %d hours: tooltip (model)" % hours)
+        sc.clean(w3)
+
+
+def sc_chart_calls(sc, ref, items):
+    """The chart's call never claims "buy": high in its range "High now: usually falls back" (blue),
+    low in it "Low now: still falling" (plain, no buy colour), else Hold; never "Strong". Backtest:
+    after a high call prices fell 11-16% the next day, after a low call 1-7%."""
+    w = World(ref, items)
+    ns = w.ns
+    for score, want in ((100, "Low now: still falling"), (25, "Low now: still falling"), (24.9, "Hold"), (0, "Hold"),
+                        (-24.9, "Hold"), (-25, "High now: usually falls back"), (-100, "High now: usually falls back")):
+        sc.eq(ns.VerdictFor(score), want, "VerdictFor(%s)" % score)
+        sc.eq(rec_model.verdict_for(score), want, "the model's verdict_for(%s)" % score)
+    seen = set()
+    C = None
+    for iid in sample_ids(ref):
+        for tf in TFS:
+            ns.SetChartTF(tf)
+            ns.ShowChart(iid, "slash")
+            C = ns.ChartPanel
+            v = C.verdict._text or ""
+            sc.check("Buy" not in v and "Strong" not in v and "Sell" not in v, "%d %s: no buy or sell claim (%s)" % (iid, tf, v))
+            if v in ("High now: usually falls back", "Low now: still falling", "Hold"):
+                seen.add(v)
+                col = rgb_name(*[C.verdict._textColor[k] for k in (1, 2, 3)])
+                sc.eq(col, "sell" if v.startswith("High") else "text", "%d %s: the call's colour" % (iid, tf))
+    ns.SetChartTF("1D")
+    if R.SIM:
+        sc.eq(seen, {"High now: usually falls back", "Low now: still falling", "Hold"}, "the test data has every call")
     sc.clean(w)
 
 
@@ -29268,6 +29888,10 @@ SCENARIOS = [
     ("crafts-ideas-limits", sc_crafts_ideas_limits),
     ("crafts-scan", sc_crafts_scan),
     ("crafts-yield", sc_crafts_yield),
+    ("one-sell-price", sc_one_sell_price),
+    ("deposit-reading", sc_deposit_reading),
+    ("verdict-edges", sc_verdict_edges),
+    ("chart-calls", sc_chart_calls),
 ]
 
 

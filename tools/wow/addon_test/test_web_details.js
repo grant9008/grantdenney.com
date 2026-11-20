@@ -698,6 +698,64 @@ function expectedFlipIds() {
   }
   check(envS.errors.length === 0, 'settled cap: no errors ' + envS.errors.slice(0, 3).join(' | '));
 
+  /* stopgap until the collector ships the addon's numbers: no Recommended Flip card, no buy claims,
+     and the chart signal in the addon's own words (its backtest: after a high call prices fell back,
+     after a low one they kept falling) */
+  {
+    check(env.run('flipHost()') === null, 'no Recommended Flip host: the card never renders');
+    const ff = env.doc.getElementById('flipFinder');
+    check(!ff || deepHtml(ff) === '', 'the flip finder stays empty');
+    const WORDS = ['High now: usually falls back', 'Hold', 'Low now: still falling'];
+    const parts = (side) => ({ pos: 0.3, rangeScore: 30, trendScore: 10, trendPct: -0.02, liqScore: 10, longScore: 5,
+      marginScore: 20, side, marginPct: 0.05, gpVol: 1000, minV: 100, maxV: 200, current: 130 });
+    const g = (grade, verdict, side) => ({ grade, verdict, color: '#fff', parts: parts(side) });
+    for (const [b, vb, s, vs, want] of [[95, 'Steal Buy', 20, 'Avoid Selling', 'Low now: still falling'],
+                                         [75, 'Strong Entry', 50, 'OK Sell', 'Low now: still falling'],
+                                         [60, 'OK Buy', 55, 'OK Sell', 'Hold'],
+                                         [20, 'Avoid Buying', 95, 'Top Sell', 'High now: usually falls back'],
+                                         [50, 'OK Buy', 75, 'Strong Exit', 'High now: usually falls back'],
+                                         [90, 'Wait for Dip', 30, 'Weak Sell', 'Hold'],
+                                         [30, 'Weak Buy', 90, 'Wait for Peak', 'Hold']]) {
+      const el = env.doc.createElement('div');
+      let err = '';
+      try { env.ctx.renderRatingGauge(linen, el, { gBuy: g(b, vb, 'buy'), gSell: g(s, vs, 'sell'), timeframe: '1D' }); }
+      catch (e) { err = e.message; }
+      const h = deepHtml(el);
+      const label = ((h.match(/<div class="rg-label[^"]*"[^>]*>([^<]*)<\/div>/) || [])[1]) || '';
+      check(!err && label === want && WORDS.includes(label), 'chart signal ' + b + '/' + s + ': "' + label + '" (want "' + want + '") ' + err);
+      check(!/Strong|Buy the Dip|Sell the Rip|Steal|good time to buy|Analyst/.test(h) && !/\bBuy\b/.test(h),
+        'chart signal ' + b + '/' + s + ': no buy claim, no Strong, no Analyst Rating (' + (h.match(/Strong|Buy the Dip|Steal|\bBuy\b|Analyst/) || [''])[0] + ')');
+      check(/rg-eyebrow">Chart signal</.test(h) && /rg-end-buy">Low</.test(h) && /rg-end-sell">High</.test(h),
+        'chart signal ' + b + '/' + s + ': labelled Chart signal, Low to High');
+      const note = (h.match(/(?:side (?:wins|leads) by|Low and High within)[^<]*/) || [''])[0];
+      check(note.length > 10 && /^[\x20-\x7e]*$/.test(note),
+        'chart signal ' + b + '/' + s + ': its note is plain ASCII, no long dashes (' + note + ')');
+    }
+    /* the other places the page said what to do: the list badges' hover text, price alerts, the gauge's toggle */
+    const claims = ['Buy now to catch the dip', 'Sell now to catch the peak', "'Buy the dip'", "'Sell into strength'",
+      "' Analyst Rating details'", "label = 'Strong Buy'", "label = 'Buy the Dip'"];
+    const left = claims.filter(c => APP_SRC.includes(c));
+    check(left.length === 0, 'no buy or sell orders left in the page text (' + left.join(' | ') + ')');
+    /* the gauge is this page's own scoring: it quotes none of the addon's backtest numbers and says
+       it can differ from the chart in game; its low half carries no buy colour; Target Sell is a
+       patient price, not "the price to list at" */
+    const page = fs.readFileSync(path.join(WOW, 'index.html'), 'utf8');
+    const gcss = fs.readFileSync(path.join(WOW, 'app.css'), 'utf8');
+    const el = env.doc.createElement('div');
+    env.ctx.renderRatingGauge(linen, el, { gBuy: g(60, 'OK Buy', 'buy'), gSell: g(55, 'OK Sell', 'sell'), timeframe: '1D' });
+    const gh = deepHtml(el);
+    const nums = ['8-16%', '1-11%', '11-16%', '1-7%'].filter(n => page.includes(n) || gh.includes(n) || APP_SRC.includes(n));
+    check(nums.length === 0, 'the page quotes no backtest numbers for its own gauge (' + nums.join(' | ') + ')');
+    check(/scored by this page its own way \(it can differ from the Goblin Ledger chart in game\)/.test(gh),
+      "the gauge tip says it is the page's own scoring");
+    check(/This page scores it its own way, so it can differ from the Goblin Ledger chart in game/.test(page),
+      "the glossary says the gauge is the page's own scoring");
+    check(!/the price to list at/.test(page) && /Target Sell<\/span><span>On the 1D timeframe: a patient price/.test(page),
+      'the glossary calls Target Sell a patient price');
+    check(!/\.rg-(?:b|sb)\s*\{[^}]*--buy-rgb/.test(gcss) && /\.rg-end-buy \{ color:var\(--text-muted\); \}/.test(gcss),
+      "app.css: the gauge's low half and its Low label are grey, not buy-gold");
+  }
+
   /* house rules: plain ASCII in what the new code writes and in the code itself, no long dashes */
   env.ctx.showAutoFavList('auto:epics');
   await tick(10);

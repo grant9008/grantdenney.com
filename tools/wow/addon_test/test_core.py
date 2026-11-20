@@ -286,10 +286,11 @@ WARN = (1.00, 0.86, 0.25)   # Core.lua ns.COLORS.warn
 
 
 def vs(pct_text):
-    """The AH value's badge as Core.lua writes it: "+3% vs avg", yellow from 40% either
-    way, grey under that (never green or red)."""
+    """The AH value's badge as Core.lua writes it: "+3% vs usual" in grey; from 40% either
+    way yellow with a word, "+45% vs usual: spike" / "-45% vs usual: dropped" (never green or red)."""
     p = abs(int(pct_text.rstrip("%")))
-    return "|c%s%s vs avg|r" % (lua_hex(WARN if p >= 40 else MUTED), pct_text)
+    word = (": spike" if pct_text.startswith("+") else ": dropped") if p >= 40 else ""
+    return "|c%s%s vs usual%s|r" % (lua_hex(WARN if p >= 40 else MUTED), pct_text, word)
 
 
 def old_hint(text):
@@ -509,23 +510,29 @@ def test_settled_drop():
     # The buy target is from the old range too: no "buy it" note.
     eq((r.buy, r.margin, r.verdict, r.score, r.settledHours), (399, 25, "Hold", 24, 6),
        "TC1 steak: margin 25c and a Hold, not Strong Buy")
-    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 6 hours"], "TC1 steak: notes")
+    eq(lua_list(r.notes), ["Price fell and stayed down for the last 6 hours"], "TC1 steak: notes")
+    # the price to sell at (rule G): Sell now 3s 97c is under 70% of the usual price (the middle of the
+    # last 24 hourly market prices still holds Tuesday's evening), so it is the usual price, and the
+    # verdict judges that one; the capped sell target (4s 47c) is the chart's business only
     P = ns.SellPrices(18045, "1D")
-    eq((P.now, P.best), (397, 447), "TC1 steak: Sell now 3s 97c (unchanged), Suggested 4s 47c")
+    usual = ns.UsualPrice(18045)
+    check(usual is not None and 397 * 100 < usual * 70, "TC1 steak: Sell now under 70% of the usual price", usual)
+    eq((P.now, P.at, P.usual, P.under), (397, usual, usual, (usual - 397) * 100 // usual),
+       "TC1 steak: Sell now 3s 97c, Sell at the usual price")
     V = ns.SellVerdict(ns.GetItem(18045), P)
-    eq((V.left, V.right, V.unit), ("Auction it", "+26% vs vendor", 399), "TC1 steak: the verdict is unchanged")
+    eq((V.left, V.unit), ("Auction it", usual), "TC1 steak: the verdict judges the usual price")
     # the AH shows the steak back at 6s: the target follows the live listing (1 copper under it). List At
     # is not the 6 hours' high then, so no note. The 1D cheapest prices run 3s 79c to 11s 90c: 6s sits
     # at (600 - 379) / 811 = 0.27 of that range, a Buy score of 45 held to a Hold (24)
     eq(rec(18045, "1D", 600), (447, 599, True), "TC1 steak live 6s: List At 5s 99c")
-    eq(ns.SellPrices(18045, "1D", 600).best, 599, "TC1 steak live 6s: Suggested 5s 99c")
+    eq(ns.SellPrices(18045, "1D", 600).at, 599, "TC1 steak live 6s: Sell at 5s 99c (over 70% of the usual price)")
     r = ns.Recommend(18045, "1D", 600)
     eq((r.verdict, r.score, lua_list(r.notes)), ("Hold", 24, []), "TC1 steak live 6s: a Hold and no note")
     # live 12s is over the old range's top (11s 90c): Strong Sell, as before the settled rule; selling
     # into a listing that high is right however far the price fell
     r = ns.Recommend(18045, "1D", 1200)
-    eq((r.listAt, r.verdict, r.score, lua_list(r.notes)), (1199, "Strong Sell", -100, []),
-       "TC1 steak live 12s: Strong Sell, not held to a Hold")
+    eq((r.listAt, r.verdict, r.score, lua_list(r.notes)), (1199, "High now: usually falls back", -100, []),
+       "TC1 steak live 12s: high now, not held to a Hold")
     # TC2 a real evening premium: 16 x 100 and 8 x 120 in the window, the 70th percentile is 120; the 6
     # morning hours at 100 are over 80% of it (96), so 120 is kept
     eq(rec(9301), (120, 120, False), "TC2 evening +20%: the 1s 20c evening price is kept in the morning")
@@ -538,7 +545,8 @@ def test_settled_drop():
     # last 6 hours (up to 340) are far over 80%: no cap, and no chasing the 340 peak either
     for tf in ("1D", "5D", "1W"):
         eq(rec(9303, tf)[0::2], (300, False), "TC3 rise %s: sell follows the market up to 300" % tf)
-    eq(ns.SellPrices(9303, "1D").best, 300, "TC3 rise: Suggested 300")
+    P3 = ns.SellPrices(9303, "1D")
+    eq((P3.at, P3.under), (P3.now, None), "TC3 rise: the price to sell at is Sell now (no dump under the usual price)")
     # up for 10 hours (the 70th percentile 300), back at 100 for 6: the target settles at 100
     eq(rec(9304), (100, 100, True), "TC3 fallen back: sell 100, not the 300 of the rise")
     eq(rec(9304, "1D", 250), (100, 249, True), "TC3 fallen back, live 2s 50c: List At follows the listing")
@@ -561,8 +569,8 @@ def test_settled_drop():
     # 700 (the 20th percentile 999, held to the market), margin 950 - 700 = 250 (36%), and 6s 99c is the
     # bottom of the week's range: Strong Buy, the dip the sidebar's price-history ideas look for
     r = ns.Recommend(9320, "1W")
-    eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Strong Buy", False),
-       "TC6 a 24-hour dip in a steady week: 1W sell 1000 and Strong Buy")
+    eq((r.sell, r.buy, r.margin, r.verdict, r.settled), (1000, 700, 250, "Low now: still falling", False),
+       "TC6 a 24-hour dip in a steady week: 1W sell 1000 and low now (no buy claim)")
     eq(rec(9320, "5D"), (1000, 1000, False), "TC6 a 24-hour dip: 5D sell 1000")
     eq(rec(9321, "5D"), (1000, 1000, False), "TC6 a 29-hour dip: 5D sell 1000 (one 1000 in its last 30 hours)")
     eq(rec(9322, "5D"), (700, 700, True), "TC6 41 hours at 700: 5D settles at 700 after 30 hours")
@@ -570,7 +578,7 @@ def test_settled_drop():
     eq(rec(9322, "1W"), (1000, 1000, False), "TC6 41 hours at 700: 1W still 1000 (one 1000 in its last 42)")
     r = ns.Recommend(9323, "1W")
     eq((r.sell, r.listAt, r.settled, r.settledHours), (700, 700, True, 42), "TC6 42 hours at 700: 1W settles at 700")
-    eq(lua_list(r.notes), ["Price fell and stayed down: the sell target uses the last 42 hours",
+    eq(lua_list(r.notes), ["Price fell and stayed down for the last 42 hours",
                            "Spread does not beat the 5% AH cut"], "TC6 42 hours: 1W notes")
     # TC7 the daily windows never cap: 1M and 1Y use the 5 daily prices at 1000, so sell 1000 (and List
     # At 1000: the cheapest 4s 99c is under the window's 40th percentile) though the last 6 hours are 500
@@ -582,13 +590,13 @@ def test_settled_drop():
     for tf in ("1M", "1Y"):
         eq(rec(9314, tf), (1000, 1000, False), "TC7 a month that slid for 8 days, %s: sell 1000" % tf)
     # TC8 nothing listed now: no cheaper listing holds the old price back, so no cap. The 70th percentile
-    # of 16 x 3g 39s and 6 x 1g 68s 74c is 3g 39s; the verdict judges that Suggested price: maybe, as
-    # nothing is listed (with the cap it was 1g 68s 74c and "Vendor it +3% vs AH")
+    # of 16 x 3g 39s and 6 x 1g 68s 74c is 3g 39s. The price to sell at is the usual price (the middle
+    # of those 22 prices: 3g 39s); the verdict judges it: maybe, as nothing is listed
     r = ns.Recommend(9312, "1D")
     eq((r.sell, r.settled), (33900, False), "TC8 nothing listed now: sell 3g 39s, no cap")
     eq(lua_list(r.notes), ["No listings right now"], "TC8 nothing listed now: notes")
     P = ns.SellPrices(9312, "1D")
-    eq((P.now, P.best), (None, 33900), "TC8 nothing listed now: no Sell now, Suggested 3g 39s")
+    eq((P.now, P.at, P.usual), (None, 33900, 33900), "TC8 nothing listed now: no Sell now, Sell at the usual 3g 39s")
     V = ns.SellVerdict(ns.GetItem(9312), P)
     eq((V.left, V.right), ("Maybe auction", "none listed now"), "TC8 nothing listed now: the verdict")
     # every settled item against the Python model, on every window, with and without a live listing
@@ -603,12 +611,14 @@ def test_settled_drop():
                 eq(lua_list(r.notes), py["notes"], "settled item %d %s live=%s notes" % (iid, tf, live))
                 sp = rec_model.sell_prices(py, live, False, ns.GetItem(iid).vendor)
                 P = ns.SellPrices(iid, tf, live)
-                eq((P.now, P.best), (sp["now"], sp["best"]), "settled item %d %s live=%s SellPrices" % (iid, tf, live))
-    # the steak's tooltip: Sell now 3s 97c and the verdict as before, Suggested price 4s 47c (was 8s 29c);
-    # the 3-day average 5s 34c, the AH value 3s 99c is 25% under it
+                eq((P.now, P.at, P.under), (sp["now"], sp["at"], sp["under"]),
+                   "settled item %d %s live=%s SellPrices" % (iid, tf, live))
+    # the steak's tooltip: Sell now 3s 97c is 48% under its usual price 7s 64c (the middle of its last 24
+    # hourly prices, Tuesday evening's included): yellow, and Sell at 7s 64c, the price the call judges;
+    # the AH value 3s 99c is 47% under the usual price: "dropped"
     L, G, ns = font_env(items=SETTLED_ITEMS)
-    tc(G, G.GameTooltip, 18045, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("3s 99c", "-25%"),
-                                 ROW("3-day average", "5s 34c"), ROW("Sell now", "3s 97c"), ROW("Suggested price", "4s 47c")],
+    tc(G, G.GameTooltip, 18045, [H(), (("Auction it", "2.4x vendor"), "pos", "pos"), AHV("3s 99c", "-47%"),
+                                 WROW("Sell now (48% under usual)", "3s 97c"), ROW("Sell at", "7s 64c")],
        True, "TC1 steak tooltip")
 
 
@@ -835,17 +845,16 @@ def test_tooltip(G, ns):
     bag_info = G.loadstring("return { getterName = 'GetBagItem', getterArgs = { 0, 1 } }")()
 
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    # AH value: the market (47c), 2% over the 7-day average (46c: 1c over is 2.17%,
-    # rounded down). Sell now: 1c under the cheapest (44c). Suggested price: the 1D sell
-    # target. The verdict judges List At (52c) capped at the AH value: 47c x 95 = 4,465
-    # against a vendor's 13c x 100 = 1,300, 3.4x. This stack of 20 at that price after
-    # the 5% cut: 47c x 20 x 95 / 100 = 8s 93c, in white.
-    up2 = vs("+2%")
-    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + up2),
-             ("7-day average", "46c"), ("Sell now", "44c"), ("Suggested price", "52c"),
-             ("This stack (20), after AH cut", "8s 93c")], "full tooltip, known item")
+    # AH value: the market (47c), 9% under the usual price (52c: the middle of the last 24
+    # hourly market prices). Sell now: 1c under the cheapest (44c), the one price to sell
+    # at (not under 70% of the usual price). The verdict judges it: 44c x 95 = 4,180 against
+    # a vendor's 13c x 100 = 1,300, 3.2x. This stack of 20 at that price after the 5% cut:
+    # 44c x 20 x 95 / 100 = 8s 36c, in white.
+    up2 = vs("-9%")
+    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.2x vendor"), ("AH value", "47c  " + up2),
+             ("Usual price", "52c"), ("Sell now", "44c"), ("This stack (20), after AH cut", "8s 36c")], "full tooltip, known item")
     sp = rec_model.sell_prices(py_recommend(ns, 2589, "1D"), None, False, 13)
-    eq((sp["now"], sp["best"]), (44, 52), "Sell now and Suggested price match the Python model")
+    eq((sp["now"], sp["at"], sp["usual"]), (44, 44, 52), "Sell now, the price to sell at and the usual price match the Python model")
     stk = tt.lines[len(tt.lines)]
     eq((round(stk.rr, 2), round(stk.rg, 2), round(stk.rb, 2)), (1, 1, 1), "the stack's value is white")
     hdr = tt.lines[1]
@@ -854,13 +863,13 @@ def test_tooltip(G, ns):
     eq((round(vl.r, 2), round(vl.g, 2), round(vl.rr, 2), round(vl.rg, 2)), (0.25, 0.8, 0.25, 0.8), "Auction it in green")
 
     M.ShowItem(tt, 2589, bag_info, False)     # same show fires again without a clear
-    eq(len(tt.lines), 7, "no duplicate lines on a second post call")
+    eq(len(tt.lines), 6, "no duplicate lines on a second post call")
 
     M.shift = True
     got = lines_of(M.ShowItem(tt, 2589, bag_info))
-    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.4x vendor"), ("AH value (x20)", "9s 40c  " + up2),
-             ("7-day average (x20)", "9s 20c"), ("Sell now (x20)", "8s 80c"), ("Suggested price (x20)", "10s 40c"),
-             ("This stack (20), after AH cut", "8s 93c")], "Shift shows stack values (the verdict and stack line stay)")
+    eq(got, [("Goblin Ledger", "2h ago - /reload"), ("Auction it", "3.2x vendor"), ("AH value (x20)", "9s 40c  " + up2),
+             ("Usual price (x20)", "10s 40c"), ("Sell now (x20)", "8s 80c"),
+             ("This stack (20), after AH cut", "8s 36c")], "Shift shows stack values (the verdict and stack line stay)")
     got = lines_of(M.ShowItem(tt, 2589, None))
     eq(got[2], ("AH value", "47c  " + up2), "Shift without a stack shows unit price")
     M.shift = False
@@ -892,7 +901,7 @@ def test_tooltip(G, ns):
     got = lines_of(M.ShowItem(tt, 2589, None))
     eq(got[-1], ("Price covers all versions of this item",), "suffix link gets the versions note")
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
-    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 6, "plain link: no versions note")
+    eq(len(lines_of(M.ShowItem(tt, 2589, None))), 5, "plain link: no versions note")
     tt.itemLink = "|cff1eff00|Hitem:2589::::::::60:::1:1:12718:1:28:6874:::::|h[Linen Cloth of the Bear]|h|r"
     eq(lines_of(M.ShowItem(tt, 2589, None))[-1], ("Price covers all versions of this item",),
        "bonus ids with no versions in the data: the versions note")
@@ -906,13 +915,13 @@ def test_tooltip(G, ns):
 
     got = lines_of(M.ShowItem(tt, 13468, None))
     eq(got[1:3], [("Auction it", "over 100x vendor"), ("AH value", "350g  " + vs("0%"))],
-       "big price in tooltip, under 1% from its average: a grey 0%")
+       "big price in tooltip, under 1% from its usual price: a grey 0%")
 
     ns.settings.compact = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH 47c  " + up2 + old_hint("2h"))],
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.2x vendor", "AH 47c  " + up2 + old_hint("2h"))],
        "compact one line (2h old: a short grey note)")
     M.shift = True
-    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.4x vendor", "AH (x20) 9s 40c  " + up2 + old_hint("2h"))],
+    eq(lines_of(M.ShowItem(tt, 2589, bag_info)), [("Auction it: 3.2x vendor", "AH (x20) 9s 40c  " + up2 + old_hint("2h"))],
        "compact with Shift")
     M.shift = False
     eq(lines_of(M.ShowItem(tt, 99001, None)), [("AH value: none listed now" + old_hint("2h"),)], "compact nothing listed")
@@ -920,11 +929,14 @@ def test_tooltip(G, ns):
 
     M.now = UPDATED + 7 * 3600 + 5
     got = lines_of(M.ShowItem(tt, 2589, None))
-    eq(got[0], ("Goblin Ledger", "7h ago - /reload"), "stale header age (with /reload)")
-    eq(got[-1], ("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "stale warning line")
+    eq(got[0], ("Goblin Ledger", "7h ago"), "stale header age (no /reload: the game read them already this old)")
+    # (this test's clock started before the data's time, so the game read them already old: the installer)
+    eq(got[-1], ("Prices are 7h old: run Install-Goblin-Ledger.bat again, then /reload",), "stale line: the installer")
+    eq([x[1] for x in got if x[0] == "AH value"], ["~47c  " + up2], "stale: the AH value with ~ (the age only in the header and the last line)")
+    eq(got[1], ("Auction it", "3.2x vendor"), "stale: the verdict stays")
     M.now = UPDATED + 2 * 3600 + 100
 
-    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 6, "comparison tooltip gets lines")
+    eq(len(M.ShowItem(G.ShoppingTooltip1, 2589, None)), 5, "comparison tooltip gets lines")
     eq(len(M.ShowItem(G.EmbeddedItemTooltip, 2589, None)), 0, "other tooltips are skipped")
     tt.forbidden = True
     eq(len(M.ShowItem(tt, 2589, None)), 0, "forbidden tooltip is skipped")
@@ -934,7 +946,7 @@ def test_tooltip(G, ns):
     ns.settings.tooltip = False
     eq(len(M.ShowItem(tt, 2589, None)), 0, "tooltip setting off")
     ns.settings.tooltip = True
-    eq(len(M.ShowItem(tt, 2589, None)), 6, "tooltip setting back on")
+    eq(len(M.ShowItem(tt, 2589, None)), 5, "tooltip setting back on")
     eq(ns.lastError, None, "no tooltip errors")
 
 
@@ -1048,20 +1060,20 @@ def test_fallback_hooks():
     tt = G.GameTooltip
     tt.itemLink = "|cffffffff|Hitem:2589::::::::60:::::|h[Linen Cloth]|h|r"
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(lines_of(tt.lines)[:3], [("Goblin Ledger", "1h ago"), ("Auction it", "3.4x vendor"), ("AH value", "47c  " + vs("+2%"))],
+    eq(lines_of(tt.lines)[:3], [("Goblin Ledger", "1h ago"), ("Auction it", "3.2x vendor"), ("AH value", "47c  " + vs("-9%"))],
        "fallback adds lines")
     eq(tt.shown, 1, "fallback resizes the tooltip with Show")
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 6, "fallback no duplicates")
+    eq(len(tt.lines), 5, "fallback no duplicates")
     tt.Clear(tt)
     tt.Fire(tt, "OnTooltipSetItem")
-    eq(len(tt.lines), 6, "fallback adds again after a clear")
+    eq(len(tt.lines), 5, "fallback adds again after a clear")
     # a bound copy (bind on pickup): the prices, but no verdict
     G.C_Item = G.loadstring("""return { GetItemInfo = function(id)
         return "Item", "link", 1, 1, 0, "Misc", "Misc", 1, "", 134400, 0, 15, 0, 1 end }""")()
     tt.Clear(tt)
     tt.Fire(tt, "OnTooltipSetItem")
-    eq([ln[0] for ln in lines_of(tt.lines)], ["Goblin Ledger", "AH value", "7-day average", "Sell now", "Suggested price"],
+    eq([ln[0] for ln in lines_of(tt.lines)], ["Goblin Ledger", "AH value", "Usual price", "Sell now"],
        "fallback: a bound item gets no verdict")
     G.C_Item = None
     eq(ns.lastError, None, "no fallback errors")
@@ -1413,7 +1425,7 @@ def test_sales_hours():
 
 
 def test_daily_points():
-    print("the average's days, AH value against it, and WeekRange (6 hourly prices)")
+    print("the usual price, the AH value against it, and WeekRange (6 hourly prices)")
     L, G, ns = new_env(fixture_lua())
     M = G.MOCK
     M.now = UPDATED + 100
@@ -1427,11 +1439,16 @@ def test_daily_points():
         left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, iid, None))]
         check(not any(x.startswith(("7-day low", "7-day high", "Market", "Cheapest", "Best price", "Listed ")) for x in left),
               "%d: none of the old tooltip lines" % iid, left)
-    # the average says how many days of prices it covers, up to 7 (the data's own count)
-    for iid, want in ((2589, "7-day average"), (13468, "1-day average"), (7228, "1-day average"), (4306, None)):
-        left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, iid, None))]
-        eq([x for x in left if x.endswith("-day average")], [want] if want else [],
-           "%d: the average line says how many days it covers" % iid)
+    # the multi-day average is not shown any more; the usual price is (the middle of the last 24
+    # hourly market prices, at least 4 of them)
+    for iid in (2589, 13468, 7228, 4306):
+        got = lines_of(M.ShowItem(G.GameTooltip, iid, None))
+        left = [ln[0] for ln in got]
+        eq([x for x in left if x.endswith("-day average")], [], "%d: no average line" % iid)
+        u = ns.UsualPrice(iid)
+        s1w = ns.GetSeries(iid, "1W")
+        want_u = rec_model.usual_price([v or None for v in lua_list(s1w.market, s1w.n)]) if s1w else None
+        eq(u, want_u, "%d: UsualPrice is the model's middle of the last 24 prices" % iid)
     eq(ns.WeekRange(424242), (None, None, 0), "WeekRange of an unknown item")
     # 6 prices is enough, 5 is not
     items = dict(ITEMS)
@@ -1439,28 +1456,33 @@ def test_daily_points():
                                                 enc_series([100], [110], [5]))
     items[9402] = "Five|100|110|5|5|0|0|%s|%s" % (enc_series([None, None, 101, 99, 120, 98, 97], [110] * 7, [1] * 7),
                                                  enc_series([100], [110], [5]))
-    # 3 days of prices, up 4%; 9 days, down 10%; under 1% off: a grey 0%
-    items[9403] = "Three|100|110|5|5|105|0|%s|%s" % (enc_series([100] * 3, [110] * 3, [1] * 3),
+    # a usual price of 1s with the AH value up 4%, one of 1s with it down 10%, one under 1% off: a grey 0%;
+    # the data's own average (field 6: 777) is never shown
+    items[9403] = "Three|100|104|5|5|777|0|%s|%s" % (enc_series([100] * 24, [100] * 24, [1] * 24),
                                                    enc_series([100, 101, 102], [104, 105, 106], [5] * 3))
-    items[9404] = "Down|80|90|5|5|100|0|%s|%s" % (enc_series([80] * 3, [90] * 3, [1] * 3),
+    items[9404] = "Down|80|90|5|5|777|0|%s|%s" % (enc_series([80] * 24, [100] * 24, [1] * 24),
                                                 enc_series([95] * 9, [100] * 9, [5] * 9))
-    items[9405] = "Flat|990|1000|5|5|1005|0|%s|%s" % (enc_series([990] * 3, [1000] * 3, [1] * 3),
+    items[9405] = "Flat|990|1000|5|5|777|0|%s|%s" % (enc_series([990] * 24, [1005] * 24, [1] * 24),
                                                     enc_series([1000] * 9, [1005] * 9, [5] * 9))
+    # only 3 hourly market prices: no usual price yet, so no badge
+    items[9406] = "Young|100|104|5|5|777|0|%s|%s" % (enc_series([100] * 3, [100] * 3, [1] * 3), enc_series([100], [104], [5]))
     L2, G2, ns2 = new_env(fixture_lua(items))
     eq(ns2.WeekRange(9401), (97, 120, 6), "6 hourly prices: low and high")
     eq(ns2.WeekRange(9402), (None, None, 5), "5 hourly prices: not yet")
     M2 = G2.MOCK
     M2.now = UPDATED + 100
 
-    def ah_and_avg(iid):
+    def ah_and_usual(iid):
         got = lines_of(M2.ShowItem(G2.GameTooltip, iid, None))
-        return [x for x in got if x[0] == "AH value"][0], [x for x in got if x[0].endswith("-day average")]
-    eq(ah_and_avg(9403), (("AH value", "1s 10c  " + vs("+4%")), [("3-day average", "1s 5c")]),
-       "3 days of prices: a 3-day average, and the AH value 4% over it (grey: under 25%)")
-    eq(ah_and_avg(9404), (("AH value", "90c  " + vs("-10%")), [("7-day average", "1s")]),
-       "9 days of prices: a 7-day average, the AH value 10% under it (grey, never red)")
-    eq(ah_and_avg(9405), (("AH value", "10s  " + vs("0%")), [("7-day average", "10s 5c")]),
-       "under 1% from the average: a grey 0%")
+        check("777" not in str(got) and not any(x[0].endswith("-day average") for x in got), "%d: no average shown" % iid, got)
+        return [x for x in got if x[0] == "AH value"][0], [x for x in got if x[0] == "Usual price"]
+    eq(ah_and_usual(9403), (("AH value", "1s 4c  " + vs("+4%")), [("Usual price", "1s")]),
+       "the AH value 4% over the usual price (grey: under 40%)")
+    eq(ah_and_usual(9404), (("AH value", "90c  " + vs("-10%")), [("Usual price", "1s")]),
+       "the AH value 10% under the usual price (grey, never red)")
+    eq(ah_and_usual(9405), (("AH value", "10s  " + vs("0%")), [("Usual price", "10s 5c")]),
+       "under 1% from the usual price: a grey 0%")
+    eq(ah_and_usual(9406), (("AH value", "1s 4c"), []), "3 hourly prices: no usual price, no badge")
     ns2.settings.compact = True
     eq(lines_of(M2.ShowItem(G2.GameTooltip, 9404, None)), [("Auction it: can't vendor", "AH 90c  " + vs("-10%"))],
        "compact: the verdict, the AH value and its % too")
@@ -1679,8 +1701,8 @@ def test_versions():
     tt = G.GameTooltip
     tt.itemLink = link([12718])
     got = lines_of(M.ShowItem(tt, CLOAK, None))
-    # the verdict judges that version's prices: 1g 50s x 95 against a vendor's 23s 82c x 100
-    eq(got[1:3], [("Auction it", "5.9x vendor"), ("AH value", "1g 50s  " + vs("0%"))],
+    # the verdict judges that version's price to sell at, Sell now: 1g 39s 99c x 95 against a vendor's 23s 82c x 100
+    eq(got[1:3], [("Auction it", "5.5x vendor"), ("AH value", "1g 50s  " + vs("0%"))],
        "version tooltip: that version's verdict and market price")
     eq(got[-1], ("Prices for this version only",), "version tooltip: says so")
     tt.itemLink = link([55555])
@@ -1742,7 +1764,7 @@ def test_data_flips():
 
 
 def test_sell_prices():
-    print("Sell now and Best price (ns.SellPrices)")
+    print("Sell now and the one price to sell at (ns.SellPrices)")
     L, G, ns = new_env(fixture_lua(NEW_ITEMS))
     L2, G2, ns2 = new_env(fixture_lua(RULE_ITEMS))
     for env, items in ((ns, NEW_ITEMS), (ns2, RULE_ITEMS)):
@@ -1752,29 +1774,37 @@ def test_sell_prices():
                     item = env.GetItem(iid)
                     py = rec_model.sell_prices(py_recommend(env, iid, tf, live), live, own, item.vendor)
                     r = env.SellPrices(iid, tf, live, own)
-                    got = {k: r[k] for k in ("now", "best", "nowWhy", "bestWhy", "live", "own", "nowVendor", "bestVendor")}
+                    got = {k: r[k] for k in ("now", "at", "under", "usual", "nowWhy", "atWhy", "live", "own",
+                                             "nowVendor", "atVendor")}
                     want = {k: py[k] for k in got}
                     eq(got, want, "SellPrices %d %s live=%s own=%s" % (iid, tf, live, own))
     eq(ns.SellPrices(424242, "1D"), None, "SellPrices of an unknown item")
-    # hand-checked cases
+    # hand-checked cases: the price to sell at is Sell now unless that is under 70% of the usual price
     r = ns2.SellPrices(9001, "1D")
-    eq((r.now, r.best), (9999, 12000), "flat market: Sell now 1c under 1g, Best price the 1g 20s sell target")
+    eq((r.now, r.at, r.usual, r.under), (9999, 9999, 12000, None),
+       "flat market: Sell now 1c under 1g (83% of the usual 1g 20s): the price to sell at")
     r = ns2.SellPrices(9001, "1D", 16000)
-    eq((r.now, r.best), (15999, 15999), "live 1g 60s: Best price never under a normal cheapest listing")
+    eq((r.now, r.at), (15999, 15999), "live 1g 60s: 1c under it")
     r = ns2.SellPrices(9001, "1D", 16000, True)
-    eq((r.now, r.best), (16000, 16000), "your own cheapest listing is matched")
+    eq((r.now, r.at), (16000, 16000), "your own cheapest listing is matched")
     r = ns2.SellPrices(9001, "1D", 50000)
-    eq((r.now, r.best), (49999, 12000), "cheapest far above history: Best price is the sell target")
+    eq((r.now, r.at), (49999, 49999), "cheapest far above history: still Sell now (a spike is no dump)")
+    r = ns2.SellPrices(9001, "1D", 8000)
+    eq((r.now, r.at, r.under), (7999, 12000, 33), "live 80s: Sell now 33% under the usual 1g 20s, so Sell at 1g 20s")
+    r = ns2.SellPrices(9001, "1D", 8400)
+    eq((r.now, r.at, r.under), (8399, 12000, 30), "Sell now 83s 99c, just under 70% of the usual price: Sell at 1g 20s")
+    r = ns2.SellPrices(9001, "1D", 8401)
+    eq((r.now, r.at, r.under), (8400, 8400, None), "exactly 70% of the usual price: Sell now stands")
     r = ns2.SellPrices(9003, "1D")
-    eq((r.now, r.best, r.bestWhy), (9999, None, "history"), "too little history: Sell now only")
+    eq((r.now, r.at, r.usual), (9999, 9999, None), "too little history: no usual price, Sell now")
     r = ns2.SellPrices(9008, "1D")
-    eq((r.now, r.best, r.bestWhy, r.nowVendor), (9999, None, "history", True), "a vendor pays more: flagged")
+    eq((r.now, r.at, r.nowVendor, r.atVendor), (9999, 9999, True, True), "a vendor pays more: flagged")
     r = ns.SellPrices(9101, "1D")
-    eq((r.now, r.bestWhy), (999, "unreliable"), "2 listings: Sell now, no Best price")
+    eq((r.now, r.at), (999, 999), "2 listings: Sell now")
     r = ns.SellPrices(9104, "1D")
-    eq((r.now, r.nowWhy, r.best), (None, "unreliable", None), "a few units far above the vendor price: neither")
+    eq((r.now, r.nowWhy, r.at, r.atWhy), (None, "unreliable", None, "unreliable"), "a few units far above the vendor price: neither")
     r = ns.SellPrices(9106, "1D")
-    eq((r.now, r.nowWhy), (None, "none"), "nothing listed: no Sell now")
+    eq((r.now, r.nowWhy, r.at), (None, "none", 1100), "nothing listed: no Sell now, Sell at the usual price")
 
 
 def test_stack_verdicts():
@@ -1801,25 +1831,25 @@ def test_stack_verdicts():
 
     def stack(iid, info=bag):
         return [ln for ln in lines_of(M.ShowItem(tt, iid, info)) if ln[0].startswith(("This stack", "Vendor it:")) or ln[0] in VERDICTS]
-    # a vendor pays 50s, the AH 42s after the cut (4200 x 95 = 399,000 against 500,000): +25%, no stack line
-    eq(stack(9501), [("Vendor it", "+25% vs AH")], "a vendor pays more: Vendor it, no stack line")
+    # a vendor pays 50s, Sell now 39s 99c after the cut (3999 x 95 = 379,905 against 500,000): +31%, no stack line
+    eq(stack(9501), [("Vendor it", "+31% vs AH")], "a vendor pays more: Vendor it, no stack line")
     vl = tt.lines[2]
     eq((round(vl.r, 2), round(vl.g, 2), round(vl.rr, 2), round(vl.rg, 2)), (0.9, 0.33, 0.9, 0.33), "Vendor it is red")
-    # no vendor price: the stack at the verdict's price, 1100 x 20 x 95 / 100 = 2g 9s
-    eq(stack(9502), [("Auction it", "can't vendor"), ("This stack (20), after AH cut", "2g 9s")],
+    # no vendor price: the stack at the verdict's price (Sell now), 999 x 20 x 95 / 100 = 1g 89s 81c
+    eq(stack(9502), [("Auction it", "can't vendor"), ("This stack (20), after AH cut", "1g 89s 81c")],
        "no vendor price: Auction it and the stack's AH value")
     sl = tt.lines[len(tt.lines)]
     eq((round(sl.rr, 2), round(sl.rg, 2), round(sl.rb, 2)), (1, 1, 1), "and the stack's value is white")
     eq(stack(9504), [("Maybe auction", "none listed now")], "nothing listed now: a maybe, no stack line")
     eq(stack(9505), [], "a 1c listing: no verdict and no stack line")
-    eq(stack(9503, None), [("Close call", "tiny gain")], "one item, 22c against 19c: a close call, no stack line")
-    eq(stack(9503), [("Close call", "tiny gain"), ("This stack (20), after AH cut", "4s 18c")],
-       "a close call on a stack: the stack line at 22c (22 x 20 x 95 / 100 = 418)")
+    # Sell now 20c nets 19c, the same as a vendor's 19c: Vendor it, one item or a stack
+    eq(stack(9503, None), [("Vendor it", "same as AH")], "one item, 20c (19c after the cut) against 19c: Vendor it")
+    eq(stack(9503), [("Vendor it", "same as AH")], "a stack of them: Vendor it, no stack line")
     for iid in sorted(items):
         it = ns.GetItem(iid)
         rec = py_recommend(ns, iid, "1D")
         sp = rec_model.sell_prices(rec, None, False, it.vendor)
-        V = rec_model.sell_verdict(py_item(it), sp, rec, ns.db.salesHours)
+        V = rec_model.sell_verdict(py_item(it), sp, rec, ns.db.salesHours, 20)
         lines = [ln for ln in stack(iid) if ln[0].startswith("This stack")]
         if V and V["kind"] in ("auction", "close"):
             eq(lines, [("This stack (20), after AH cut", ns.MoneyText(rec_model.stack_after_cut(V["unit"], 20)))],
@@ -1827,7 +1857,7 @@ def test_stack_verdicts():
         else:
             eq(lines, [], "stack %d: no stack line for %s" % (iid, V and V["kind"]))
     ns.settings.compact = True
-    eq(lines_of(M.ShowItem(tt, 9502, bag)), [("Auction it: can't vendor", "AH 11s  " + vs("+4%"))],
+    eq(lines_of(M.ShowItem(tt, 9502, bag)), [("Auction it: can't vendor", "AH 11s  " + vs("0%"))],
        "compact tooltips are one line, no stack line")
     ns.settings.compact = False
 
@@ -1838,9 +1868,17 @@ def test_stack_verdicts():
 # ---------------------------------------------------------------------------
 VERDICT_ITEMS = dict(ITEMS)
 VERDICT_ITEMS.update({
-    # vendor 1s 50c; the cheapest (1s 58c) is a lone dip under the usual 1s 90c, the AH value 2s
-    4306: "Silk Cloth|158|200|11850|14202|199|150|%s|%s|418" % (
+    # vendor 1s 50c; the cheapest 2s (Sell now 1s 99c), the AH value 2s
+    4306: "Silk Cloth|200|200|11850|14202|199|150|%s|%s|418" % (
+        enc_series([200] * 24, [200] * 24, [600] * 24), enc_series([200, 200], [198, 200], [14000, 14202])),
+    # the old Silk: a lone cheap listing (1s 58c) under the usual 2s is not skipped any more (rule G)
+    9807: "Silk Dip|158|200|11850|14202|199|150|%s|%s|418" % (
         enc_series([190] * 23 + [158], [200] * 24, [600] * 24), enc_series([190, 158], [198, 200], [14000, 14202])),
+    # someone dumps at 6s against the usual 10s (Sell now under 70% of it): Sell at the usual 10s
+    9808: "Dumped|600|1000|500|100|1000|300|%s|%s|30" % (
+        enc_series([1000] * 23 + [600], [1000] * 24, [5] * 24), enc_series([1000] * 5, [1000] * 5, [120] * 5)),
+    # 4c against a vendor's 2c: a stack of 20 gains 36c, not worth the trip
+    9809: "Trip|5|5|500|100|5|2|%s|30" % series24(5, 5, 5),
     2838: "Heavy Stone|389|389|862|13417|367|60|%s|%s|39" % (
         enc_series([340] * 12 + [389] * 12, [370] * 12 + [389] * 12, [500] * 24), enc_series([350] * 7, [367] * 7, [13000] * 7)),
     17057: "Shiny Fish Scales|7|7|5000|7254|7|7|%s|323" % series24(7, 7, 300),
@@ -1864,7 +1902,7 @@ VERDICT_ITEMS.update({
     9703: "Tiny Gain|4|4|500|100|4|3|%s|30" % series24(4, 4, 5),
     9705: "Thin Vendor|50|50|1|10|50|60|%s|1" % series24(50, 50),
     9706: "Thin No Vendor|30000|30000|2|0|30000|0|%s|2" % series24(30000, 30000),
-    # the rule edges: nothing listed, a Suggested price 300x / 150x the vendor price (over / under 200x);
+    # the rule edges: nothing listed, a usual price 300x / 150x the vendor price (over / under 200x);
     # the AH nets exactly as much as a vendor, then 1% more; exactly 2 copper more; nothing listed, vendor ahead
     9801: "Old Far|0|0|0|20|0|1|%s|0" % series24(300, 300),
     9802: "Old Near|0|0|0|20|0|2|%s|0" % series24(300, 300),
@@ -2077,9 +2115,10 @@ def tc(G, tt, iid, want, big, label, count=1, shift=False):
     eq(normal_fonts(G, tt, skip=(4, 5) if big else ()), [], label + ": every other line at the normal size")
 
 
-def H(age="1m ago"):
-    """The header: the age in grey, or over 80 minutes old "7h ago - /reload" in yellow."""
-    return (("Goblin Ledger", age), "sell", "warn" if age.endswith(" - /reload") else "muted")
+def H(age="1m ago", old=False):
+    """The header: the age in grey, or over 80 minutes old "2h ago - /reload" in yellow (old: stale
+    prices the game read already stale, the yellow age alone)."""
+    return (("Goblin Ledger", age), "sell", "warn" if (old or age.endswith(" - /reload")) else "muted")
 
 
 def AHV(money, pct=None, tag=""):
@@ -2094,77 +2133,90 @@ def py_item(it):
     return {"vendor": int(it.vendor or 0), "market": int(it.market or 0), "sold24": int(it.sold24 or 0)}
 
 
-SILK_LINES = [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
-              ROW("Sell now", "1s 57c", "neg"), ROW("Suggested price", "2s")]
+SILK_LINES = [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("2s", "0%"), ROW("Usual price", "2s"),
+              ROW("Sell now", "1s 99c")]
+
+
+def WROW(left, right):
+    """Sell now far under the usual price: yellow, with how far."""
+    return ((left, right), "warn", "warn")
 
 
 def test_verdict_tooltips():
     print("sell verdict: the tooltip lines (TC1 to TC17, TC28)")
+    # The verdict judges the price to sell at (rule G): Sell now, unless it is under 70% of the usual
+    # price (the middle of the last 24 hourly market prices), then the usual price. Auction it needs
+    # the expected result (sold at that price, or else sold to a vendor after the deposit is lost:
+    # 60% of the vendor price at 24 hours, at least 1 silver a listing) to beat vendoring by 5%, at the
+    # item's sell chance (92 / 73 / 39% for 10+ / 1-9 / under 1 a day); between 1.01x and that it is a
+    # close call. A stack in the bags (count) also needs at least 1 silver more than a vendor pays.
     L, G, ns = font_env()
     tt = G.GameTooltip
     stack = lambda v: ROW("This stack (%d), after AH cut" % v[0], v[1])  # noqa: E731
-    # TC1 Silk x20: the cheapest (1s 58c) is a lone dip, the verdict judges List At, the AH value:
-    # 200 x 95 = 19,000 against a vendor's 150 x 100 = 15,000, 26% more; the stack 200 x 20 x 95 / 100 = 38s
-    tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC1 Silk x20", count=20)
+    # TC1 Silk x20: Sell now 1s 99c x 95 = 18,905 against a vendor's 150 x 100 = 15,000, 26% more;
+    # the stack 199 x 20 x 95 / 100 = 37s 81c
+    tc(G, tt, 4306, SILK_LINES + [stack((20, "37s 81c"))], True, "TC1 Silk x20", count=20)
     check(not any(r[0][0].startswith("Vendor it") for r in show(G, tt, 4306, 20)), "TC1: no 'Vendor it' line")
     tc(G, tt, 4306, SILK_LINES, True, "TC2 Silk by id")
     tc(G, tt, 4306, [H(), (("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("40s", "0%", tag=" (x20)"),
-                     ROW("2-day average (x20)", "39s 80c"), ROW("Sell now (x20)", "31s 40c", "neg"),
-                     ROW("Suggested price (x20)", "40s"), stack((20, "38s"))], True, "TC3 Silk x20 with Shift",
-       count=20, shift=True)
-    tc(G, tt, 4306, SILK_LINES + [stack((20, "38s"))], True, "TC3 Shift released: TC1 again", count=20)
+                     ROW("Usual price (x20)", "40s"), ROW("Sell now (x20)", "39s 80c"), stack((20, "37s 81c"))], True,
+       "TC3 Silk x20 with Shift", count=20, shift=True)
+    tc(G, tt, 4306, SILK_LINES + [stack((20, "37s 81c"))], True, "TC3 Shift released: TC1 again", count=20)
     eq(len(big_lines(G, tt)), 4, "TC3: exactly four big FontStrings (two lines) after the rebuild")
-    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+5%"),
-                     ROW("7-day average", "3s 67c"), ROW("Sell now", "3s 88c"), ROW("Suggested price", "3s 89c"),
-                     stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17", count=17)
-    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("66s 13c", "+5%", tag=" (x17)"),
-                     ROW("7-day average (x17)", "62s 39c"), ROW("Sell now (x17)", "65s 96c"),
-                     ROW("Suggested price (x17)", "66s 13c"), stack((17, "62s 66c"))], True, "TC4 Heavy Stone x17 Shift",
-       count=17, shift=True)
+    # a lone cheap listing (1s 58c) under the usual 2s: Sell now 1s 57c is 78% of it, so it stands, and nets
+    # 1s 49c against a vendor's 1s 50c
+    tc(G, tt, 9807, [H(), (("Vendor it", "same as AH"), "neg", "neg"), ROW("Vendor pays", "1s 50c"), AHV("2s", "0%"),
+                     ROW("Usual price", "2s"), ROW("Sell now", "1s 57c", "neg")], True, "TC1 Silk Dip: no dip skipped")
+    # a dump: Sell now 5s 99c is 40% under the usual 10s: yellow, and Sell at 10s, the price the call judges
+    dumped = [H(), (("Auction it", "3.1x vendor"), "pos", "pos"), AHV("10s", "0%"),
+              WROW("Sell now (40% under usual)", "5s 99c"), ROW("Sell at", "10s")]
+    tc(G, tt, 9808, dumped, True, "TC1 Dumped")
+    tc(G, tt, 9808, dumped + [stack((20, "1g 90s"))], True, "TC1 Dumped x20: the stack at Sell at", count=20)
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("3s 89c", "+2%"),
+                     ROW("Usual price", "3s 80c"), ROW("Sell now", "3s 88c"), stack((17, "62s 66c"))], True,
+       "TC4 Heavy Stone x17", count=17)
+    tc(G, tt, 2838, [H(), (("Auction it", "6.1x vendor"), "pos", "pos"), AHV("66s 13c", "+2%", tag=" (x17)"),
+                     ROW("Usual price (x17)", "64s 60c"), ROW("Sell now (x17)", "65s 96c"), stack((17, "62s 66c"))], True,
+       "TC4 Heavy Stone x17 Shift", count=17, shift=True)
     tc(G, tt, 13468, [H(), (("Auction it", "over 100x vendor"), "pos", "pos"), AHV("350g", "0%"),
-                      ROW("1-day average", "350g 5s"), ROW("Sell now", "350g 19s"), ROW("Suggested price", "350g 19s")],
-       True, "TC5 Black Lotus")
-    tc(G, tt, 17057, [H(), (("Vendor it", "+5% vs AH"), "neg", "neg"), ROW("Vendor pays", "7c"), AHV("7c", "0%"),
-                      ROW("5-day average", "7c"),
-                      ROW("Sell now", "6c", "neg"), ROW("Suggested price", "7c", "neg")], True,
+                      ROW("Usual price", "350g"), ROW("Sell now", "350g 19s")], True, "TC5 Black Lotus")
+    tc(G, tt, 17057, [H(), (("Vendor it", "+22% vs AH"), "neg", "neg"), ROW("Vendor pays", "7c"), AHV("7c", "0%"),
+                      ROW("Usual price", "7c"), ROW("Sell now", "6c", "neg")], True,
        "TC6 Shiny Fish Scales x20 (no stack line)", count=20)
-    tc(G, tt, 12365, [H(), (("Close call", "AH +9%"), "muted", "muted"), AHV("2s 88c", "0%"),
-                      ROW("5-day average", "2s 88c"), ROW("Sell now", "2s 77c"), ROW("Suggested price", "2s 88c"),
-                      stack((20, "54s 72c"))], False, "TC7 Dense Stone x20", count=20)
-    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
-                     ROW("5-day average", "42s"),
-                     ROW("Sell now", "39s 99c", "neg"), ROW("Suggested price", "42s", "neg")], True,
+    # Dense Stone x20: Sell now 2s 77c nets 5% over a vendor's 2s 50c, under the 1.10x a fast seller needs
+    tc(G, tt, 12365, [H(), (("Close call", "AH +5%, vendor is safer"), "muted", "muted"), AHV("2s 88c", "0%"),
+                      ROW("Usual price", "2s 88c"), ROW("Sell now", "2s 77c"), stack((20, "52s 63c"))], False,
+       "TC7 Dense Stone x20", count=20)
+    tc(G, tt, 9501, [H(), (("Vendor it", "+31% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
+                     ROW("Usual price", "42s"), ROW("Sell now", "39s 99c", "neg")], True,
        "TC8 Vendor Pays More x20 (no stack line)", count=20)
     # with Shift on the stack: Vendor pays for the stack, with the same (x20) tag as the other lines
-    tc(G, tt, 9501, [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays (x20)", "10g"),
-                     AHV("8g 40s", "0%", tag=" (x20)"), ROW("5-day average (x20)", "8g 40s"),
-                     ROW("Sell now (x20)", "7g 99s 80c", "neg"), ROW("Suggested price (x20)", "8g 40s", "neg")], True,
-       "TC8 Vendor Pays More x20 with Shift", count=20, shift=True)
-    tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "+4%"),
-                     ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c"), ROW("Suggested price", "11s"),
-                     stack((20, "2g 9s"))], True, "TC9 No Vendor x20", count=20)
-    tc(G, tt, 9102, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("11s", "+4%"),
-                     ROW("5-day average", "10s 50c"), ROW("Sell now", "9s 99c")], False,
-       "TC10 One Listing (no 'Few listed' line, no Suggested price)")
-    tc(G, tt, 9104, [H(), AHV("11s", "+4%"), ROW("5-day average", "10s 50c"),
+    tc(G, tt, 9501, [H(), (("Vendor it", "+31% vs AH"), "neg", "neg"), ROW("Vendor pays (x20)", "10g"),
+                     AHV("8g 40s", "0%", tag=" (x20)"), ROW("Usual price (x20)", "8g 40s"),
+                     ROW("Sell now (x20)", "7g 99s 80c", "neg")], True, "TC8 Vendor Pays More x20 with Shift", count=20, shift=True)
+    tc(G, tt, 9502, [H(), (("Auction it", "can't vendor"), "pos", "muted"), AHV("11s", "0%"),
+                     ROW("Usual price", "11s"), ROW("Sell now", "9s 99c"), stack((20, "1g 89s 81c"))], True,
+       "TC9 No Vendor x20", count=20)
+    tc(G, tt, 9102, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("11s", "0%"),
+                     ROW("Usual price", "11s"), ROW("Sell now", "9s 99c")], False,
+       "TC10 One Listing (no 'Few listed' line)")
+    tc(G, tt, 9104, [H(), AHV("11s", "0%"), ROW("Usual price", "11s"),
                      (("Few listed: the price may not be reliable",), "muted", None)], False, "TC11 vendorFar: no verdict")
     tc(G, tt, 9504, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
-                     ROW("Suggested price", "32c")], False, "TC12 Nothing Now")
+                     ROW("Sell at", "32c")], False, "TC12 Nothing Now: Sell at the usual price")
     # TC13 the thresholds
-    tc(G, tt, 9503, [H(), (("Close call", "tiny gain"), "muted", "muted"), AHV("22c", "0%"), ROW("5-day average", "22c"),
-                     ROW("Sell now", "20c", "neg"), ROW("Suggested price", "22c")], False, "TC13 9503 Even")
+    tc(G, tt, 9503, [H(), (("Vendor it", "same as AH"), "neg", "neg"), ROW("Vendor pays", "19c"), AHV("22c", "0%"),
+                     ROW("Usual price", "22c"), ROW("Sell now", "20c", "neg")], True, "TC13 9503 Even")
     for iid, verdict, big, rows in (
-            (9602, ("Auction it", "+10% vs vendor"), True, [AHV("44c", "0%"), ROW("5-day average", "44c"),
-                                                             ROW("Sell now", "43c"), ROW("Suggested price", "44c")]),
-            (9603, ("Vendor it", "+1% vs AH"), True, [ROW("Vendor pays", "96c"), AHV("1s", "0%"), ROW("5-day average", "1s"),
-                                                       ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")]),
-            (9604, ("Auction it", "2x vendor"), True, [AHV("2s", "0%"), ROW("5-day average", "2s"),
-                                                        ROW("Sell now", "1s 99c"), ROW("Suggested price", "2s")]),
-            (9605, ("Auction it", "+99% vs vendor"), True, [AHV("1s 99c", "0%"), ROW("5-day average", "1s 99c"),
-                                                             ROW("Sell now", "1s 98c"), ROW("Suggested price", "1s 99c")]),
-            (9704, ("Auction it", "10x vendor"), True, [AHV("11s", "0%"), ROW("5-day average", "11s"),
-                                                         ROW("Sell now", "10s 99c"), ROW("Suggested price", "11s")])):
-        c = ("pos", "pos") if verdict[0] == "Auction it" else ("neg", "neg")
+            (9602, ("Close call", "AH +7%, vendor is safer"), False, [AHV("44c", "0%"), ROW("Usual price", "44c"),
+                                                                     ROW("Sell now", "43c")]),
+            (9603, ("Vendor it", "+2% vs AH"), True, [ROW("Vendor pays", "96c"), AHV("1s", "0%"), ROW("Usual price", "1s"),
+                                                       ROW("Sell now", "99c", "neg")]),
+            (9604, ("Auction it", "+99% vs vendor"), True, [AHV("2s", "0%"), ROW("Usual price", "2s"), ROW("Sell now", "1s 99c")]),
+            (9605, ("Auction it", "+98% vs vendor"), True, [AHV("1s 99c", "0%"), ROW("Usual price", "1s 99c"),
+                                                             ROW("Sell now", "1s 98c")]),
+            (9704, ("Auction it", "10x vendor"), True, [AHV("11s", "0%"), ROW("Usual price", "11s"), ROW("Sell now", "10s 99c")])):
+        c = {"Auction it": ("pos", "pos"), "Vendor it": ("neg", "neg"), "Close call": ("muted", "muted")}[verdict[0]]
         tc(G, tt, iid, [H(), (verdict, c[0], c[1])] + rows, big, "TC13 %d %s" % (iid, verdict[1]))
     for hi, lo, what, want in ((99940, 1000, "vendor", "99x vendor"), (10000, 100, "vendor", "100x vendor"),
                                (10001, 100, "vendor", "over 100x vendor"), (36860, 6000, "vendor", "6.1x vendor"),
@@ -2172,50 +2224,49 @@ def test_verdict_tooltips():
                                (100, 100, "AH", "same as AH"), (19000, 15000, "vendor", "+26% vs vendor")):
         eq(ns.BetterText(hi, lo, what), want, "TC13 BetterText(%d, %d, %s)" % (hi, lo, what))
         eq(rec_model.better_text(hi, lo, what), want, "TC13 the Python twin's better_text(%d, %d, %s)" % (hi, lo, what))
-    tc(G, tt, 9601, [H(), (("Maybe auction", "price jumped"), "buy", "muted"), AHV("30s", "+200%"),
-                     ROW("5-day average", "10s"), ROW("Sell now", "29s 99c"), ROW("Suggested price", "10s 10c", "neg")],
-       False, "TC14 Jumped")
-    slow_rows = [AHV("5s 20c", "+1%"), ROW("5-day average", "5s 10c"), ROW("Sell now", "4s 99c"),
-                 ROW("Suggested price", "5s 20c")]
-    tc(G, tt, 9701, [H(), (("Maybe auction", "sells slowly"), "buy", "muted")] + slow_rows, False, "TC15 Slow Seller")
-    tc(G, tt, 9702, [H(), (("Auction it", "4.9x vendor"), "pos", "pos")] + slow_rows, True, "TC15 Slow Huge")
+    # TC14 a spike: Sell now 29s 99c, far over the usual 10s 10c, is the price to sell at; the badge says spike
+    tc(G, tt, 9601, [H(), (("Auction it", "2.8x vendor"), "pos", "pos"), AHV("30s", "+197%"),
+                     ROW("Usual price", "10s 10c"), ROW("Sell now", "29s 99c")], True, "TC14 Jumped")
+    slow_rows = [AHV("5s 20c", "0%"), ROW("Usual price", "5s 20c"), ROW("Sell now", "4s 99c")]
+    # TC15 none sold in a measured day: it needs about 2x the vendor price (1.18x is a close call)
+    tc(G, tt, 9701, [H(), (("Close call", "AH +18%, vendor is safer"), "muted", "muted")] + slow_rows, False, "TC15 Slow Seller")
+    tc(G, tt, 9702, [H(), (("Auction it", "4.7x vendor"), "pos", "pos")] + slow_rows, True, "TC15 Slow Huge")
     L3, G3, ns3 = font_env(sales_hours=3)
-    tc(G3, G3.GameTooltip, 9701, [H(), (("Auction it", "+23% vs vendor"), "pos", "pos")] + slow_rows, True,
-       "TC15 Slow Seller with 3 hours of sales measured (speed unknown)")
-    tc(G, tt, 9703, [H(), (("Close call", "tiny gain"), "muted", "muted"), AHV("4c", "0%"), ROW("5-day average", "4c"),
-                     ROW("Sell now", "3c", "neg"), ROW("Suggested price", "4c", "neg"), stack((20, "76c"))], False,
-       "TC16 Tiny Gain x20", count=20)
+    tc(G3, G3.GameTooltip, 9701, [H(), (("Close call", "AH +18%, vendor is safer"), "muted", "muted")] + slow_rows, False,
+       "TC15 Slow Seller with 3 hours of sales measured (speed unknown: the middle band, 1.27x)")
+    tc(G, tt, 9703, [H(), (("Vendor it", "+5% vs AH"), "neg", "neg"), ROW("Vendor pays", "3c"), AHV("4c", "0%"),
+                     ROW("Usual price", "4c"), ROW("Sell now", "3c", "neg")], True, "TC16 Tiny Gain x20", count=20)
+    # TC16 the trip: 4c against a vendor's 2c pays +90% for one, but a stack of 20 gains only 36c
+    tc(G, tt, 9809, [H(), (("Auction it", "+90% vs vendor"), "pos", "pos"), AHV("5c", "0%"),
+                     ROW("Usual price", "5c"), ROW("Sell now", "4c")], True, "TC16 Trip by id")
+    tc(G, tt, 9809, [H(), (("Vendor it", "AH +36c, not worth the trip"), "neg", "neg"), ROW("Vendor pays", "2c"), AHV("5c", "0%"),
+                     ROW("Usual price", "5c"), ROW("Sell now", "4c")], True, "TC16 Trip x20: not worth the trip", count=20)
     tc(G, tt, 9705, [H(), (("Vendor it", "+28% vs AH"), "neg", "neg"), ROW("Vendor pays", "60c"), AHV("50c", "0%"),
-                     ROW("5-day average", "50c"),
-                     ROW("Sell now", "49c", "neg"), (("Few listed: the price may not be reliable",), "muted", None)],
-       True, "TC17 Thin Vendor")
-    tc(G, tt, 9706, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("3g", "0%"), ROW("5-day average", "3g"),
+                     ROW("Usual price", "50c"), ROW("Sell now", "49c", "neg"),
+                     (("Few listed: the price may not be reliable",), "muted", None)], True, "TC17 Thin Vendor")
+    tc(G, tt, 9706, [H(), (("Maybe auction", "few listed"), "buy", "muted"), AHV("3g", "0%"), ROW("Usual price", "3g"),
                      ROW("Sell now", "2g 99s 99c")], False, "TC17 Thin No Vendor")
-    # TC13 the rule edges, one fixture each: OLD_FAR (200x), VENDOR_PCT (101%), MIN_GAIN (2 copper)
-    tc(G, tt, 9801, [H(), ROW("AH value", "none listed", "muted"), ROW("Suggested price", "3s")], False,
-       "TC13 Old Far: nothing listed, a Suggested price 300x the vendor price, no verdict", count=20)
+    # TC13 the rule edges, one fixture each: OLD_FAR (200x), VENDOR_PCT (101%), EDGE_PCT
+    tc(G, tt, 9801, [H(), ROW("AH value", "none listed", "muted"), ROW("Sell at", "3s")], False,
+       "TC13 Old Far: nothing listed, a usual price 300x the vendor price, no verdict", count=20)
     tc(G, tt, 9802, [H(), (("Maybe auction", "none listed now"), "buy", "muted"), ROW("AH value", "none listed", "muted"),
-                     ROW("Suggested price", "3s")], False, "TC13 Old Near: 150x the vendor price is used", count=20)
-    # 100 x 95 = 9,500 against 95 x 100 = 9,500: the same, so the vendor (instant, no deposit)
-    tc(G, tt, 9803, [H(), (("Vendor it", "same as AH"), "neg", "neg"), ROW("Vendor pays", "95c"), AHV("1s", "0%"),
-                     ROW("5-day average", "1s"),
-                     ROW("Sell now", "99c", "neg"), ROW("Suggested price", "1s", "neg")], True,
-       "TC13 Tie: the AH nets the same as a vendor (no stack line)", count=20)
-    # 101 x 95 = 9,595: exactly 101% of 9,500
-    tc(G, tt, 9804, [H(), (("Close call", "AH +1%"), "muted", "muted"), AHV("1s 1c", "0%"), ROW("5-day average", "1s 1c"),
-                     ROW("Sell now", "1s", "neg"), ROW("Suggested price", "1s 1c", "neg"),
-                     stack((20, "19s 19c"))], False, "TC13 Tie Plus: 1% more is a close call", count=20)
-    # 20 x 95 = 1,900 against 17 x 100 = 1,700: 11% more and exactly 2 copper (200) more
-    tc(G, tt, 9805, [H(), (("Auction it", "+11% vs vendor"), "pos", "pos"), AHV("20c", "0%"), ROW("5-day average", "20c"),
-                     ROW("Sell now", "19c"), ROW("Suggested price", "20c"), stack((20, "3s 80c"))], True,
-       "TC13 Two Copper: exactly 2 copper more each is enough", count=20)
+                     ROW("Sell at", "3s")], False, "TC13 Old Near: 150x the vendor price is used", count=20)
+    # Sell now 99c nets 9,405 against 95 x 100 = 9,500: a vendor pays 1% more
+    tc(G, tt, 9803, [H(), (("Vendor it", "+1% vs AH"), "neg", "neg"), ROW("Vendor pays", "95c"), AHV("1s", "0%"),
+                     ROW("Usual price", "1s"), ROW("Sell now", "99c", "neg")], True,
+       "TC13 Tie: a vendor pays more (no stack line)", count=20)
+    # Sell now 1s nets 9,500, the same as a vendor: the vendor (instant, no deposit)
+    tc(G, tt, 9804, [H(), (("Vendor it", "same as AH"), "neg", "neg"), ROW("Vendor pays", "95c"), AHV("1s 1c", "0%"),
+                     ROW("Usual price", "1s 1c"), ROW("Sell now", "1s", "neg")], True, "TC13 Tie Plus: the same is a vendor", count=20)
+    # Sell now 19c x 95 = 1,805 against 17 x 100 = 1,700: 6% more, a close call
+    tc(G, tt, 9805, [H(), (("Close call", "AH +6%, vendor is safer"), "muted", "muted"), AHV("20c", "0%"),
+                     ROW("Usual price", "20c"), ROW("Sell now", "19c"), stack((20, "3s 61c"))], False,
+       "TC13 Two Copper: 6% more is a close call", count=20)
     tc(G, tt, 9806, [H(), (("Vendor it", "+64% vs AH"), "neg", "neg"), ROW("Vendor pays", "50c"),
-                     ROW("AH value", "none listed", "muted"),
-                     ROW("Suggested price", "32c", "neg")], True, "TC13 Nothing Vendor: none listed, a vendor ahead",
-       count=20)
+                     ROW("AH value", "none listed", "muted"), ROW("Sell at", "32c", "neg")], True,
+       "TC13 Nothing Vendor: none listed, a vendor ahead", count=20)
     # TC28 unchanged lines and no verdict
-    tc(G, tt, 9505, [H(), AHV("1c", "0%"), ROW("5-day average", "1c"), ROW("Suggested price", "1c")], False,
-       "TC28 Junk: 1 copper, no verdict")
+    tc(G, tt, 9505, [H(), AHV("1c", "0%"), ROW("Sell at", "1c")], False, "TC28 Junk: 1 copper, no verdict")
     tc(G, tt, 99001, [H(), ROW("AH value", "none listed", "muted")], False, "TC28 nothing listed, no history")
     tc(G, tt, 99999, [(("Goblin Ledger: no recent listings",), "muted", None)], False, "TC28 not in the data")
     eq((ns.lastError, G.MOCK.lineSetFont), (None, None), "no tooltip errors, no SetFont on a line")
@@ -2228,12 +2279,11 @@ def test_verdict_cases():
     tt = G.GameTooltip
     # TC18 a suffix link: the prices mix versions, so no verdict and nothing to sell at
     tt.itemLink = "|cff1eff00|Hitem:4306::::::1034::60:::::|h[Silk Cloth of the Monkey]|h|r"
-    tc(G, tt, 4306, [H(), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
+    tc(G, tt, 4306, [H(), AHV("2s", "0%"), ROW("Usual price", "2s"),
                      (("Price covers all versions of this item",), "muted", None)], False, "TC18 all versions")
     tt.itemLink = None
     # TC19 bound: bind on pickup, then a soulbound bag copy (C_Item.IsBound)
-    no_verdict = [H(), AHV("2s", "0%"), ROW("2-day average", "1s 99c"), ROW("Sell now", "1s 57c", "neg"),
-                  ROW("Suggested price", "2s")]
+    no_verdict = [H(), AHV("2s", "0%"), ROW("Usual price", "2s"), ROW("Sell now", "1s 99c")]
     G.C_Item = G.loadstring("""return {
       GetItemInfo = function(id)
         local bind = ({ [4306] = 1 })[id] or 0
@@ -2254,35 +2304,41 @@ def test_verdict_cases():
     G.C_GameRules = G.loadstring("return { IsHardcoreActive = function() return true end }")()
     tc(G, tt, 4306, no_verdict, False, "TC20 Hardcore", count=20)
     G.C_GameRules = None
-    tc(G, tt, 4306, SILK_LINES + [ROW("This stack (20), after AH cut", "38s")], True, "TC20 back home", count=20)
-    # TC21 the auction house open: the live cheapest feeds List At and Sell now
-    for live, own, verdict, now, best, stk in ((195, "false", "+26% vs vendor", "1s 94c", "2s", "38s"),
-                                               (210, "false", "+32% vs vendor", "2s 9c", "2s 9c", "39s 71c"),
-                                               (196, "true", "+26% vs vendor", "1s 96c", "2s", "38s")):
+    tc(G, tt, 4306, SILK_LINES + [ROW("This stack (20), after AH cut", "37s 81c")], True, "TC20 back home", count=20)
+    # TC21 the auction house open: the live cheapest feeds Sell now and the call (your own listing is matched)
+    for live, own, verdict, now, stk in ((195, "false", "+22% vs vendor", "1s 94c", "36s 86c"),
+                                         (210, "false", "+32% vs vendor", "2s 9c", "39s 71c"),
+                                         (196, "true", "+24% vs vendor", "1s 96c", "37s 24c")):
         ns.LiveCheapest = G.loadstring("return function(id) if id == 4306 then return %d, %s end end" % (live, own))()
-        tc(G, tt, 4306, [H(), (("Auction it", verdict), "pos", "pos"), AHV("2s", "0%"), ROW("2-day average", "1s 99c"),
-                         ROW("Sell now (live)", now), ROW("Suggested price", best),
-                         ROW("This stack (20), after AH cut", stk)], True, "TC21 live %d %s" % (live, own), count=20)
+        tc(G, tt, 4306, [H(), (("Auction it", verdict), "pos", "pos"), AHV("2s", "0%"), ROW("Usual price", "2s"),
+                         ROW("Sell now (live)", now), ROW("This stack (20), after AH cut", stk)], True,
+           "TC21 live %d %s" % (live, own), count=20)
     ns.LiveCheapest = None
-    # TC22 prices 7h old: the verdict at the normal size, the stale line last
+    # TC22 prices 3 hours old or more: the verdict stays, at its size; the prices from the file marked "~";
+    # the stale line last says how old and what to do (the game read them already that old: the installer)
+    stale_silk = [(("Auction it", "+26% vs vendor"), "pos", "pos"), AHV("~2s", "0%"), ROW("Usual price", "~2s"),
+                  ROW("Sell now", "~1s 99c")]
     L2, G2, ns2 = font_env(now_offset=7 * 3600 + 120)
-    tc(G2, G2.GameTooltip, 4306, [H("7h ago - /reload")] + SILK_LINES[1:] +
-       [(("Prices are 7h old: run Install-Goblin-Ledger.bat, then /reload",), "muted", None)], False, "TC22 stale Silk")
-    # exactly 6h old (ns.STALE_SECONDS) is still fresh: bigger, no stale line
-    L2, G2, ns2 = font_env(now_offset=6 * 3600)
-    tc(G2, G2.GameTooltip, 4306, [H("6h ago - /reload")] + SILK_LINES[1:], True, "TC22 Silk exactly 6h old")
+    tc(G2, G2.GameTooltip, 4306, [H("7h ago", old=True)] + stale_silk +
+       [(("Prices are 7h old: run Install-Goblin-Ledger.bat again, then /reload",), "muted", None)], True, "TC22 stale Silk")
+    # exactly 3h old (ns.STALE_SECONDS) is stale; a second before it is not
+    L2, G2, ns2 = font_env(now_offset=3 * 3600)
+    eq(ns2.AgeState(), "stale", "TC22 exactly 3h old: stale")
+    L2, G2, ns2 = font_env(now_offset=3 * 3600 - 1)
+    eq(ns2.AgeState(), "old", "TC22 a second under 3h: old (yellow /reload only)")
+    tc(G2, G2.GameTooltip, 4306, [H("2h ago - /reload")] + SILK_LINES[1:], True, "TC22 Silk 2h 59m old")
     # TC23 compact: one line, never bigger
     ns.settings.compact = True
     for iid, count, shift, want in (
             (4306, 20, False, (("Auction it: +26% vs vendor", "AH 2s  " + vs("0%")), "pos", "white")),
             (4306, 20, True, (("Auction it: +26% vs vendor", "AH (x20) 40s  " + vs("0%")), "pos", "white")),
-            (2838, 17, False, (("Auction it: 6.1x vendor", "AH 3s 89c  " + vs("+5%")), "pos", "white")),
-            (17057, 20, False, (("Vendor it: +5% vs AH", "AH 7c  " + vs("0%")), "neg", "white")),
-            (12365, 1, False, (("Close call: AH +9%", "AH 2s 88c  " + vs("0%")), "muted", "white")),
-            (9102, 1, False, (("Maybe auction: few listed", "AH 11s  " + vs("+4%")), "buy", "white")),
+            (2838, 17, False, (("Auction it: 6.1x vendor", "AH 3s 89c  " + vs("+2%")), "pos", "white")),
+            (17057, 20, False, (("Vendor it: +22% vs AH", "AH 7c  " + vs("0%")), "neg", "white")),
+            (12365, 1, False, (("Close call: AH +5%, vendor is safer", "AH 2s 88c  " + vs("0%")), "muted", "white")),
+            (9102, 1, False, (("Maybe auction: few listed", "AH 11s  " + vs("0%")), "buy", "white")),
             (9504, 1, False, (("Maybe auction: none listed now", "AH: none listed"), "buy", "muted")),
-            (9502, 1, False, (("Auction it: can't vendor", "AH 11s  " + vs("+4%")), "pos", "white")),
-            (9104, 1, False, (("AH value: 11s  " + vs("+4%"),), "text", None)),
+            (9502, 1, False, (("Auction it: can't vendor", "AH 11s  " + vs("0%")), "pos", "white")),
+            (9104, 1, False, (("AH value: 11s  " + vs("0%"),), "text", None)),
             (99001, 1, False, (("AH value: none listed now",), "text", None))):
         tc(G, tt, iid, [want], False, "TC23 compact %d x%d%s" % (iid, count, " Shift" if shift else ""), count, shift)
     ns.settings.compact = False
@@ -2312,7 +2368,7 @@ def test_verdict_fonts():
     show(G, tt, 4306, 20)
     tt.Fire(tt, "OnHide")         # a hide that does not clear the lines (a parent hid, as with Alt+Z)
     eq(big_lines(G, tt), [], "TC24: OnHide alone puts it back")
-    eq(rows_of(G, tt), SILK_LINES + [ROW("This stack (20), after AH cut", "38s")],
+    eq(rows_of(G, tt), SILK_LINES + [ROW("This stack (20), after AH cut", "37s 81c")],
        "TC24: after OnHide alone the lines stay, the verdict still green (SetFontObject took its colour)")
     show(G, tt, 9104)
     eq(big_lines(G, tt), [], "TC24: the next item (no verdict) has nothing bigger")
@@ -2363,11 +2419,11 @@ def test_verdict_fonts():
     G2.MOCK.ShowGameItem(tt2, 4306, None, blz)
     tt2.AddLine(tt2, " ")
     tt2.AddDoubleLine(tt2, "ID: 4306", "Bags: 30")
-    eq([tt2.lines[i].left for i in range(9, 17)], ["Goblin Ledger", "Auction it", "AH value", "2-day average", "Sell now",
-                                                   "Suggested price", " ", "ID: 4306"], "TC25 lines 9 to 16")
+    eq([tt2.lines[i].left for i in range(9, 16)], ["Goblin Ledger", "Auction it", "AH value", "Usual price", "Sell now",
+                                                   " ", "ID: 4306"], "TC25 lines 9 to 15")
     eq(big_lines(G2, tt2), [(k, side, "ForeverAHBigFont1", 15) for k in (10, 11) for side in ("TextLeft", "TextRight")],
        "TC25: only lines 10 and 11 (the verdict, the AH value) are bigger")
-    eq(normal_fonts(G2, tt2, skip=(10, 11)), [], "TC25: lines 12 to 16, made on demand, are GameTooltipText 12")
+    eq(normal_fonts(G2, tt2, skip=(10, 11)), [], "TC25: lines 12 to 15, made on demand, are GameTooltipText 12")
     # TC26 fallbacks: the same text and colours at the normal size, no error. In the last two the
     # left side is already bigger when the right side fails: both go back, still green
     for label, setup in (("ShoppingTooltip1", None), ("HookScript errors", "hook"), ("CreateFont missing", "nofont"),
@@ -2402,8 +2458,8 @@ def test_verdict_fonts():
            "TC26 %s: no error, no chat print" % label)
     # TC26 the second line (line 5: the AH value, or Vendor pays) fails: that line stays at the normal size
     # (a side already swapped goes back), the verdict stays bigger, and a clear puts it all back
-    vendor_lines = [H(), (("Vendor it", "+25% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
-                    ROW("5-day average", "42s"), ROW("Sell now", "39s 99c", "neg"), ROW("Suggested price", "42s", "neg")]
+    vendor_lines = [H(), (("Vendor it", "+31% vs AH"), "neg", "neg"), ROW("Vendor pays", "50s"), AHV("42s", "0%"),
+                    ROW("Usual price", "42s"), ROW("Sell now", "39s 99c", "neg")]
     for label, iid, want, code in (
             ("the AH value's right side refuses our Font", 4306, SILK_LINES, """
               local fs = GameTooltipTextRight5
@@ -2480,9 +2536,10 @@ def test_verdict_parity():
     L, G, ns = font_env()
     eq(ns.SellVerdict(None, None), None, "SellVerdict with nothing")
     eq(ns.SellVerdictPrice(ns.GetItem(4306), G.loadstring("return { rec = 5 }")()), None, "SellVerdictPrice with no advice table")
-    eq(ns.SellVerdictPrice(ns.GetItem(4306), ns.SellPrices(4306, "1D")), 200, "Silk's verdict price is the AH value 2s")
-    eq(ns.SellVerdictPrice(ns.GetItem(2838), ns.SellPrices(2838, "1D")), 388, "Heavy Stone's is List At, 3s 88c")
-    eq(ns.SellVerdictPrice(ns.GetItem(9504), ns.SellPrices(9504, "1D")), 32, "nothing listed: the Suggested price")
+    eq(ns.SellVerdictPrice(ns.GetItem(4306), ns.SellPrices(4306, "1D")), 199, "Silk's verdict price is Sell now 1s 99c")
+    eq(ns.SellVerdictPrice(ns.GetItem(2838), ns.SellPrices(2838, "1D")), 388, "Heavy Stone's is Sell now, 3s 88c")
+    eq(ns.SellVerdictPrice(ns.GetItem(9808), ns.SellPrices(9808, "1D")), 1000, "Dumped: Sell at the usual 10s")
+    eq(ns.SellVerdictPrice(ns.GetItem(9504), ns.SellPrices(9504, "1D")), 32, "nothing listed: the usual price")
     eq(ns.SellVerdictPrice(ns.GetItem(9104), ns.SellPrices(9104, "1D")), None, "vendorFar: none")
 
 

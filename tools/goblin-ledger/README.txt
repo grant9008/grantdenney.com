@@ -19,13 +19,16 @@ INSTALL (Windows, about 3 minutes)
    you could sell: the Goblin Ledger lines show its prices.
    Type /gl help in chat for the commands.
 
-Afterwards you can delete the zip and the unzipped folder. (Unzipped it
-straight into the game's AddOns folder? Then delete only the zip.)
+Afterwards you can delete the zip. Keep the unzipped folder: running its
+Install-Goblin-Ledger.bat again is how you get fresh prices right away.
+(Unzipped it straight into the game's AddOns folder? Leave it there.)
 
 FRESH PRICES
 They update by themselves every 30 minutes while you are logged in to
 Windows (if you said Y). The game loads them when you log in or type
 /reload. Want fresh prices right now? Run Install-Goblin-Ledger.bat again.
+Prices 3 hours old or more show with a ~, and the tooltip says which of
+the two you need: /reload, or Install-Goblin-Ledger.bat then /reload.
 
 NEW VERSIONS
 They install by themselves if you said Y (checked every few hours, only

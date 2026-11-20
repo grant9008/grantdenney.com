@@ -12,7 +12,9 @@ local ADDON_NAME, ns = ...
 --           never under a normal-priced cheapest listing)
 --   verdict where the cheapest price sits in the window's range of cheapest
 --           prices (a range under 10% of the typical price counts as flat;
---           no Buy after a drop that lasts, the range is the old one)
+--           never low after a drop that lasts, the range is the old one):
+--           "High now: usually falls back", "Hold" or "Low now: still
+--           falling". Not a buy call: after a low call prices fell further.
 -- When the chosen window has fewer than 4 prices, the next longer one is used.
 -- "Sold" numbers are estimates, so this is advice, not a promise.
 --
@@ -27,10 +29,11 @@ local ADDON_NAME, ns = ...
 -- cheapest listing, or today's List At rule when only the history is short)
 -- and vendorBetter still warns when a vendor pays more than that.
 --
--- ns.SellPrices (below) gives the sell screen's two buttons and the tooltip's
--- Sell now (1 copper under the cheapest listing) and Suggested price (the sell
--- target, never under a normal-priced cheapest listing). ns.SellVerdict (at
--- the end) gives the tooltip's call: auction it or vendor it, and by how much.
+-- ns.SellPrices (below) gives the one price to sell at, for the tooltip, the
+-- sell buttons, the chart's Sell at box and the bag panel alike: Sell now (1
+-- copper under the cheapest listing), unless that is under 70% of the usual
+-- price, then the usual price. ns.SellVerdict (at the end) gives the
+-- tooltip's call at that price: auction it or vendor it, and by how much.
 
 ns = ns or {}
 
@@ -64,12 +67,16 @@ local function percentile(sorted, p)
 end
 ns.Percentile = percentile
 
+-- The chart's call. Backtest of the next 24 hours' middle market price after
+-- each call (19 Nov data): after a high call it fell 11 to 16%; after a low
+-- call it fell too (1 to 7%), so a low price is no reason to buy. Hold
+-- stayed about flat.
+local CALL_LOW, CALL_HIGH = "Low now: still falling", "High now: usually falls back"
+ns.CALL_LOW, ns.CALL_HIGH = CALL_LOW, CALL_HIGH
 local function verdictFor(score)
-  if score >= 60 then return "Strong Buy" end
-  if score >= 25 then return "Buy" end
+  if score >= 25 then return CALL_LOW end
   if score > -25 then return "Hold" end
-  if score > -60 then return "Sell" end
-  return "Strong Sell"
+  return CALL_HIGH
 end
 ns.VerdictFor = verdictFor
 
@@ -143,6 +150,45 @@ function ns.PriceDoubt(itemID)
   if type(ns.GetItem) ~= "function" then return false end
   local thin, far = priceDoubt(ns.GetItem(itemID))
   return thin or far
+end
+
+-- The usual price: the middle of the item's last 24 hourly market prices (a
+-- slow seller's go back further, up to the 7 days of hourly prices Data.lua
+-- has), at least 4 of them, else nil. Hours with nothing listed have no
+-- price; the price file repeats the last prices over a gap of up to 6 hours
+-- in its own updates, and those repeats count too. Backtest: within 5% of
+-- the 24 real hours' median for 81-88% of item-hours, and the sell price
+-- below (rule G) came out the same for 96-98% of them.
+local USUAL_N = 24
+local DUMP_PCT = 70   -- Sell now under 70% of the usual price: sell at the usual price instead
+local function usualPrice(itemID)
+  local s = type(ns.GetSeries) == "function" and ns.GetSeries(itemID, "1W") or nil
+  if not s then return nil end
+  local vals = {}
+  for i = s.n, 1, -1 do
+    local m = s.market[i]
+    if m and m > 0 then
+      vals[#vals + 1] = m
+      if #vals >= USUAL_N then break end
+    end
+  end
+  if #vals < MIN_POINTS then return nil end
+  sort(vals)
+  return percentile(vals, 0.5)
+end
+ns.UsualPrice = usualPrice
+
+-- Rule G, the one rule for the price to sell at (Recommend and SellPrices
+-- both use it): Sell now (now; nil when nothing is listed), unless it is
+-- under 70% of the usual price, then the usual price. Returns that price
+-- (nil: neither) and, when it is the usual price over a listing, how many %
+-- under it Sell now is.
+local function ruleG(now, usual)
+  if now and now > 0 then
+    if usual and now * 100 < usual * DUMP_PCT then return usual, floor((usual - now) * 100 / usual) end
+    return now, nil
+  end
+  return usual, nil
 end
 
 -- ns.Recommend(itemID, tf [, liveCheapest])
@@ -281,7 +327,7 @@ function ns.Recommend(itemID, tf, liveCheapest)
 
   local score = (0.5 - pos) * 200
   -- After a drop that lasts, the window's range is the old one: a cheapest
-  -- low in it is no Buy. High in it, it is even higher now: Sell stands.
+  -- low in it is not low. High in it, it is even higher now: high stands.
   if margin <= 0 then
     score = max(-24, min(24, score))
   elseif settled then
@@ -289,9 +335,21 @@ function ns.Recommend(itemID, tf, liveCheapest)
   end
   local verdict = verdictFor(score)
 
+  -- The one price to sell at (rule G), the same in every timeframe: Sell
+  -- now (1 copper under the cheapest listing), unless that is under 70% of
+  -- the usual price (someone is dumping), then the usual price. Nothing
+  -- listed: the usual price. 0 when a few units sit far above what a vendor
+  -- pays (one player's price). Backtest, 18-19 Nov: it sold within a day
+  -- 41-86% of the time and kept the most value of the rules tried
+  -- (0.80-0.89 of the AH value, unsold ones relisted), and equals Sell now
+  -- in 85-92% of item-hours. ns.SellPrices also matches your own listing.
+  local usual = usualPrice(itemID)
+  local sellAt = 0
+  if not vendorFar then sellAt = ruleG(cheapNow > 1 and (cheapNow - 1) or nil, usual) or 0 end
+
   -- A vendor pays more than the auction house would after its 5% cut, at
-  -- the price a player would post at (also when there is no advice).
-  local vendorBetter = vendor > 0 and postAt > 0 and floor(postAt * AH_CUT) <= vendor
+  -- that price (also when there is no advice).
+  local vendorBetter = vendor > 0 and sellAt > 0 and floor(sellAt * AH_CUT) <= vendor
 
   local notes = {}
   -- While sales are still being measured there is no sales number to judge.
@@ -307,13 +365,14 @@ function ns.Recommend(itemID, tf, liveCheapest)
   end
   if vendorFar then notes[#notes + 1] = "Listed far above what a vendor pays: price may not be reliable" end
   if far then notes[#notes + 1] = "Cheapest now is far above recent prices" end
-  -- Only when List At is that target (a live listing can lift it).
+  -- Only when List At is that target (a live listing can lift it). Why the call is not low.
   if settled and advice and listAt == sell then
-    notes[#notes + 1] = "Price fell and stayed down: the sell target uses the last " .. settledHours .. " hours"
+    notes[#notes + 1] = "Price fell and stayed down for the last " .. settledHours .. " hours"
   end
-  -- The buy target comes from the old range too: no "buy it" after a drop that lasts.
+  -- The buy target comes from the old range too: no such note after a drop
+  -- that lasts. A fact, not a call to buy: low prices often fell further.
   if history and cheapNow > 0 and cheapNow < buy and margin > 0 and not settled then
-    notes[#notes + 1] = "Cheapest is below the buy target: buy it"
+    notes[#notes + 1] = "Cheapest is under Target Buy"
   end
   if margin <= 0 and buy > 0 and sell > 0 then notes[#notes + 1] = "Spread does not beat the 5% AH cut" end
   if vendorBetter then notes[#notes + 1] = "A vendor pays more (" .. moneyText(vendor) .. ")" end
@@ -351,51 +410,50 @@ function ns.Recommend(itemID, tf, liveCheapest)
     settledHours = (settled and advice) and settledHours or nil, -- ... over this many hours
     live = live ~= nil,
     vendorBetter = vendorBetter,
+    usual = usual,                 -- the usual price (nil: too few prices)
+    sellAt = sellAt,               -- the one price to sell at (0: none)
   }
 end
 
--- ns.SellPrices(itemID, tf [, liveCheapest, own])
--- The two prices the sell screen offers (and the tooltip shows), in copper:
---   now   Sell now: 1 copper under the cheapest listing (the live one when the
---         auction house showed it, else the snapshot's). When that live
---         listing is your own it is matched, not undercut. nil when nothing
---         is listed (nowWhy "none") or when a few units are listed far above
---         what a vendor pays, so the cheapest is one player's silly price
---         (nowWhy "unreliable").
---   best  Suggested price: the sell target from the price history (Recommend's
---         sell), never under a normal-priced cheapest listing. nil without
---         enough history (bestWhy "history") or when the price cannot be
---         trusted (bestWhy "unreliable").
--- Also: rec (the advice), live (a live listing was used), own, cheapest, and
--- nowVendor / bestVendor (true when a vendor pays more than that price after
--- the 5% cut).
+-- ns.SellPrices(itemID [, tf, liveCheapest, own])
+-- The price to sell at, the same on every surface (the tooltip, the sell
+-- buttons, the chart's Sell at box, the bag panel), in copper. tf is not
+-- used: the chart's timeframe changes only the chart.
+--   now    Sell now: 1 copper under the cheapest listing (the live one when
+--          the auction house showed it, else the snapshot's). When that live
+--          listing is your own it is matched, not undercut. nil when nothing
+--          is listed (nowWhy "none") or when a few units are listed far above
+--          what a vendor pays, so the cheapest is one player's silly price
+--          (nowWhy "unreliable").
+--   usual  the usual price (ns.UsualPrice), nil with too few prices.
+--   at     the price to sell at: Sell now, unless that is under 70% of the
+--          usual price, then the usual price (under = how many % under it
+--          Sell now is). Nothing listed: the usual price. nil (atWhy "none"
+--          or "unreliable") when there is neither.
+-- Also: rec (the 1D advice), live (a live listing was used), own, cheapest,
+-- and nowVendor / atVendor (true when a vendor pays at least as much as that
+-- price after the 5% cut).
 function ns.SellPrices(itemID, tf, liveCheapest, own)
-  local rec = ns.Recommend(itemID, tf, liveCheapest)
+  local rec = ns.Recommend(itemID, "1D", liveCheapest)
   if not rec then return nil end
   local item = ns.GetItem(itemID)
   local vendor = tonumber(item and item.vendor) or 0
   local cheap = tonumber(rec.cheapestNow) or 0
   local mine = rec.live and own == true
-  local out = { rec = rec, live = rec.live, own = mine, cheapest = cheap }
+  local usual = tonumber(rec.usual)
+  local out = { rec = rec, live = rec.live, own = mine, cheapest = cheap, usual = usual }
   if rec.vendorFar then
-    out.nowWhy = "unreliable"
+    out.nowWhy, out.atWhy = "unreliable", "unreliable"
   elseif cheap > 1 then
     out.now = mine and cheap or (cheap - 1)
+    out.at, out.under = ruleG(out.now, usual)
   else
     out.nowWhy = "none"
-  end
-  if not rec.history then
-    out.bestWhy = "history"
-  elseif rec.advice == false then
-    out.bestWhy = "unreliable"
-  else
-    local b = tonumber(rec.sell) or 0
-    if cheap > 1 and not rec.far and b < cheap - 1 then b = cheap - 1 end
-    if mine and b == cheap - 1 then b = cheap end
-    if b > 0 then out.best = b else out.bestWhy = "history" end
+    out.at = ruleG(nil, usual)
+    if not out.at then out.atWhy = "none" end
   end
   out.nowVendor = vendor > 0 and out.now ~= nil and floor(out.now * AH_CUT) <= vendor
-  out.bestVendor = vendor > 0 and out.best ~= nil and floor(out.best * AH_CUT) <= vendor
+  out.atVendor = vendor > 0 and out.at ~= nil and floor(out.at * AH_CUT) <= vendor
   return out
 end
 
@@ -404,36 +462,100 @@ end
 ---------------------------------------------------------------------------
 -- All in whole numbers: A = what the AH nets per item after the 5% cut and
 -- B = what a vendor pays, both in 1/100 copper.
-local AUCTION_PCT = 110  -- "Auction it": the AH nets at least 110% of B ...
-local SLOW_PCT = 200     -- ... (200% when none sold in 6+ measured hours: an unsold listing loses its deposit) ...
-local MIN_GAIN = 200     -- ... and at least 2 copper more per item
 local VENDOR_PCT = 101   -- "Vendor it": the AH nets under 101% of B (a vendor is instant and needs no deposit)
-local OLD_FAR = 200      -- nothing listed now: a Suggested price over 200x the vendor price is not trusted
-local SLOW_HOURS = 6     -- sales measured for fewer hours than this: how fast it sells is unknown
+local OLD_FAR = 200      -- nothing listed now: a usual price over 200x the vendor price is not trusted
+local SLOW_HOURS = 4     -- none sold in this many measured hours or more: a slow seller (backtest: none sold
+                         -- in 4-5 hours sold like one, about 40% within a day, break-even about 2x); fewer: not known
+local EDGE_PCT = 5       -- "Auction it": the expected result beats vendoring by at least 5% of B ...
+local TRIP_MIN = 100     -- ... and the stack gains at least 1 silver if it sells, else "not worth the trip"
+-- How often a listing at that price sold within its listing time, by how
+-- many sell a day (10 or more, 1 to 9, under 1), near each one's break-even
+-- (backtest of 18-19 Nov, percent). Keyed by the listing hours.
+local SELL_P = { [2] = { 70, 26, 13 }, [8] = { 86, 49, 26 }, [24] = { 92, 73, 39 } }
+-- Someone dumping (Sell now under 70% of the usual price): the call judges
+-- the usual price, and while the cheap ones were up a listing there sold far
+-- less often. Measured the same way on just those item-hours: with these, no
+-- price group of them called Auction it lost money on average (with the
+-- chances above 4 to 9 groups did, the worst 15% under vendoring).
+local DUMP_P = { [2] = { 10, 7, 3 }, [8] = { 23, 15, 6 }, [24] = { 36, 49, 18 } }
+
+-- The deposit: per mille of the vendor price for each unit, by listing
+-- time (Forever's sell tab: 2, 8 or 24 hours), and the least it takes per
+-- listing. These are Classic's rates and the 1 silver players still saw on
+-- 11 Nov, until the game shows its own (ns.NoteDeposit). Lost when the
+-- listing does not sell.
+local DEPOSIT_PM = { 50, 200, 600 }
+local DEPOSIT_HOURS = { 2, 8, 24 }
+local DEPOSIT_MIN = 100
+
+local function wholeIn(v, lo, hi)
+  v = tonumber(v)
+  if v and v == floor(v) and v >= lo and v <= hi then return v end
+  return nil
+end
+
+-- The deposit model for the listing time the player picked last: hours,
+-- per mille of the vendor price, the least per listing (copper).
+function ns.DepositModel()
+  local S = type(ns.settings) == "table" and ns.settings or {}
+  local D = type(S.deposit) == "table" and S.deposit or {}
+  local d = wholeIn(D.dur, 1, 3) or 3
+  local pm = type(D.rate) == "table" and wholeIn(D.rate[d], 0, 5000) or DEPOSIT_PM[d]
+  local hours = type(D.hours) == "table" and wholeIn(D.hours[d], 1, 168) or DEPOSIT_HOURS[d]
+  local least = wholeIn(D.min, 0, 100000) or DEPOSIT_MIN
+  return hours, pm, least
+end
+
+-- A reading of the real deposit (AH.lua, while an item sits in a sell slot;
+-- the game works it out itself, nothing is sent). vendor: what a vendor pays
+-- for one; n: how many that listing could hold; deps[d] = { one = deposit for
+-- 1, many = deposit for n } for listing time d (1 to 3); dur: the listing time
+-- picked (1 to 3); hours[d]: the hours the game names for d (optional).
+-- The rate comes only from a deposit of 2 silver or more (a per-listing
+-- minimum cannot hide it there); a deposit for 1 above that rate is the
+-- minimum, one at the rate only says the minimum is no higher (it can lower
+-- the 1 silver assumed, never raise it: a 5g gear piece's 25s deposit at 2
+-- hours is its rate, not a minimum).
+function ns.NoteDeposit(vendor, n, deps, dur, hours)
+  local S = ns.settings
+  if type(S) ~= "table" then return end
+  vendor, n = tonumber(vendor) or 0, tonumber(n) or 1
+  if vendor <= 0 or n < 1 or type(deps) ~= "table" then return end
+  local D = type(S.deposit) == "table" and S.deposit or {}
+  D.rate = type(D.rate) == "table" and D.rate or {}
+  D.hours = type(D.hours) == "table" and D.hours or {}
+  for d = 1, 3 do
+    local r = type(deps[d]) == "table" and deps[d] or {}
+    local many, one = tonumber(r.many), tonumber(r.one)
+    if many and many >= 200 then D.rate[d] = floor(many * 1000 / (vendor * n) + 0.5) end
+    local pm = wholeIn(D.rate[d], 0, 5000)
+    if one and one >= 0 and pm then
+      local atRate = pm * vendor / 1000
+      if one > atRate + 1 then
+        D.min = one
+      elseif one < (D.min or DEPOSIT_MIN) then
+        D.min = floor(one)
+      end
+    end
+    local h = type(hours) == "table" and wholeIn(hours[d], 1, 168)
+    if h then D.hours[d] = h end
+  end
+  D.dur = wholeIn(dur, 1, 3) or D.dur
+  S.deposit = D
+end
 
 -- ns.SellVerdictPrice(item, P): the AH price per item (copper, before the 5%
 -- cut) the verdict judges, or nil. item = ns.GetItem(id), P = ns.SellPrices(id, ...).
---   With listings: the List At price (postAt: 1 copper under a normal
---   cheapest listing, a lone cheap listing under the window's usual prices
---   is a dip and ignored), never over today's AH value, or over Sell now
---   when a live listing sits above that value.
---   Nothing listed now: the Suggested price (nil without one, or when it is
---   over 200x what a vendor pays).
---   nil when a few units sit far above the vendor price (vendorFar), and for
---   1 copper or less. It is always a price the tooltip shows.
+-- It is the price to sell at (P.at), the one the tooltip and the buttons
+-- show. nil when a few units sit far above the vendor price (vendorFar),
+-- for 1 copper or less, and with nothing listed now for a usual price over
+-- 200x what a vendor pays.
 function ns.SellVerdictPrice(item, P)
   if type(item) ~= "table" or type(P) ~= "table" or type(P.rec) ~= "table" or P.rec.vendorFar then return nil end
+  local U = tonumber(P.at)
+  if not U or U <= 1 then return nil end
   local V, M = tonumber(item.vendor) or 0, tonumber(item.market) or 0
-  local U
-  if M > 0 then
-    U = tonumber(P.rec.postAt) or 0
-    local cap = max(M, tonumber(P.now) or 0)
-    if U > cap then U = cap end
-  else
-    U = tonumber(P.best)
-    if not U or (V > 0 and U > OLD_FAR * V) then return nil end
-  end
-  if U <= 1 then return nil end
+  if M <= 0 and V > 0 and U > OLD_FAR * V then return nil end
   return U
 end
 
@@ -452,21 +574,55 @@ function ns.BetterText(hi, lo, what)
   return "+" .. p .. "% vs " .. what
 end
 
--- A nets at least pct% of B and at least 2 copper more.
-local function wins(A, B, pct) return A * 100 >= B * pct and A - B >= MIN_GAIN end
+-- How fast an item sells: 1 (10 or more a day), 2 (1 to 9) or 3 (under 1,
+-- measured for 4 hours or more). Not known yet counts as 2.
+local function speedBand(item)
+  local per = type(ns.SoldPerDay) == "function" and ns.SoldPerDay(item) or nil
+  if per == nil then return 2 end
+  if per >= 10 then return 1 end
+  if per >= 1 then return 2 end
+  local hours = type(ns.SalesHours) == "function" and ns.SalesHours() or 24
+  return hours >= SLOW_HOURS and 3 or 2
+end
 
--- ns.SellVerdict(item, P): the tooltip's call for one item, or nil (no usable
--- AH price). { kind, unit, left, right, lc, rc } with lc / rc ns.COLORS keys:
+-- The sell chances for a listing time: the nearest measured one (dump: the
+-- usual price while someone is dumping).
+local function sellChances(hours, dump)
+  local T = dump and DUMP_P or SELL_P
+  local best, bestD
+  for h in pairs(T) do
+    local d = math.abs(h - hours)
+    if not bestD or d < bestD or (d == bestD and h < best) then best, bestD = h, d end
+  end
+  return T[best]
+end
+
+-- ns.SellVerdict(item, P [, count]): the tooltip's call for a stack of count
+-- in your bags, or for one item sold as part of a stack (no count: not from
+-- your bags), or nil (no usable AH price).
+-- { kind, unit, left, right, lc, rc } with lc / rc ns.COLORS keys:
 --   "auction"  "Auction it"     "+26% vs vendor", "6.1x vendor", "can't vendor" (no vendor price)
---   "vendor"   "Vendor it"      "+5% vs AH", "2.8x AH" or "same as AH" (within 1%)
---   "close"    "Close call"     "AH +9%", or "tiny gain" (10% or more, but under 2 copper more each)
---   "maybe"    "Maybe auction"  "few listed", "none listed now", "sells slowly", "price jumped"
--- unit is the price judged (ns.SellVerdictPrice); "maybe" has none. The call is
--- per item: a stack's size and Shift never change it.
-function ns.SellVerdict(item, P)
+--   "vendor"   "Vendor it"      "+5% vs AH", "2.8x AH", "same as AH" (within 1%), or
+--                               "AH +3c, not worth the trip" (it pays, but under 1 silver for the stack)
+--   "close"    "Close call"     "AH +9%, vendor is safer"
+--   "maybe"    "Maybe auction"  "few listed", "none listed now"
+-- Auction it needs the expected result (sold at that price, or else sold to
+-- a vendor after the deposit is lost) to beat vendoring by 5% of the vendor
+-- price: p x (A - B) - (1 - p) x deposit >= 5% of B, p from SELL_P for the
+-- item's sales speed, d the deposit over B. So A must be at least
+-- 1 + (d(1 - p) + 5%) / p times B: about 1.11 / 1.29 / 2.07 at 24 hours,
+-- 1.09 / 1.31 / 1.76 at 8 hours and 1.09 / 1.33 / 1.72 at 2 hours. While
+-- someone is dumping (P.under) the usual price is judged with DUMP_P: about
+-- 2.21 / 1.73 / 4.01 at 24 hours, 1.89 / 2.47 / 4.97 at 8, 1.95 / 2.38 / 4.28 at 2.
+-- unit is the price judged (ns.SellVerdictPrice); "maybe" has none. Shift
+-- never changes it; a stack in the bags only through the deposit's
+-- per-listing minimum and the 1 silver trip (both left out without a count).
+function ns.SellVerdict(item, P, count)
   if type(item) ~= "table" or type(P) ~= "table" or type(P.rec) ~= "table" then return nil end
   local rec, U = P.rec, ns.SellVerdictPrice(item, P)
   if not U then return nil end
+  local q = tonumber(count)
+  if q then q = max(1, floor(q)) end
   local V, M = tonumber(item.vendor) or 0, tonumber(item.market) or 0
   -- 1 or 2 listings, or none right now: an AH price that looks better is a maybe.
   local unsure = (rec.thinListings and "few listed") or (M <= 0 and "none listed now") or nil
@@ -476,22 +632,26 @@ function ns.SellVerdict(item, P)
     return { kind = "auction", unit = U, left = "Auction it", right = "can't vendor", lc = "pos", rc = "muted" }
   end
   local A, B = U * 95, V * 100
-  if wins(A, B, AUCTION_PCT) then
-    if unsure then return maybe(unsure) end
-    -- None sold in the hours measured (6 or more): the AH must pay twice what a vendor does.
-    local per = type(ns.SoldPerDay) == "function" and ns.SoldPerDay(item) or nil
-    local hours = type(ns.SalesHours) == "function" and ns.SalesHours() or 24
-    if per ~= nil and hours >= SLOW_HOURS and per < 1 and not wins(A, B, SLOW_PCT) then return maybe("sells slowly") end
-    return { kind = "auction", unit = U, left = "Auction it", right = ns.BetterText(A, B, "vendor"), lc = "pos", rc = "pos" }
-  end
-  -- The history price does not win, but today's Sell now (far above it) would.
-  local now = tonumber(P.now)
-  if rec.far and now and wins(now * 95, B, AUCTION_PCT) then return maybe("price jumped") end
   if A * 100 < B * VENDOR_PCT then
     return { kind = "vendor", unit = U, left = "Vendor it", right = (B > A) and ns.BetterText(B, A, "AH") or "same as AH",
              lc = "neg", rc = "neg" }
   end
-  local p = floor((A - B) * 100 / B)
-  return { kind = "close", unit = U, left = "Close call", right = (p < 10) and ("AH +" .. p .. "%") or "tiny gain",
+  local hours, pm, least = ns.DepositModel()
+  local p = sellChances(hours, P.under ~= nil)[speedBand(item)]
+  -- The deposit for one of them, in 1/100 copper: the rate, or the
+  -- per-listing minimum shared by the stack.
+  local dep = floor(pm * V / 10)
+  if q then dep = max(dep, floor((least * 100 + q - 1) / q)) end
+  if p * (A - B) - (100 - p) * dep >= EDGE_PCT * B then
+    local gain = q and floor((A - B) * q / 100) or TRIP_MIN
+    if gain < TRIP_MIN then
+      return { kind = "vendor", unit = U, left = "Vendor it",
+               right = (gain >= 1) and ("AH +" .. moneyText(gain) .. ", not worth the trip") or "same as AH",
+               lc = "neg", rc = "neg" }
+    end
+    if unsure then return maybe(unsure) end
+    return { kind = "auction", unit = U, left = "Auction it", right = ns.BetterText(A, B, "vendor"), lc = "pos", rc = "pos" }
+  end
+  return { kind = "close", unit = U, left = "Close call", right = "AH +" .. floor((A - B) * 100 / B) .. "%, vendor is safer",
            lc = "muted", rc = "muted" }
 end

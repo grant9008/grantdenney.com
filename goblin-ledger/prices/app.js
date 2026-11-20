@@ -2999,7 +2999,7 @@ function buildShareText() {
        line — it has to, the margin is the difference — it just stops being
        presented as an equal recommendation. */
     const capIsBuy = activePriceBox === 'buy';
-    const capWord = (view === '1d' ? '' : 'Swing ') + (capIsBuy ? 'Buy' : 'Sell');
+    const capWord = (view === '1d' ? 'Target ' : 'Swing ') + (capIsBuy ? 'Buy' : 'Sell');
     const capPrice = fmtGp(capIsBuy ? recommendedBuy : recommendedSell);
     lines.push(`${capWord} ${capPrice}${view && view !== '1d' ? ` (${String(view).toUpperCase()})` : ''}`);
     const money = [`${margin >= 0 ? '+' : ''}${fmtGp(margin)}/ea after tax`];
@@ -3630,7 +3630,7 @@ function fireFavoriteAlerts() {
     const emoji = direction === 'high' ? '📈' : '📉';
     const titleTier = tier === '5d' ? '5D' : '24H';
     const verb = direction === 'high' ? 'broke above' : 'broke below';
-    const sideHint = direction === 'high' ? 'Sell into strength' : 'Buy the dip';
+    const sideHint = direction === 'high' ? 'highs usually fell back' : 'lows often kept falling';
     try {
       const n = new Notification(`${emoji} ${item.name} ${verb} ${titleTier} ${direction === 'high' ? 'high' : 'low'}`, {
         body: `Live ${direction === 'high' ? 'sell' : 'buy'}: ${fmtGp(price)} (prev ${titleTier} ${direction === 'high' ? 'high' : 'low'}: ${fmtGp(breakOf)}) — ${sideHint}`,
@@ -4973,8 +4973,8 @@ function renderWatchlist() {
           : hlClass === 'at-spike-down' ? `<span class="hl-badge low5d" title="Spiking — down ${Math.abs(spikePct).toFixed(1)}% ${spikeOn}.">💥 ${spikePct.toFixed(0)}%</span>`
           : hlClass === 'at-high5d' ? `<span class="hl-badge high5d" title="At or near the 5-DAY HIGH — notable peak across the last 5 days.">▲ 5D</span>`
           : hlClass === 'at-low5d'  ? `<span class="hl-badge low5d"  title="At or near the 5-DAY LOW — notable trough across the last 5 days.">▼ 5D</span>`
-          : hlClass === 'at-high'   ? `<span class="hl-badge high" title="Currently at or above its 24-hour high. Sell now to catch the peak.">▲</span>`
-          : hlClass === 'at-low'    ? `<span class="hl-badge low" title="Currently at or below its 24-hour low. Buy now to catch the dip.">▼</span>` : '';
+          : hlClass === 'at-high'   ? `<span class="hl-badge high" title="Currently at or above its 24-hour high. Highs usually fell back.">▲</span>`
+          : hlClass === 'at-low'    ? `<span class="hl-badge low" title="Currently at or below its 24-hour low. Lows often kept falling.">▼</span>` : '';
         /* Favorites delete now rides inside the vol cell (see buildMeta) so
            it lands exactly on the K/M suffix. Fallback: if the VOL column is
            toggled off there's no cell to ride in, so fall back to a
@@ -6574,7 +6574,7 @@ document.addEventListener('click', (ev) => {
   document.querySelectorAll('.rg-toggle').forEach(b => {
     b.classList.toggle('closed', next);
     b.setAttribute('aria-expanded', next ? 'false' : 'true');
-    b.setAttribute('aria-label', (next ? 'Expand' : 'Collapse') + ' Analyst Rating details');
+    b.setAttribute('aria-label', (next ? 'Expand' : 'Collapse') + ' chart signal details');
   });
   /* `next` is the COLLAPSED flag, so it inverts to the panel's state. */
   track('analyst_rating_toggle', { state: next ? 'closed' : 'open' });
@@ -6720,16 +6720,16 @@ function ratingWhyHtml(gBuy, gSell, tf) {
      are scored from. The tie case has no winner to name, so that one says
      it outright. */
   const gap = Math.abs(b - s);
-  const sideWord = p.side === 'buy' ? 'Buy' : 'Sell';
+  const sideWord = p.side === 'buy' ? 'Low' : 'High';
   const verdictNote = gap >= 30
-    ? sideWord + ' side wins by ' + gap + ' — firm call.'
+    ? sideWord + ' side wins by ' + gap + ': a clear signal.'
     : gap >= 12
-      ? sideWord + ' side leads by ' + gap + ' — a lean.'
-      : 'Buy and Sell within ' + gap + ' — rows show the ' + sideWord.toLowerCase() + ' side.';
+      ? sideWord + ' side leads by ' + gap + ': a lean.'
+      : 'Low and High within ' + gap + ': rows show the ' + sideWord.toLowerCase() + ' side.';
 
   return '<div class="rg-why">'
-    + '<div class="rg-why-head"><span class="rw-t">Why this rating · ' + tf + '</span>'
-    + '<span class="rw-sides"><b class="rw-buy">Buy ' + b + '</b><i>vs</i><b class="rw-sell">Sell ' + s + '</b></span></div>'
+    + '<div class="rg-why-head"><span class="rw-t">Why this signal · ' + tf + '</span>'
+    + '<span class="rw-sides"><b class="rw-buy">Low ' + b + '</b><i>vs</i><b class="rw-sell">High ' + s + '</b></span></div>'
     + row('Range', rangeTxt, p.rangeScore, 45)
     + row('Trend', trendTxt, p.trendScore, 25)
     + row('Margin', marginTxt, p.marginScore, 25)
@@ -6791,15 +6791,19 @@ function renderRatingGauge(item, mountEl, opts = {}) {
          "100 Steal Buy" paired with the other side's "Wait for Peak" is an
          act-now Strong Buy, not "not yet". */
       const patient = /^Wait/.test((b >= s) ? vB : vS);
+      /* WoW: the words of the addon's chart call, but this page's own
+         scoring (not the addon's, and not backtested), so no numbers are
+         quoted here. The addon's backtest found low prices kept falling, so
+         the low side makes no buy claim and carries no buy colour, and there
+         is no "Strong". */
       if (patient) {
         signed = dir * Math.min(mag, 0.55); strong = false;
-        if (dir > 0) { label = 'Buy the Dip'; hue = 'var(--buy-color)'; liveIdx = 3; }
-        else { label = 'Sell the Rip'; hue = 'var(--sell-color)'; liveIdx = 1; }
-        sub = `${dir > 0 ? 'Entry' : 'Exit'} score ${dom} · ${tf} · not yet`;
+        label = 'Hold'; hue = 'var(--text-muted)'; liveIdx = dir > 0 ? 3 : 1;
+        sub = `${dir > 0 ? 'Low' : 'High'} side score ${dom} · ${tf} · not yet`;
       } else {
         signed = dir * mag;
-        if      (signed >=  0.60) { label = 'Strong Buy';  hue = 'var(--buy-color)';  liveIdx = 4; strong = true; }
-        else if (signed >=  0.20) { label = 'Buy';         hue = 'var(--buy-color)';  liveIdx = 3; }
+        if      (signed >=  0.60) { label = 'Low now: still falling';  hue = 'var(--text-muted)';  liveIdx = 4; }
+        else if (signed >=  0.20) { label = 'Low now: still falling';  hue = 'var(--text-muted)';  liveIdx = 3; }
         /* No word at all in the middle band. "Neutral" was a non-answer
            dressed as an answer: it occupied the line where Strong Buy or
            Sell would sit, in the same size and weight, while telling a
@@ -6808,10 +6812,10 @@ function renderRatingGauge(item, mountEl, opts = {}) {
            claiming to be a call — and since the "ANALYST RATING" eyebrow is
            now permanent, dropping the word leaves the block labelled rather
            than blank. */
-        else if (signed >  -0.20) { label = '';             hue = 'var(--text-muted)'; liveIdx = 2; }
-        else if (signed >  -0.60) { label = 'Sell';        hue = 'var(--sell-color)'; liveIdx = 1; }
-        else                      { label = 'Strong Sell'; hue = 'var(--sell-color)'; liveIdx = 0; strong = true; }
-        sub = `${dir > 0 ? 'Entry' : 'Exit'} score ${dom} · ${tf}`;
+        else if (signed >  -0.20) { label = 'Hold';        hue = 'var(--text-muted)'; liveIdx = 2; }
+        else if (signed >  -0.60) { label = 'High now: usually falls back'; hue = 'var(--sell-color)'; liveIdx = 1; }
+        else                      { label = 'High now: usually falls back'; hue = 'var(--sell-color)'; liveIdx = 0; }
+        sub = `${dir > 0 ? 'Low' : 'High'} side score ${dom} · ${tf}`;
       }
       whyHtml = ratingWhyHtml(gBuy, gSell, tf);
     }
@@ -6829,33 +6833,32 @@ function renderRatingGauge(item, mountEl, opts = {}) {
     else if (liveIdx === 0) liveIdx = 1;
     thinNote = '<div class="wow-thin-note">Only ' + (thinN === 1 ? '1 listing' : '2 listings') +
       ' on the auction house right now, so this price can jump with one sale or one new listing. ' +
-      'Treat this rating as a rough guide, not a sure thing.</div>';
+      'Treat this signal as a rough guide, not a sure thing.</div>';
   }
   /* Track runs BUY (left) → SELL (right) to mirror the page layout: Target
      Buy is the left price box, Target Sell the right. signed=+1 (strong
      buy) therefore lands at 0%, signed=-1 at 100%. */
   const needleX = (1 - signed) / 2 * 100, aria = Math.round(signed * 100);
   const segCls = i => 'rg-seg ' + ['rg-ss', 'rg-s', 'rg-n', 'rg-b', 'rg-sb'][i] + (i === liveIdx ? ' is-live' : '');
-  const tip = ('Analyst Rating condenses the same 0–100 buy and sell grade — scored against the ' + tf +
-    ' price range, so it re-judges when you switch chart timeframes — into one call, Strong Sell to Strong ' +
-    'Buy. It points to whichever side (entry or exit) is better graded right now. Advisory only: the Target ' +
-    'Buy / Target Sell prices are the actual trade. Tap for the full glossary.').replace(/"/g, '&quot;');
+  const tip = ('Chart signal: where the price sits in the ' + tf + ' price range, scored by this page its own ' +
+    'way (it can differ from the Goblin Ledger chart in game). High now: high prices tended to come down. Low now: ' +
+    'low prices often kept falling, so it is not a reason to buy. Tap for the full glossary.').replace(/"/g, '&quot;');
   mountEl.hidden = false;
   const collapsed = ratingCollapsed();
   mountEl.innerHTML =
-    '<div class="rg-top"><span class="rg-eyebrow">Analyst Rating</span>' +
-      '<span class="pg-help" title="' + tip + '" role="button" aria-label="What does the Analyst Rating mean?">?</span>' +
+    '<div class="rg-top"><span class="rg-eyebrow">Chart signal</span>' +
+      '<span class="pg-help" title="' + tip + '" role="button" aria-label="What does the chart signal mean?">?</span>' +
       (thinN ? wowThinTag(item.id) : '') +
       '<button type="button" class="rg-toggle calc-caret' + (collapsed ? ' closed' : '') + '" aria-expanded="' + (collapsed ? 'false' : 'true') + '" ' +
-        'aria-label="' + (collapsed ? 'Expand' : 'Collapse') + ' Analyst Rating details">' + uiIcon('chev') + '</button></div>' +
+        'aria-label="' + (collapsed ? 'Expand' : 'Collapse') + ' chart signal details">' + uiIcon('chev') + '</button></div>' +
     '<div class="rg-label' + (strong ? ' is-strong' : '') + '" style="color:' + hue + '">' + label + '</div>' +
     '<div class="rg-meter' + (muted ? ' is-muted' : '') + '" role="meter" aria-valuemin="-100" aria-valuemax="100" ' +
-      'aria-valuenow="' + aria + '" aria-valuetext="' + label + '" aria-label="Analyst rating: ' + label + (sub ? ', ' + sub : '') + '">' +
+      'aria-valuenow="' + aria + '" aria-valuetext="' + label + '" aria-label="Chart signal: ' + label + (sub ? ', ' + sub : '') + '">' +
       '<div class="rg-track">' + [4, 3, 2, 1, 0].map(i => '<span class="' + segCls(i) + '"></span>').join('') + '</div>' +
       '<span class="rg-needle" style="left:' + needleX + '%;--rg-hue:' + hue + '"></span>' +
     '</div>' +
-    '<div class="rg-scale"><span class="rg-end rg-end-buy">Buy</span>' +
-      '<span class="rg-sub">' + sub + '</span><span class="rg-end rg-end-sell">Sell</span></div>' +
+    '<div class="rg-scale"><span class="rg-end rg-end-buy">Low</span>' +
+      '<span class="rg-sub">' + sub + '</span><span class="rg-end rg-end-sell">High</span></div>' +
     thinNote +
     whyHtml;
   mountEl.classList.toggle('is-collapsed', collapsed);
@@ -7207,7 +7210,11 @@ function markRecSeen(id){
   if (Object.keys(store.ids).length >= REC_SEEN_RESET_N) store.ids = { [id]: now };
   recSeenSave(store); recLastId = id;
 }
-function flipHost(){ return document.getElementById('flipFinder'); }
+/* WoW stopgap: no Recommended Flip card. In the backtest of the flips it
+   offered (18-19 Nov), gap flips lost money overall, so the page makes no flip
+   claim until the collector ships the addon's own tested rules. With no host
+   every render of the card returns at once. */
+function flipHost(){ return null; }
 /* Every re-render of this card replaces the host's innerHTML, which throws the
    whole subtree away and builds a new one. In the landscape layout the card
    lives inside .watchlist-container — a real scrolling box, capped at

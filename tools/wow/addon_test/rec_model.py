@@ -87,16 +87,39 @@ def pct(sorted_vals, p):
     return math.floor(v + 0.5)
 
 
+CALL_LOW, CALL_HIGH = "Low now: still falling", "High now: usually falls back"
+
+
 def verdict_for(score):
-    if score >= 60:
-        return "Strong Buy"
+    """The chart's call: high in its range, Hold, or low (no buy claim: low prices kept falling)."""
     if score >= 25:
-        return "Buy"
+        return CALL_LOW
     if score > -25:
         return "Hold"
-    if score > -60:
-        return "Sell"
-    return "Strong Sell"
+    return CALL_HIGH
+
+
+USUAL_N = 24
+DUMP_PCT = 70
+
+
+def rule_g(now, usual):
+    """Recommend.lua ruleG: Sell now, unless under 70% of the usual price, then the usual price
+    (nothing listed: the usual price). Returns (price or None, % Sell now is under it or None)."""
+    if now and now > 0:
+        if usual and now * 100 < usual * DUMP_PCT:
+            return usual, (usual - now) * 100 // usual
+        return now, None
+    return usual, None
+
+
+def usual_price(market_week):
+    """ns.UsualPrice: the middle (pct 0.5) of the last 24 market prices of the hourly 1W window
+    (None = nothing listed), at least 4 of them, else None."""
+    vals = [v for v in market_week if v and v > 0][-USUAL_N:]
+    if len(vals) < MIN_POINTS:
+        return None
+    return pct(sorted(vals), 0.5)
 
 
 def money_text(c):
@@ -201,7 +224,12 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
     elif settled:                       # after a drop that lasted the window's range is the old one: no Buy
         score = min(24, score)
 
-    vendor_better = vendor > 0 and post_at > 0 and math.floor(post_at * AH_CUT) <= vendor
+    # the one price to sell at (rule G), the same in every timeframe
+    usual = usual_price(windows("1W")[1])
+    sell_at = 0
+    if not vendor_far:
+        sell_at = rule_g(cheap_now - 1 if cheap_now > 1 else None, usual)[0] or 0
+    vendor_better = vendor > 0 and sell_at > 0 and math.floor(sell_at * AH_CUT) <= vendor
     notes = []
     if per_day is not None and per_day < 3:
         notes.append("Thin market")
@@ -218,9 +246,9 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
     if far:
         notes.append("Cheapest now is far above recent prices")
     if settled and advice and list_at == sell:
-        notes.append("Price fell and stayed down: the sell target uses the last %d hours" % settled_hours)
+        notes.append("Price fell and stayed down for the last %d hours" % settled_hours)
     if history and 0 < cheap_now < buy and margin > 0 and not settled:
-        notes.append("Cheapest is below the buy target: buy it")
+        notes.append("Cheapest is under Target Buy")
     if margin <= 0 and buy > 0 and sell > 0:
         notes.append("Spread does not beat the 5% AH cut")
     if vendor_better:
@@ -233,46 +261,39 @@ def recommend(item, windows, tf, live=None, sales_hours=24):
             "tf": used, "askedTF": asked, "history": history, "advice": advice,
             "auctions": auctions, "thinListings": thin_listings, "vendorFar": vendor_far,
             "far": far, "settled": bool(settled and advice),
-            "settledHours": settled_hours if settled and advice else None, "vendorBetter": vendor_better}
+            "settledHours": settled_hours if settled and advice else None, "vendorBetter": vendor_better,
+            "usual": usual, "sellAt": sell_at}
 
 
 def sell_prices(rec, live=None, own=False, vendor=0):
-    """ns.SellPrices (Recommend.lua): the sell screen's two prices.
-    now   Sell now: 1 copper under the cheapest listing (the live one when
-          given; your own live listing is matched), None when nothing is
-          listed (nowWhy "none") or a few units sit far above the vendor price
-          (nowWhy "unreliable").
-    best  Best price: the sell target, never under a normal cheapest listing,
-          None without history (bestWhy "history") or without advice
-          (bestWhy "unreliable").
-    rec is recommend(...) for the same live price."""
+    """ns.SellPrices (Recommend.lua): the one price to sell at.
+    now    Sell now: 1 copper under the cheapest listing (the live one when
+           given; your own live listing is matched), None when nothing is
+           listed (nowWhy "none") or a few units sit far above the vendor price
+           (nowWhy "unreliable").
+    usual  the usual price (rec["usual"]).
+    at     Sell now, unless under 70% of usual (then usual, under = % under it);
+           nothing listed: usual; None (atWhy "none" / "unreliable") without.
+    rec is recommend(...) on 1D for the same live price (ns.SellPrices ignores
+    the chart's timeframe)."""
     cheap = rec["cheapestNow"]
     is_live = live is not None and live > 0
     mine = is_live and bool(own)
-    out = {"now": None, "best": None, "nowWhy": None, "bestWhy": None, "live": is_live, "own": mine,
-           "cheapest": cheap}
+    usual = rec.get("usual")
+    out = {"now": None, "at": None, "under": None, "nowWhy": None, "atWhy": None, "live": is_live, "own": mine,
+           "cheapest": cheap, "usual": usual}
     if rec["vendorFar"]:
-        out["nowWhy"] = "unreliable"
+        out["nowWhy"] = out["atWhy"] = "unreliable"
     elif cheap > 1:
         out["now"] = cheap if mine else cheap - 1
+        out["at"], out["under"] = rule_g(out["now"], usual)
     else:
         out["nowWhy"] = "none"
-    if not rec["history"]:
-        out["bestWhy"] = "history"
-    elif not rec["advice"]:
-        out["bestWhy"] = "unreliable"
-    else:
-        b = rec["sell"]
-        if cheap > 1 and not rec["far"] and b < cheap - 1:
-            b = cheap - 1
-        if mine and b == cheap - 1:
-            b = cheap
-        if b > 0:
-            out["best"] = b
-        else:
-            out["bestWhy"] = "history"
+        out["at"] = rule_g(None, usual)[0]
+        if not out["at"]:
+            out["atWhy"] = "none"
     out["nowVendor"] = vendor > 0 and out["now"] is not None and math.floor(out["now"] * AH_CUT) <= vendor
-    out["bestVendor"] = vendor > 0 and out["best"] is not None and math.floor(out["best"] * AH_CUT) <= vendor
+    out["atVendor"] = vendor > 0 and out["at"] is not None and math.floor(out["at"] * AH_CUT) <= vendor
     return out
 
 
@@ -290,30 +311,46 @@ def week_range(cheap_week):
 
 # The tooltip's sell verdict (ns.SellVerdict). Whole numbers only: A = what the
 # AH nets per item after the 5% cut, B = what a vendor pays, in 1/100 copper.
-AUCTION_PCT = 110   # "Auction it": A >= 110% of B (200% for a slow seller) ...
-SLOW_PCT = 200
-MIN_GAIN = 200      # ... and A - B >= 2 copper
 VENDOR_PCT = 101    # "Vendor it": A under 101% of B
-OLD_FAR = 200       # nothing listed: a Suggested price over 200x the vendor price is not used
-SLOW_HOURS = 6      # fewer measured sales hours: how fast it sells is unknown
+OLD_FAR = 200       # nothing listed: a usual price over 200x the vendor price is not used
+SLOW_HOURS = 4      # none sold in this many measured hours or more: a slow seller; fewer: not known
+EDGE_PCT = 5        # "Auction it": the expected result beats vendoring by 5% of B ...
+TRIP_MIN = 100      # ... and the stack gains at least 1 silver if it sells
+SELL_P = {2: (70, 26, 13), 8: (86, 49, 26), 24: (92, 73, 39)}   # sold within the listing time, by speed band
+DUMP_P = {2: (10, 7, 3), 8: (23, 15, 6), 24: (36, 49, 18)}      # the same at the usual price while someone dumps
+DEPOSIT_PM = (50, 200, 600)     # deposit per mille of the vendor price, by listing time 1..3
+DEPOSIT_HOURS = (2, 8, 24)
+DEPOSIT_MIN = 100               # the least per listing (copper)
+
+
+def deposit_model(deposit=None):
+    """ns.DepositModel: (hours, per mille, least per listing) for the listing time picked last.
+    deposit = the saved ns.settings.deposit as a dict ({"dur", "rate": {d: pm}, "hours": {d: h}, "min"}) or None."""
+    D = deposit or {}
+
+    def whole(v, lo, hi):
+        return v if isinstance(v, (int, float)) and v == int(v) and lo <= v <= hi else None
+    d = whole(D.get("dur"), 1, 3) or 3
+    rate, hours = D.get("rate") or {}, D.get("hours") or {}
+    pm = whole(rate.get(d), 0, 5000) if isinstance(rate, dict) else None
+    h = whole(hours.get(d), 1, 168) if isinstance(hours, dict) else None
+    least = whole(D.get("min"), 0, 100000)
+    return (int(h) if h is not None else DEPOSIT_HOURS[int(d) - 1],
+            int(pm) if pm is not None else DEPOSIT_PM[int(d) - 1],
+            int(least) if least is not None else DEPOSIT_MIN)
 
 
 def sell_verdict_price(item, sp, rec):
-    """ns.SellVerdictPrice: the AH price per item the verdict judges, or None.
-    item {"vendor", "market"}, sp = sell_prices(...), rec = recommend(...).
-    Listed now: List At (postAt), never over the AH value (or over Sell now
-    when that is higher). Nothing listed: the Suggested price, unless it is
-    over 200x the vendor price. None for vendorFar and for 1 copper or less."""
+    """ns.SellVerdictPrice: the price to sell at (sp["at"]), or None: for vendorFar, for 1 copper or
+    less, and with nothing listed for a usual price over 200x the vendor price."""
     if rec["vendorFar"]:
         return None
-    v, m = item["vendor"], item["market"]
-    if m > 0:
-        u = min(rec["postAt"] or 0, max(m, sp["now"] or 0))
-    else:
-        u = sp["best"]
-        if u is None or (v > 0 and u > OLD_FAR * v):
-            return None
-    return u if u > 1 else None
+    u = sp["at"]
+    if u is None or u <= 1:
+        return None
+    if item["market"] <= 0 and item["vendor"] > 0 and u > OLD_FAR * item["vendor"]:
+        return None
+    return u
 
 
 def better_text(hi, lo, what):
@@ -329,14 +366,35 @@ def better_text(hi, lo, what):
     return ("same as " + what) if p < 1 else "+%d%% vs %s" % (p, what)
 
 
-def sell_verdict(item, sp, rec, sales_hours=None):
-    """ns.SellVerdict: {"kind", "unit", "left", "right", "lc", "rc"} or None.
-    item {"vendor", "market", "sold24"}; sales_hours as in the data file (None = a full day).
-    kind "auction" ("Auction it"), "vendor" ("Vendor it"), "close" ("Close call")
-    or "maybe" ("Maybe auction", no unit); lc / rc are ns.COLORS keys."""
+def speed_band(sold24, sales_hours=None):
+    """1 (10+ a day), 2 (1-9), 3 (under 1, measured 4+ hours); not known: 2."""
+    per, _ = sold_per_day(sold24, sales_hours)
+    if per is None:
+        return 2
+    if per >= 10:
+        return 1
+    if per >= 1:
+        return 2
+    return 3 if sales_hours_of(sales_hours) >= SLOW_HOURS else 2
+
+
+def sell_chances(hours, dump=False):
+    T = DUMP_P if dump else SELL_P
+    best = min(T, key=lambda h: (abs(h - hours), h))
+    return T[best]
+
+
+def sell_verdict(item, sp, rec, sales_hours=None, count=None, deposit=None):
+    """ns.SellVerdict: {"kind", "unit", "left", "right", "lc", "rc"} or None, for a stack of count in
+    the bags (None: one item sold as part of a stack: no per-listing minimum, no 1 silver trip).
+    item {"vendor", "market", "sold24"}; sales_hours as in the data file (None = a full day);
+    deposit: the saved deposit readings (deposit_model). kind "auction" ("Auction it"), "vendor"
+    ("Vendor it", also "AH +3c, not worth the trip"), "close" ("Close call") or "maybe"
+    ("Maybe auction", no unit); lc / rc are ns.COLORS keys."""
     u = sell_verdict_price(item, sp, rec)
     if u is None:
         return None
+    q = max(1, int(count)) if count is not None else None
     v, m = item["vendor"], item["market"]
     unsure = "few listed" if rec["thinListings"] else ("none listed now" if m <= 0 else None)
 
@@ -347,24 +405,25 @@ def sell_verdict(item, sp, rec, sales_hours=None):
             return maybe(unsure)
         return {"kind": "auction", "unit": u, "left": "Auction it", "right": "can't vendor", "lc": "pos", "rc": "muted"}
     a, b = u * 95, v * 100
-
-    def wins(x, pct):
-        return x * 100 >= b * pct and x - b >= MIN_GAIN
-    if wins(a, AUCTION_PCT):
-        if unsure:
-            return maybe(unsure)
-        per, _ = sold_per_day(item["sold24"], sales_hours)
-        if per is not None and sales_hours_of(sales_hours) >= SLOW_HOURS and per < 1 and not wins(a, SLOW_PCT):
-            return maybe("sells slowly")
-        return {"kind": "auction", "unit": u, "left": "Auction it", "right": better_text(a, b, "vendor"),
-                "lc": "pos", "rc": "pos"}
-    if rec["far"] and sp["now"] and wins(sp["now"] * 95, AUCTION_PCT):
-        return maybe("price jumped")
     if a * 100 < b * VENDOR_PCT:
         return {"kind": "vendor", "unit": u, "left": "Vendor it",
                 "right": better_text(b, a, "AH") if b > a else "same as AH", "lc": "neg", "rc": "neg"}
-    p = (a - b) * 100 // b
-    return {"kind": "close", "unit": u, "left": "Close call", "right": ("AH +%d%%" % p) if p < 10 else "tiny gain",
+    hours, pm, least = deposit_model(deposit)
+    p = sell_chances(hours, sp.get("under") is not None)[speed_band(item["sold24"], sales_hours) - 1]
+    dep = pm * v // 10
+    if q is not None:
+        dep = max(dep, (least * 100 + q - 1) // q)
+    if p * (a - b) - (100 - p) * dep >= EDGE_PCT * b:
+        gain = (a - b) * q // 100 if q is not None else TRIP_MIN
+        if gain < TRIP_MIN:
+            return {"kind": "vendor", "unit": u, "left": "Vendor it",
+                    "right": ("AH +%s, not worth the trip" % money_text(gain)) if gain >= 1 else "same as AH",
+                    "lc": "neg", "rc": "neg"}
+        if unsure:
+            return maybe(unsure)
+        return {"kind": "auction", "unit": u, "left": "Auction it", "right": better_text(a, b, "vendor"),
+                "lc": "pos", "rc": "pos"}
+    return {"kind": "close", "unit": u, "left": "Close call", "right": "AH +%d%%, vendor is safer" % ((a - b) * 100 // b),
             "lc": "muted", "rc": "muted"}
 
 

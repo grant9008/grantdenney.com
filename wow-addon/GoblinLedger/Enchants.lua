@@ -1241,13 +1241,12 @@ local function roundCopper(c)
 end
 E.RoundCopper = roundCopper
 
--- Prices older than Core's limit (6 hours): the costs are grey. Core's own age line is
+-- Stale prices (Core's one rule, ns.AgeState: 3 hours old or more): the costs are grey. Core's own age line is
 -- not on gear with no price lines (most worn gear), so the grey is the hint there.
 local function stalePrices()
-  local f, most = ns.DataAge, ns.STALE_SECONDS
-  if type(f) ~= "function" or type(most) ~= "number" then return false end
-  local ok, age = pcall(f)
-  return ok and type(age) == "number" and age > most or false
+  if type(ns.AgeState) ~= "function" then return false end
+  local ok, st = pcall(ns.AgeState)
+  return ok and st == "stale"
 end
 
 -- "~38g", "~38g + 2 Skin of Shadow", "~38g + more" (mats with no AH price),
