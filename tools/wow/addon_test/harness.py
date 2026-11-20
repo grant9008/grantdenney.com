@@ -23569,9 +23569,37 @@ def fl_pos(nid):
     return (n[1], n[2])
 
 
+# The timer the older scenarios run with: "big" (no setting: the default) or "small" (the slim
+# bar, /gl flights small); fl_in_small runs one with the slim bar.
+FL_STYLE = ["big"]
+
+
+def fl_in_small(fn):
+    """Scenario fn with the slim bar (/gl flights small): all its old checks."""
+    def run(sc, ref, items):
+        FL_STYLE[0] = "small"
+        try:
+            fn(sc, ref, items)
+        finally:
+            FL_STYLE[0] = "big"
+    return run
+
+
+def fl_small(w):
+    """The world's flight timer is the slim bar."""
+    return w.ns.settings.flightBar == "small"
+
+
 def fl_world(ref, items, saved=None, login=(True, False), t=None, now=None, on_taxi=False, pos=None,
-             guid=None, ff=False, before=None, **kw):
-    """A world for the flight timers: GetTime at t, on a taxi or not, at world x, y pos."""
+             guid=None, ff=False, before=None, style="", **kw):
+    """A world for the flight timers: GetTime at t, on a taxi or not, at world x, y pos. style:
+    "big" (the default), "small" (/gl flights small) or "" (FL_STYLE's); a saved flightBar wins."""
+    style = style or FL_STYLE[0]
+    if style == "small" and not (isinstance(saved, dict) and "flightBar" in saved):
+        saved = dict(saved) if isinstance(saved, dict) else ({} if saved is None else saved)
+        if isinstance(saved, dict):
+            saved["flightBar"] = "small"
+
     def setup(w):
         M = w.M
         if t is not None:
@@ -23660,10 +23688,28 @@ def fl_state(w):
 
 
 def fl_bar_line(w):
-    b = w.ns.Flights.Bar()
+    """What the timer says: the slim bar's line, or the big timer's place and time left in the same
+    words ("Ironforge 4:19"); None while neither shows (and a note when both do, to fail the check)."""
+    FL = w.ns.Flights
+    shown = [b for b in fl_values(FL.Bars()) if b.IsVisible(b)]
+    if len(shown) > 1:
+        return "(the big timer and the slim bar both show)"
+    b = FL.Bar()
     if b is None or not b.IsVisible(b):
         return None
+    if b.dest is not None:
+        return "%s %s" % (b.dest.GetText(b.dest), b.text.GetText(b.text))
     return b.text.GetText(b.text)
+
+
+def fl_shown(o):
+    """A frame that exists and shows."""
+    return o is not None and bool(o.IsShown(o))
+
+
+def fl_values(t):
+    """The values of a Lua table (any keys)."""
+    return [] if t is None else [v for _, v in t.items()]
 
 
 def fl_el(w):
@@ -23885,32 +23931,53 @@ def sc_flights_bar(sc, ref, items):
     b = FL.Bar()
     r = w.rect(b)
     sw, sh = M.screenW, M.screenH
-    sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 100)) < 0.01,
-             "bar: top centre, where the game's timer bars go (%s)" % (r,))
-    sc.eq((round(r[2] - r[0], 3), round(r[3] - r[1], 3), FL.anchor), (180, 16, "MirrorTimerContainer"), "bar: slim, on the Timer Bars spot")
+    small = fl_small(w)
+    if small:
+        sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 100)) < 0.01,
+                 "bar: top centre, where the game's timer bars go (%s)" % (r,))
+        sc.eq((round(r[2] - r[0], 3), round(r[3] - r[1], 3), FL.anchor), (180, 16, "MirrorTimerContainer"), "bar: slim, on the Timer Bars spot")
+    else:
+        sc.eq((FL.spot, round(r[2] - r[0], 3), round(r[3] - r[1], 3), b.GetName(b)), ("middle", 240, 60, "GoblinLedgerFlightTimer"),
+              "bar: big, in the upper middle")
+        sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 290)) < 0.01, "bar: centred, 290 under the top (%s)" % (r,))
     sc.check(not b.IsMouseEnabled(b), "bar: clicks go through it")
     sc.eq((w.same(b.GetParent(b), w.g.UIParent), b.GetFrameStrata(b)), (True, "MEDIUM"),
           "bar: on the game's interface (Alt+Z hides it), at its middle strata")
     x = b.x
     xr = w.rect(x)
-    sc.check(xr[2] <= r[2] and xr[0] >= r[2] - 16 and abs((xr[1] + xr[3]) / 2 - (r[1] + r[3]) / 2) < 0.01,
-             "bar: the X at its right end (%s in %s)" % (xr, r))
+    if small:
+        sc.check(xr[2] <= r[2] and xr[0] >= r[2] - 16 and abs((xr[1] + xr[3]) / 2 - (r[1] + r[3]) / 2) < 0.01,
+                 "bar: the X at its right end (%s in %s)" % (xr, r))
+    else:
+        sc.check(abs(xr[2] - (r[2] - 2)) < 0.01 and abs(xr[3] - (r[3] - 2)) < 0.01, "bar: the X at its top right (%s in %s)" % (xr, r))
     sc.eq((round(xr[2] - xr[0], 3), x.IsVisible(x)), (14, True), "bar: a 14px X")
-    tr = w.rect(b.text)
+    tr = w.rect(b.dest if not small else b.text)
     sc.check(tr[2] <= xr[0], "bar: the words stop before the X")
     sc.check(abs((tr[0] + tr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01, "bar: the words centred on the bar (%s in %s)" % (tr, r))
+    if not small:
+        vr = w.rect(b.text)
+        sc.check(vr[3] <= xr[1] and abs((vr[0] + vr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01, "bar: the time left under the X, centred (%s)" % (vr,))
+    inner = (180 if small else 240) - 2
     for wait in (60, 61.3, 0.45, 100):
         fl_wait(w, wait)
         el = fl_el(w)
         sc.eq(fl_bar_line(w), fl_line("Ironforge", est, el), "bar: %.1f s in" % el)
-        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, 178 * (est - el) / est)) < 1e-6, "bar: the fill is what is left (%.1f s in)" % el)
+        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, inner * (est - el) / est)) < 1e-6, "bar: the fill is what is left (%.1f s in)" % el)
     tc = b.text.GetTextColor(b.text)
-    sc.eq(tuple(round(v, 3) for v in tc[:3]), (1, 1, 1), "bar: white while on time")
+    if small:
+        sc.eq(tuple(round(v, 3) for v in tc[:3]), (1, 1, 1), "bar: white while on time")
+    else:
+        dc = b.dest.GetTextColor(b.dest)
+        sc.eq((tuple(round(v, 3) for v in dc[:3]), tuple(round(v, 3) for v in tc[:3])), ((1, 1, 1), (1, 0.82, 0)),
+              "bar: the place in white, the time in the game's gold (the big boat timer's)")
     fl_wait(w, est - fl_el(w) + 12.3)
     sc.eq(fl_bar_line(w), "Ironforge +0:12", "bar: over the estimate: +0:12, never a negative time")
     tc = b.text.GetTextColor(b.text)
     bc = ns.COLORS.buy
-    sc.eq(tuple(round(v, 3) for v in tc[:3]), (bc[1], bc[2], bc[3]), "bar: gold when over")
+    if small:
+        sc.eq(tuple(round(v, 3) for v in tc[:3]), (bc[1], bc[2], bc[3]), "bar: gold when over")
+    else:
+        sc.eq(tuple(round(v, 3) for v in tc[:3]), (1, 0.82, 0), "bar: still gold when over (the + says it)")
     sc.check(not b.fill.IsShown(b.fill), "bar: no fill when over")
     land_t = M.t
     gt = cur.gt
@@ -24227,11 +24294,12 @@ def sc_flights_slash(sc, ref, items):
     w = fl_world(ref, items, pos=fl_pos(FL_SW))
     M, FL, S = w.M, w.ns.Flights, w.ns.settings
     out = [strip_codes(c) for c in w.slash("/gl help")]
-    want = "Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off or status)"
+    want = "Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)"
+    kind = " (slim bar)" if fl_small(w) else " (big timer)"
     sc.eq(sum(1 for t in out if t == want), 1, "slash: /gl help says it once")
     sc.check(any("/gl consumes" in t for t in out) and any("/gl chart" in t for t in out), "slash: the other lines stay")
     out = [strip_codes(c) for c in w.slash("/gl flights status")]
-    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 0 routes."], "slash: status")
+    sc.eq(out, ["Goblin Ledger: flight timers are on%s. Your own times for 0 routes." % kind], "slash: status")
     out = [strip_codes(c) for c in w.slash("/gl flights")]
     sc.eq(out, ["Goblin Ledger: flight timers are on. /gl flights off turns them off."], "slash: alone, while on")
     out = [strip_codes(c) for c in w.slash("/gl flights off")]
@@ -24249,7 +24317,7 @@ def sc_flights_slash(sc, ref, items):
     cur = fl_state(w)[0]
     left = fl_clock(math.ceil(cur.est - fl_el(w) - 1e-6))
     out = [strip_codes(c) for c in w.slash("/gl flights status")]
-    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 0 routes.",
+    sc.eq(out, ["Goblin Ledger: flight timers are on%s. Your own times for 0 routes." % kind,
                 "Goblin Ledger: flying to Stormwind: %s left." % left], "slash: status in the air")
     w.slash("/gl flights off")
     sc.check(fl_bar_line(w) is None and fl_state(w)[0] is not None, "slash: off in the air: the bar goes")
@@ -24262,13 +24330,13 @@ def sc_flights_slash(sc, ref, items):
     sc.check(fl_bar_line(w) is not None, "slash: on brings a hidden bar back")
     for alias in ("/gl fly status", "/gl flight status", "/gl FLIGHTS status"):
         out = [strip_codes(c) for c in w.slash(alias)]
-        sc.check(out and out[0].startswith("Goblin Ledger: flight timers are on."), "slash: %s" % alias)
+        sc.check(out and out[0].startswith("Goblin Ledger: flight timers are on%s." % kind), "slash: %s" % alias)
     out = [strip_codes(c) for c in w.slash("/gl flights maybe")]
-    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl flights on, /gl flights off or /gl flights status."], "slash: unknown choice")
+    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl flights on, off, big, small or status."], "slash: unknown choice")
     fl_wait(w, cur.est - fl_el(w) + 1, dt=0.5)
     fl_land(w, FL_SW)
     out = [strip_codes(c) for c in w.slash("/gl flights status")]
-    sc.eq(out, ["Goblin Ledger: flight timers are on. Your own times for 1 route."], "slash: one route timed")
+    sc.eq(out, ["Goblin Ledger: flight timers are on%s. Your own times for 1 route." % kind], "slash: one route timed")
     w.slash("/gl flights off")
     saved = lua_to_py(w.g.ForeverAH_Settings)
     sc.clean(w, "slash")
@@ -24446,6 +24514,368 @@ def sc_flights_joins(sc, ref, items):
     fl_land(w, FL_IF)
     sc.eq((fl_list(S.flightJoins), sorted(fl_times(w))), ([0], ["4>2>6 ff"]), "joins: Frequent Flier: in at the whole paths' time")
     sc.clean(w, "joins ff")
+
+
+# --- flights: the big timer (the default) ---
+# The game's messages at the top centre, as Forever 1.60.1 places them (wow-ui-source, branch
+# forever): Blizzard_UIErrorsFrame/Mainline/UIErrorsFrame.xml (UIErrorsFrame 512x60 at TOP -122);
+# Blizzard_RaidWarning/RaidWarning.xml (RaidWarningFrame 800x100 at TOP -182, Edit Mode's
+# default too; PrivateRaidBossEmoteFrameAnchor 800x80 on its top); Blizzard_FrameXML/Mainline/
+# ZoneText.xml (ZoneTextFrame 128x128 at TOP -128, ZoneTextString 512 wide in ZoneTextFont (32)
+# at its centre, PVPInfoTextString (22) under it; SubZoneTextFrame 128x128 at BOTTOM +512, its
+# SubZoneTextString (26) under PVPInfoTextString and PVPArenaTextString (22) under that);
+# Blizzard_UIWidgets (UIWidgetTopCenterContainerFrame 10x10 at TOP -15, UIWidgetSubZoneText-
+# ContainerFrame 10x10 on SubZoneTextFrame's top); Blizzard_MirrorTimer (MirrorTimerContainer at
+# TOP -100, three 206x32 timers stacked under it). A line is as tall as its font.
+# o: raidY (Edit Mode moved the raid warnings), hidden (the zone's name faded out), widgets (w, h
+# of a capture bar in the top centre widgets).
+FL_TOP_LUA = r'''
+local M = MOCK
+function M.FlTopFrames(o)
+  o = o or {}
+  local function line(name, parent, size, txt)
+    local f = CreateFont(nil)
+    f:SetFont("Fonts\\FRIZQT__.TTF", size, "THICK")
+    local fs = parent:CreateFontString(name, "ARTWORK")
+    fs:SetFontObject(f)
+    fs:SetSize(512, size)
+    fs:SetText(txt)
+    return fs
+  end
+  local e = CreateFrame("Frame", "UIErrorsFrame", UIParent)
+  e:SetSize(512, 60)
+  e:SetPoint("TOP", UIParent, "TOP", 0, -122)
+  e:SetFrameStrata("DIALOG")
+  local rw = CreateFrame("Frame", "RaidWarningFrame", UIParent)
+  rw:SetSize(800, 100)
+  rw:SetPoint("TOP", UIParent, "TOP", 0, o.raidY or -182)
+  rw:SetFrameStrata("HIGH")
+  local pb = CreateFrame("Frame", "PrivateRaidBossEmoteFrameAnchor", UIParent)
+  pb:SetSize(800, 80)
+  pb:SetPoint("TOP", rw, "TOP", 0, 0)
+  local zf = CreateFrame("Frame", "ZoneTextFrame", UIParent)
+  zf:SetSize(128, 128)
+  zf:SetPoint("TOP", UIParent, "TOP", 0, -128)
+  local zs = line("ZoneTextString", zf, 32, "Stormwind City")
+  zs:SetPoint("CENTER", zf, "CENTER", 0, 0)
+  local pv = line("PVPInfoTextString", zf, 22, "(Alliance Territory)")
+  pv:SetPoint("TOP", zs, "BOTTOM", 0, 0)
+  local sf = CreateFrame("Frame", "SubZoneTextFrame", UIParent)
+  sf:SetSize(128, 128)
+  sf:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 512)
+  local ss = line("SubZoneTextString", sf, 26, "Trade District")
+  ss:SetPoint("TOP", pv, "BOTTOM", 0, 0)
+  local pa = line("PVPArenaTextString", sf, 22, "(Sanctuary)")
+  pa:SetPoint("TOP", ss, "BOTTOM", 0, 0)
+  if o.hidden then zf:Hide(); sf:Hide(); rw:Hide() end
+  local tc = CreateFrame("Frame", "UIWidgetTopCenterContainerFrame", UIParent)
+  tc:SetSize(o.widgets and o.widgets[1] or 10, o.widgets and o.widgets[2] or 10)
+  tc:SetPoint("TOP", UIParent, "TOP", 0, -15)
+  local sw = CreateFrame("Frame", "UIWidgetSubZoneTextContainerFrame", UIParent)
+  sw:SetSize(10, 10)
+  sw:SetPoint("BOTTOM", sf, "TOP", 0, 0)
+  MirrorTimerContainer:Show()
+  for i = 1, 3 do
+    local t = CreateFrame("Frame", "FlTestMirrorTimer" .. i, MirrorTimerContainer)
+    t:SetSize(206, 32)
+    t:SetPoint("TOP", MirrorTimerContainer, "TOP", 0, -(i - 1) * 32)
+  end
+end
+'''
+FL_SCREENS = [(1280, 720), (1920, 1080), (2560, 1440)]
+FL_SCALES = [1.0, 0.8, 0.62]
+FL_MSG_NAMES = ["UIErrorsFrame", "RaidWarningFrame", "PrivateRaidBossEmoteFrameAnchor", "ZoneTextFrame", "ZoneTextString",
+                "PVPInfoTextString", "SubZoneTextString", "PVPArenaTextString", "FlTestMirrorTimer1", "FlTestMirrorTimer2",
+                "FlTestMirrorTimer3", "UIWidgetTopCenterContainerFrame"]
+FL_EM = 0.58   # Friz Quadrata's letters and digits: about 0.58 of the font's size wide (an estimate)
+
+
+def fl_top_world(ref, items, screen, elvui=False, top=None, **kw):
+    """A flight world at screen (pixels w, h and the UI scale: UIParent's scale is h / 768 times it)
+    with the game's messages at the top centre (FL_TOP_LUA; top: its options)."""
+    def setup(w):
+        w.loader(FL_TOP_LUA, "@MOCK/flight_top.lua")
+        w.M.FlTopFrames(w.to_lua(top or {}))
+        if elvui:
+            w.M.InstallBlizzardBags()
+            w.M.InstallElvUIAddon(w.to_lua({}))
+    pw, ph, s = screen
+    return fl_world(ref, items, pos=fl_pos(FL_SW), screen=(pw, ph, ph / 768.0 * s), before=setup, **kw)
+
+
+def fl_hit(a, b):
+    """Two screen rectangles (L, B, R, T) share some area (touching is not)."""
+    return a[0] < b[2] - 1e-6 and a[2] > b[0] + 1e-6 and a[1] < b[3] - 1e-6 and a[3] > b[1] + 1e-6
+
+
+def fl_px(r):
+    return "(%s)" % ", ".join("%.0f" % v for v in r)
+
+
+def fl_big_place_checks(sc, w, label, spot="middle"):
+    """The big timer's place and size: centred, its spot, above the character, clear of every
+    message frame; the X at the top right clear of the words; the words fit. Gives its rectangle."""
+    FL, M = w.ns.Flights, w.M
+    b = FL.Bar()
+    if not sc.check(b is not None and b.IsVisible(b) and b.dest is not None, "%s: the big timer shows" % label):
+        return None
+    sw, sh = M.screenW, M.screenH
+    es = b.GetEffectiveScale(b)
+    r = w.rect(b)
+    sc.eq(FL.spot, spot, "%s: at its %s spot" % (label, spot))
+    sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01, "%s: centred (%s on a %d wide screen)" % (label, fl_px(r), sw))
+    sc.check(abs((r[2] - r[0]) - 240 * es) < 0.01 and abs((r[3] - r[1]) - 60 * es) < 0.01,
+             "%s: 240 x 60 (%.0f x %.0f px)" % (label, r[2] - r[0], r[3] - r[1]))
+    if spot == "middle":
+        sc.check(abs(r[3] - (sh - max(290 * es, 0.30 * sh))) < 0.01,
+                 "%s: its top 290 under the top of the screen, or 30%% down (%.1f%%)" % (label, 100.0 * (sh - r[3]) / sh))
+    sc.check(r[1] >= sh * 0.54 - 1e-6, "%s: ends above 46%% of the screen height, over the character (%.1f%%)"
+             % (label, 100.0 * (sh - r[1]) / sh))
+    sc.check(r[0] >= 0 and r[2] <= sw and r[1] >= 0 and r[3] <= sh, "%s: on screen" % label)
+    hits = []
+    for n in FL_MSG_NAMES:
+        o = w.g[n]
+        orr = w.rect(o) if o is not None else None
+        if n.startswith("UIWidget") and orr and (orr[2] - orr[0] <= 12 * es or orr[3] - orr[1] <= 12 * es):
+            orr = None   # (an empty widget container: nothing to cover)
+        if orr and fl_hit(r, orr):
+            hits.append("%s %s" % (n, fl_px(orr)))
+    zs = w.rect(w.g.ZoneTextString)
+    if zs:   # all four lines of the zone's name, as low as they can reach
+        zr = ((zs[0] + zs[2]) / 2 - 256 * es, zs[3] - 102 * es, (zs[0] + zs[2]) / 2 + 256 * es, zs[3])
+        if fl_hit(r, zr):
+            hits.append("the zone's names %s" % fl_px(zr))
+    sc.eq(hits, [], "%s: clear of the game's messages and the timer bars (%s)" % (label, fl_px(r)))
+    x, d, t = b.x, b.dest, b.text
+    xr, dr, tr = w.rect(x), w.rect(d), w.rect(t)
+    sc.check(abs(xr[2] - (r[2] - 2 * es)) < 0.01 and abs(xr[3] - (r[3] - 2 * es)) < 0.01 and abs((xr[2] - xr[0]) - 14 * es) < 0.01,
+             "%s: a 14 X at the top right %s" % (label, fl_px(xr)))
+    sc.check(not fl_hit(xr, dr) and not fl_hit(xr, tr), "%s: the X clear of the words (%s, %s, %s)" % (label, fl_px(xr), fl_px(dr), fl_px(tr)))
+    sc.check(tr[3] <= dr[1] + 1e-6 and abs((dr[0] + dr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01 and abs((tr[0] + tr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01,
+             "%s: the place over the time, both centred" % label)
+    sc.eq((d.GetFont(d)[1:], t.GetFont(t)[1:]), ((16, "OUTLINE"), (32, "OUTLINE")), "%s: 16 and 32, outlined" % label)
+    longest = max((fl_source()[0][i][0].split(",")[0] for i in fl_source()[0]), key=len)
+    sc.check(len(longest) * FL_EM * 16 * es <= dr[2] - dr[0] and len("12:34 so far") * FL_EM * 32 * es <= tr[2] - tr[0],
+             "%s: the longest place (%s) and time (12:34 so far) fit their lines" % (label, longest))
+    return r
+
+
+def sc_flights_big(sc, ref, items):
+    """The big timer (the default): where it sits at 1280x720, 1920x1080 and 2560x1440, UI scale 1.0, 0.8
+    and 0.62, the default UI and ElvUI: centred in the upper middle (the big boat timer's spot), above the
+    character, clear of the error lines, raid warnings, the zone's names and the timer bars; its X at the
+    top right; its words, the fill; where it goes when the middle is taken."""
+    # The words for Stormwind to Ironforge: the data's estimate (the map says "about"), your own time.
+    est = fl_est([FL_SW, FL_IF])[0]
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL, M, S = w.ns.Flights, w.M, w.ns.settings
+    sc.eq((S.flightBar, FL.WantBig()), (None, True), "big: the default")
+    slot = fl_open(w)
+    lines, _ = fl_hover(w, slot[FL_IF])
+    sc.eq(fl_tips(lines), ["Flight time: about 4:19"], "big: the map: about 4:19 (the estimate)")
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    sc.eq((b.dest.GetText(b.dest), b.text.GetText(b.text), fl_bar_line(w)), ("Ironforge", "4:19", "Ironforge 4:19"),
+          "big: Ironforge over 4:19")
+    sc.check(not FL.Bars().small, "big: no slim bar made")
+    fl_big_place_checks(sc, w, "big 1920x1080 1.0")
+    W = 238
+    r0 = w.rect(b.fill)
+    sc.check(abs(r0[0] - (w.rect(b)[0] + b.GetEffectiveScale(b))) < 0.01, "big: the fill from the left edge")
+    last = None
+    for wait in (30, 60.4, 90, 77.7):
+        fl_wait(w, wait)
+        el = fl_el(w)
+        fr = w.rect(b.fill)
+        sc.eq(b.text.GetText(b.text), fl_line("Ironforge", est, el).split(" ", 1)[1], "big: the time left, %.1f s in" % el)
+        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, W * (est - el) / est)) < 1e-6 and abs(fr[0] - r0[0]) < 0.01,
+                 "big: the fill is what is left (%.1f s in), running down to the left" % el)
+        sc.check(last is None or fr[2] < last, "big: the fill gets shorter")
+        last = fr[2]
+    fl_wait(w, est - fl_el(w) + 5.2)
+    sc.eq((b.dest.GetText(b.dest), b.text.GetText(b.text), b.fill.IsShown(b.fill)), ("Ironforge", "+0:05", False),
+          "big: over the estimate: +0:05, no fill")
+    fl_land(w, FL_IF)
+    sc.eq((fl_bar_line(w), b.IsShown(b)), (None, False), "big: gone on landing")
+    sc.clean(w, "big words")
+    # Your own time for the route: the map says it plainly, the timer counts it down the same way.
+    for style in ("big", "small"):
+        w = fl_top_world(ref, items, (1920, 1080, 1.0), saved={"flightTimes": {"2>6": {1: 255.0}}}, style=style)
+        slot = fl_open(w)
+        lines, _ = fl_hover(w, slot[FL_IF])
+        sc.eq(fl_tips(lines), ["Flight time: 4:15"], "%s: the map: 4:15 (your own time)" % style)
+        fl_take(w, slot[FL_IF])
+        b = w.ns.Flights.Bar()
+        got = (b.dest.GetText(b.dest), b.text.GetText(b.text)) if style == "big" else b.text.GetText(b.text)
+        sc.eq(got, ("Ironforge", "4:15") if style == "big" else "Ironforge 4:15", "%s: your own time on the timer" % style)
+        sc.clean(w, "%s own time" % style)
+    # The slim bar for the estimate, and a flight the data has no time for (it counts up).
+    w = fl_top_world(ref, items, (1920, 1080, 1.0), style="small")
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = w.ns.Flights.Bar()
+    sc.eq((b.GetName(b), b.text.GetText(b.text), w.ns.Flights.spot), ("GoblinLedgerFlightBar", "Ironforge 4:19", "slim"),
+          "small: Ironforge 4:19 on the slim bar")
+    sc.clean(w, "small words")
+    for style in ("big", "small"):
+        w = fl_top_world(ref, items, (1920, 1080, 1.0), style=style)
+        slot = fl_open(w, routes={999: [FL_SW, 999]}, names={999: "Frostwolf Keep, Alterac"}, extra=())
+        fl_take(w, slot[999])
+        fl_wait(w, 65)
+        b = w.ns.Flights.Bar()
+        got = (b.dest.GetText(b.dest), b.text.GetText(b.text)) if style == "big" else b.text.GetText(b.text)
+        sc.eq(got, ("Frostwolf Keep", "1:05 so far") if style == "big" else "Frostwolf Keep 1:05 so far",
+              "%s: no time in the data: it counts up" % style)
+        sc.check(not b.fill.IsShown(b.fill), "%s: no fill without a time" % style)
+        sc.clean(w, "%s so far" % style)
+    # Every screen and UI scale, the default UI and ElvUI.
+    for pw, ph in FL_SCREENS:
+        for s in FL_SCALES:
+            for elv in (False, True):
+                label = "%dx%d %.2f %s" % (pw, ph, s, "elvui" if elv else "default")
+                w = fl_top_world(ref, items, (pw, ph, s), elvui=elv)
+                slot = fl_open(w)
+                fl_take(w, slot[FL_IF])
+                r = fl_big_place_checks(sc, w, label)
+                b = w.ns.Flights.Bar()
+                if elv and b is not None:
+                    sc.eq((b._template, b.x.glLook), ("Transparent", "elvui"), "%s: ElvUI's panel and X" % label)
+                sc.clean(w, label)
+    # ElvUI's pixel-perfect scales (768 / screen height) too.
+    for pw, ph in ((1920, 1080), (2560, 1440)):
+        w = fl_top_world(ref, items, (pw, ph, 768.0 / ph), elvui=True)
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        fl_big_place_checks(sc, w, "%dx%d %.3f elvui" % (pw, ph, 768.0 / ph))
+        sc.clean(w, "elvui pixel perfect")
+    # The zone's name faded out (it comes back as you fly into the next zone): the same place.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0), top={"hidden": True})
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_big_place_checks(sc, w, "zone names hidden")
+    sc.clean(w, "hidden messages")
+    # UI scale 1.15: the middle would reach the character: over the timer bars, 18 under the top.
+    w = fl_top_world(ref, items, (1920, 1080, 1.15))
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    r = fl_big_place_checks(sc, w, "scale 1.15", spot="top")
+    if r:
+        es = w.ns.Flights.Bar().GetEffectiveScale(w.ns.Flights.Bar())
+        sc.check(abs(r[3] - (w.M.screenH - 18 * es)) < 0.01, "scale 1.15: 18 under the top")
+    sc.clean(w, "scale 1.15")
+    # The same with a capture bar in the top centre widgets: under it.
+    w = fl_top_world(ref, items, (1920, 1080, 1.15), top={"widgets": (220, 18)})
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    r = fl_big_place_checks(sc, w, "scale 1.15 widgets", spot="top")
+    wr = w.rect(w.g.UIWidgetTopCenterContainerFrame)
+    if r and wr:
+        es = w.ns.Flights.Bar().GetEffectiveScale(w.ns.Flights.Bar())
+        sc.check(abs(r[3] - (wr[1] - 4 * es)) < 0.01, "scale 1.15 widgets: 4 under the capture bar")
+    sc.clean(w, "scale 1.15 widgets")
+    # Raid warnings moved (Edit Mode) onto the middle spot: over the timer bars.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0), top={"raidY": -300})
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_big_place_checks(sc, w, "raid warnings moved", spot="top")
+    sc.clean(w, "raid warnings moved")
+    # No room anywhere (raid warnings in the middle, a tall widget at the top): the slim bar, same words.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0), top={"raidY": -300, "widgets": (300, 60)})
+    FL = w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    sc.eq((FL.spot, b.GetName(b), fl_bar_line(w), fl_shown(FL.Bars().big)),
+          ("slim", "GoblinLedgerFlightBar", "Ironforge 4:19", False), "no room: the slim bar on the timer bars' spot")
+    sc.clean(w, "no room")
+    # The X in big mode: hidden until you land, /gl flights brings it back, the next flight shows it.
+    w = fl_top_world(ref, items, (1920, 1080, 0.8))
+    FL, M, S = w.ns.Flights, w.M, w.ns.settings
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    mark = w.chat_mark()
+    M.click(b.x)
+    sc.eq((fl_bar_line(w), b.IsShown(b), [strip_codes(c) for c in w.chat(mark)], S.flightNow.hidden),
+          (None, False, ["Goblin Ledger: " + FL_HIDDEN_LINE], True), "big x: hidden, one line says how to get it back")
+    fl_wait(w, 20)
+    sc.eq(fl_bar_line(w), None, "big x: stays hidden")
+    w.slash("/gl flights")
+    sc.check(fl_bar_line(w) is not None and FL.Bar().dest is not None, "big x: /gl flights brings the big timer back")
+    M.click(FL.Bar().x)
+    fl_wait(w, est - fl_el(w) + 1, dt=0.5)
+    fl_land(w, FL_IF)
+    slot = fl_open(w, current=FL_IF, routes={FL_SW: [FL_IF, FL_SW]}, extra=())
+    fl_take(w, slot[FL_SW])
+    sc.check(fl_bar_line(w) is not None and fl_bar_line(w).startswith("Stormwind ") and FL.Bar().dest is not None,
+             "big x: the next flight shows it again")
+    sc.clean(w, "big x")
+
+
+def sc_flights_style(sc, ref, items):
+    """/gl flights big | small: saved, says which in /gl flights status, switches in the air, kept over a
+    /reload in the air; one help line."""
+    w = fl_top_world(ref, items, (1920, 1080, 0.8))
+    FL, M, S = w.ns.Flights, w.M, w.ns.settings
+    out = [strip_codes(c) for c in w.slash("/gl help")]
+    sc.eq([t for t in out if "/gl flights" in t],
+          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)"],
+          "style: one help line")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")],
+          ["Goblin Ledger: flight timers are on (big timer). Your own times for 0 routes."], "style: status says big")
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    sc.eq((FL.Bar().GetName(FL.Bar()), FL.spot), ("GoblinLedgerFlightTimer", "middle"), "style: the big timer in the air")
+    out = [strip_codes(c) for c in w.slash("/gl flights small")]
+    sc.eq(out, ["Goblin Ledger: flight timer: the slim bar at the top. /gl flights big for the big one."], "style: small, one line")
+    b = FL.Bar()
+    bars = FL.Bars()
+    sc.eq((S.flightBar, b.GetName(b), fl_shown(bars.big), FL.spot, FL.anchor),
+          ("small", "GoblinLedgerFlightBar", False, "slim", "MirrorTimerContainer"), "style: saved; the slim bar at once, the big one gone")
+    sc.eq(fl_bar_line(w), fl_line("Ironforge", fl_state(w)[0].est, fl_el(w)), "style: the same words on it")
+    r = w.rect(b)
+    sc.eq((round((r[2] - r[0]) / b.GetEffectiveScale(b), 3), round((r[3] - r[1]) / b.GetEffectiveScale(b), 3)), (180, 16),
+          "style: the slim bar's size")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are on (slim bar). Your own times for 0 routes.", "style: status says slim")
+    fl_wait(w, 40)
+    saved = lua_to_py(w.g.ForeverAH_Settings)
+    sc.eq(saved.get("flightBar"), "small", "style: in the saved settings")
+    w2 = fl_world(ref, items, saved=saved, login=(False, True), t=w.M.t + 3, now=w.M.now + 3, on_taxi=True, style="big")
+    sc.eq((w2.ns.Flights.resumed, w2.ns.settings.flightBar, w2.ns.Flights.Bar().GetName(w2.ns.Flights.Bar())),
+          ("reload", "small", "GoblinLedgerFlightBar"), "style: /reload in the air: still the slim bar")
+    sc.eq(fl_bar_line(w2), fl_line("Ironforge", fl_state(w2)[0].est, fl_el(w2)), "style: after the reload, the same clock")
+    out = [strip_codes(c) for c in w2.slash("/gl flights big")]
+    sc.eq(out, ["Goblin Ledger: flight timer: big, in the upper middle of the screen. /gl flights small for the slim bar."],
+          "style: big, one line")
+    b2 = w2.ns.Flights.Bar()
+    sc.eq((w2.ns.settings.flightBar, b2.GetName(b2), fl_shown(w2.ns.Flights.Bars().small)),
+          (None, "GoblinLedgerFlightTimer", False), "style: the big timer at once, the slim bar gone")
+    saved2 = lua_to_py(w2.g.ForeverAH_Settings)
+    sc.check("flightBar" not in saved2, "style: big is the default: nothing saved for it")
+    w3 = fl_world(ref, items, saved=saved2, login=(False, True), t=w2.M.t + 3, now=w2.M.now + 3, on_taxi=True, style="big")
+    sc.eq(w3.ns.Flights.Bar().GetName(w3.ns.Flights.Bar()), "GoblinLedgerFlightTimer", "style: /reload again: big")
+    sc.clean(w2, "style reload")
+    sc.clean(w3, "style reload 2")
+    # Hidden with the X, then a size: shown again in that size.
+    w.M.click(w.ns.Flights.Bar().x)
+    w.slash("/gl flights big")
+    sc.check(fl_bar_line(w) is not None and w.ns.Flights.Bar().dest is not None, "style: a size brings a hidden timer back in it")
+    # While the timers are off: saved, and the line says they are off.
+    w.slash("/gl flights off")
+    out = [strip_codes(c) for c in w.slash("/gl flights small")]
+    sc.eq(out, ["Goblin Ledger: flight timer: the slim bar at the top. /gl flights big for the big one. "
+                "Flight timers are off: /gl flights on turns them on."], "style: off: saved, says they are off")
+    sc.eq((S.flightBar, fl_bar_line(w)), ("small", None), "style: off: nothing shows")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are off (slim bar). Your own times for 0 routes.", "style: status while off")
+    w.slash("/gl flights on")
+    sc.eq(w.ns.Flights.Bar().GetName(w.ns.Flights.Bar()), "GoblinLedgerFlightBar", "style: on: the slim bar")
+    for cmd in ("/gl flights BIG", "/gl fly big"):
+        w.slash("/gl flights small")
+        w.slash(cmd)
+        sc.eq(S.flightBar, None, "style: %s" % cmd)
+    sc.clean(w, "style")
 
 
 # --- boats: the boat timers under the minimap (Boats.lua) ---
@@ -29229,6 +29659,17 @@ SCENARIOS = [
     ("flights-elvui", sc_flights_elvui),
     ("flights-guards", sc_flights_guards),
     ("flights-joins", sc_flights_joins),
+    ("flights-big", sc_flights_big),
+    ("flights-style", sc_flights_style),
+    ("flights-small-bar", fl_in_small(sc_flights_bar)),
+    ("flights-small-x", fl_in_small(sc_flights_x)),
+    ("flights-small-reload", fl_in_small(sc_flights_reload)),
+    ("flights-small-multihop", fl_in_small(sc_flights_multihop)),
+    ("flights-small-learning", fl_in_small(sc_flights_learning)),
+    ("flights-small-slash", fl_in_small(sc_flights_slash)),
+    ("flights-small-elvui", fl_in_small(sc_flights_elvui)),
+    ("flights-small-guards", fl_in_small(sc_flights_guards)),
+    ("flights-small-joins", fl_in_small(sc_flights_joins)),
     ("boats-data", sc_boats_data),
     ("boats-dock", sc_boats_dock),
     ("boats-countdown", sc_boats_countdown),
