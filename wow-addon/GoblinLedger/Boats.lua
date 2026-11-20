@@ -9,7 +9,8 @@ local ADDON_NAME, ns = ...
 -- boat, nearest first (3 at most); when the lines would run into the quest tracker they
 -- become one line. Zeppelins and skyships say Zeppelin and Skyship. A small X at their right
 -- end hides them until you leave that dock (250 yd from its piers; a /reload there keeps them
--- hidden, the next visit shows them again).
+-- hidden, the next visit shows them again) and says in one chat line that /gl boats on brings
+-- them back.
 --
 -- Each boat runs a fixed loop (the table below, from the game's own data). Where in its loop
 -- a boat is right now is in no game data, so the addon learns it, best first:
@@ -126,6 +127,7 @@ local MAX_LINES, LINE_H, GAP = 3, 12, 2
 local X_SIZE, X_GAP = 12, 4
 local HINT = " - /gl boat now when it docks"
 local X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+local X_SAID = "boat timers hidden until you leave this dock. /gl boats on brings them back."
 
 local function isSecret(v)
   local f = ns.IsSecret
@@ -1267,7 +1269,10 @@ hideHere = function()
   end
   local tt = _G.GameTooltip
   if UI.x and type(tt) == "table" and call(tt, "GetOwner") == UI.x then pcall(tt.Hide, tt) end
+  local was = UI.shown
   hideUI()
+  -- One line, like the flight bar's X: what it did and how to undo it (a near miss happens).
+  if was and settings().boatHide then say(X_SAID) end
 end
 B.HideHere = hideHere
 
@@ -1364,7 +1369,7 @@ step = function()
   sampleRide(now, x, y, inst)
   local list = docksHere(x, y, inst, UI.shown and 10 or 0)
   if hiddenHere(x, y, inst, list) then
-    hideUI()   -- (the X: nothing shown or asked here; rides still learn)
+    hideUI()   -- (the X: nothing shown or asked here; rides and dockmasters still teach)
   elseif #list > 0 then
     render(list, now)
     for _, e in ipairs(list) do

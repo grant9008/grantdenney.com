@@ -25708,6 +25708,7 @@ def sc_boats_layout(sc, ref, items):
 
 
 BT_X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+BT_X_SAID = "Goblin Ledger: boat timers hidden until you leave this dock. /gl boats on brings them back."
 BT_HIDDEN_STATUS = "Goblin Ledger: boat timers are on, hidden at this dock until you leave it (/gl boats on shows them)."
 BT_ON_STATUS = "Goblin Ledger: boat timers are on. /gl boats all lists every route."
 
@@ -25770,12 +25771,14 @@ def bt_x_ok(sc, w, label, others=()):
 
 def sc_boats_x(sc, ref, items):
     """The X at the lines' right end: its hover says what it does; a click hides the line(s)
-    until you leave that dock (250 yd from its piers): walking about the harbor keeps them
-    hidden, leaving and coming back shows them, another dock shows its own; a /reload there
-    keeps them hidden, a /reload elsewhere or the next login does not; /gl boats says so and
-    /gl boats on brings them back. A click on a line still sets the timer. The X never covers
-    the minimap, the lines' words or their click area: under the minimap (one line, three,
-    joined), above it, beside it, with ElvUI (its own X) and at UI scale 0.62."""
+    until you leave that dock (250 yd from its piers) and one chat line says how to undo it;
+    walking about the harbor keeps them hidden, leaving and coming back shows them, another
+    dock shows its own; a /reload there keeps them hidden, a /reload elsewhere or the next
+    login does not; /gl boats says so and /gl boats on brings them back. A click on a line
+    still sets the timer. Hidden, a ride and the dockmaster still teach and nothing is asked
+    of the guild. The X never covers the minimap, the lines' words or their click area: under
+    the minimap (one line, three, joined), above it, beside it, with ElvUI (its own X) and at
+    UI scale 0.62."""
     tx, ty, tinst = bt_stop("menethil_theramore", 1)   # Theramore: one boat
     w = boat_world(ref, items)
     B, M, S = w.ns.Boats, w.M, w.ns.settings
@@ -25802,14 +25805,14 @@ def sc_boats_x(sc, ref, items):
     sc.check(bt_anchor(w, 292) is not None and bt_anchor(w, 292)["src"] == "M", "x: a click on the line still sets the timer")
     w.settle(1.1)
     sc.check(len(bt_lines(w)) == 1 and "unknown" not in bt_lines(w)[0], "x: the line shows it (%s)" % bt_lines(w))
-    # The X: hidden, nothing said in chat, the tooltip gone too.
+    # The X: hidden, one chat line (like the flight bar's X) says how to undo it, the tooltip gone too.
     mark = w.chat_mark()
     M.enter(x)
     M.click(x)
     sc.eq(bt_lines(w), [], "x: a click on the X hides the line")
     sc.check(not w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats), "x: the holder is hidden")
     sc.check(not tt.IsShown(tt), "x: its tooltip goes with it")
-    sc.eq(w.chat(mark), [], "x: nothing said in chat")
+    sc.eq([strip_codes(c) for c in w.chat(mark)], [BT_X_SAID], "x: one chat line says how to get them back")
     sc.eq(lua_to_py(S.boatHide), {"inst": tinst, "ses": B.session, "piers": {1: "292:2"}}, "x: saved: this dock, this login")
     w.settle(20)
     sc.eq(bt_lines(w), [], "x: stays hidden at the dock")
@@ -25920,8 +25923,10 @@ def sc_boats_x(sc, ref, items):
     sc.eq(len([1 for i in range(1, 4) if B4.ui.btn[i].IsVisible(B4.ui.btn[i])]), 3, "x: (three click areas, one X)")
     w4.M.click(B4.ui.btn[2])
     sc.check(bt_anchor(w4, 11167) is not None and bt_anchor(w4, 11167)["obs"] == 3, "x: a click on the second line sets that boat")
+    mark4 = w4.chat_mark()
     w4.M.click(B4.ui.x)
     sc.eq(bt_lines(w4), [], "x: Auberdine hidden")
+    sc.eq([strip_codes(c) for c in w4.chat(mark4)], [BT_X_SAID], "x: three lines, still one chat line")
     for key, j in (("auberdine_rutheran", 0), ("menethil_southshore_auberdine", 2)):
         px, py, pinst = bt_stop(key, j)
         bt_at(w4, px - 3, py, pinst, zone=False)
@@ -25979,6 +25984,51 @@ def sc_boats_x(sc, ref, items):
         ww.M.click(xx)
         sc.eq(bt_lines(ww), [], "%s: the X hides them" % lab)
         sc.clean(ww, lab)
+    # Hidden, the addon still learns: the boat ride from Menethil (its departure, the
+    # sharpest sighting) and, after a /reload at the Dalaran dock, the dockmaster's call.
+    # Nothing is asked of the guild while hidden.
+    rt = boat_data()[0]["menethil_theramore"]
+    wr = boat_world(ref, items)
+    Br = wr.ns.Boats
+    t0 = bt_now(wr) + 5 - 0.37
+    bt_at(wr, mx + 6, my - 4, minst)
+    bt_ride(wr, "menethil_theramore", t0, t0 + 20, speed_counts_boat=True)
+    sc.check(len(bt_lines(wr)) >= 1 and bt_anchor(wr, 292) is None, "x ride: at Menethil, shown, no timer yet (%s)" % bt_lines(wr))
+    wr.M.click(Br.ui.x)
+    sc.eq(bt_lines(wr), [], "x ride: hidden on the boat at the pier")
+    bt_ride(wr, "menethil_theramore", t0, t0 + 64, speed_counts_boat=True)
+    a = bt_anchor(wr, 292)
+    sc.check(a is not None and a["src"] == "R" and a["obs"] == 1, "x ride: the departure is learned while hidden (%s)" % a)
+    sc.check(wr.ns.settings.boatHide is not None and bt_lines(wr) == [], "x ride: still hidden as it leaves the pier")
+    bt_ride(wr, "menethil_theramore", t0, t0 + 95)
+    sc.check(wr.ns.settings.boatHide is None, "x ride: out at sea the hiding is over")
+    bt_ride(wr, "menethil_theramore", t0, t0 + rt["stops"][1]["arrive_s"] + 4)
+    sc.check(len(bt_lines(wr)) == 1 and "Menethil" in bt_lines(wr)[0], "x ride: Theramore shows its line (%s)" % bt_lines(wr))
+    sc.clean(wr, "x ride")
+    dx, dy, dinst = bt_stop("dalaran_zephras", 0)
+    wd = boat_world(ref, items)
+    wd.M.guild = True
+    bt_at(wd, dx + 5, dy, dinst)
+    wd.settle(2.5)
+    sc.eq(bt_sent(wd), [("GUILD", "Q1|11398")], "x dm: shown, no timer: the guild is asked")
+    wd.M.click(wd.ns.Boats.ui.x)
+    sc.eq(bt_lines(wd), [], "x dm: hidden at Dalaran")
+    saved = lua_to_py(wd.g.ForeverAH_Settings)
+    w7 = boat_world(ref, items, saved=saved, login=(False, True))
+    w7.M.guild = True
+    w7.M.sbase = wd.ns.Boats.Now() - w7.M.t + 3
+    bt_at(w7, dx + 5, dy, dinst)
+    w7.settle(2.5)
+    B7 = w7.ns.Boats
+    sc.eq(bt_lines(w7), [], "x dm: a /reload there: still hidden")
+    sc.eq(bt_sent(w7), [], "x dm: hidden: nothing asked of the guild")
+    sc.check(B7.driver.listening, "x dm: hidden: still listening for the dockmaster")
+    t = B7.Now()
+    w7.M.fire("CHAT_MSG_MONSTER_SAY", "The skycutter to Zephras Isle has just arrived. All aboard!", "Arcanist Laurain")
+    a = bt_anchor(w7, 11398)
+    sc.check(a is not None and a["src"] == "A" and abs(a["t0"] - t) < 0.1, "x dm: the call teaches while hidden (%s)" % a)
+    sc.eq(bt_lines(w7), [], "x dm: and the lines stay hidden")
+    sc.clean(w7, "x dm")
 
 
 # --- boats: end ---
