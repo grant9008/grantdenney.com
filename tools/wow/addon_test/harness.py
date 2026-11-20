@@ -791,12 +791,33 @@ function M.eff(o)
   return s
 end
 
+-- M.fontSizes (the boat timers' worlds): a font string is as big as its Font (its size / 12
+-- times the 12-point one: 6 a letter, 12 high); else every font string is 12-point.
+function M.fontScale(o)
+  if not M.fontSizes then return 1 end
+  local f = rawget(o, "_font")
+  if type(f) == "string" then f = _G[f] end
+  local s = type(f) == "table" and rawget(f, "_isFont") and rawget(f, "_size")
+  return finite(s) and s > 0 and s / 12 or 1
+end
+-- How many letters wide a text is (colour codes take no room); M.narrowOne (a boat test): a
+-- font whose "1" is half as wide as its other digits.
+function M.letters(text)
+  local s = (text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+  local n = #s
+  if M.narrowOne then
+    local _, ones = s:gsub("1", "")
+    n = n - ones / 2
+  end
+  return n
+end
 local function baseSize(o)
   local w, h = o._w, o._h
   if o._otype == "FontString" then
     -- As wide as its words (6 a letter, like GetStringWidth): colour codes take no room.
-    if w == 0 then w = #((o._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")) * 6 end
-    if h == 0 then h = 12 end
+    local k = M.fontScale(o)
+    if w == 0 then w = M.letters(o._text) * 6 * k end
+    if h == 0 then h = 12 * k end
   end
   return w, h
 end
@@ -1043,8 +1064,8 @@ end
 function FontString:SetShadowColor() end
 function FontString:SetShadowOffset() end
 function FontString:SetSpacing() end
-function FontString:GetStringWidth() local s = (self._text or ""):gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", ""); return #s * 6 end
-function FontString:GetStringHeight() return 12 end
+function FontString:GetStringWidth() return M.letters(self._text) * 6 * M.fontScale(self) end
+function FontString:GetStringHeight() return 12 * M.fontScale(self) end
 function FontString:SetDrawLayer(layer, sub) if not LAYERS[layer] then apiError("bad layer") end end
 
 -- Frames -------------------------------------------------------------------------
@@ -2884,6 +2905,8 @@ M.MODERN_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PL
   "ZONE_CHANGED", "ZONE_CHANGED_INDOORS", "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "LOADING_SCREEN_DISABLED",
   "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON", "CHAT_MSG_MONSTER_SAY", "CHAT_MSG_MONSTER_YELL", "CHAT_MSG_MONSTER_EMOTE",
   "CHAT_MSG_RAID_BOSS_EMOTE"}
+-- The UI scale and the screen size changing (the big flight timer finds its place again at once).
+for _, e in ipairs({ "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" }) do M.MODERN_EVENTS[#M.MODERN_EVENTS + 1] = e end
 -- The legacy client has no TRAIT_CONFIG_UPDATED or ACTIVE_TALENT_GROUP_CHANGED: registering them must not break anything.
 M.LEGACY_EVENTS = { "ADDON_LOADED", "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "PLAYER_LOGOUT", "VARIABLES_LOADED",
   "AUCTION_HOUSE_SHOW", "AUCTION_HOUSE_CLOSED", "AUCTION_ITEM_LIST_UPDATE", "NEW_AUCTION_UPDATE",
@@ -23602,6 +23625,7 @@ def fl_world(ref, items, saved=None, login=(True, False), t=None, now=None, on_t
 
     def setup(w):
         M = w.M
+        M.fontSizes = True   # (font strings as big as their Font: the big timer's sizes count)
         if t is not None:
             M.t = t
         if on_taxi:
@@ -23937,31 +23961,29 @@ def sc_flights_bar(sc, ref, items):
                  "bar: top centre, where the game's timer bars go (%s)" % (r,))
         sc.eq((round(r[2] - r[0], 3), round(r[3] - r[1], 3), FL.anchor), (180, 16, "MirrorTimerContainer"), "bar: slim, on the Timer Bars spot")
     else:
-        sc.eq((FL.spot, round(r[2] - r[0], 3), round(r[3] - r[1], 3), b.GetName(b)), ("middle", 240, 60, "GoblinLedgerFlightTimer"),
-              "bar: big, in the upper middle")
+        sc.eq((FL.spot, b.GetName(b)), ("middle", "GoblinLedgerFlightTimer"), "bar: big, in the upper middle")
         sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 290)) < 0.01, "bar: centred, 290 under the top (%s)" % (r,))
+        fl_big_place_checks(sc, w, "bar")
     sc.check(not b.IsMouseEnabled(b), "bar: clicks go through it")
-    sc.eq((w.same(b.GetParent(b), w.g.UIParent), b.GetFrameStrata(b)), (True, "MEDIUM"),
-          "bar: on the game's interface (Alt+Z hides it), at its middle strata")
+    sc.eq((w.same(b.GetParent(b), w.g.UIParent), b.GetFrameStrata(b)), (True, "MEDIUM" if small else "LOW"),
+          "bar: on the game's interface (Alt+Z hides it), at its strata (slim: middle; big: low, as the boat timer)")
     x = b.x
     xr = w.rect(x)
     if small:
         sc.check(xr[2] <= r[2] and xr[0] >= r[2] - 16 and abs((xr[1] + xr[3]) / 2 - (r[1] + r[3]) / 2) < 0.01,
                  "bar: the X at its right end (%s in %s)" % (xr, r))
     else:
-        sc.check(abs(xr[2] - (r[2] - 2)) < 0.01 and abs(xr[3] - (r[3] - 2)) < 0.01, "bar: the X at its top right (%s in %s)" % (xr, r))
+        lr = w.rect(b.line)
+        sc.check(abs(xr[0] - (lr[2] + 6)) < 0.01 and abs(xr[3] - r[3]) < 0.01, "bar: the X just after the time (%s in %s)" % (xr, r))
     sc.eq((round(xr[2] - xr[0], 3), x.IsVisible(x)), (14, True), "bar: a 14px X")
-    tr = w.rect(b.dest if not small else b.text)
+    tr = w.rect(b.text if small else b.line)
     sc.check(tr[2] <= xr[0], "bar: the words stop before the X")
     sc.check(abs((tr[0] + tr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01, "bar: the words centred on the bar (%s in %s)" % (tr, r))
-    if not small:
-        vr = w.rect(b.text)
-        sc.check(vr[3] <= xr[1] and abs((vr[0] + vr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01, "bar: the time left under the X, centred (%s)" % (vr,))
-    inner = (180 if small else 240) - 2
     for wait in (60, 61.3, 0.45, 100):
         fl_wait(w, wait)
         el = fl_el(w)
         sc.eq(fl_bar_line(w), fl_line("Ironforge", est, el), "bar: %.1f s in" % el)
+        inner = 178 if small else fl_big_line_w(*fl_line("Ironforge", est, el).split(" ", 1))
         sc.check(abs(b.fill.GetWidth(b.fill) - max(1, inner * (est - el) / est)) < 1e-6, "bar: the fill is what is left (%.1f s in)" % el)
     tc = b.text.GetTextColor(b.text)
     if small:
@@ -23978,7 +24000,7 @@ def sc_flights_bar(sc, ref, items):
         sc.eq(tuple(round(v, 3) for v in tc[:3]), (bc[1], bc[2], bc[3]), "bar: gold when over")
     else:
         sc.eq(tuple(round(v, 3) for v in tc[:3]), (1, 0.82, 0), "bar: still gold when over (the + says it)")
-    sc.check(not b.fill.IsShown(b.fill), "bar: no fill when over")
+    sc.check(not b.fill.IsShown(b.fill) and (small or not b.track.IsShown(b.track)), "bar: no fill when over")
     land_t = M.t
     gt = cur.gt
     fl_land(w, FL_IF)
@@ -24358,13 +24380,23 @@ def sc_flights_elvui(sc, ref, items):
     def setup(w):
         w.M.InstallBlizzardBags()
         w.M.InstallElvUIAddon(w.to_lua({}))
-    w = fl_world(ref, items, pos=fl_pos(FL_SW), before=setup)
+    def setup_font(w):
+        setup(w)
+        g = w.g.GameFontHighlight   # (ElvUI puts its font on the game's)
+        g.SetFont(g, r"Interface\AddOns\ElvUI\Media\Fonts\PTSansNarrow.ttf", 12, "")
+    w = fl_world(ref, items, pos=fl_pos(FL_SW), before=setup_font)
     M, FL = w.M, w.ns.Flights
     slot = fl_open(w)
     fl_take(w, slot[FL_IF])
     b = FL.Bar()
     x = b.x
-    sc.eq((b._template, FL.look), ("Transparent", "elvui"), "elvui: the bar in ElvUI's look")
+    if fl_small(w):
+        sc.eq((b._template, FL.look), ("Transparent", "elvui"), "elvui: the bar in ElvUI's look")
+    else:
+        sc.eq((b._template, b._backdrop, b.dest.GetFont(b.dest), b.text.GetFont(b.text)),
+              (None, None, (r"Interface\AddOns\ElvUI\Media\Fonts\PTSansNarrow.ttf", 16, "OUTLINE"),
+               (r"Interface\AddOns\ElvUI\Media\Fonts\PTSansNarrow.ttf", 32, "OUTLINE")),
+              "elvui: the big timer: no panel (as the big boat timer), its words in ElvUI's font")
     sc.eq((x.glLook, x.Texture._texture, x.Texture.GetWidth(x.Texture)), ("elvui", "Interface\\AddOns\\ElvUI\\Media\\Textures\\Close", 12),
           "elvui: ElvUI's X")
     sc.eq((x.GetHitRectInsets(x), x.GetWidth(x)), ((-2, -2, -2, -2), 14), "elvui: still easy to hit")
@@ -24527,8 +24559,9 @@ def sc_flights_joins(sc, ref, items):
 # Blizzard_UIWidgets (UIWidgetTopCenterContainerFrame 10x10 at TOP -15, UIWidgetSubZoneText-
 # ContainerFrame 10x10 on SubZoneTextFrame's top); Blizzard_MirrorTimer (MirrorTimerContainer at
 # TOP -100, three 206x32 timers stacked under it). A line is as tall as its font.
-# o: raidY (Edit Mode moved the raid warnings), hidden (the zone's name faded out), widgets (w, h
-# of a capture bar in the top centre widgets).
+# o: raidY (Edit Mode moved the raid warnings), errY, zoneY, mirrorY (the error lines, the zone's
+# name, the timer bars moved: Edit Mode, another addon), hidden (the zone's name faded out),
+# widgets (w, h of a capture bar in the top centre widgets).
 FL_TOP_LUA = r'''
 local M = MOCK
 function M.FlTopFrames(o)
@@ -24544,7 +24577,7 @@ function M.FlTopFrames(o)
   end
   local e = CreateFrame("Frame", "UIErrorsFrame", UIParent)
   e:SetSize(512, 60)
-  e:SetPoint("TOP", UIParent, "TOP", 0, -122)
+  e:SetPoint("TOP", UIParent, "TOP", 0, o.errY or -122)
   e:SetFrameStrata("DIALOG")
   local rw = CreateFrame("Frame", "RaidWarningFrame", UIParent)
   rw:SetSize(800, 100)
@@ -24555,7 +24588,7 @@ function M.FlTopFrames(o)
   pb:SetPoint("TOP", rw, "TOP", 0, 0)
   local zf = CreateFrame("Frame", "ZoneTextFrame", UIParent)
   zf:SetSize(128, 128)
-  zf:SetPoint("TOP", UIParent, "TOP", 0, -128)
+  zf:SetPoint("TOP", UIParent, "TOP", 0, o.zoneY or -128)
   local zs = line("ZoneTextString", zf, 32, "Stormwind City")
   zs:SetPoint("CENTER", zf, "CENTER", 0, 0)
   local pv = line("PVPInfoTextString", zf, 22, "(Alliance Territory)")
@@ -24574,6 +24607,10 @@ function M.FlTopFrames(o)
   local sw = CreateFrame("Frame", "UIWidgetSubZoneTextContainerFrame", UIParent)
   sw:SetSize(10, 10)
   sw:SetPoint("BOTTOM", sf, "TOP", 0, 0)
+  if o.mirrorY then
+    MirrorTimerContainer:ClearAllPoints()
+    MirrorTimerContainer:SetPoint("TOP", UIParent, "TOP", 0, o.mirrorY)
+  end
   MirrorTimerContainer:Show()
   for i = 1, 3 do
     local t = CreateFrame("Frame", "FlTestMirrorTimer" .. i, MirrorTimerContainer)
@@ -24612,9 +24649,20 @@ def fl_px(r):
     return "(%s)" % ", ".join("%.0f" % v for v in r)
 
 
+FL_BIG_H = 32 + 3 + 3   # the big timer: its line (as tall as the 32 time), 3 down, the 3 strip
+
+
+def fl_big_line_w(dest, left):
+    """The big timer's line in the mock's letters (6 a letter at 12, M.fontSizes): the place at 16,
+    8 more, the time at 32 (every digit as wide as the widest: all one width here)."""
+    return len(dest) * 6 * 16 / 12.0 + 8 + len(left) * 6 * 32 / 12.0
+
+
 def fl_big_place_checks(sc, w, label, spot="middle"):
-    """The big timer's place and size: centred, its spot, above the character, clear of every
-    message frame; the X at the top right clear of the words; the words fit. Gives its rectangle."""
+    """The big timer's place, size and look (the big boat timer's): centred at its spot, above the
+    character, clear of every message frame; no panel, on the boat timer's strata, clicks go
+    through; one line, the place (16, white) before the time (32, gold) on its baseline, 8 apart;
+    the 14 X 6 after the line; the 3 strip 3 under the line, as wide. Gives its rectangle."""
     FL, M = w.ns.Flights, w.M
     b = FL.Bar()
     if not sc.check(b is not None and b.IsVisible(b) and b.dest is not None, "%s: the big timer shows" % label):
@@ -24622,10 +24670,13 @@ def fl_big_place_checks(sc, w, label, spot="middle"):
     sw, sh = M.screenW, M.screenH
     es = b.GetEffectiveScale(b)
     r = w.rect(b)
+    d, t, ln, tk, x = b.dest, b.text, b.line, b.track, b.x
+    dr, tr, lr, kr, xr = w.rect(d), w.rect(t), w.rect(ln), w.rect(tk), w.rect(x)
+    lw = fl_big_line_w(d.GetText(d), t.GetText(t))
     sc.eq(FL.spot, spot, "%s: at its %s spot" % (label, spot))
     sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01, "%s: centred (%s on a %d wide screen)" % (label, fl_px(r), sw))
-    sc.check(abs((r[2] - r[0]) - 240 * es) < 0.01 and abs((r[3] - r[1]) - 60 * es) < 0.01,
-             "%s: 240 x 60 (%.0f x %.0f px)" % (label, r[2] - r[0], r[3] - r[1]))
+    sc.check(abs((r[2] - r[0]) - (lw + 40) * es) < 0.01 and abs((r[3] - r[1]) - FL_BIG_H * es) < 0.01,
+             "%s: its line and room for the X on both sides, %d high (%.0f x %.0f px)" % (label, FL_BIG_H, r[2] - r[0], r[3] - r[1]))
     if spot == "middle":
         sc.check(abs(r[3] - (sh - max(290 * es, 0.30 * sh))) < 0.01,
                  "%s: its top 290 under the top of the screen, or 30%% down (%.1f%%)" % (label, 100.0 * (sh - r[3]) / sh))
@@ -24640,23 +24691,32 @@ def fl_big_place_checks(sc, w, label, spot="middle"):
             orr = None   # (an empty widget container: nothing to cover)
         if orr and fl_hit(r, orr):
             hits.append("%s %s" % (n, fl_px(orr)))
-    zs = w.rect(w.g.ZoneTextString)
+    zs = w.rect(w.g.ZoneTextString) if w.g.ZoneTextString is not None else None
     if zs:   # all four lines of the zone's name, as low as they can reach
         zr = ((zs[0] + zs[2]) / 2 - 256 * es, zs[3] - 102 * es, (zs[0] + zs[2]) / 2 + 256 * es, zs[3])
         if fl_hit(r, zr):
             hits.append("the zone's names %s" % fl_px(zr))
     sc.eq(hits, [], "%s: clear of the game's messages and the timer bars (%s)" % (label, fl_px(r)))
-    x, d, t = b.x, b.dest, b.text
-    xr, dr, tr = w.rect(x), w.rect(d), w.rect(t)
-    sc.check(abs(xr[2] - (r[2] - 2 * es)) < 0.01 and abs(xr[3] - (r[3] - 2 * es)) < 0.01 and abs((xr[2] - xr[0]) - 14 * es) < 0.01,
-             "%s: a 14 X at the top right %s" % (label, fl_px(xr)))
-    sc.check(not fl_hit(xr, dr) and not fl_hit(xr, tr), "%s: the X clear of the words (%s, %s, %s)" % (label, fl_px(xr), fl_px(dr), fl_px(tr)))
-    sc.check(tr[3] <= dr[1] + 1e-6 and abs((dr[0] + dr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01 and abs((tr[0] + tr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01,
-             "%s: the place over the time, both centred" % label)
+    sc.eq((b.GetFrameStrata(b), b.IsMouseEnabled(b), ln.IsMouseEnabled(ln), b._backdrop, b._template),
+          ("LOW", False, False, None, None), "%s: no panel, under the windows (the boat timer's strata), clicks go through" % label)
+    sc.check(abs((lr[0] + lr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01 and abs(lr[3] - r[3]) < 0.01
+             and abs((lr[2] - lr[0]) - lw * es) < 0.01 and abs((lr[3] - lr[1]) - 32 * es) < 0.01,
+             "%s: the line centred at the top, 32 high (%s)" % (label, fl_px(lr)))
+    sc.check(abs(dr[0] - lr[0]) < 0.01 and abs(dr[1] - (lr[1] + 3 * es)) < 0.01 and abs(tr[1] - lr[1]) < 0.01
+             and abs(tr[0] - (dr[2] + 8 * es)) < 0.01 and tr[2] <= lr[2] + 0.01,
+             "%s: the place, then 8 on the time, on its baseline (%s, %s)" % (label, fl_px(dr), fl_px(tr)))
     sc.eq((d.GetFont(d)[1:], t.GetFont(t)[1:]), ((16, "OUTLINE"), (32, "OUTLINE")), "%s: 16 and 32, outlined" % label)
+    sc.eq((tuple(round(v, 3) for v in d.GetTextColor(d)[:3]), tuple(round(v, 3) for v in t.GetTextColor(t)[:3])),
+          ((1, 1, 1), (1, 0.82, 0)), "%s: the place white, the time in the game's gold (the boat timer's)" % label)
+    sc.check(abs((xr[2] - xr[0]) - 14 * es) < 0.01 and abs(xr[0] - (lr[2] + 6 * es)) < 0.01 and abs(xr[3] - lr[3]) < 0.01
+             and abs(xr[2] - r[2]) < 0.01, "%s: a 14 X 6 after the line, at its top (%s)" % (label, fl_px(xr)))
+    sc.check(not fl_hit(xr, dr) and not fl_hit(xr, tr), "%s: the X clear of the words (%s, %s, %s)" % (label, fl_px(xr), fl_px(dr), fl_px(tr)))
+    if tk.IsShown(tk):
+        sc.check(abs(kr[3] - (lr[1] - 3 * es)) < 0.01 and abs((kr[3] - kr[1]) - 3 * es) < 0.01 and abs(kr[0] - lr[0]) < 0.01
+                 and abs(kr[2] - lr[2]) < 0.01, "%s: the strip 3 under the line, 3 high, as wide (%s)" % (label, fl_px(kr)))
     longest = max((fl_source()[0][i][0].split(",")[0] for i in fl_source()[0]), key=len)
-    sc.check(len(longest) * FL_EM * 16 * es <= dr[2] - dr[0] and len("12:34 so far") * FL_EM * 32 * es <= tr[2] - tr[0],
-             "%s: the longest place (%s) and time (12:34 so far) fit their lines" % (label, longest))
+    sc.check((len(longest) * FL_EM * 16 + 8 + len("12:34 so far") * FL_EM * 32 + 40) * es <= sw,
+             "%s: the longest place (%s) and time (12:34 so far) fit the screen" % (label, longest))
     return r
 
 
@@ -24679,22 +24739,23 @@ def sc_flights_big(sc, ref, items):
           "big: Ironforge over 4:19")
     sc.check(not FL.Bars().small, "big: no slim bar made")
     fl_big_place_checks(sc, w, "big 1920x1080 1.0")
-    W = 238
     r0 = w.rect(b.fill)
-    sc.check(abs(r0[0] - (w.rect(b)[0] + b.GetEffectiveScale(b))) < 0.01, "big: the fill from the left edge")
+    sc.check(b.track.IsShown(b.track) and abs(r0[0] - w.rect(b.track)[0]) < 0.01, "big: the strip fills from its left end")
     last = None
     for wait in (30, 60.4, 90, 77.7):
         fl_wait(w, wait)
         el = fl_el(w)
         fr = w.rect(b.fill)
-        sc.eq(b.text.GetText(b.text), fl_line("Ironforge", est, el).split(" ", 1)[1], "big: the time left, %.1f s in" % el)
-        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, W * (est - el) / est)) < 1e-6 and abs(fr[0] - r0[0]) < 0.01,
-                 "big: the fill is what is left (%.1f s in), running down to the left" % el)
-        sc.check(last is None or fr[2] < last, "big: the fill gets shorter")
+        left = fl_line("Ironforge", est, el).split(" ", 1)[1]
+        sc.eq(b.text.GetText(b.text), left, "big: the time left, %.1f s in" % el)
+        sc.check(abs(b.fill.GetWidth(b.fill) - max(1, fl_big_line_w("Ironforge", left) * (est - el) / est)) < 1e-6
+                 and abs(fr[0] - r0[0]) < 0.01, "big: the strip is what is left (%.1f s in), running down to the left" % el)
+        sc.check(last is None or fr[2] < last, "big: the strip gets shorter")
         last = fr[2]
     fl_wait(w, est - fl_el(w) + 5.2)
-    sc.eq((b.dest.GetText(b.dest), b.text.GetText(b.text), b.fill.IsShown(b.fill)), ("Ironforge", "+0:05", False),
-          "big: over the estimate: +0:05, no fill")
+    sc.eq((b.dest.GetText(b.dest), b.text.GetText(b.text), b.fill.IsShown(b.fill), b.track.IsShown(b.track)),
+          ("Ironforge", "+0:05", False, False), "big: over the estimate: +0:05, no strip")
+    fl_big_place_checks(sc, w, "big +0:05")
     fl_land(w, FL_IF)
     sc.eq((fl_bar_line(w), b.IsShown(b)), (None, False), "big: gone on landing")
     sc.clean(w, "big words")
@@ -24726,7 +24787,9 @@ def sc_flights_big(sc, ref, items):
         got = (b.dest.GetText(b.dest), b.text.GetText(b.text)) if style == "big" else b.text.GetText(b.text)
         sc.eq(got, ("Frostwolf Keep", "1:05 so far") if style == "big" else "Frostwolf Keep 1:05 so far",
               "%s: no time in the data: it counts up" % style)
-        sc.check(not b.fill.IsShown(b.fill), "%s: no fill without a time" % style)
+        sc.check(not b.fill.IsShown(b.fill) and (style == "small" or not b.track.IsShown(b.track)), "%s: no fill without a time" % style)
+        if style == "big":
+            fl_big_place_checks(sc, w, "so far")
         sc.clean(w, "%s so far" % style)
     # Every screen and UI scale, the default UI and ElvUI.
     for pw, ph in FL_SCREENS:
@@ -24739,7 +24802,7 @@ def sc_flights_big(sc, ref, items):
                 r = fl_big_place_checks(sc, w, label)
                 b = w.ns.Flights.Bar()
                 if elv and b is not None:
-                    sc.eq((b._template, b.x.glLook), ("Transparent", "elvui"), "%s: ElvUI's panel and X" % label)
+                    sc.eq((b._template, b.x.glLook), (None, "elvui"), "%s: ElvUI's X, no panel (as the big boat timer)" % label)
                 sc.clean(w, label)
     # ElvUI's pixel-perfect scales (768 / screen height) too.
     for pw, ph in ((1920, 1080), (2560, 1440)):
@@ -24779,6 +24842,46 @@ def sc_flights_big(sc, ref, items):
     fl_take(w, slot[FL_IF])
     fl_big_place_checks(sc, w, "raid warnings moved", spot="top")
     sc.clean(w, "raid warnings moved")
+    # The error lines, the zone's name or the timer bars moved onto the middle spot (Edit Mode,
+    # another addon): over the timer bars there, clear of them.
+    for opt, label in (({"errY": -300}, "error lines moved"), ({"zoneY": -230}, "zone name moved"),
+                       ({"mirrorY": -280}, "timer bars moved")):
+        w = fl_top_world(ref, items, (1920, 1080, 1.0), top=opt)
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        fl_big_place_checks(sc, w, label, spot="top")
+        sc.clean(w, label)
+    # At the top, the unit frames (shown or not) and the buffs, minimap and tracker while they
+    # show: the target frame moved to the top centre, the buffs there: the slim bar instead.
+    for name, show, want in (("TargetFrame", False, "slim"), ("BuffFrame", True, "slim"), ("BuffFrame", False, "top")):
+        w = fl_top_world(ref, items, (1920, 1080, 1.15))
+        f = w.g.CreateFrame("Frame", name, w.g.UIParent)
+        f.SetSize(f, 300, 60)
+        f.SetPoint(f, "TOP", w.g.UIParent, "TOP", 0, -4)
+        if not show:
+            f.Hide(f)
+        slot = fl_open(w)
+        fl_take(w, slot[FL_IF])
+        label = "top: %s %s" % (name, "shown" if show else "hidden")
+        sc.eq(w.ns.Flights.spot, want, "%s: %s" % (label, "the slim bar" if want == "slim" else "the big timer at the top"))
+        if want == "top":
+            fl_big_place_checks(sc, w, label, spot="top")
+        sc.clean(w, label)
+    # A font whose 1 is narrower than its other digits: the line keeps its width and the X its
+    # place as the seconds tick (every digit counted as the widest).
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    w.M.narrowOne = True
+    FL = w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    b = FL.Bar()
+    seen = {}
+    for _ in range(14):
+        seen[b.text.GetText(b.text)] = (round(w.rect(b.line)[2] - w.rect(b.line)[0], 6), tuple(round(v, 6) for v in w.rect(b.x)))
+        fl_wait(w, 1)
+    sc.check("4:11" in seen and "4:19" in seen and len(set(seen.values())) == 1,
+             "digits: one width and one X place from 4:19 to 4:06 (%s)" % sorted(set(seen.values())))
+    sc.clean(w, "digits")
     # No room anywhere (raid warnings in the middle, a tall widget at the top): the slim bar, same words.
     w = fl_top_world(ref, items, (1920, 1080, 1.0), top={"raidY": -300, "widgets": (300, 60)})
     FL = w.ns.Flights
@@ -24876,6 +24979,164 @@ def sc_flights_style(sc, ref, items):
         w.slash(cmd)
         sc.eq(S.flightBar, None, "style: %s" % cmd)
     sc.clean(w, "style")
+
+
+def sc_flights_place(sc, ref, items):
+    """The big timer finds its place again while you fly: at once at a new UI scale or screen size
+    (UI_SCALE_CHANGED, DISPLAY_SIZE_CHANGED), within a second for a capture bar coming up at the
+    top, no room any more or room again; once a second, not at every tick; the slim bar never."""
+    # ElvUI's pixel-perfect UI scale for 1080p (0.711), then UI scale 1.0 in the air.
+    w = fl_top_world(ref, items, (1920, 1080, 768.0 / 1080), elvui=True)
+    FL, M = w.ns.Flights, w.M
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_big_place_checks(sc, w, "place 0.711")
+    M.SetScreen(1920, 1080, 1080 / 768.0)
+    M.fire("UI_SCALE_CHANGED")
+    fl_big_place_checks(sc, w, "place: UI scale 1.0 in the air, at once")
+    M.SetScreen(1920, 1080, 1.0)   # (back to 0.711, and no event: a client without it)
+    fl_wait(w, 1.0)
+    fl_big_place_checks(sc, w, "place: back to 0.711 with no event, within a second")
+    M.SetScreen(2560, 1440, 1440 / 768.0 * 0.8)
+    M.fire("DISPLAY_SIZE_CHANGED")
+    fl_big_place_checks(sc, w, "place: 2560x1440 at 0.8 in the air, at once")
+    sc.clean(w, "place scale")
+    # UI scale 1.15 (the top): a capture bar comes up at the top centre, grows over it, goes.
+    w = fl_top_world(ref, items, (1920, 1080, 1.15))
+    FL = w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_big_place_checks(sc, w, "place 1.15", spot="top")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are on (big timer, at the top: no room in the middle). Your own times for 0 routes.",
+          "place: status says it is at the top")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights big")],
+          ["Goblin Ledger: flight timer: big, at the top: no room in the middle. /gl flights small for the slim bar."],
+          "place: /gl flights big says it is at the top")
+    tc = w.g.UIWidgetTopCenterContainerFrame
+    tc.SetSize(tc, 220, 18)
+    fl_wait(w, 1.0)
+    r = fl_big_place_checks(sc, w, "place: a capture bar came up", spot="top")
+    wr = w.rect(tc)
+    es = FL.Bar().GetEffectiveScale(FL.Bar())
+    sc.check(r is not None and abs(r[3] - (wr[1] - 4 * es)) < 0.01, "place: 4 under the capture bar within a second")
+    tc.SetSize(tc, 300, 60)
+    fl_wait(w, 1.0)
+    b = FL.Bar()
+    sc.eq((FL.spot, b.GetName(b), fl_bar_line(w)), ("slim", "GoblinLedgerFlightBar", fl_line("Ironforge", fl_state(w)[0].est, fl_el(w))),
+          "place: no room any more: the slim bar within a second, the same words")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are on (big timer, no room for it now: the slim bar shows). Your own times for 0 routes.",
+          "place: status says the slim bar shows for now")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights big")],
+          ["Goblin Ledger: flight timer: big, no room for it now: the slim bar shows. /gl flights small for the slim bar."],
+          "place: /gl flights big says the slim bar shows for now")
+    tc.SetSize(tc, 10, 10)
+    fl_wait(w, 1.0)
+    fl_big_place_checks(sc, w, "place: room again: the big timer within a second", spot="top")
+    sc.eq(fl_bar_line(w), fl_line("Ironforge", fl_state(w)[0].est, fl_el(w)), "place: room again: the same words")
+    sc.clean(w, "place top")
+    # Once a second (as the big boat timer), not at each of the 10 ticks a second; the slim bar never.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL = w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    p0, t0 = FL.places, FL.polls
+    fl_wait(w, 60)
+    n, ticks = FL.places - p0, FL.polls - t0
+    sc.check(54 <= n <= 61 and ticks >= 590, "place: about once a second over 60 s (%d places in %d ticks)" % (n, ticks))
+    w.slash("/gl flights small")
+    p0 = FL.places
+    fl_wait(w, 60)
+    sc.eq(FL.places - p0, 0, "place: the slim bar is not placed again")
+    sc.clean(w, "place cost")
+
+
+# The flight mock's taxi again after BOAT_MOCK_LUA (its M.taxi is a yes or no, the flights' a table).
+FL_BOAT_FIX_LUA = r'''
+local M = MOCK
+M.taxi = { open = false, nodes = {}, mapID = 1463, taken = {}, early = 0, delay = 0.3 }
+M.onTaxi = false
+function UnitOnTaxi(unit) return unit == "player" and M.onTaxi == true end
+'''
+
+
+def sc_flights_boats(sc, ref, items):
+    """The big boat timer (Boats.lua's GoblinLedgerBoatsBig) never shows with the flight timer: at the
+    dock you take off from it goes; shown as you fly over a dock, hidden at once (also with the
+    flight timer hidden by its X); after you land it shows again. With a Boats.lua that has the big
+    timer, the real thing: Darkshire to Booty Bay passes the Booty Bay pier, never both at once."""
+    est = fl_est([FL_SW, FL_IF])[0]
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL, M, P = w.ns.Flights, w.M, w.g.UIParent
+    boat = w.g.GoblinLedgerBoatsBig or w.g.CreateFrame("Frame", "GoblinLedgerBoatsBig", P)   # (as at a dock)
+    boat.SetSize(boat, 400, 32)
+    boat.ClearAllPoints(boat)
+    boat.SetPoint(boat, "TOP", P, "TOP", 0, -290)
+    boat.Show(boat)
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    sc.eq((fl_shown(boat), fl_shown(FL.Bar())), (False, True), "boats: the boat timer goes as you take off")
+    fl_wait(w, 30)
+    boat.Show(boat)   # (Boats.lua shows it at each step at a dock)
+    sc.eq((fl_shown(boat), fl_shown(FL.Bar())), (False, True), "boats: over a dock: hidden at once")
+    M.click(FL.Bar().x)
+    boat.Show(boat)
+    sc.eq((fl_shown(boat), fl_bar_line(w)), (False, None), "boats: hidden too with the flight timer hidden by its X")
+    fl_wait(w, est - fl_el(w) + 1, dt=0.5)
+    fl_land(w, FL_IF)
+    boat.Show(boat)
+    sc.check(fl_shown(boat), "boats: after landing it shows again at a dock")
+    sc.clean(w, "boats")
+    # The first dock of the session under you on the way: made then, hidden within a tick.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL, P = w.ns.Flights, w.g.UIParent
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_wait(w, 20)
+    boat = w.g.GoblinLedgerBoatsBig or w.g.CreateFrame("Frame", "GoblinLedgerBoatsBig", P)
+    boat.Show(boat)
+    fl_wait(w, 0.1)
+    sc.check(not fl_shown(boat) and fl_shown(FL.Bar()), "boats: made on the way: hidden within a tick")
+    boat.Show(boat)
+    sc.check(not fl_shown(boat), "boats: then hidden at once")
+    sc.clean(w, "boats on the way")
+    # The real flight, with a Boats.lua that has the big timer (Darkshire to Booty Bay, 1 s steps).
+    track = fl_source()[2].get("12>19")
+
+    def setup(w):
+        w.loader(FL_TOP_LUA, "@MOCK/flight_top.lua")
+        w.M.FlTopFrames(w.to_lua({}))
+        w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
+        w.loader(FL_BOAT_FIX_LUA, "@MOCK/flight_boats.lua")
+        w.M.InstallMinimap(w.to_lua({"tracker": True, "coords": False, "questie": False}))
+    w = fl_world(ref, items, screen=(1920, 1080, 1080 / 768.0), before=setup)
+    B = w.ns.Boats
+    if B is None or B.ui is None or B.ui.big is None or not track:
+        sc.clean(w, "boats real (this Boats.lua has no big timer)")
+        return
+    M, FL = w.M, w.ns.Flights
+    M.pos = w.to_lua([track[0][0], track[0][1], 0, 0])
+    slot = fl_open(w, routes={19: [12, 19]}, current=12, extra=())
+    fl_take(w, slot[19])
+    fb = FL.Bar()
+    both, near = [], 0
+    for i in range(len(track) - 1):
+        for k in range(20):
+            f = k / 20.0
+            M.pos = w.to_lua([track[i][0] + (track[i + 1][0] - track[i][0]) * f,
+                              track[i][1] + (track[i + 1][1] - track[i][1]) * f, 0, 0])
+            if k == 0:
+                M.fire("ZONE_CHANGED")
+            fl_wait(w, 1.0)
+            if B.ui.shown:
+                near += 1
+            bb = w.g.GoblinLedgerBoatsBig
+            if bb is not None and bb.IsVisible(bb) and fb.IsVisible(fb):
+                both.append(i * 20 + k)
+    sc.check(near > 0, "boats real: the flight passes a dock (a boat timer for %d s)" % near)
+    sc.eq(both, [], "boats real: the big boat timer never with the big flight timer")
+    sc.clean(w, "boats real")
 
 
 # --- boats: the boat timers under the minimap (Boats.lua) ---
@@ -29661,6 +29922,8 @@ SCENARIOS = [
     ("flights-joins", sc_flights_joins),
     ("flights-big", sc_flights_big),
     ("flights-style", sc_flights_style),
+    ("flights-place", sc_flights_place),
+    ("flights-boats", sc_flights_boats),
     ("flights-small-bar", fl_in_small(sc_flights_bar)),
     ("flights-small-x", fl_in_small(sc_flights_x)),
     ("flights-small-reload", fl_in_small(sc_flights_reload)),
