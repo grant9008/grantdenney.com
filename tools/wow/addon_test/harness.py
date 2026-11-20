@@ -20500,32 +20500,42 @@ def cs_expect_marks(w, role, cls, level, all_=False, n=4):
     return out
 
 
-def cs_shown(rows, n):
-    """Which of a section's [(id, "or" row?)] show with n rows a section (None: all): the first n; with
-    "or" rows, the plain ones first (an "or" row only once every plain one is in), in their order."""
-    if n is None or n >= len(rows) or not any(a for _, a in rows):
+def cs_shown(rows, n, alts=None):
+    """Which of a section's [(id, "or" row?)] show with n rows a section (None: all) and at most alts "or" rows
+    (None: no cap): the first n; with "or" rows, the plain ones first (an "or" row only once every plain one is
+    in), in their order."""
+    if not any(a for _, a in rows):
         return rows[:n] if n is not None else list(rows)
     plain = sum(1 for _, a in rows if not a)
-    alts, p, out = n - plain, 0, []
+    left = n - plain if n is not None else len(rows)
+    if alts is not None:
+        left = min(left, alts)
+    p, out = 0, []
     for r in rows:
         if r[1]:
-            if alts > 0:
+            if left > 0:
                 out.append(r)
-                alts -= 1
-        elif p < n:
+                left -= 1
+        elif n is None or p < n:
             out.append(r)
             p += 1
     return out
 
 
-def cs_trim(secs, n):
-    """cs_expect_marks's sections as shown with n rows a section: [(title, [ids])]."""
-    return [(t, [r[0] for r in cs_shown(rows, n)]) for t, rows in secs]
+def cs_trim(secs, n, alts=None, cols=2):
+    """cs_expect_marks's sections as shown with n rows a section and at most alts "or" rows: [(title, [ids])]; the
+    tallest of a line of sections (cols side by side) sets its height, the others fill it with their "or" rows."""
+    out = []
+    for k in range(0, len(secs), cols):
+        line = secs[k:k + cols]
+        tall = max(len(cs_shown(rows, n, alts)) for _, rows in line)
+        out += [(t, [r[0] for r in cs_shown(rows, tall)]) for t, rows in line]
+    return out
 
 
 def cs_title(title, rows):
-    """A section's title as shown over these [(id, "or" row?)]: FOOD and FLASKS "- 1 at a time", ELIXIRS and
-    SCROLLS how many plain rows (when 2 or more) "- 3 at once"."""
+    """A section's title over the model's [(id, "or" row?)] (every row, also those cut for room): FOOD and FLASKS
+    "- 1 at a time", ELIXIRS and SCROLLS how many plain rows (when 2 or more) "- 3 at once"."""
     if title in ("FOOD", "FLASKS"):
         return title + " - 1 at a time"
     plain = sum(1 for _, a in rows if not a)
@@ -20678,6 +20688,19 @@ def cs_place_ok(sc, w, label, side="below", avoid=True):
     sc.eq(out, [], "%s: every line inside the list" % label)
     clash = [(a[0], b[0]) for i, a in enumerate(rows) for b in rows[i + 1:] if _overlap(a[4], b[4])]
     sc.eq(clash, [], "%s: no two rows overlap" % label)
+    # Nothing else takes the mouse: each shown spot that does (a title's hover) sits on a shown title, inside
+    # the list, over no row (folded, scrolled or with fewer sections: the spots left over are hidden).
+    es = F.GetEffectiveScale(F)
+    spots = [c for c in lua_kids(F) if c.GetObjectType(c) == "Frame" and c.IsShown(c) and c.IsMouseEnabled(c)]
+    stray = []
+    for s in spots:
+        sr = w.rect(s)
+        on = [t for t in titles if sr and abs(sr[0] - (t[2][0] - 2 * es)) < 0.01
+              and abs((sr[1] + sr[3]) / 2 - (t[2][1] + t[2][3]) / 2) < 0.01]
+        if (not on or sr is None or not (r[0] - 0.01 <= sr[0] and sr[2] <= r[2] + 0.01 and r[1] - 0.01 <= sr[1]
+                                          and sr[3] <= r[3] + 0.01) or any(_overlap(sr, x[4]) for x in rows)):
+            stray.append((s.glRule, sr, [t[0] for t in on]))
+    sc.eq(stray, [], "%s: every hover spot on a shown title, over no row" % label)
 
 
 def cs_header(w):
@@ -20690,37 +20713,51 @@ def cs_most(secs):
     return max([4] + [len(ids) for _, ids in secs])
 
 
-def cs_fit_n(secs, room_lines, cols=2):
-    """The most rows a section (from cs_most down to 2) whose lines fit in room_lines; None: not 2."""
-    for k in range(cs_most(secs), 1, -1):
-        if cs_lines(secs, k, cols) <= room_lines:
-            return k
+def cs_lines_m(marks, n, alts=None, cols=2):
+    """How many lines the list takes with n rows a section and at most alts "or" rows a section, sections side by
+    side (marks: cs_expect_marks's sections)."""
+    out = 0
+    for k in range(0, len(marks), cols):
+        out += 1 + max(len(cs_shown(rows, n, alts)) for _, rows in marks[k:k + cols])
+    return out
+
+
+def cs_fit(marks, room_lines, cols=2):
+    """(rows a section, "or" rows a section) shown in room_lines: every row if they fit, else first fewer "or" rows
+    (3 a section down to none), then fewer rows a section, down to 2; None: not 2 a section."""
+    for k in range(cs_most(marks), 1, -1):
+        for a in range(CS_MAX_ALTS, -1, -1):
+            if cs_lines_m(marks, k, a, cols) <= room_lines:
+                return k, a
     return None
 
 
 def cs_marks_ok(sc, w, label):
     """What goes together, as shown: each title says it (FOOD, FLASKS "- 1 at a time"; ELIXIRS, SCROLLS how many
-    plain rows, when 2 or more) and its hover spot covers its words, inside its column; in a marked section no
-    two plain rows may clash (a group or a stat in common), each "or" row sits right under its plain row (or
-    under another "or" row of that one) and is of its kind, at most 3 of them in the best ones; the grey "or"
-    in front, inside the row, the icon 16 in, the words after it; the rows' marks are the model's."""
+    plain rows the section has, also those cut for room, when 2 or more) and its hover spot covers its words,
+    inside its column; in a marked section no two plain rows may clash (a group or a stat in common), each "or"
+    row sits right under its plain row (or under another "or" row of that one): in Best and Budget one of its
+    kind that clashes with no other plain row, at most 3 of them; in All under the only plain row it clashes
+    with (one that clashes with more: under its own group's, else the first it clashes with); food and flasks:
+    one plain row, the rest "or". The grey "or" in front, inside the row, the icon 16 in, the words after it
+    (a column under 200: no icon, the "or" in its place, the words where a plain row's start); the rows'
+    marks are the model's."""
     F, C = cs_frame(w), w.ns.Consumes
     es = F.GetEffectiveScale(F)
     L = C.Layout()
     all_ = bool(C.Model().all)
     model = {t: rows for t, rows in cs_model(w)}
     fr = w.rect(F)
+    narrow = (L.colW or 0) < CS_OR_NARROW
+    it = cs_source_items()
     bad = []
     tips = [c for c in lua_kids(F) if c.GetObjectType(c) == "Frame" and c.IsShown(c) and c.glRule is not None]
-    laid = {}
-    for k in range(1, len(L.cells or {}) + 1):
-        c = L.cells[k]
-        if c.title is None:
-            laid.setdefault(c.key, []).append((int(c.id), bool(c.alt)))
     for full, key, rows in cs_marked_rows(w):
         base = CS_TITLE_TAIL.sub("", full or "")
-        if full != cs_title(base, laid.get(key, [])):
-            bad.append((full, "title", cs_title(base, laid.get(key, []))))
+        m = model.get(base, [])
+        want_t = cs_title(base, [(r[0], r[4]) for r in m])
+        if full != want_t:
+            bad.append((full, "title", want_t))
         fs = [c for c in lua_kids(F) if c.GetObjectType(c) == "FontString" and c.IsShown(c) and c.glKey == key
               and c.GetText(c) == full]
         tr = w.rect(fs[0]) if fs else None
@@ -20743,43 +20780,73 @@ def cs_marks_ok(sc, w, label):
                     bad.append((full, "hover spot not over the words", hr, tr))
         elif mine:
             bad.append((full, "a hover spot without a rule"))
-        m = model.get(base, [])
         mark = {r[0]: r[4] for r in m}
-        plain = [i for i, a, _ in rows if not a]
-        if base in ("ELIXIRS", "SCROLLS"):
-            clash = [(a, b) for k, a in enumerate(plain) for b in plain[k + 1:] if cs_clash(a, b)]
-            if clash:
-                bad.append((full, "two plain rows that may not both count", clash))
-        if base == "FLASKS" and len(plain) > 1:
-            bad.append((full, "two plain flasks", plain))
         parent = None
         for i, a, row in rows:
             if mark.get(i) != a:
                 bad.append((full, i, "mark not the model's", a, mark.get(i)))
             if not a:
                 parent = i
-            elif parent is None:
+            elif parent is None and rows[0][0] == i:
                 bad.append((full, i, "an or row with no plain row above it"))
-            elif base != "FLASKS" and not cs_clash(parent, i):
-                bad.append((full, i, "an or row under a plain row it goes with", parent))
-            elif base != "FLASKS" and cs_source_items()[i][8] != cs_source_items()[parent][8] and not all_:
-                bad.append((full, i, "an or row of another group", parent))
-            rr, ir = w.rect(row), w.rect(row.icon)
+            rr, ir, tr = w.rect(row), w.rect(row.icon), w.rect(row.text)
             ow = row.orWord
             if ow.IsShown(ow) != a:
                 bad.append((full, i, "the or word", ow.IsShown(ow)))
-            if abs(ir[0] - (rr[0] + (CS_OR_W if a else 1) * es)) > 0.01:
+            hide = a and narrow
+            if row.icon.IsShown(row.icon) == hide:
+                bad.append((full, i, "the icon shown" if hide else "the icon hidden"))
+            if abs(ir[0] - (rr[0] + (1 if hide or not a else CS_OR_W) * es)) > 0.01:
                 bad.append((full, i, "icon not in its place", ir[0] - rr[0]))
             if a:
                 orr = w.rect(ow)
                 txt = (ow.GetText(ow) or "")
                 if txt != "or" or cs_rgb(ow) != CS_COLOURS["muted"]:
                     bad.append((full, i, "the or word's words or colour", txt, cs_rgb(ow)))
-                if not (rr[0] - 0.01 <= orr[0] and orr[0] + ow.GetStringWidth(ow) * es <= ir[0] - 1 * es + 0.01
-                        and orr[2] <= ir[0] + 0.01 and rr[1] - 0.01 <= orr[1] and orr[3] <= rr[3] + 0.01):
-                    bad.append((full, i, "the or word not in front of the icon, inside the row", orr, ir, rr))
-        if not all_ and base in ("ELIXIRS", "SCROLLS") and (sum(1 for _, a, _ in rows if a) > 3 or len(rows) > 8):
-            bad.append((full, "more than 3 or rows or 8 rows"))
+                if abs((orr[2] - orr[0]) - ow.GetStringWidth(ow) * es) > 0.01:
+                    bad.append((full, i, "the or word cut short", orr))
+                stop = tr[0] - 2 * es if hide else ir[0] - 1 * es
+                if not (rr[0] - 0.01 <= orr[0] and orr[2] <= stop + 0.01 and rr[1] - 0.01 <= orr[1] and orr[3] <= rr[3] + 0.01):
+                    bad.append((full, i, "the or word not in front of the icon and words, inside the row", orr, ir, tr, rr))
+                if hide and abs(tr[0] - (rr[0] + 19 * es)) > 0.01:
+                    bad.append((full, i, "narrow: the words not where a plain row's start", tr[0] - rr[0]))
+    # The model's marked sections, every row (also those scrolled or cut away).
+    for title, m in model.items():
+        key = {t_: k_ for k_, t_, _ in CS_SECTIONS}.get(title)
+        if key not in CS_MARKS:
+            continue
+        one = CS_MARKS[key] == "one"
+        mplain = [r[0] for r in m if not r[4]]
+        if not one:
+            clash = [(a, b) for k, a in enumerate(mplain) for b in mplain[k + 1:] if cs_clash(a, b)]
+            if clash:
+                bad.append((title, "two plain rows that may not both count", clash))
+        elif len(mplain) > 1:
+            bad.append((title, "two plain rows where one at a time counts", mplain))
+        if m and m[0][4]:
+            bad.append((title, "an or row first"))
+        parent = None
+        for r in m:
+            i, a = r[0], r[4]
+            if not a:
+                parent = i
+                continue
+            if one or parent is None:
+                continue
+            others = [h for h in mplain if h != parent and cs_clash(h, i)]
+            if not cs_clash(parent, i):
+                bad.append((title, i, "an or row under a plain row it goes with", parent))
+            elif not all_ and others:
+                bad.append((title, i, "an or row that may not count with another plain row", parent, others))
+            elif not all_ and it[i][8] != it[parent][8]:
+                bad.append((title, i, "an or row of another group", parent))
+            elif all_ and others:
+                own = [h for h in mplain if it[h][8] == it[i][8]]
+                want_p = own[0] if own else [h for h in mplain if cs_clash(h, i)][0]
+                if parent != want_p:
+                    bad.append((title, i, "All: clashing with more, not under its own group's plain row", parent, want_p))
+        if not all_ and not one and (sum(1 for r in m if r[4]) > 3 or len(m) > 8):
+            bad.append((title, "more than 3 or rows or 8 rows"))
     sc.eq(bad, [], "%s: what goes together: titles, plain rows, or rows" % label)
 
 
@@ -21033,11 +21100,13 @@ def sc_consumes_room(sc, ref, items):
     L = C.Layout()
     sc.eq((L.side, L.n), ("below", 2), "room: a 768 UI: the best 2 a section, under the frame")
     cs_place_ok(sc, w, "room: 768")
-    sc.eq(cs_sections(w), cs_trim(cs_expect_marks(w, "melee", "WARRIOR", 60), 2), "room: 768: the best 2 of each (plain rows first)")
+    marks = cs_expect_marks(w, "melee", "WARRIOR", 60)
+    sc.eq(cs_sections(w), cs_trim(marks, 2, L.alts), "room: 768: the best 2 of each (plain rows first)")
     cs_marks_ok(sc, w, "room: 768")
-    # Dragged low: above the frame, 3 a section (room above for 3 a section, not for 4).
+    # Dragged low: above the frame, 3 a section (room above for 3 a section, not for 4 nor for every plain row).
     want = cs_expect(w, "melee", "WARRIOR", 60)
     l3, l4 = cs_lines(want, 3), cs_lines(want, 4)
+    sc.check(cs_lines_m(marks, cs_most(marks), 0) > l3, "room: every plain row takes more lines than the best 3")
     sc.check(l3 < l4, "room: the best 3 take fewer lines than the best 4 (%d, %d)" % (l3, l4))
     g = w.g
     over = w.rect(g.CharacterFramePortrait)[3] - w.rect(g.CharacterFrame)[3]
@@ -21047,13 +21116,13 @@ def sc_consumes_room(sc, ref, items):
     L = C.Layout()
     sc.eq((L.side, L.n, L.lines), ("above", 3, l3), "room: frame bottom at %d: above it, the best 3" % low)
     cs_place_ok(sc, w, "room: bottom at %d" % low, side="above")
-    sc.eq(cs_sections(w), cs_trim(cs_expect_marks(w, "melee", "WARRIOR", 60), 3), "room: above: the best 3 of each")
+    sc.eq(cs_sections(w), cs_trim(marks, 3, L.alts), "room: above: the best 3 of each")
     cs_marks_ok(sc, w, "room: above, 3")
     cs_move(w, 20)
     w.settle(0.3)
-    k = cs_fit_n(want, int((C.Layout().above - CS_HEAD_H - 4) // CS_ROW_H))
-    sc.check(k is not None and k >= 4 and (C.Layout().side, C.Layout().n) == ("above", k),
-             "room: frame bottom at 20: above it, as many as fit (at least the best 4: %s, %s)" % (k, C.Layout().n))
+    ka = cs_fit(marks, int((C.Layout().above - CS_HEAD_H - 4) // CS_ROW_H))
+    sc.check(ka is not None and ka[0] >= 4 and (C.Layout().side, C.Layout().n, C.Layout().alts) == ("above",) + ka,
+             "room: frame bottom at 20: above it, as many as fit (at least the best 4: %s, %s)" % (ka, C.Layout().n))
     cs_marks_ok(sc, w, "room: above")
     cs_place_ok(sc, w, "room: bottom at 20", side="above")
     # Room for 4 again: under it, all 4.
@@ -21802,10 +21871,11 @@ CS_MARKS = {"elixir": "kinds", "scroll": "kinds", "flask": "one"}
 CS_MAX_ROWS, CS_MAX_ALTS, CS_USEFUL = 8, 3, 0.15
 CS_RULES = {
     "FOOD": "One Well Fed at a time: a new food replaces the old one.",
-    "ELIXIRS": "Different kinds stack. Two of one kind (two Agility elixirs): only one counts, as in classic.",
-    "SCROLLS": "Different stats stack. Two of one stat (two Strength scrolls): only one counts, as in classic.",
+    "ELIXIRS": "No limit: different stats stack. Two for one stat (or two +crit): only one counts, as in classic.",
+    "SCROLLS": "As in classic: different stats stack; two for one stat: only one counts.",
     "FLASKS": "One flask at a time: a new one replaces the old one."}
 CS_OR_W = 16   # an "or" row's icon this far in
+CS_OR_NARROW = 200   # a column narrower than this: an "or" row has no icon, the "or" in its place
 
 
 def cs_stats(iid):
@@ -21843,15 +21913,16 @@ def cs_head_of(heads, iid, one):
 
 def cs_grouped(rows, one):
     """[(id, list)] in order -> [(id, list, "or" row?)]: a plain row when it goes with each plain row
-    before it, else an "or" row right under the plain row it would replace."""
-    heads, kids = [], []
+    before it; then each other one an "or" row right under the plain row it would replace (once all are known)."""
+    heads = []
     for r in rows:
-        h = cs_head_of([x[0] for x in heads], r[0], one)
-        if h is None:
+        if cs_head_of([x[0] for x in heads], r[0], one) is None:
             heads.append(r)
-            kids.append([])
-        else:
-            kids[h].append(r)
+    hids = [x[0] for x in heads]
+    kids = [[] for _ in heads]
+    for r in rows:
+        if r not in heads:
+            kids[cs_head_of(hids, r[0], one)].append(r)
     out = []
     for hr, ks in zip(heads, kids):
         out.append((hr[0], hr[1], False))
@@ -21860,8 +21931,9 @@ def cs_grouped(rows, one):
 
 
 def cs_alt_for(w, role, lst, p, level, cls, heads, shown, cost):
-    """The "or" row under plain row p: of p's group, going with the other plain rows, at least a third as
-    strong; the best value of the cheaper ones at least half as strong, else the strongest."""
+    """The "or" row under plain row p: of p's group, with a price, going with the other plain rows: the best
+    value of the cheaper ones at least half as strong, else of the cheaper ones at least a third as strong,
+    else the strongest as strong as p for more (the same buff); never one weaker and dearer."""
     it = cs_source_items()
     cp, sp = cost(p), cs_strength(w, role, lst, p, level) or 0
     cheap = other = None
@@ -21870,13 +21942,14 @@ def cs_alt_for(w, role, lst, p, level, cls, heads, shown, cost):
                 or cs_chancy(lst, iid) or not cs_goes_with(heads, p, iid)):
             continue
         c, s = cost(iid), cs_strength(w, role, lst, iid, level) or 0
-        if s < CS_FLOORS[1] * sp - 1e-9:
+        if not c or c <= 0 or s < CS_FLOORS[1] * sp - 1e-9:
             continue
-        if c and c > 0 and (not cp or c < cp) and s >= CS_FLOORS[0] * sp - 1e-9:
-            v = cs_value(lst, iid, s, c)
-            if cheap is None or v > cheap[1] or (v == cheap[1] and (s > cheap[2] or (s == cheap[2] and c < cheap[3]))):
-                cheap = (iid, v, s, c)
-        if other is None or s > other[1]:
+        if not cp or c < cp:
+            f, v = (0 if s >= CS_FLOORS[0] * sp - 1e-9 else 1), cs_value(lst, iid, s, c)
+            if cheap is None or (f, -v) < (cheap[1], -cheap[2]) or ((f, v) == (cheap[1], cheap[2]) and (
+                    s > cheap[3] or (s == cheap[3] and c < cheap[4]))):
+                cheap = (iid, f, v, s, c)
+        elif s >= sp - 1e-9 and (other is None or s > other[1]):
             other = (iid, s)
     return cheap[0] if cheap else other[0] if other else None
 
@@ -22362,8 +22435,8 @@ def sc_consumes_percent(sc, ref, items):
         "Major Healing Potion": "best", "Superior Frenzy Potion": "best", "Mighty Rage Potion": "best",
         "Limited Invulnerability Potion": "best", "Elixir of the Mongoose": "best", "Elixir of Brute Force": "57%",
         "Winterfall Firewater": "31%", "Scroll of Strength III": "best", "Scroll of Agility III": "50%",
-        "Elixir of Greater Agility": "33%", "Elixir of Strength": "26%", "Distilled Firewater": "31%",
-        "Scroll of Strength II": "69%", "Scroll of Agility II": "34%",
+        "Elixir of Ogre Strength": "21%", "Distilled Firewater": "31%", "Scroll of Strength II": "69%",
+        "Scroll of Agility": "19%",
         "Dense Weightstone": "best", "Dense Sharpening Stone": "best"},
         "percent: a level 47 warrior's list (+40 AP = +20 Str = best; +1% crit 62%; +20 Agi 50%; Mongoose 75, Brute Force 43, "
         "Firewater 35 AP for 20 of 30 min 23)")
@@ -22860,9 +22933,10 @@ def sc_consumes_together(sc, ref, items):
     cs_set_prices(w, px)
     cs_open(w)
     sc.eq(cs_section_named(w, "ELIXIRS"), ("ELIXIRS - 3 at once", [
-        "Elixir of the Mongoose", "or Elixir of Greater Agility", "Elixir of Greater Strength", "or Elixir of Brute Force",
-        "Winterfall Firewater", "or Distilled Firewater"]),
-        "together: 48 elixirs: Mongoose, Greater Strength, Firewater go together, each with one in its place")
+        "Elixir of the Mongoose", "or Elixir of Greater Agility", "Elixir of Greater Strength", "or Elixir of Strength",
+        "Winterfall Firewater"]),
+        "together: 48 elixirs: Mongoose, Greater Strength, Firewater go together, with one in their place: never Brute Force "
+        "(weaker and dearer), nothing under Winterfall (Distilled Firewater not on the AH)")
     p = cs_pcts(w)
     sc.eq([p.get(n) for n in ("Elixir of the Mongoose", "Elixir of Greater Strength", "Winterfall Firewater")],
           ["best", "66%", "31%"], "together: 48: the screenshot's numbers")
@@ -22889,11 +22963,13 @@ def sc_consumes_together(sc, ref, items):
                  "together: hover: %s" % t.glRule)
         M.leave(t)
         sc.check(not tt.IsShown(tt), "together: hover: gone with the mouse")
-    sc.eq(CS_RULES["ELIXIRS"], "Different kinds stack. Two of one kind (two Agility elixirs): only one counts, as in classic.",
-          "together: the elixirs' rule (the same-stat part is the classic rule: worded so)")
+    sc.eq(CS_RULES["ELIXIRS"], "No limit: different stats stack. Two for one stat (or two +crit): only one counts, as in classic.",
+          "together: the elixirs' rule: no limit (rankedboost: confirmed), the same-stat and crit part the classic rule: worded so")
+    sc.eq(CS_RULES["SCROLLS"], "As in classic: different stats stack; two for one stat: only one counts.",
+          "together: the scrolls' rule: all of it the classic rule, worded so")
     # An "or" row is a row: its tooltip, a click at the auction house searches it, shift-click links it.
     rows = [r for r in cs_cells(w)[1] if r[5].glAlt is True]
-    sc.eq(sorted(it[r[0]][0] for r in rows), sorted(["Elixir of Greater Agility", "Elixir of Brute Force", "Distilled Firewater",
+    sc.eq(sorted(it[r[0]][0] for r in rows), sorted(["Elixir of Greater Agility", "Elixir of Strength",
                                                     "Scroll of Strength II", "Scroll of Agility II"]), "together: 48: the or rows")
     orow = [r for r in rows if r[0] == 9187][0][5]
     M.enter(orow)
@@ -22916,12 +22992,23 @@ def sc_consumes_together(sc, ref, items):
     sc.check(len(list(M.inserted.values())) == 1 and "item:9187" in str(list(M.inserted.values())[0]),
              "together: shift-click on an or row links it")
     w.close_ah_modern()
-    # Level 47: Brute Force in Greater Strength's place (level 48).
+    # Distilled Firewater on the AH for more than Winterfall (99s 94c, as on Nov 20): the same buff, as strong: under
+    # it; Brute Force for more than Greater Strength and weaker: never.
+    cs_set_prices(w, cs_px_all({**CS_SHOT2_PX, 246948: 9994}))
+    cs_reopen(w)
+    sc.eq(cs_section_named(w, "ELIXIRS")[1][4:], ["Winterfall Firewater", "or Distilled Firewater"],
+          "together: 48: or Distilled Firewater (the same buff for more)")
+    cs_set_prices(w, cs_px_all({**CS_SHOT2_PX, 246948: 9994, 250349: 0, 3391: 0}))
+    cs_reopen(w)
+    sc.eq(cs_section_named(w, "ELIXIRS")[1][2:4], ["Elixir of Greater Strength", "Winterfall Firewater"],
+          "together: 48: no cheaper Strength elixir on the AH: nothing under Greater Strength (Brute Force: weaker, dearer)")
+    cs_set_prices(w, px)
+    # Level 47: Brute Force in Greater Strength's place (level 48); under it the best value at least a third as strong.
     en_player(w, "WARRIOR", (31, 5, 0), "forever", 47)
     cs_reopen(w)
     sc.eq(cs_section_named(w, "ELIXIRS"), ("ELIXIRS - 3 at once", [
-        "Elixir of the Mongoose", "or Elixir of Greater Agility", "Elixir of Brute Force", "or Elixir of Strength",
-        "Winterfall Firewater", "or Distilled Firewater"]), "together: 47 elixirs")
+        "Elixir of the Mongoose", "or Elixir of Greater Agility", "Elixir of Brute Force", "or Elixir of Ogre Strength",
+        "Winterfall Firewater"]), "together: 47 elixirs (Ogre Strength: the best value a third as strong)")
     cs_marks_ok(sc, w, "together: 47")
     cs_picks_ok(sc, w, "melee", "WARRIOR", 47, "together: 47 Best")
     # Budget and All keep the marks.
@@ -22944,6 +23031,22 @@ def sc_consumes_together(sc, ref, items):
                                                         if c.title and c.key == "elixir"],
                       ["ELIXIRS - %d at once" % len(plain)], label + ": the count is the plain rows (%d)" % len(plain))
     w.ns.settings.consumesBudget = None
+    w.ns.settings.consumesAll = None
+    # All: each "or" row under the plain row it would replace, once all are known: Whale (+Spi, +crit) under Greater
+    # Spirit, not under Owl (+crit) with Greater Spirit plain beside it (two Spirit elixirs).
+    en_player(w, "MAGE", (0, 31, 20), "forever", 60)
+    w.ns.settings.consumesAll = True
+    cs_reopen(w)
+    el = [r for t_, r in cs_model(w) if t_ == "ELIXIRS"][0]
+    up = {}
+    for r in el:
+        if not r[4]:
+            head = r[0]
+        else:
+            up[it[r[0]][0]] = it[head][0]
+    sc.eq((up.get("Elixir of the Whale"), up.get("Elixir of Sages")), ("Elixir of Greater Spirit", "Elixir of Greater Spirit"),
+          "together: mage All: Whale and Sages under Greater Spirit")
+    cs_marks_ok(sc, w, "together: mage All")
     w.ns.settings.consumesAll = None
     # Flasks: one at a time, the rest "or"; a warlock's spell damage and shadow damage elixirs go together.
     en_player(w, "WARRIOR", (0, 5, 31), "forever", 60)
@@ -22976,26 +23079,33 @@ def sc_consumes_together(sc, ref, items):
     w.ns.settings.consumesBudget = None
     w.ns.settings.consumesAll = None
     sc.clean(w, "together")
-    # Fewer rows when there is less room: the "or" rows go first, the count says what is shown.
-    w = cs_world(ref, items, screen=(1365, 1080, 1))
-    C = w.ns.Consumes
-    cs_open(w)
-    marks = cs_expect_marks(w, "melee", "WARRIOR", 60)
-    want = [(t, [r[0] for r in rows]) for t, rows in marks]
-    for k in range(2, cs_most(want) + 1):
-        lines = cs_lines(want, k)
-        cs_move(w, CS_HEAD_H + 4 + lines * CS_ROW_H + CS_GAP + 8)
-        w.settle(0.3)
-        n = cs_fit_n(want, lines)
-        L = C.Layout()
-        sc.eq((L.side, L.n), ("below", n), "together: room for %d lines: %d a section" % (lines, n))
-        sc.eq(cs_sections(w), cs_trim(marks, n), "together: %d a section: the plain rows first" % n)
+    # Less room: first the "or" rows go (3 a section, down to none; a section beside a taller one keeps those that
+    # fit beside it), only then rows a section; the count is every kind, also one cut for room.
+    for lvl, who in ((60, "melee"), (48, "melee")):
+        w = cs_world(ref, items, screen=(1365, 1080, 1), level=lvl)
+        C = w.ns.Consumes
+        cs_set_prices(w, px)
+        cs_open(w)
+        marks = cs_expect_marks(w, who, "WARRIOR", lvl)
         el = [r for t, r in marks if t == "ELIXIRS"][0]
-        sc.eq(dict(cs_sections(w, full=True)).get(cs_title("ELIXIRS", cs_shown(el, n))), [r[0] for r in cs_shown(el, n)],
-              "together: %d a section: the count is the plain rows shown (%s)" % (n, cs_title("ELIXIRS", cs_shown(el, n))))
-        cs_marks_ok(sc, w, "together: %d a section" % n)
-        cs_place_ok(sc, w, "together: %d a section" % n)
-    sc.clean(w, "together: room")
+        for lines in range(cs_lines_m(marks, 2, 0), cs_lines_m(marks, cs_most(marks)) + 1):
+            cs_move(w, CS_HEAD_H + 4 + lines * CS_ROW_H + CS_GAP + 8)
+            w.settle(0.3)
+            k, a = cs_fit(marks, lines)
+            L = C.Layout()
+            lab = "together: %d, room for %d lines" % (lvl, lines)
+            sc.eq((L.side, L.n, L.alts, L.lines), ("below", k, a, cs_lines_m(marks, k, a)), lab + ": %d a section, %d or rows" % (k, a))
+            sc.eq(cs_sections(w), cs_trim(marks, k, a), lab + ": the or rows go first")
+            sc.check(cs_title("ELIXIRS", el) in dict(cs_sections(w, full=True)),
+                     lab + ": the count is every kind (%s)" % cs_title("ELIXIRS", el))
+            cs_marks_ok(sc, w, lab)
+            cs_place_ok(sc, w, lab)
+            if lvl == 48 and lines == 12:
+                # The 48 warrior with room for 12 lines: food and potions keep 4, the elixirs their 3 kinds.
+                sc.eq([(t, len(ids)) for t, ids in cs_sections(w)][:2], [("FOOD", 4), ("POTIONS", 4)], lab + ": food and potions keep 4")
+                sc.eq(cs_section_named(w, "ELIXIRS"), ("ELIXIRS - 3 at once", ["Elixir of the Mongoose", "Elixir of Greater Strength",
+                                                                             "Winterfall Firewater"]), lab + ": the elixirs' 3 kinds")
+        sc.clean(w, "together: room %d" % lvl)
     # 631 and 398, the game's look and ElvUI's, 0.62: every row in its place, the or word before the icon,
     # the words cut short before the number (bag counts make the prices long), titles inside their column.
 
@@ -23033,6 +23143,23 @@ def sc_consumes_together(sc, ref, items):
                 cs_pct_place_ok(sc, w, lab)
                 cs_marks_ok(sc, w, lab)
                 cs_head_ok(sc, w, lab)
+            if label == "Blizzard":
+                # A wider font (the "or" 20 wide): never cut short; the icon (631) or the words (398) move past it.
+                for r in cs_cells(w)[1]:
+                    r[5].orWord.GetStringWidth = w.lua.eval("function() return 20 end")
+                for wide, icon_x in ((631, 24), (398, 7)):
+                    fold(w, wide)
+                    w.ns.Consumes.Draw()
+                    es = cs_frame(w).GetEffectiveScale(cs_frame(w))
+                    bad = []
+                    for r in cs_cells(w)[1]:
+                        row = r[5]
+                        if row.glAlt is True:
+                            rr, ir, tr = w.rect(row), w.rect(row.icon), w.rect(row.text)
+                            if abs(ir[0] - (rr[0] + icon_x * es)) > 0.01 or abs(tr[0] - (ir[2] + 4 * es)) > 0.01 \
+                                    or tr[0] < w.rect(row.orWord)[0] + 22 * es - 0.01:
+                                bad.append((r[0], ir[0] - rr[0], tr[0] - rr[0]))
+                    sc.eq(bad, [], "together: %s %d, %d wide, a wide font: the or word whole, then the icon and words" % (cls, lvl, wide))
             sc.clean(w, "together: %s" % label)
 
 

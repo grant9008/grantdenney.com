@@ -1175,20 +1175,21 @@ C.CostOf = costOf
 -- The panel's sections, in order; one with nothing usable is left out.
 -- marks: the rows say what goes together. "kinds" (elixirs, scrolls): the best one of each kind,
 -- plain, all usable at once; under one, indented and starting with "or", one of the same kind in its
--- place. "one" (flasks): the best one plain, the rest "or". once: the title says "1 at a time".
+-- place. "one" (flasks): the best one plain, the rest "or". once: the title says "1 at a time" (food
+-- too, its rows plain: an "or" row's indent would cut short the +5% XP at 631).
 -- rule: the title's hover line. What is known (Forever, Nov 2026): one flask at a time (the game's
--- tooltip), one Well Fed, elixirs have no Battle / Guardian slots and those for different stats
--- stack (rankedboost.com/world-of-warcraft/forever/buffs/consumables/); two for one stat (or two
+-- tooltip), one Well Fed, elixirs have no Battle / Guardian slots (no limit) and those for different
+-- stats stack (rankedboost.com/world-of-warcraft/forever/buffs/consumables/); two for one stat (or two
 -- crit elixirs, or a two-stat one with either): only one counts is the classic rule, not confirmed
--- for Forever, so such two are never shown as going together.
+-- for Forever, so such two are never shown as going together. Scrolls: the classic rule only.
 local SECTIONS = {
   { key = "food", title = "FOOD", lists = { "food" }, once = true,
     rule = "One Well Fed at a time: a new food replaces the old one." },
   { key = "potion", title = "POTIONS" },   -- lists: POTIONS[role]
   { key = "elixir", title = "ELIXIRS", lists = { "elixir" }, marks = "kinds",
-    rule = "Different kinds stack. Two of one kind (two Agility elixirs): only one counts, as in classic." },
+    rule = "No limit: different stats stack. Two for one stat (or two +crit): only one counts, as in classic." },
   { key = "scroll", title = "SCROLLS", lists = { "scroll" }, marks = "kinds",
-    rule = "Different stats stack. Two of one stat (two Strength scrolls): only one counts, as in classic." },
+    rule = "As in classic: different stats stack; two for one stat: only one counts." },
   { key = "flask", title = "FLASKS", lists = { "flask" }, marks = "one", once = true,
     rule = "One flask at a time: a new one replaces the old one." },
   { key = "weapon", title = "STONES AND OILS", lists = { "weapon" } },
@@ -1503,7 +1504,8 @@ local function goesWith(heads, p, id)
 end
 
 -- The plain row id goes under (its place in heads): the first of its own group, else the first
--- it clashes with; nil: it goes with all of them (a plain row itself). one: always the first.
+-- it clashes with (so the only one, when it clashes with one); nil: it goes with all of them (a plain
+-- row itself). one: always the first.
 local function headOf(heads, id, one)
   if one then return heads[1] and 1 or nil end
   local first
@@ -1515,18 +1517,21 @@ local function headOf(heads, id, one)
 end
 
 -- The rows with each "or" row under its plain row: in the order given, one is a plain row when it
--- goes with every plain row before it, else an "or" row under the one it would replace.
+-- goes with every plain row before it; then each other one under the plain row it would replace
+-- (headOf, once every plain row is known: Whale under Greater Spirit, not under Owl).
 -- Returns the ids, their lists and alt (alt[i]: an "or" row).
 local function grouped(ids, from, one)
-  local heads, at, kids = {}, {}, {}
+  local heads, at, kids, plain = {}, {}, {}, {}
   for i, id in ipairs(ids) do
-    local h = headOf(heads, id, one)
-    if h then
-      local k = kids[h]
-      k[#k + 1] = i
-    else
+    if not headOf(heads, id, one) then
       local n = #heads + 1
-      heads[n], at[n], kids[n] = id, i, {}
+      heads[n], at[n], kids[n], plain[i] = id, i, {}, true
+    end
+  end
+  for i, id in ipairs(ids) do
+    if not plain[i] then
+      local k = kids[headOf(heads, id, one)]
+      k[#k + 1] = i
     end
   end
   local out, of, alt = {}, {}, {}
@@ -1542,23 +1547,27 @@ local function grouped(ids, from, one)
   return out, of, alt
 end
 
--- The "or" row under a plain row p: one of its own group that goes with the other plain rows and is
--- at least a third as strong; the best value of the cheaper ones at least half as strong, else the
--- strongest of them (never a PvP-only or random one, or one shown).
+-- The "or" row under a plain row p: one of its own group, with a price, that goes with the other
+-- plain rows: the best value of the cheaper ones at least half as strong, else of the cheaper ones
+-- at least a third as strong, else the strongest as strong as p for more (the same buff: Distilled
+-- Firewater for Winterfall); never one weaker and dearer, a PvP-only or random one, or one shown.
 local function altFor(role, list, p, level, class, heads, shown)
   local cp, sp, g = costOf(p), strength(role, list, p, level) or 0, ITEMS[p][9]
-  local cheap, cv, cs, cc, other, os
+  local cheap, cf, cv, cs, cc, other, os
   for _, id in ipairs(ALL[role] and ALL[role][list] or {}) do
     local it = ITEMS[id]
     local s = strength(role, list, id, level) or 0
+    local c = costOf(id)
     if not shown[id] and it and it[9] == g and usable(it, level, class) and not PVP[id] and not chancy(list, id)
-       and goesWith(heads, p, id) and s >= FLOORS[2] * sp - 1e-9 then
-      local c = costOf(id)
-      if c and c > 0 and (not cp or c < cp) and s >= FLOORS[1] * sp - 1e-9 then
-        local v = valueOf(list, id, s, c)
-        if not cheap or v > cv or (v == cv and (s > cs or (s == cs and c < cc))) then cheap, cv, cs, cc = id, v, s, c end
+       and goesWith(heads, p, id) and c and c > 0 and s >= FLOORS[2] * sp - 1e-9 then
+      if not cp or c < cp then
+        local f, v = s >= FLOORS[1] * sp - 1e-9 and 1 or 2, valueOf(list, id, s, c)
+        if not cheap or f < cf or (f == cf and (v > cv or (v == cv and (s > cs or (s == cs and c < cc))))) then
+          cheap, cf, cv, cs, cc = id, f, v, s, c
+        end
+      elseif s >= sp - 1e-9 and (not other or s > os) then
+        other, os = id, s
       end
-      if not other or s > os then other, os = id, s end
     end
   end
   return cheap or other
@@ -1620,9 +1629,9 @@ local function markedIds(role, s, level, class, budget)
   return ids, from, alt
 end
 
--- { role, class, level, all, budget, sections = { { key, title, ids, lists, pct, ref, alt, ... }, ... } }: each
--- row's list, its strength in % of the strongest usable one of its kind (100: it is that strong), which that
--- is, and (marked sections) alt[i]: an "or" row, in place of the plain row above it.
+-- { role, class, level, all, budget, sections = { { key, title, ids, lists, pct, ref, alt, plain, ... }, ... } }:
+-- each row's list, its strength in % of the strongest usable one of its kind (100: it is that strong), which
+-- that is, (marked sections) alt[i]: an "or" row, in place of the plain row above it, and how many are plain.
 local model
 
 local function buildModel()
@@ -1656,8 +1665,9 @@ local function buildModel()
       ids, from = bestIds(role, lists, level, class)
     end
     if #ids > 0 then
-      local pct, refs = {}, {}
+      local pct, refs, plain = {}, {}, 0
       for i, id in ipairs(ids) do
+        if not (alt and alt[i]) then plain = plain + 1 end
         local list = from[i]
         local r, sc = ref[kindOf(list, id)], strength(role, list, id, level)
         if r and sc and r[1] > 0 then
@@ -1666,7 +1676,7 @@ local function buildModel()
         end
       end
       m.sections[#m.sections + 1] = { key = s.key, title = s.title, ids = ids, lists = from, pct = pct, ref = refs,
-                                      alt = alt, marks = s.marks, once = s.once, rule = s.rule }
+                                      alt = alt, plain = plain, marks = s.marks, once = s.once, rule = s.rule }
     end
   end
   model = m
@@ -1772,7 +1782,7 @@ end
 local NAME = "GoblinLedgerConsumes"
 local HEAD_H, ROW_H, PAD, COL_GAP, GAP = 18, 16, 6, 12, 2
 local PCT_GAP = 4      -- the grey number's gap to the words and to the price
-local OR_W = 16        -- an "or" row: the grey word "or", then its icon this far in
+local OR_W, OR_NARROW = 16, 200   -- an "or" row: the grey "or", its icon this far in (a column under 200: none)
 local BODY_TOP, BODY_BOT = 1, 3
 local MAX_LINES = 16   -- the All list: at most this many lines, the rest scrolls
 local CAP = 24         -- a part more than this under the frame is not ours to avoid
@@ -1841,26 +1851,23 @@ local function colsFor(width)
   return 1
 end
 
--- Which of a section's rows show with n a section (nil: all): the first n; marked: the plain rows
--- first (an "or" row only once every plain row is in), in their order.
-local function shownRows(s, n)
+-- Which of a section's rows show with n a section (nil: all) and at most alts "or" rows (nil: no cap):
+-- the first n; marked: the plain rows first (an "or" row only once every plain row is in), in their order.
+local function shownRows(s, n, alts)
   local k, out = #s.ids, {}
-  if not n or n >= k or not s.alt then
+  if not s.alt then
     for i = 1, (n and n < k) and n or k do out[i] = i end
     return out
   end
-  local plain = 0
-  for i = 1, k do
-    if not s.alt[i] then plain = plain + 1 end
-  end
-  local alts, p = n - plain, 0
+  local left, p = n and n - (s.plain or 0) or k, 0
+  if alts and alts < left then left = alts end
   for i = 1, k do
     if s.alt[i] then
-      if alts > 0 then
+      if left > 0 then
         out[#out + 1] = i
-        alts = alts - 1
+        left = left - 1
       end
-    elseif p < n then
+    elseif not n or p < n then
       out[#out + 1] = i
       p = p + 1
     end
@@ -1868,34 +1875,34 @@ local function shownRows(s, n)
   return out
 end
 
--- A section's title: food and flasks "- 1 at a time"; elixirs and scrolls, how many of the rows shown
--- go together ("ELIXIRS - 3 at once"), when two or more do.
-local function titleOf(s, plain)
+-- A section's title: food and flasks "- 1 at a time"; elixirs and scrolls, how many kinds go together
+-- ("ELIXIRS - 3 at once": every plain row, also one cut for room), when two or more do.
+local function titleOf(s)
   if s.once then return s.title .. " - 1 at a time" end
-  if s.marks and plain >= 2 then return s.title .. " - " .. plain .. " at once" end
+  if s.marks and (s.plain or 0) >= 2 then return s.title .. " - " .. s.plain .. " at once" end
   return s.title
 end
 C.TitleOf = titleOf
 
--- The lines (section titles and rows) for n rows a section (nil: all), sections side by side.
-local function cellsFor(m, cols, n)
+-- The lines (section titles and rows) for n rows a section (nil: all) and at most alts "or" rows a
+-- section (nil: no cap), sections side by side: the tallest of a line of sections sets its height, the
+-- others fill it with more of their "or" rows (room that is there anyway).
+local function cellsFor(m, cols, n, alts)
   local cells, line, secs = {}, 0, m.sections
   for first = 1, #secs, cols do
     local tall = 0
     for c = 0, cols - 1 do
       local s = secs[first + c]
+      if s then tall = max(tall, #shownRows(s, n, alts)) end
+    end
+    for c = 0, cols - 1 do
+      local s = secs[first + c]
       if s then
-        local show, plain = shownRows(s, n), 0
-        local head = { line = line, col = c, key = s.key, rule = s.rule }
-        cells[#cells + 1] = head
-        for k, i in ipairs(show) do
-          local alt = s.alt and s.alt[i] or nil
-          if not alt then plain = plain + 1 end
+        cells[#cells + 1] = { line = line, col = c, key = s.key, rule = s.rule, title = titleOf(s) }
+        for k, i in ipairs(shownRows(s, tall)) do
           cells[#cells + 1] = { line = line + k, col = c, id = s.ids[i], key = s.key, pct = s.pct and s.pct[i],
-                                ref = s.ref and s.ref[i], alt = alt }
+                                ref = s.ref and s.ref[i], alt = s.alt and s.alt[i] or nil }
         end
-        head.title = titleOf(s, plain)
-        if #show > tall then tall = #show end
       end
     end
     line = line + 1 + tall
@@ -1970,7 +1977,6 @@ local function newRow(i)
   -- An "or" row (one in place of the row above it): the grey "or" first, the icon further in.
   r.orWord = newFS(r)
   r.orWord:SetPoint("LEFT", r, "LEFT", 2, 0)
-  r.orWord:SetWidth(OR_W - 3)
   r.orWord:SetTextColor(mu[1], mu[2], mu[3], 1)
   r.orWord:SetText("or")
   r.orWord:Hide()
@@ -1993,8 +1999,19 @@ C.PctText = pctText
 
 local function fillRow(r, id, stale, pct, ref, alt)
   r.glID, r.glPct, r.glRef, r.glAlt = id, pct, ref, alt and true or nil
+  -- An "or" row: the icon past the "or" (OR_W in, more for a wide font); in a narrow column no icon,
+  -- the "or" in its place, so the words get a plain row's room.
+  local x, narrow = 1, alt and (layout.colW or 0) < OR_NARROW
+  if alt then
+    local okW, ow = pcall(r.orWord.GetStringWidth, r.orWord)
+    ow = okW and plainNumber(ow) or 0
+    if ow <= 0 or ow > 60 then ow = 12 end
+    ow = -floor(-ow)   -- whole pixels, rounded up
+    x = narrow and max(1, ow - 13) or max(OR_W, ow + 4)
+  end
   r.icon:ClearAllPoints()
-  r.icon:SetPoint("LEFT", r, "LEFT", alt and OR_W or 1, 0)
+  r.icon:SetPoint("LEFT", r, "LEFT", x, 0)
+  r.icon:SetShown(not narrow)
   if alt then r.orWord:Show() else r.orWord:Hide() end
   r.icon:SetTexture(iconOf(id))
   r.text:SetText(leftText(id, model.level))
@@ -2119,7 +2136,7 @@ local function place()
   local above = (m.screenTop - m.high) / pe - GAP
   local collapsed = settings().consumesCollapsed == true or #model.sections == 0
   local fitBelow, fitAbove = fitLines(below), fitLines(above)
-  local side, n, lines, cells, total = "below", nil, 0, {}, 0
+  local side, n, alts, lines, cells, total = "below", nil, nil, 0, {}, 0
   if not collapsed then
     if model.all then
       cells, total = cellsFor(model, cols, nil)
@@ -2132,17 +2149,20 @@ local function place()
         lines = max(0, fitBelow)
       end
     else
-      -- Every row if they fit (the best 4; a marked section more), else fewer a section (a marked one's
-      -- "or" rows go first), down to 2; under the screen first, then above it.
+      -- Every row if they fit (the best 4; a marked section more), else first fewer "or" rows (3 a
+      -- section down to none), then fewer rows a section, down to 2; under the screen first, then above it.
       local most = longest(model)
       for _, where in ipairs({ "below", "above" }) do
         local fit = where == "below" and fitBelow or fitAbove
         for k = most, 2, -1 do
-          local c, t = cellsFor(model, cols, k)
-          if t <= fit then
-            side, n, cells, total, lines = where, k, c, t, t
-            break
+          for a = MAX_ALTS, 0, -1 do
+            local c, t = cellsFor(model, cols, k, a)
+            if t <= fit then
+              side, n, alts, cells, total, lines = where, k, a, c, t, t
+              break
+            end
           end
+          if n then break end
         end
         if n then break end
       end
@@ -2168,7 +2188,7 @@ local function place()
     F:SetPoint("BOTTOMRIGHT", cf, "TOPRIGHT", 0, dy)
   end
   F:SetHeight(heightFor(collapsed and 0 or lines))
-  layout = { side = side, cols = cols, colW = colW, n = n, lines = collapsed and 0 or lines, total = total,
+  layout = { side = side, cols = cols, colW = colW, n = n, alts = alts, lines = collapsed and 0 or lines, total = total,
              cells = cells, collapsed = collapsed, below = below, above = above, width = width }
   draw()
 end
