@@ -14,9 +14,10 @@ local ADDON_NAME, ns = ...
 -- own timer bars (breath, fatigue): "Ironforge 1:23"; /gl flights big goes back
 -- (saved as flightStyle, as the boat timers' boatStyle). The small X just after the time
 -- hides it until you land; /gl flights brings it back. Drag the big timer with the left mouse
--- button to put it anywhere (saved as flightPos, kept there; a click on it does nothing, the
--- right button goes through it for the camera); /gl flights reset puts it back. When you land, the real
--- time is kept for that route (the last 5, the middle one counts), when it was a
+-- button to put it anywhere (saved as flightPos, kept there, clear of the minimap, the trackers
+-- and the buffs; let go near the middle, the middle again; a click on it does nothing, none at all
+-- in a fight; the right button goes through it for the camera); /gl flights reset puts it back.
+-- When you land, the real time is kept for that route (the last 5, the middle one counts), when it was a
 -- plain flight: landed where it was going, seen landing, no loading screen on
 -- the way, within 15% of the data's time. A /reload in the air carries on;
 -- after a relog the bar finds its place from where you are. Alterac Valley's
@@ -1112,6 +1113,7 @@ local function build(which)
     b = _G.CreateFrame("Frame", "GoblinLedgerFlightTimer", _G.UIParent)
     FL.builds = FL.builds + 1
     b:SetFrameStrata("LOW")
+    b:SetFrameLevel(Big.level)   -- (ns.Big's: before its parts, which go over it)
     b:SetSize(10, 10)
     local line = _G.CreateFrame("Frame", nil, b)
     line:SetSize(10, BIG.time)
@@ -1207,6 +1209,7 @@ local function arrange(t)
     local left = t and timeLeft(f, t) or ""
     local hw, hh = bigLayout(b, f.dest, left)
     b.glLine = f.dest .. " " .. left
+    Big.Mouse(b)   -- (no click in a fight: a drag ends there)
     if b.glMoving then
       FL.spot = "placed"   -- (being dragged: its place is the mouse's)
     elseif Big.PlaceSpot(b, hw, hh, "flightPos") then
@@ -1729,7 +1732,8 @@ local function flightsCommand(rest)
     settings().flightPos = nil   -- (the spot it was dragged to: back to its own place)
     FL.placedAt = nil
     if cur then showBar() end
-    say(wantBig() and "flight timer back in the middle of the screen." or "flight timer back in the middle of the screen (when big: /gl flights big).")
+    local msg = wantBig() and "flight timer back in the middle of the screen." or "flight timer back in the middle of the screen (when big: /gl flights big)."
+    say(isOn() and msg or (msg .. " They are off: /gl flights on turns them on."))
   else
     say("unknown choice. Use /gl flights on, off, big, small, status or reset.")
   end

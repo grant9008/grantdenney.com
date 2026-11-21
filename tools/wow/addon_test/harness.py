@@ -3060,9 +3060,14 @@ end
 -- -275), and as ElvUI v16.01 moves it (Modules/Maps/Minimap.lua: ElvUI_MinimapHolder at TOPRIGHT
 -- -3, -3, a 175 map, the datatext panel MinimapPanel under it, the zone text button hidden; the
 -- tracker at its ObjectiveFrameMover, TOPRIGHT -163, -325). The boat and flight timers' worlds.
+-- What takes the mouse there, as in the game: MinimapCluster (LOW, toplevel, enableMouse) and the
+-- map over it; the quest tracker (LOW: its lines take the mouse; here all of it); Questie's tracker
+-- (MEDIUM, over all of LOW); ElvUI's cluster at level 20, its map LOW at level 10.
 function M.InstallMinimap(o)
   o = o or {}
   local cl = CreateFrame("Frame", "MinimapCluster", UIParent)
+  cl:SetFrameStrata("LOW")
+  cl:EnableMouse(true)
   cl:SetSize(256, 256)
   cl:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", 0, 0)
   local zb = CreateFrame("Button", nil, cl)
@@ -3077,6 +3082,7 @@ function M.InstallMinimap(o)
   ct:SetPoint("TOP", cl, "TOP", 10, -30)
   cl.MinimapContainer = ct
   local mm = CreateFrame("Frame", "Minimap", ct)
+  mm:EnableMouse(true)
   mm:SetSize(198, 198)
   mm:SetPoint("CENTER", ct, "CENTER", 0, 0)
   local bd = CreateFrame("Frame", "MinimapBackdrop", mm)
@@ -3097,6 +3103,8 @@ function M.InstallMinimap(o)
   wd:SetPoint("TOPRIGHT", cl, "BOTTOMRIGHT", 0, 0)
   if o.tracker ~= false then
     local ot = CreateFrame("Frame", "ObjectiveTrackerFrame", UIParent)
+    ot:SetFrameStrata("LOW")
+    ot:EnableMouse(true)
     ot:SetSize(248, 400)
     ot:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
   end
@@ -3104,6 +3112,8 @@ function M.InstallMinimap(o)
     -- Questie (Modules/Tracker/TrackerBaseFrame.lua, QuestieCompat.lua): its own tracker frame
     -- at the game tracker's point, and the game's tracker hidden.
     local q = CreateFrame("Frame", "Questie_BaseFrame", UIParent)
+    q:SetFrameStrata("MEDIUM")
+    q:EnableMouse(true)
     q:SetSize(280, 180)
     q:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -110, -275)
     if ObjectiveTrackerFrame then ObjectiveTrackerFrame:Hide() end
@@ -3113,6 +3123,9 @@ function M.InstallElvUIMinimap()
   local holder = CreateFrame("Frame", "ElvUI_MinimapHolder", UIParent)
   holder:SetPoint("TOPRIGHT", UIParent, "TOPRIGHT", -3, -3)
   holder:SetSize(177, 199)
+  MinimapCluster:SetFrameLevel(20)
+  Minimap:SetFrameStrata("LOW")
+  Minimap:SetFrameLevel(10)
   Minimap:ClearAllPoints()
   Minimap:SetPoint("TOPRIGHT", holder, "TOPRIGHT", -1, -1)
   Minimap:SetSize(175, 175)
@@ -28523,15 +28536,17 @@ def bt_clock(sec):
     return "%d:%02d" % (sec // 60, sec % 60)
 
 
-# The big timer's hint under an unknown or "about" big line, after the boat's kind: "Boat in? Click here".
-BT_CLICK = " in? Click here"
+# The big timer's hint under an unknown big line (its pier the nearest by 15 yd): "Click when the
+# boat docks" (zeppelin, skyship: the boat's kind).
+def bt_click(kind):
+    return "Click when the %s docks" % kind.lower()
 
 
 def bt_want(key, j, rec, now, hint=True, reset_penalty=False, big=None):
     """The line for stop j of route key, from the research data (not the addon's code). hint: with
     the hint where the line has one; big (None: BT_STYLE's): the big timer's line 1, whose hint is
-    "Boat in? Click here" after an unknown or "about" line, else the small line's
-    "/gl boat now when it docks" after an unknown one."""
+    "Click when the boat docks" after an unknown line (none after a learned one, "about" too), else
+    the small line's "/gl boat now when it docks" after an unknown one."""
     routes, gen = boat_data()
     r = routes[key]
     P, sP = r["cycle_s"], gen.PERIOD_SIGMA[key]
@@ -28540,7 +28555,7 @@ def bt_want(key, j, rec, now, hint=True, reset_penalty=False, big=None):
     kind = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}[r["type"]]
     head = kind + " to " + to + ": "
     big = BT_STYLE[0] == "big" if big is None else big
-    click = " - " + kind + BT_CLICK if hint and big else ""
+    click = " - " + bt_click(kind) if hint and big else ""
     unknown = head + "unknown, every " + bt_period(key) + (click if big else (" - /gl boat now when it docks" if hint else ""))
     if rec is None:
         return unknown
@@ -28560,8 +28575,8 @@ def bt_want(key, j, rec, now, hint=True, reset_penalty=False, big=None):
     if sg <= 5:
         return head + ("docked, leaves in " + bt_clock(sec) if docked else bt_clock(sec))
     if docked or sec <= sg:
-        return head + "about now" + click
-    return head + "about %d min" % max(1, int(math.floor(sec / 60 + 0.5))) + click
+        return head + "about now"
+    return head + "about %d min" % max(1, int(math.floor(sec / 60 + 0.5)))
 
 
 def bt_rect_ok(sc, w, label, others):
@@ -29304,7 +29319,7 @@ def sc_boats_expiry(sc, ref, items):
     want_sg = 4 + (abs(n2 - rec["seen"]) / 329.316 + 1) * 0.01 + 1
     got_sg = B2b.Sigma(rt292, B2b.AnchorOf(rt292, n2), 2, n2)
     sc.check(abs(got_sg - want_sg) < 1e-6, "expiry: a second less sure in the next login (%.3f, want %.3f)" % (got_sg, want_sg))
-    sc.check(bt_lines(w2b) and bt_lines(w2b)[0] == "Boat to Menethil: about now" + (" - Boat" + BT_CLICK if BT_STYLE[0] == "big" else ""),
+    sc.check(bt_lines(w2b) and bt_lines(w2b)[0] == "Boat to Menethil: about now",
              "expiry: a /gl boat now timer is about then (%s)" % bt_lines(w2b))
     sc.clean(w2b, "expiry relogin")
     # 31 days old: dropped.
@@ -30100,6 +30115,7 @@ def sc_boats_realm(sc, ref, items):
     # later ride counts, the other ride stays; nothing left under "realm".
     later = bt_fixture("boats_menethil_1950.lua")
     junk = dict(later["boatTimes"]["realm"][292], earlier=True)
+    junk_ride = junk
     sc.eq((sorted(later["boatTimes"]), later["boatSession"], junk["ses"]), (sorted([BT_REALM, "realm"]), 3, 3),
           "realm 19:50: the fixture: the ride of login 3 under \"realm\"")
     for label, realm, name, came in (("19:50 state, 71037", None, BT_REALM_NAME, by_gr), ("19:50 state, no name", None, None, by_saved),
@@ -30143,7 +30159,7 @@ def sc_boats_realm(sc, ref, items):
     w.M.sbase = base - 9 * 3600
     bt_at(w, x + 3, y + 2, inst)
     w.settle(0.3)
-    sc.eq(bt_lines(w)[:1], ["Boat to Theramore: unknown, every 5:29 - Boat" + BT_CLICK], "clock: 9 h behind: not used meanwhile")
+    sc.eq(bt_lines(w)[:1], ["Boat to Theramore: unknown, every 5:29 - " + bt_click("Boat")], "clock: 9 h behind: not used meanwhile")
     sc.eq(bt_slash(w, "/gl boats")[-1], bt_saved_line(2, 3, BT_REALM, aside=2), "clock: /gl boats says they are set aside")
     w.M.sbase = base
     w.settle(1.1)
@@ -30159,15 +30175,70 @@ def sc_boats_realm(sc, ref, items):
     bt_msg(w, bt_a1(w, 292, 1, round(B.Now() - 30, 1)), sender="Other-TestRealm")
     sc.eq(B.stats.got, g0 + 1, "self: another player's: read")
     sc.clean(w, "self")
+    # No realm name at all (the one realm saved): your own message shared back is still yours.
+    w = boat_world(ref, items, saved=saved, realm=None, realm_name=None)
+    B = w.ns.Boats
+    g0 = B.stats.got
+    bt_msg(w, bt_a1(w, 292, 1, round(B.Now() - 30, 1)), sender="Player-" + BT_REALM)
+    sc.eq(B.stats.got, g0, "self, no name: your own message: not read")
+    bt_msg(w, bt_a1(w, 292, 1, round(B.Now() - 30, 1)), sender="Other-" + BT_REALM)
+    sc.eq(B.stats.got, g0 + 1, "self, no name: another player's: read")
+    sc.clean(w, "self no name")
+    # The fold keeps the better record per boat: your own sighting over a share (later or not), and
+    # of two of your own the smaller error (the ride over a later /gl boat now): the ride counts.
+    st0 = saved["boatTimes"][BT_REALM]
+    rd = dict(st0[292])
+    share = dict(rd, t0=rd["t0"] + 25, s=12, src="G", seen=rd["seen"] + 3600)
+    share.pop("ses", None)
+    click = dict(rd, t0=rd["t0"] + 3, s=4, src="M", seen=rd["seen"] + 1800)
+    for name, mine, junk in (("a later share under \"realm\"", rd, share), ("a later /gl boat now under \"realm\"", rd, click),
+                             ("the ride under \"realm\", a later share the realm's", share, rd)):
+        mine_st = dict(st0)
+        mine_st[292] = mine
+        state = {"boatTimes": {BT_REALM: mine_st, "realm": {"periods": {}, 292: junk}}, "boatSession": 2}
+        w = at_menethil("fold, " + name, BT_REALM, BT_REALM_NAME, state=state)
+        T = lua_to_py(w.ns.settings.boatTimes)
+        sc.eq((T[BT_REALM][292]["t0"], T[BT_REALM][292]["src"], "realm" in T), (rd["t0"], "R", False), "fold, %s: the ride kept" % name)
+        sc.clean(w, "fold " + name)
+    # The rule itself (B.Better): your own over a share whatever their errors; of two of your own (or
+    # two shares) the smaller error at the later one's time (a ride 10 days old: 1.5 + 26 s).
+    w = boat_world(ref, items)
+    B = w.ns.Boats
+    rt = B.byPath[292]
+    t = 1795224000.0
+    mk = lambda src, s, age: w.to_lua(dict(t0=t, s=s, src=src, seen=t - age, obs=1, ok=0))
+    for name, a, b, want in (("own 20 s over a share 2 s", mk("R", 20, 0), mk("G", 2, 0), True),
+                             ("a share 2 s under own 20 s", mk("G", 2, 0), mk("R", 20, 0), False),
+                             ("a later /gl boat now over a ride 10 days old", mk("M", 4, 0), mk("R", 1.5, 10 * 86400), True),
+                             ("a ride an hour old over a later /gl boat now", mk("R", 1.5, 3600), mk("M", 4, 0), True),
+                             ("a tie: the one there stays", mk("R", 2, 0), mk("R", 2, 0), False)):
+        sc.eq(bool(B.Better(rt, a, b)), want, "better: %s" % name)
+    sc.clean(w, "better")
+    # An alt on another realm that only stood at a dock leaves an empty table: no saved realm (the one
+    # saved still counts with no name; what was saved under "realm" still joins the realm's).
+    alt = {"boatTimes": dict(saved["boatTimes"], AltRealm={"periods": {}}), "boatSession": 2}
+    w = at_menethil("an empty other realm, no name", None, None, state=alt, came=by_saved, realms=sorted([BT_REALM, "AltRealm"]))
+    sc.clean(w, "empty other realm")
+    later2 = {"boatTimes": dict(later["boatTimes"], AltRealm={"periods": {}}), "boatSession": 3}
+    w = at_menethil("an empty other realm, the fold", BT_REALM, None, state=later2, now=SHOT + 2 * 3600, rec=junk_ride, logins=4,
+                    realms=sorted([BT_REALM, "AltRealm"]))
+    sc.clean(w, "empty other realm fold")
+    # A client that writes the realm's name another way (case, hyphens): the same timers.
+    for name in ("CAMWOW-US1-Realm2-PvP", "camwowus1realm2pvp"):
+        w = at_menethil("the name as " + name, name, None)
+        sc.clean(w, "name as " + name)
 
 
 def sc_boats_big_click(sc, ref, items):
-    """The big timer's hint: while its big line's boat is unknown or "about", "Boat in? Click here"
-    under it is a button of its own (just its words): a click on it does what /gl boat now does for
-    that boat (the same chat line, the same timer); its hover says so in one line; the right button
-    goes through it to the camera. A click anywhere else on the timer still does nothing and the
-    big line still drags it (the click line goes along). A known timer has none (no stray click can
-    spoil it). Zeppelins say Zeppelin; the small line keeps its own click."""
+    """The big timer's hint: while its big line's boat is unknown, "Click when the boat docks" under
+    it is a button of its own (just its words): a click on it does what /gl boat now does for that
+    boat (the same chat line, the same timer); its hover says so in one line; the right button goes
+    through it to the camera. A click anywhere else on the timer still does nothing and the big line
+    still drags it (the click line goes along); a drag that starts on the click line moves the timer
+    too, and letting go there is no click. A learned timer has none, "about" too (a ride's timer
+    after a day or a weekly reset: no stray or late click can spoil it), nor a boat whose pier is not
+    the nearest by 15 yd (between a zeppelin tower's two piers). Zeppelins say zeppelin; the small
+    line keeps its own click (a second one for a learned timer that says the boat is not near)."""
     tx, ty, tinst = bt_stop("menethil_theramore", 1)
     routes, _ = boat_data()
     arr2, P = routes["menethil_theramore"]["stops"][1]["arrive_s"], routes["menethil_theramore"]["cycle_s"]
@@ -30177,7 +30248,7 @@ def sc_boats_big_click(sc, ref, items):
     tt = g.GameTooltip
     bt_at(w, tx, ty, tinst)
     w.settle(2.5)
-    click = "Boat" + BT_CLICK
+    click = bt_click("Boat")
     sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - " + click], "click: unknown: the click line under the big line")
     bt_big_ok(sc, w, "click unknown")
     hb = G.hintBtn
@@ -30222,20 +30293,62 @@ def sc_boats_big_click(sc, ref, items):
     sc.check(a2 is not None and {k: a2[k] for k in ("src", "s", "obs", "ok", "p0", "v")} == {k: a[k] for k in ("src", "s", "obs", "ok", "p0", "v")},
              "click: /gl boat now sets the same timer (%s, %s)" % (a2, a))
     sc.clean(w2, "click boat now")
-    # About (good to 30 s): the click line too; a click makes it sharp.
-    bt_set(w, 292, B.Now() - arr2 - (P - 120), s=10.0, src="R", obs=2)
-    B.Step()
-    sc.eq(bt_lines(w), ["Boat to Menethil: about 2 min - " + click], "click: about: the click line")
-    bt_big_ok(sc, w, "click about")
-    mark = w.chat_mark()
-    M.click(G.hintBtn)
-    w.settle(0.1)
-    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "click: about: set")
-    sc.check(bt_anchor(w, 292)["s"] == 4 and not G.hintBtn.IsVisible(G.hintBtn), "click: about: sharp now, no click line")
-    # Dragged with the click line up: the big line drags it, the click line goes along and works there.
+    # About (a ride's timer, good to 30 s): no click line (a stray or a late click must not spoil it):
+    # a press where it was does nothing, the ride's timer stays; so after a weekly reset ("about now").
+    for name, t0, s, seen, word in (("about", B.Now() - arr2 - (P - 120), 10.0, None, "about 2 min"),
+                                    ("a weekly reset", B.Now() - arr2 - 30, 1.0, B.Now() - 4 * 86400, "about now")):
+        bt_set(w, 292, t0, s=s, src="R", obs=2, seen=seen)
+        B.Step()
+        sc.eq(bt_lines(w), ["Boat to Menethil: " + word], "click: %s: no click line" % name)
+        bt_big_ok(sc, w, "click " + name)
+        before = bt_anchor(w, 292)
+        mark = w.chat_mark()
+        f = M.frameAt((hr[0] + hr[2]) / 2, (hr[1] + hr[3]) / 2, "LeftButton")
+        sc.check(not w.same(f, hb), "click: %s: nothing to click where the line was" % name)
+        M.press(f, "LeftButton")
+        M.release(f, "LeftButton")
+        w.settle(2)
+        sc.eq((w.chat(mark), bt_anchor(w, 292)), ([], before), "click: %s: nothing said, the ride's timer kept" % name)
+    # A drag that starts on the click line: the timer moves, letting go there is no click (nothing
+    # said, nothing set); the next click on it is one.
     B.Store()[292] = None
     B.Step()
     h = G.holder
+    SW, SH = M.screenW, M.screenH
+    sc.check(hb.IsVisible(hb), "grip: unknown again: the click line")
+    mark = w.chat_mark()
+    M.press(hb, "LeftButton")
+    M.fireScript(hb, "OnDragStart", "LeftButton")
+    sc.check(bool(h.glMoving) and bool(h._moving), "grip: a drag on the click line moves the timer")
+    es = h.GetEffectiveScale(h)
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", 0.08 * SW / es, 0.9 * SH / es])
+    M.fireScript(hb, "OnDragStop")
+    M.dragTo = None
+    M.release(hb, "LeftButton")
+    M.click(hb)   # (the click the client may send as the button is let go over it)
+    w.settle(1.1)
+    sc.eq((w.chat(mark), bt_anchor(w, 292)), ([], None), "grip: let go on the click line: nothing said, no timer set")
+    r = bt_placed_ok(sc, w, "grip")
+    sc.check(r is not None and abs(r[0] - 0.08 * SW) < 0.6 and abs(r[3] - 0.9 * SH) < 0.6, "grip: where it was let go (%s)" % (fl_px(r) if r else None))
+    # Dragged by it again and let go elsewhere (no click comes): the next press and click on it is one.
+    M.press(hb, "LeftButton")
+    M.fireScript(hb, "OnDragStart", "LeftButton")
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", 0.12 * SW / es, 0.88 * SH / es])
+    M.fireScript(hb, "OnDragStop")
+    M.dragTo = None
+    M.release(None, "LeftButton")
+    w.settle(1.1)
+    mark = w.chat_mark()
+    M.press(hb, "LeftButton")
+    M.release(hb, "LeftButton")
+    M.click(hb)
+    w.settle(0.1)
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."],
+          "grip: after a drag let go elsewhere, the next click on it sets it")
+    B.Store()[292] = None
+    bt_slash(w, "/gl boats reset")
+    w.settle(1.1)
+    # Dragged with the click line up: the big line drags it, the click line goes along and works there.
     sc.check(hb.IsVisible(hb), "drag: unknown again: the click line")
     big_drag(w, h, 0.15 * M.screenW, 0.85 * M.screenH)
     bt_placed_ok(sc, w, "drag with the click line")
@@ -30274,10 +30387,56 @@ def sc_boats_big_click(sc, ref, items):
     bt_at(w, ox, oy, oinst)
     w.settle(1.1)
     lines = bt_lines(w)
-    sc.check(len(lines) == 2 and lines[0] == "Zeppelin to Undercity: unknown, every 5:56 - Zeppelin" + BT_CLICK
+    sc.check(len(lines) == 2 and lines[0] == "Zeppelin to Undercity: unknown, every 5:56 - " + bt_click("Zeppelin")
              and lines[1].startswith("Zeppelin to Grom'gol: unknown"), "zeppelin: its click line (%s)" % lines)
     bt_big_ok(sc, w, "zeppelin", where=w.ns.Boats.ui.big.mode.split(" ")[0])
+    # Between the tower's two piers (50 yd apart): which one a click would be for is not clear, so
+    # no click line; 8 yd off the middle (16 yd nearer one pier): that one's.
+    gx, gy, _ = bt_stop("orgrimmar_gromgol", 0)
+    G = w.ns.Boats.ui.big
+    d = math.hypot(gx - ox, gy - oy)
+    sc.check(45 < d < 55, "zeppelin: the tower's piers %.1f yd apart" % d)
+    for name, f, near in (("in the middle", 0.5, None), ("8 yd off the middle", 0.5 - 8 / d, "Undercity"), ("4 yd off", 0.5 - 4 / d, None),
+                          ("8 yd off the other way", 0.5 + 8 / d, "Grom'gol")):
+        bt_at(w, ox + (gx - ox) * f, oy + (gy - oy) * f, oinst, zone=False)
+        w.settle(1.1)
+        lines = bt_lines(w)
+        if near:
+            sc.check(len(lines) == 2 and lines[0].startswith("Zeppelin to " + near) and lines[0].endswith(" - " + bt_click("Zeppelin"))
+                     and G.hintBtn.IsVisible(G.hintBtn), "zeppelin %s: its click line (%s)" % (name, lines))
+        else:
+            sc.check(len(lines) == 2 and not any(bt_click("Zeppelin") in l for l in lines) and not G.hintBtn.IsVisible(G.hintBtn),
+                     "zeppelin %s: no click line (%s)" % (name, lines))
+        bt_big_ok(sc, w, "zeppelin " + name, where=G.mode.split(" ")[0])
     sc.clean(w, "zeppelin")
+    # The small line: a click on a learned "about" timer that says the boat is not near asks for a
+    # second one (as for a good timer); one that says it docks about now sets it at once.
+    w = boat_world(ref, items, style="small")
+    B, M = w.ns.Boats, w.M
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    bt_set(w, 292, B.Now() - arr2 - (P - 120), s=10.0, src="R", obs=2)
+    B.Step()
+    before = bt_anchor(w, 292)
+    sc.eq(bt_lines(w), ["Boat to Menethil: about 2 min"], "small about: the line")
+    mark = w.chat_mark()
+    M.click(B.ui.btn[1])
+    w.settle(0.1)
+    said = [strip_codes(c) for c in w.chat(mark)]
+    sc.check(len(said) == 1 and "Click again if it is docking now" in said[0] and bt_anchor(w, 292) == before,
+             "small about: a click 2 min off asks for a second one, the timer kept (%s)" % said)
+    mark = w.chat_mark()
+    M.click(B.ui.btn[1])
+    w.settle(0.1)
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "small about: the second click sets it")
+    bt_set(w, 292, B.Now() - arr2 - 6, s=10.0, src="R", obs=2)
+    B.Step()
+    mark = w.chat_mark()
+    M.click(B.ui.btn[1])
+    w.settle(0.1)
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."],
+          "small about: a click as it says the boat docks: set at once")
+    sc.clean(w, "small about")
 
 
 def sc_boats_layout(sc, ref, items):
@@ -30793,25 +30952,39 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
     return r
 
 
+def bt_click_clear(w):
+    """The big line's pier is the nearest by 15 yd (or the only one): the harness's distances from
+    where the player stands to the piers of the addon's first two lines."""
+    lst, pos = w.ns.Boats.ui.list, w.M.pos
+    if lst is None or lst[2] is None or pos is None:
+        return True
+    d = lambda e: math.hypot(pos[1] - e.st.x, pos[2] - e.st.y)
+    return d(lst[2]) - d(lst[1]) >= 15
+
+
 def bt_click_ok(sc, w, label, passed=True):
-    """The big timer's hint: under an unknown or "about" big line (none under a known one), "Boat
-    in? Click here" ("Zeppelin", "Skyship": the big line's kind), 13, as B.Lines says it; a button of
-    its own on the timer, just its words' size, under line 1, inside the timer, clear of the X's
-    hit area; the left button there is its click, the right one goes through to the world (passed:
-    once out of a fight); its click and hover scripts; line 1 is still the timer's (a drag)."""
+    """The big timer's hint: under an unknown big line whose pier is the nearest by 15 yd (none
+    under a learned one, "about" too: no stray or late click can spoil it), "Click when the boat
+    docks" (zeppelin, skyship: the big line's kind), 13, as B.Lines says it; a button of its own on
+    the timer, just its words' size, under line 1, inside the timer, clear of the X's hit area; the
+    left button there is its click (in a fight the world's: no click at all), the right one goes
+    through to the world (passed: once out of a fight); its click and hover scripts, and the timer's
+    drag on the left button (a drag that starts on it moves the timer); line 1 is still the timer's
+    (a drag; in a fight the world's)."""
     B, M = w.ns.Boats, w.M
     G = B.ui.big
     hb, hf = G.hintBtn, G.hint
     lines = bt_lines(w)
     first = lines[0] if lines else ""
     state = first.split(": ", 1)[1] if ": " in first else ""
-    want = B.ui.style == "big" and (state.startswith("unknown") or state.startswith("about"))
+    want = B.ui.style == "big" and state.startswith("unknown") and bt_click_clear(w)
     shown = hb is not None and bool(hb.IsVisible(hb))
     if not sc.eq(shown, want, "%s: the click line %s (%s)" % (label, "shows" if want else "does not show", first)) or not want:
         return
     kind = first.split(" to ", 1)[0]
-    sc.eq((strip_codes(hf.GetText(hf) or ""), bt_font(hf)[1], hb._otype, w.same(hb.GetParent(hb), G.holder), first.endswith(" - " + kind + BT_CLICK)),
-          (kind + BT_CLICK, BT_BIG["hint"], "Button", True, True), "%s: the click line: its words, 13, a button on the timer" % label)
+    words = bt_click(kind)
+    sc.eq((strip_codes(hf.GetText(hf) or ""), bt_font(hf)[1], hb._otype, w.same(hb.GetParent(hb), G.holder), first.endswith(" - " + words)),
+          (words, BT_BIG["hint"], "Button", True, True), "%s: the click line: its words, 13, a button on the timer" % label)
     hr, fr, l1, r = w.rect(hb), w.rect(hf), w.rect(G.btn[1]), w.rect(G.holder)
     if not sc.check(hr is not None and fr is not None and l1 is not None and r is not None, "%s: the click line has a place" % label):
         return
@@ -30822,15 +30995,20 @@ def bt_click_ok(sc, w, label, passed=True):
     if G.x is not None and G.x.IsVisible(G.x):
         sc.check(not bt_overlap(bt_hit(w, G.x), hr), "%s: the click line clear of the X" % label)
     cx, cy = (hr[0] + hr[2]) / 2, (hr[1] + hr[3]) / 2
-    sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), hb), "%s: the left button on the click line: its click" % label)
+    fight = M.combat == True
+    if fight:
+        sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), w.g.WorldFrame), "%s: in a fight the left button on the click line: the world" % label)
+    else:
+        sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), hb), "%s: the left button on the click line: its click" % label)
     if passed:
         sc.check(w.same(M.frameAt(cx, cy, "RightButton"), w.g.WorldFrame), "%s: the right button on it: the world (the camera)" % label)
     else:
         sc.eq(hb._pass, None, "%s: the click line's right button not set in a fight" % label)
-    sc.check(hb.GetScript(hb, "OnClick") is not None and hb.GetScript(hb, "OnEnter") is not None and hb.GetScript(hb, "OnDragStart") is None,
-             "%s: the click line: a click and a hover, no drag of its own" % label)
-    sc.check(w.same(M.frameAt((l1[0] + l1[2]) / 2, (l1[1] + l1[3]) / 2, "LeftButton"), G.holder),
-             "%s: the big line still the timer's (a drag)" % label)
+    sc.check(hb.GetScript(hb, "OnClick") is not None and hb.GetScript(hb, "OnEnter") is not None and hb.GetScript(hb, "OnDragStart") is not None
+             and hb.GetScript(hb, "OnDragStop") is not None and lua_to_py(hb._drag) == {1: "LeftButton"},
+             "%s: the click line: a click, a hover, and the timer's drag on the left button" % label)
+    sc.check(w.same(M.frameAt((l1[0] + l1[2]) / 2, (l1[1] + l1[3]) / 2, "LeftButton"), w.g.WorldFrame if fight else G.holder),
+             "%s: the big line still the timer's (a drag; in a fight the world's)" % label)
 
 
 def bt_tracker_way(sc, w, label, free):
@@ -31087,7 +31265,8 @@ def sc_boats_big_states(sc, ref, items):
     state: the countdown (good to 5 s), docked, about (good to 30 s), about now, and unknown with
     how often it comes (no timer, too old to trust, from before a weekly reset that moved the
     boats, with a round trip learned from your rides; the Dalaran skyship's measured 5:53); each
-    one's fonts and colours; under an unknown or "about" big line its hint "Boat in? Click here" (13).
+    one's fonts and colours; under an unknown big line its hint "Click when the boat docks" (13; none under a
+    learned one, "about" too).
     At harbors: the nearest pier's boat big, the others 15 under it, the hint once under the big
     line when it is unknown, none on the others' lines nor a joined line; the joined forms
     "Theramore unknown (every 5:29)"."""
@@ -31096,7 +31275,7 @@ def sc_boats_big_states(sc, ref, items):
     arr2 = routes["menethil_theramore"]["stops"][1]["arrive_s"]
     tx, ty, tinst = bt_stop("menethil_theramore", 1)
     gold = "|cffffd100"
-    click = "Boat" + BT_CLICK
+    click = bt_click("Boat")
     # (name, the saved timer, the big timer's (line 1, countdown, hint), the small line's words, the big one's)
     cases = (
         ("unknown", None, ("Boat to Menethil: unknown, every 5:29", None, click),
@@ -31105,10 +31284,10 @@ def sc_boats_big_states(sc, ref, items):
          "Boat to Menethil: 1:42"),
         ("docked", lambda n: dict(t0=n - arr2 - 25.5, s=1.0), ("Boat to Menethil: docked, leaves in", "0:35", None),
          "Boat to Menethil: docked, leaves in 0:35", "Boat to Menethil: docked, leaves in 0:35"),
-        ("about", lambda n: dict(t0=n - arr2 - (P - 120), s=10.0), ("Boat to Menethil: about", "2 min", click), "Boat to Menethil: about 2 min",
-         "Boat to Menethil: about 2 min - " + click),
-        ("about now", lambda n: dict(t0=n - arr2 - (P - 8), s=10.0), ("Boat to Menethil: about", "now", click), "Boat to Menethil: about now",
-         "Boat to Menethil: about now - " + click),
+        ("about", lambda n: dict(t0=n - arr2 - (P - 120), s=10.0), ("Boat to Menethil: about", "2 min", None), "Boat to Menethil: about 2 min",
+         "Boat to Menethil: about 2 min"),
+        ("about now", lambda n: dict(t0=n - arr2 - (P - 8), s=10.0), ("Boat to Menethil: about", "now", None), "Boat to Menethil: about now",
+         "Boat to Menethil: about now"),
         ("too old", lambda n: dict(t0=n - arr2 - 40, s=1.0, seen=n - 12 * 86400), ("Boat to Menethil: unknown, every 5:29", None, click),
          "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks", "Boat to Menethil: unknown, every 5:29 - " + click),
     )
@@ -31159,7 +31338,7 @@ def sc_boats_big_states(sc, ref, items):
         dx, dy, dinst = bt_stop("dalaran_zephras", 0)
         bt_at(w, dx, dy, dinst)
         w.settle(1.1)
-        sc.eq(bt_lines(w), ["Skyship to Zephras Isle: unknown, every 5:53 - " + (BT_HINT if style == "small" else "Skyship" + BT_CLICK)],
+        sc.eq(bt_lines(w), ["Skyship to Zephras Isle: unknown, every 5:53 - " + (BT_HINT if style == "small" else bt_click("Skyship"))],
               "states %s: the skyship" % style)
         sc.clean(w, "states " + style)
     # Harbors with the big timer: three boats at Auberdine (UI scale 0.8: three lines).
@@ -31173,7 +31352,7 @@ def sc_boats_big_states(sc, ref, items):
                         "Boat to Rut'theran: unknown, every 5:16"], "harbors big: Auberdine, three boats, the nearest pier's big")
     sc.eq((bt_font(G.fs[1])[1], bt_font(G.fs[2])[1], bt_font(G.fs[3])[1]), (BT_BIG["med"], BT_BIG["sub"], BT_BIG["sub"]),
           "harbors big: the others 15")
-    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 1, "harbors big: the hint once (%s)" % bt_big_words(w))
+    sc.eq(sum(t.count(bt_click("Boat")) for t in bt_big_words(w)), 1, "harbors big: the hint once (%s)" % bt_big_words(w))
     sc.eq(G.hint.IsShown(G.hint), True, "harbors big: under the big line")
     bt_big_ok(sc, w, "harbors big three")
     bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
@@ -31181,7 +31360,7 @@ def sc_boats_big_states(sc, ref, items):
     lines = bt_lines(w)
     sc.eq(lines[1:], ["Boat to Menethil, Southshore: unknown, every 8:06", "Boat to Rut'theran: unknown, every 5:16"],
           "harbors big: the big line known: no hint on the other boats' lines (/gl boat now sets the big one)")
-    sc.eq((sum(t.count("Click here") for t in bt_big_words(w)), G.hint.IsShown(G.hint)), (0, False), "harbors big: no hint")
+    sc.eq((sum(t.count(bt_click("Boat")) for t in bt_big_words(w)), G.hint.IsShown(G.hint)), (0, False), "harbors big: no hint")
     sc.check(lines[0].startswith("Boat to Stormwind: docked, leaves in 0:"), "harbors big: the big line (%s)" % lines[0])
     bt_big_ok(sc, w, "harbors big known")
     sc.clean(w, "harbors big")
@@ -31195,12 +31374,12 @@ def sc_boats_big_states(sc, ref, items):
                         "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"], "harbors big joined: the other two on one line")
     sc.eq(G.fs[2].GetText(G.fs[2]), "Menethil, Southshore " + gold + "unknown (every 8:06)|r; Rut'theran " + gold + "unknown (every 5:16)|r",
           "harbors big joined: the states gold")
-    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 1, "harbors big joined: the hint once")
+    sc.eq(sum(t.count(bt_click("Boat")) for t in bt_big_words(w)), 1, "harbors big joined: the hint once")
     bt_big_ok(sc, w, "harbors big joined")
     bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
     B.Step()
     sc.eq(bt_lines(w)[1], "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)", "harbors big joined: known big line")
-    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 0, "harbors big joined: no hint on a joined line")
+    sc.eq(sum(t.count(bt_click("Boat")) for t in bt_big_words(w)), 0, "harbors big joined: no hint on a joined line")
     sc.clean(w, "harbors big joined")
     # The small lines' joined form at Menethil (the tracker under the minimap).
     mx, my, minst = bt_stop("menethil_theramore", 0)
@@ -34329,13 +34508,19 @@ end"""
 
 def big_drag_ok(sc, w, h, line, x, label, passed=True):
     """A big timer and the mouse: it takes the left button for a drag and nothing else (a Frame, no
-    press or release script: a plain click does nothing), kept on screen while dragged, its spot not
-    in the game's layout file; the right button goes through it to the world (passed: once out of a
-    fight), its line takes no mouse, the X takes its own click."""
+    press or release script: a plain click does nothing; in a fight no mouse at all: the left button
+    is the world's), kept on screen while dragged, its spot not in the game's layout file; the right
+    button goes through it and its X to the world (passed: once out of a fight), its line takes no
+    mouse, the X takes its own click (in a fight too); at frame level 30 of LOW (over ElvUI's bars
+    and unit frames), its parts over it."""
     M = w.M
+    fight = M.combat == True
     sc.eq((h._otype, bool(h.IsMouseEnabled(h)), bool(h.IsMovable(h)), h._clamped, h._dontSave, lua_to_py(h._drag)),
-          ("Frame", True, True, True, True, {1: "LeftButton"}),
-          "%s: the timer takes the left button for a drag, kept on screen, not in the game's layout file" % label)
+          ("Frame", not fight, True, True, True, {1: "LeftButton"}),
+          "%s: the timer takes the left button for a drag (%s), kept on screen, not in the game's layout file"
+          % (label, "no mouse in a fight" if fight else "out of a fight"))
+    sc.check(h.GetFrameStrata(h) == "LOW" and h.GetFrameLevel(h) == 30 and line.GetFrameLevel(line) > 30
+             and (x is None or x.GetFrameLevel(x) > 30), "%s: at frame level 30 of LOW, its parts over it" % label)
     sc.check(all(h.GetScript(h, s) is None for s in ("OnMouseDown", "OnMouseUp", "OnEnter"))
              and h.GetScript(h, "OnDragStart") is not None and h.GetScript(h, "OnDragStop") is not None,
              "%s: no click, press or hover of its own: only the drag" % label)
@@ -34346,12 +34531,20 @@ def big_drag_ok(sc, w, h, line, x, label, passed=True):
     if lr is None or not h.IsVisible(h):
         return
     cx, cy = (lr[0] + lr[2]) / 2, (lr[1] + lr[3]) / 2
-    sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), h), "%s: the left button on it: the timer (a drag)" % label)
+    if fight:
+        sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), w.g.WorldFrame), "%s: in a fight the left button on it: the world (targeting)" % label)
+    else:
+        sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), h), "%s: the left button on it: the timer (a drag)" % label)
     if passed:
         sc.check(w.same(M.frameAt(cx, cy, "RightButton"), w.g.WorldFrame), "%s: the right button on it: the world (the camera)" % label)
     if x is not None and x.IsVisible(x):
         xr = w.rect(x)
-        sc.check(w.same(M.frameAt((xr[0] + xr[2]) / 2, (xr[1] + xr[3]) / 2, "LeftButton"), x), "%s: the X takes its click" % label)
+        xc = ((xr[0] + xr[2]) / 2, (xr[1] + xr[3]) / 2)
+        sc.check(w.same(M.frameAt(xc[0], xc[1], "LeftButton"), x), "%s: the X takes its click" % label)
+        if passed:
+            sc.check(w.same(M.frameAt(xc[0], xc[1], "RightButton"), w.g.WorldFrame), "%s: the right button on the X: the world (the camera)" % label)
+        else:
+            sc.eq(x._pass, None, "%s: the X's right button not set in a fight" % label)
 
 
 def big_drag(w, h, left, top, during=0.0, wait=None):
@@ -34600,19 +34793,23 @@ def sc_boats_big_drag(sc, ref, items):
     # line, the drag ends (the spot saved); then big at that spot (the player put it there).
     bt_slash(w, "/gl boats reset")
     M.fireScript(h, "OnDragStart", "LeftButton")
-    rm = w.rect(h)
+    es = h.GetEffectiveScale(h)
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", 0.30 * SW / es, 0.90 * SH / es])   # (where the mouse took it)
     bt_at(w, tx + 400, ty, tinst, zone=False)
     w.settle(3.5)
+    M.dragTo = None
     sc.check(not h.IsVisible(h) and not h._moving and not h.glMoving, "hidden in a drag: the drag is over")
     spm = big_spot(w, "boatPos")
-    sc.check(spm is not None and abs(spm[1] - (rm[3] - M.screenH / 2.0) / M.screenH) < 1e-6, "hidden in a drag: the spot where it got to")
+    sc.check(spm is not None and abs(spm[1] - 0.4) < 1e-6, "hidden in a drag: the spot where it got to (%s)" % (spm,))
     bt_at(w, tx, ty, tinst, zone=False)
     w.settle(3.5)
     r = bt_placed_ok(sc, w, "hidden in a drag, back")
-    sc.check(r is not None and abs(r[3] - rm[3]) < 0.6, "hidden in a drag, back: there")
+    sc.check(r is not None and abs(r[3] - 0.9 * SH) < 0.6, "hidden in a drag, back: there")
     bt_slash(w, "/gl boats reset")
     M.fireScript(h, "OnDragStart", "LeftButton")
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", 0.30 * SW / es, 0.90 * SH / es])
     M.Fight(True)
+    M.dragTo = None
     sc.check(B.ui.style == "small" and not h._moving and big_spot(w, "boatPos") is not None,
              "a fight in a drag: the small line at once, the drag over, the spot saved (%s)" % B.ui.style)
     w.settle(1.1)
@@ -34639,6 +34836,189 @@ def sc_boats_big_drag(sc, ref, items):
     w2.settle(1.1)
     bt_placed_ok(sc, w2, "after the fight")
     sc.clean(w2, "made in a fight")
+
+
+def big_covers(w):
+    """What a big timer let go over would hide under, out of reach (they take the mouse there, as
+    in the game: M.InstallMinimap): the minimap's cluster and parts, the quest trackers, the buffs,
+    while they show; (name, screen rectangle)."""
+    g = w.g
+    out = []
+    cl = g.MinimapCluster
+    frames = [(n, g[n]) for n in ("MinimapCluster", "Minimap", "MinimapBackdrop", "ElvUI_MinimapHolder", "MinimapPanel",
+                                  "ObjectiveTrackerFrame", "Questie_BaseFrame", "BuffFrame", "DebuffFrame", "DurabilityFrame",
+                                  "UIWidgetBelowMinimapContainerFrame")]
+    frames.append(("the zone text", cl.ZoneTextButton if cl is not None else None))
+    for n, o in frames:
+        if o is not None and o.IsVisible(o):
+            r = w.rect(o)
+            if r is not None and r[2] - r[0] > 2 and r[3] - r[1] > 2:
+                out.append((n, r))
+    return out
+
+
+def big_drop_ok(sc, w, h, line, label, drop=None):
+    """h after it was let go over something it would hide under: clear of all of that (big_covers,
+    2 UI units more all round), whole on the screen, just clear of one of them; drop: (left, top) it
+    was let go at: no shorter move from there (whole on the screen) is clear (a search every 3 px,
+    not the addon's way); a press on its line reaches it (not what it was let go over). Gives its
+    rectangle."""
+    M = w.M
+    r = w.rect(h)
+    if not sc.check(r is not None and h.IsVisible(h), "%s: it shows" % label):
+        return None
+    g2 = 2 * h.GetEffectiveScale(h)
+    covers = big_covers(w)
+    gaps = []
+    for n, q in covers:
+        sc.check(not bt_overlap(r, (q[0] - g2, q[1] - g2, q[2] + g2, q[3] + g2)), "%s: clear of %s (%s vs %s)" % (label, n, fl_px(r), fl_px(q)))
+        gaps.append(max(q[0] - r[2], r[0] - q[2], q[1] - r[3], r[1] - q[3], 0))
+    sc.check(r[0] >= -0.5 and r[2] <= M.screenW + 0.5 and r[1] >= -0.5 and r[3] <= M.screenH + 0.5, "%s: whole on the screen (%s)" % (label, fl_px(r)))
+    sc.check(bool(gaps) and min(abs(gp - g2) for gp in gaps) < 0.6, "%s: just clear of one of them (gaps %s)" % (label, [round(gp, 1) for gp in gaps]))
+    if drop is not None:
+        wd, ht = r[2] - r[0], r[3] - r[1]
+        l0 = max(0.0, min(M.screenW - wd, drop[0]))
+        t0 = min(M.screenH, max(ht, drop[1]))
+        moved = math.hypot(r[0] - l0, r[3] - t0)
+        qs = [(q[0] - g2, q[1] - g2, q[2] + g2, q[3] + g2) for _, q in covers]
+        shorter = None
+        n = int(moved / 3) + 1
+        for i in range(-n, n + 1):
+            for j in range(-n, n + 1):
+                dx, dy = 3.0 * i, 3.0 * j
+                if math.hypot(dx, dy) >= moved - 4.5:
+                    continue
+                c = (l0 + dx, t0 + dy - ht, l0 + dx + wd, t0 + dy)
+                if c[0] < -0.5 or c[2] > M.screenW + 0.5 or c[1] < -0.5 or c[3] > M.screenH + 0.5:
+                    continue
+                if not any(bt_overlap(c, q) for q in qs):
+                    shorter = (dx, dy)
+                    break
+            if shorter:
+                break
+        sc.check(shorter is None, "%s: the shortest way clear (moved %.1f; clear already at %s)" % (label, moved, shorter))
+    lr = w.rect(line)
+    f = M.frameAt((lr[0] + lr[2]) / 2, (lr[1] + lr[3]) / 2, "LeftButton")
+    sc.check(w.same(f, h), "%s: a press on its line reaches it (not %s)" % (label, f.GetName(f) if f is not None else None))
+    return r
+
+
+def sc_boats_big_drop(sc, ref, items):
+    """The big boat timer let go over the minimap (the game's, ElvUI's), over a quest tracker (the
+    game's, LOW; Questie's, MEDIUM: over all of LOW) or the minimap's middle: it goes the shortest way
+    clear of them (else it would hide under them, out of reach: only a typed /gl boats reset would
+    bring it back), saved there, kept over a /reload; nothing is said; a press on it reaches it. Let
+    go back near its middle spot, or near where it was (a stray drag, also from its top spot), it is
+    the place rule's again (no spot); 40 off, it stays there. In a fight a placed timer takes no
+    click (the world's: targeting; its X still hides it), no drag starts, one under way ends there;
+    after it, as before. /gl boats reset with the boat timers off says they are off."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    for ui, kw in (("default", {}), ("elvui", {"elvui": True}), ("questie", {"questie": True})):
+        w = boat_world(ref, items, screen=bt_screen(1920, 1080, 0.62), style="big", **kw)
+        B, M, g = w.ns.Boats, w.M, w.g
+        G = B.ui.big
+        bt_at(w, tx, ty, tinst)
+        w.settle(2.5)
+        h = G.holder
+        SW, SH = M.screenW, M.screenH
+        tr = w.rect(g.Questie_BaseFrame if ui == "questie" else g.ObjectiveTrackerFrame)
+        mm = w.rect(g.Minimap)
+        for name, left, top in (("the top right corner", SW - 5, SH), ("the tracker", tr[0] + 10, tr[3] - 10),
+                                ("the minimap's middle", (mm[0] + mm[2]) / 2 - 60, (mm[1] + mm[3]) / 2 + 8)):
+            lab = "drop %s %s" % (ui, name)
+            mark = w.chat_mark()
+            big_drag(w, h, left, top)
+            w.settle(1.1)
+            sc.eq(w.chat(mark), [], "%s: nothing said" % lab)
+            bt_placed_ok(sc, w, lab)
+            big_drop_ok(sc, w, h, G.btn[1], lab, drop=(left, top))
+        saved = lua_to_py(g.ForeverAH_Settings)
+        w2 = boat_world(ref, items, saved=saved, login=(False, True), screen=bt_screen(1920, 1080, 0.62), style="big", **kw)
+        bt_at(w2, tx, ty, tinst)
+        w2.settle(2.5)
+        bt_placed_ok(sc, w2, "drop %s reload" % ui)
+        big_drop_ok(sc, w2, w2.ns.Boats.ui.big.holder, w2.ns.Boats.ui.big.btn[1], "drop %s reload" % ui)
+        sc.clean(w2, "drop %s reload" % ui)
+        sc.clean(w, "drop " + ui)
+    # Back where it was: a stray drag (10 px) from the middle, from its top spot (ElvUI's tracker at
+    # Auberdine on a 16:9 screen at UI scale 1 leaves it no room in the middle); near its middle spot
+    # after it was put somewhere; 40 off it stays.
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 0.62), style="big")
+    B, M, S = w.ns.Boats, w.M, w.ns.settings
+    G = B.ui.big
+    bt_at(w, tx, ty, tinst)
+    w.settle(2.5)
+    h = G.holder
+    SW, SH = M.screenW, M.screenH
+    es = h.GetEffectiveScale(h)
+    r0 = bt_big_ok(sc, w, "back before")
+    mark = w.chat_mark()
+    big_drag(w, h, r0[0] + 10, r0[3] - 6)
+    w.settle(1.1)
+    sc.eq((S.boatPos, G.mode, w.chat(mark)), (None, "middle", []), "back: a stray drag of 10 px: no spot, in the middle, nothing said")
+    bt_big_ok(sc, w, "back stray")
+    for off, placed in ((21.6, False), (29, False), (40, True)):
+        big_drag(w, h, 0.1 * SW, 0.8 * SH)
+        bt_placed_ok(sc, w, "back put %g" % off)
+        big_drag(w, h, r0[0] - off * 0.8 * es, r0[3] + off * 0.6 * es)
+        w.settle(1.1)
+        lab = "back %g UI units from its middle spot" % off
+        if placed:
+            sc.check(S.boatPos is not None and G.mode == "placed", "%s: put there (%s)" % (lab, G.mode))
+            bt_placed_ok(sc, w, lab)
+        else:
+            sc.eq((S.boatPos, G.mode), (None, "middle"), "%s: no spot, in the middle" % lab)
+            bt_big_ok(sc, w, lab)
+    # In a fight: put somewhere, it takes no click (big_drag_ok: the world's), no drag starts; one
+    # under way ends where it got to.
+    big_drag(w, h, 0.1 * SW, 0.8 * SH)
+    M.Fight(True)
+    w.settle(1.1)
+    r = bt_placed_ok(sc, w, "fight")
+    M.fireScript(h, "OnDragStart", "LeftButton")
+    sc.check(not h._moving and not h.glMoving, "fight: no drag starts")
+    mark = w.chat_mark()
+    M.click(G.x)
+    sc.eq(([strip_codes(c) for c in w.chat(mark)], bt_lines(w)), ([BT_X_SAID], []), "fight: its X still hides it")
+    bt_slash(w, "/gl boats on")
+    M.Fight(False)
+    w.settle(1.1)
+    bt_placed_ok(sc, w, "fight over")
+    width = w.rect(h)[2] - w.rect(h)[0]
+    M.fireScript(h, "OnDragStart", "LeftButton")
+    sc.check(bool(h._moving), "fight: a drag")
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", 0.2 * SW / es, 0.7 * SH / es])
+    M.Fight(True)
+    M.dragTo = None
+    want = big_spot_want(w, 0.2 * SW, 0.7 * SH, width)
+    sp = big_spot(w, "boatPos")
+    sc.check(not h._moving and not h.glMoving and sp is not None and abs(sp[0] - want[0]) < 1e-6 and abs(sp[1] - want[1]) < 1e-6,
+             "fight in a drag: the drag ends where it got to (%s, want %s)" % (sp, want))
+    bt_placed_ok(sc, w, "fight in a drag")
+    M.Fight(False)
+    w.settle(1.1)
+    bt_placed_ok(sc, w, "fight in a drag, over")
+    # /gl boats reset with the timers off.
+    bt_slash(w, "/gl boats off")
+    sc.eq(bt_slash(w, "/gl boats reset"), ["Goblin Ledger: boat timer back in the middle of the screen. They are off: /gl boats on turns them on."],
+          "reset: off: says so")
+    sc.eq(S.boatPos, None, "reset: off: no spot")
+    sc.clean(w, "back")
+    # From its top spot: a stray drag puts it back there.
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    w = boat_world(ref, items, elvui=True, screen=bt_screen(1920, 1080, 1.0), style="big")
+    B, S = w.ns.Boats, w.ns.settings
+    G = B.ui.big
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(2.5)
+    h = G.holder
+    if sc.check((G.mode or "").startswith("top"), "back top: ElvUI at Auberdine: at its top spot (%s)" % G.mode):
+        mode = G.mode
+        r0 = w.rect(h)
+        big_drag(w, h, r0[0] + 10, r0[3] - 6)
+        w.settle(1.1)
+        sc.eq((S.boatPos, G.mode), (None, mode), "back top: a stray drag of 10 px: no spot, at its top spot again")
+    sc.clean(w, "back top")
 
 
 def sc_flights_big_drag(sc, ref, items):
@@ -34707,15 +35087,29 @@ def sc_flights_big_drag(sc, ref, items):
                  and abs(r[3] / M.screenH - r1[3] / SH) < 0.6 / M.screenH, "%s: the same place on the screen, at once" % label)
     M.SetScreen(1920, 1080, 1080 / 768.0)
     M.fire("UI_SCALE_CHANGED")
-    # In the corner: its line grows past its time, it stays whole on the screen.
+    # Let go in the top right corner: over the minimap, so the shortest way clear of it.
     big_drag(w, b, SW - 5, SH)
+    big_at_spot(sc, w, b, "flightPos", "minimap")
+    big_drop_ok(sc, w, b, b.line, "minimap", drop=(SW - 5, SH))
+    big_drag_ok(sc, w, b, b.line, b.x, "minimap")
+    # Let go near its middle spot: the middle again (no spot).
+    rp = w.rect(b)
+    w.slash("/gl flights reset")
+    rm = w.rect(b)
+    big_drag(w, b, rp[0], rp[3])
+    es = b.GetEffectiveScale(b)
+    big_drag(w, b, rm[0] + 12 * es, rm[3] - 9 * es)
+    sc.eq((S.flightPos, FL.spot), (None, "middle"), "back: let go 15 from its middle spot: no spot, in the middle")
+    big_drag(w, b, rp[0], rp[3])
+    # In the corner (the bottom right one): its line grows past its time, it stays whole on the screen.
+    big_drag(w, b, SW - 5, 10)
     rc = big_at_spot(sc, w, b, "flightPos", "corner")
-    sc.check(abs(rc[2] - SW) < 0.6 and abs(rc[3] - SH) < 0.6, "corner: in the top right corner (%s)" % fl_px(rc))
+    sc.check(abs(rc[2] - SW) < 0.6 and abs(rc[1]) < 0.6, "corner: in the bottom right corner (%s)" % fl_px(rc))
     est = fl_state(w)[0].est
     fl_wait(w, est - fl_el(w) + 6, dt=0.5)
     sc.check(fl_bar_line(w).startswith("Ironforge +0:0"), "grow: over its time (%s)" % fl_bar_line(w))
     rg = big_at_spot(sc, w, b, "flightPos", "grow")
-    sc.check(rg[2] - rg[0] > rc[2] - rc[0] + 1 and abs(rg[2] - SW) < 0.6, "grow: longer, still whole in the corner (%s)" % fl_px(rg))
+    sc.check(rg[2] - rg[0] > rc[2] - rc[0] + 1 and abs(rg[2] - SW) < 0.6 and abs(rg[1]) < 0.6, "grow: longer, still whole in the corner (%s)" % fl_px(rg))
     # /reload in the air: there again.
     big_drag(w, b, left, top)
     sp = big_spot(w, "flightPos")
@@ -34748,6 +35142,10 @@ def sc_flights_big_drag(sc, ref, items):
           "reset: one line")
     sc.eq(S.flightPos, None, "reset: no spot")
     fl_big_place_checks(sc, w, "reset")
+    w.slash("/gl flights off")
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights reset")],
+          ["Goblin Ledger: flight timer back in the middle of the screen. They are off: /gl flights on turns them on."], "reset: off: says so")
+    w.slash("/gl flights on")
     sc.eq([t for t in [strip_codes(c) for c in w.slash("/gl help")] if "/gl flights" in t],
           ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)"],
           "help: one line, with reset")
@@ -34796,6 +35194,15 @@ def sc_boats_flights_drag(sc, ref, items):
     big_drag(w, b, 0.05 * SW, 0.75 * SH)
     sc.eq(FL.spot, "placed", "both: the flight timer placed")
     rf = big_at_spot(sc, w, b, "flightPos", "both: the flight timer")
+    # A fight in the air: the flight timer takes no click (the world's), no drag starts; after it, as before.
+    M.Fight(True)
+    fl_wait(w, 1.1)
+    big_drag_ok(sc, w, b, b.line, b.x, "both: a fight in the air")
+    M.fireScript(b, "OnDragStart", "LeftButton")
+    sc.check(not b._moving and not b.glMoving, "both: a fight in the air: no drag starts")
+    M.Fight(False)
+    fl_wait(w, 1.1)
+    big_drag_ok(sc, w, b, b.line, b.x, "both: the fight over")
     watch = FlWatch(w, spot="placed")
     track = fl_track("%d>%d" % (FL_RATCHET, FL_THERAMORE))
     fl_fly_track(w, [(rx, ry)] + track[1:], rinst, watch, upto=40)
@@ -35016,6 +35423,7 @@ SCENARIOS = [
     ("boats-trust", sc_boats_trust),
     ("boats-realm", sc_boats_realm),
     ("boats-big-click", sc_boats_big_click),
+    ("boats-big-drop", sc_boats_big_drop),
     ("boats-layout", sc_boats_layout),
     ("boats-x", sc_boats_x),
     ("boats-big-place", sc_boats_big_place),

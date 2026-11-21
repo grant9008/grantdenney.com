@@ -1305,8 +1305,8 @@ end
 --   ns.Big.Overlaps(rect): the first of the minimap's parts, the quest trackers and the buffs that
 --     rect covers (what the boat timer's small line avoids; the big timers too).
 --   ns.Big.Movable(h, key, placed), ns.Big.Spot(key), ns.Big.PlaceSpot(h, hw, hh, key): the spot
---     the player dragged it to (below), ns.Big.Tip(x, lines): the X's hover; ns.Big.PassRight(o):
---     the right button through o (the timer, or a line on it that takes a click: o.glPassRight).
+--     the player dragged it to (below); ns.Big.Grip(o, h): a line on it that takes a click drags it
+--     too; ns.Big.Mouse(h): the mouse in and out of a fight; ns.Big.Tip(x, lines): the X's hover.
 -- The place: centred, its top 290 below the top of the screen, or 30% of the screen height down
 -- when that is lower ("middle"), ending above 46% of the screen height (the camera looks at the
 -- character's head at the screen centre); where that does not fit, 18 below the top ("top", under
@@ -1322,16 +1322,21 @@ end
 -- under the minimap, the flight timer's slim bar).
 -- The player's spot: either big timer can be dragged with the left mouse button anywhere on the
 -- screen (nothing else shows meanwhile; a plain click on it does nothing, but on the boat timer's
--- "Boat in? Click here", Boats.lua). The right button goes
--- through it to the world (SetPassThroughButtons), so the camera still turns where you hold it
+-- "Click when the boat docks", Boats.lua, which drags it too). The right button goes through it
+-- and its X to the world (SetPassThroughButtons), so the camera still turns where you hold it
 -- down on a timer; the client lets an addon call that only out of a fight, so a timer first made
--- in a fight lets it through from its first look after the fight. Where it was put is saved as
--- settings[key] (boatPos, flightPos) = { x, y }: its top centre from the screen's centre, in screen
--- widths and heights, so a new UI scale or screen size keeps it in the same place. Once put
--- somewhere, the place rule above no longer moves it: it stays there, whole on the screen.
--- /gl boats reset and /gl flights reset forget the spot.
+-- in a fight lets it through from its first look after the fight. In a fight it takes no click at
+-- all (the left button is for targeting then; a drag under way ends there), but on its X. Where it
+-- was put is saved as settings[key] (boatPos, flightPos) = { x, y }: its top centre from the
+-- screen's centre, in screen widths and heights, so a new UI scale or screen size keeps it in the
+-- same place. Let go over the minimap, a quest tracker or the buffs (what takes the mouse there: it
+-- would hide under them, out of reach), it goes the shortest way clear of them. Let go within 30 of
+-- where it was before the drag (a stray drag) or of its middle spot (put back), it is the place
+-- rule's again. Once put somewhere, the place rule above no longer moves it: it stays there, whole
+-- on the screen. /gl boats reset and /gl flights reset forget the spot. Both timers sit at frame
+-- level 30 of their strata (LOW): over ElvUI's bars and unit frames, under every window.
 local BIG = { top = 290, frac = 0.30, char = 0.46, band = 18, timerW = 206, timerH = 96, x = 14, xgap = 6,
-              fonts = {}, digit = {} }
+              level = 30, snap = 30, fonts = {}, digit = {} }
 ns.Big = BIG
 do
   -- A real number (not secret, not NaN), else nil. Secret first: a secret value cannot be compared.
@@ -1404,9 +1409,15 @@ do
     fs:SetText(text)
     return max(w, textW(fs, text, size))
   end
+  -- (The X lets the right button through as the timer does: BIG.PassRight, at its first look.)
   function BIG.X(parent, onClick, after)
     local x = type(ns.CloseX) == "function" and ns.CloseX(parent, onClick, BIG.x) or nil
-    if x then x:SetPoint("TOPLEFT", after, "TOPRIGHT", BIG.xgap, 0) end
+    if x then
+      x:SetPoint("TOPLEFT", after, "TOPRIGHT", BIG.xgap, 0)
+      x.glPassRight = true
+      parent.glKids = parent.glKids or {}
+      parent.glKids[#parent.glKids + 1] = x
+    end
     return x
   end
   -- The X's hover: lines[1] (what it does), then the others (hooked: ElvUI's X colours itself on
@@ -1549,13 +1560,14 @@ do
     return x, y
   end
   BIG.Spot = spot
-  -- The right mouse button through h to the world, once (a timer the player can drag, or a line on
-  -- it that takes a click: h.glPassRight). Never in a fight: the client blocks it then (tried again
-  -- at the next look). h.glPass: true once done, false where the client has no way.
-  local function passRight(h)
-    if h.glPass ~= nil or not (h.glDrag or h.glPassRight) then return end
-    if type(h.SetPassThroughButtons) ~= "function" then
-      h.glPass = false
+  -- The right mouse button through o to the world, once (a timer the player can drag, or a part of
+  -- it that takes a click: o.glPassRight, its X and the boat timer's click line). Never in a fight:
+  -- the client blocks it then (tried again at the next look). o.glPass: true once done, false where
+  -- the client has no way.
+  local function passOne(o)
+    if type(o) ~= "table" or o.glPass ~= nil or not (o.glDrag or o.glPassRight) then return end
+    if type(o.SetPassThroughButtons) ~= "function" then
+      o.glPass = false
       return
     end
     local lock = _G.InCombatLockdown
@@ -1563,22 +1575,99 @@ do
       local ok, v = pcall(lock)
       if not ok or v ~= false then return end
     end
-    h.glPass = pcall(h.SetPassThroughButtons, h, "RightButton") and true or false
+    o.glPass = pcall(o.SetPassThroughButtons, o, "RightButton") and true or false
+  end
+  -- The timer h and its parts that take a click (h.glKids).
+  local function passRight(h)
+    passOne(h)
+    for _, o in ipairs(h.glKids or {}) do passOne(o) end
   end
   BIG.PassRight = passRight
-  -- The drag is over (save: where h got to is its spot).
+  local function inFight()
+    local f = _G.UnitAffectingCombat
+    if type(f) ~= "function" then return false end
+    local ok, v = pcall(f, "player")
+    return ok and not isSecret(v) and v == true
+  end
+  -- What a timer let go over would hide under, out of reach (they take the mouse there): the
+  -- minimap's parts, the quest trackers and the buffs (BIG.Side) and the minimap's cluster; their
+  -- screen rectangles, 2 larger all round.
+  local function covers(es)
+    local list = BIG.Side()
+    if shown(_G.MinimapCluster) then list[#list + 1] = _G.MinimapCluster end
+    local out = {}
+    for _, o in ipairs(list) do
+      local l, b, r, t = rect(o)
+      if l and r - l > 2 and t - b > 2 then out[#out + 1] = { l - 2 * es, b - 2 * es, r + 2 * es, t + 2 * es } end
+    end
+    return out
+  end
+  local function hits(c, q) return c[1] < q[3] - 0.5 and c[3] > q[1] + 0.5 and c[2] < q[4] - 0.5 and c[4] > q[2] + 0.5 end
+  -- rc (left, bottom, right, top in screen pixels) moved the shortest way clear of all of qs and on
+  -- the screen s: along a side of one of them, and of another one the other way (a corner); rc
+  -- itself when it is clear, or when nothing is.
+  local function clearOf(rc, qs, s)
+    local over = false
+    for _, q in ipairs(qs) do if hits(rc, q) then over = true end end
+    if not over then return rc end
+    local dxs, dys = { 0 }, { 0 }
+    for _, q in ipairs(qs) do
+      dxs[#dxs + 1] = q[1] - rc[3]
+      dxs[#dxs + 1] = q[3] - rc[1]
+      dys[#dys + 1] = q[2] - rc[4]
+      dys[#dys + 1] = q[4] - rc[2]
+    end
+    local best, bd = rc, nil
+    for _, dx in ipairs(dxs) do
+      for _, dy in ipairs(dys) do
+        local c, d = { rc[1] + dx, rc[2] + dy, rc[3] + dx, rc[4] + dy }, dx * dx + dy * dy
+        if (not bd or d < bd) and c[1] >= s[1] - 0.5 and c[3] <= s[3] + 0.5 and c[2] >= s[2] - 0.5 and c[4] <= s[4] + 0.5 then
+          local free = true
+          for _, q in ipairs(qs) do
+            if hits(c, q) then
+              free = false
+              break
+            end
+          end
+          if free then best, bd = c, d end
+        end
+      end
+    end
+    return best
+  end
+  BIG.ClearOf = clearOf
+  -- The drag is over: where h got to is its spot (settings[key]), moved clear of what it would hide
+  -- under; back within 30 of where it was before (h.glFrom: a stray drag) or of its middle spot, no
+  -- spot (the place rule's again).
   local function stopDrag(h)
     if not h.glMoving then return end
     h.glMoving = nil
+    local from = h.glFrom
+    h.glFrom = nil
     call(h, "StopMovingOrSizing")
     call(h, "SetUserPlaced", false)   -- (the spot is the addon's, not the game's layout file's)
+    local S = ns.settings
     local l, b, r, t = rect(h)
     local sl, sb, sr, st = rect(_G.UIParent)
-    if l and sl and sr - sl > 1 and st - sb > 1 and type(ns.settings) == "table" then
-      local x = ((l + r) / 2 - (sl + sr) / 2) / (sr - sl)
-      local y = (t - (sb + st) / 2) / (st - sb)
-      ns.settings[h.glDrag] = { x = max(-0.5, min(0.5, x)), y = max(-0.5, min(0.5, y)) }
+    local es = num(call(h, "GetEffectiveScale"))
+    if not (l and sl and es and es > 0 and sr - sl > 1 and st - sb > 1 and type(S) == "table") then return end
+    local cx, top, near = (l + r) / 2, t, (BIG.snap * es) ^ 2
+    local mid = st - max(BIG.top * es, BIG.frac * (st - sb))
+    if (cx - (sl + sr) / 2) ^ 2 + (top - mid) ^ 2 <= near or (from and (cx - from[1]) ^ 2 + (top - from[2]) ^ 2 <= near) then
+      S[h.glDrag] = nil
+      return
     end
+    local w, hh = r - l, t - b
+    local cl, ct = max(sl, min(sr - w, l)), min(st, max(sb + hh, t))   -- (whole on the screen, as it is put)
+    local c = clearOf({ cl, ct - hh, cl + w, ct }, covers(es), { sl, sb, sr, st })
+    if c[1] ~= cl or c[4] ~= ct then cx, top = (c[1] + c[3]) / 2, c[4] end
+    S[h.glDrag] = { x = max(-0.5, min(0.5, (cx - (sl + sr) / 2) / (sr - sl))), y = max(-0.5, min(0.5, (top - (sb + st) / 2) / (st - sb))) }
+  end
+  local function startDrag(self)
+    if inFight() then return end   -- (no mouse then; the left button is the world's)
+    local l, _, r, t = rect(self)
+    self.glFrom = (l and not spot(self.glDrag)) and { (l + r) / 2, t } or nil
+    if pcall(self.StartMoving, self) then self.glMoving = true end
   end
   -- h (a big timer) can be dragged with the left mouse button; its spot is settings[key]; placed()
   -- puts it there after a drag (on its own anchor, whole on the screen). Hidden in a drag (a flight
@@ -1591,9 +1680,7 @@ do
     call(h, "SetDontSavePosition", true)
     call(h, "RegisterForDrag", "LeftButton")
     passRight(h)
-    call(h, "SetScript", "OnDragStart", function(self)
-      if pcall(self.StartMoving, self) then self.glMoving = true end
-    end)
+    call(h, "SetScript", "OnDragStart", startDrag)
     call(h, "SetScript", "OnDragStop", function(self)
       if not self.glMoving then return end
       stopDrag(self)
@@ -1603,6 +1690,38 @@ do
       end
     end)
     call(h, "HookScript", "OnHide", stopDrag)
+  end
+  -- o, a part of timer h that takes a click (the boat timer's click line), drags h too: a press
+  -- there that moves starts h's drag, and the click that may come as it is let go is none
+  -- (o.glDragged: true from the drag until the next press; o's OnClick reads it). The right button
+  -- goes through it as through h.
+  function BIG.Grip(o, h)
+    o.glPassRight = true
+    h.glKids = h.glKids or {}
+    h.glKids[#h.glKids + 1] = o
+    h.glGrips = h.glGrips or {}
+    h.glGrips[#h.glGrips + 1] = o
+    call(o, "RegisterForDrag", "LeftButton")
+    call(o, "SetScript", "OnMouseDown", function(self) self.glDragged = nil end)
+    call(o, "SetScript", "OnDragStart", function(self)
+      self.glDragged = true
+      local f = call(h, "GetScript", "OnDragStart")
+      if type(f) == "function" then f(h) end
+    end)
+    call(o, "SetScript", "OnDragStop", function()
+      local f = call(h, "GetScript", "OnDragStop")
+      if type(f) == "function" then f(h) end
+    end)
+  end
+  -- In a fight the left button is the world's (targeting): h and its grips take no mouse then (its
+  -- X still does) and a drag under way ends where it got to (the caller puts it at its spot);
+  -- out of one they take it again. Gives true in a fight.
+  function BIG.Mouse(h)
+    local fight = inFight()
+    if fight then stopDrag(h) end
+    call(h, "EnableMouse", not fight)
+    for _, o in ipairs(h.glGrips or {}) do call(o, "EnableMouse", not fight) end
+    return fight
   end
   -- Puts h (hw x hh) at its spot (settings[key]), whole on the screen; gives the screen rectangle it
   -- takes, or nil: no spot (or no screen to measure), the place rule's to place it.
