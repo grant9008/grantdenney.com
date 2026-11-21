@@ -6,7 +6,7 @@
 
   PHOTOS FIRST, FEW WORDS (the owner asked: no wall of text, just pictures of
   everything it does, and a quick how to download). The top: the name, one
-  Download button, the 3 install steps. Then one card per feature: a photo and
+  Download button, the 4 install steps. Then one card per feature: a photo and
   a title with one short line. Commands and help are folded at the bottom.
 
   Photos are real game screenshots (21 Nov 2026, Goblin Ledger 1.1.0), cropped
@@ -151,7 +151,7 @@ code {
 .cta { display: flex; flex-wrap: wrap; justify-content: center; gap: 12px; }
 @media (max-width: 520px) { .cta .btn { flex: 1 1 100%; } }
 
-/* ---- hero: name, download, the 3 install steps ---- */
+/* ---- hero: name, download, the 4 install steps ---- */
 .hero {
   padding: 34px 0 30px; border-bottom: 1px solid var(--hair); text-align: center;
   background: radial-gradient(900px 420px at 50% -20%, var(--glow), transparent 70%);
@@ -188,7 +188,8 @@ main, [id] { scroll-margin-top: 70px; }
   display: grid; gap: 10px; max-width: 900px; margin: 0 auto; padding: 0; list-style: none;
   counter-reset: step; text-align: left;
 }
-@media (min-width: 760px) { .steps { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+/* 2 x 2 from tablet width up: room for the installer's name on one line. */
+@media (min-width: 640px) { .steps { max-width: 760px; grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .steps > li {
   position: relative; padding: 12px 14px 12px 56px; counter-increment: step;
   border: 1px solid var(--hair); border-radius: 12px; background: var(--panel);
@@ -229,7 +230,7 @@ main, [id] { scroll-margin-top: 70px; }
 .shot h3 { margin: 0; color: var(--strong); font-size: 18px; font-weight: 800; line-height: 1.25; }
 .shot h3 a { color: inherit; }
 .sub { margin-top: 2px; color: var(--muted); font-size: 14.5px; }
-.old { opacity: 0.8; font-size: 13px; }
+.old { font-size: 13px; }
 
 /* ---- the flight timer drawing, in the game's look ---- */
 .mock-box {
@@ -339,15 +340,16 @@ main, [id] { scroll-margin-top: 70px; }
       </a>
     </div>
     <p class="fine">Free. Version 1.1.0. Alliance, US PvP realms.</p>
+    <p class="fine tap-only">On your phone? Install it from your Windows PC.</p>
 
     <h2 class="steps-title" id="install">Install</h2>
     <ol class="steps">
       <li><p class="k">Download the zip</p><p class="s">Browser asks? Keep.</p></li>
-      <li><p class="k">Unzip it, double-click <span class="nw">Install-Goblin-Ledger.bat</span></p><p class="s">Windows warns? More info, Run anyway.</p></li>
+      <li><p class="k">Right-click it, Extract All</p><p class="s">Keep that folder.</p></li>
+      <li><p class="k">Double-click <span class="nw">Install-Goblin-Ledger.bat</span></p><p class="s">Windows warns? More info, Run anyway (or Run).</p></li>
       <li><p class="k">Press Enter twice, start WoW</p><p class="s">Hover an item: prices are there.</p></li>
     </ol>
-    <p class="fine">Had 1.0.0? Do it again once. Keep the unzipped folder.</p>
-    <p class="fine tap-only">On your phone? Install it from your Windows PC.</p>
+    <p class="fine">Had 1.0.0? Do these steps again once.</p>
   </div>
 </section>
 
@@ -380,7 +382,7 @@ main, [id] { scroll-margin-top: 70px; }
           <a href="img/chart.png"><img src="img/chart.png" width="693" height="222" loading="lazy" decoding="async"
              alt="Screenshot of the Goblin Ledger price chart docked under the auction house for Plans: Runed Copper Breastplate: price 4 silver 99 copper, the 1D, 5D, 1W, 1M and 1Y buttons, a Target Buy box and a List At box, a one-day price line with sales bars, and the margin after the 5% cut."></a>
         </div>
-        <figcaption><h3>Price chart at the auction house</h3><p class="sub">Buttons fill in the price for you. <span class="old">(older look)</span></p></figcaption>
+        <figcaption><h3>Price chart at the auction house</h3><p class="sub">The last day, week or month of prices. <span class="old">(older look)</span></p></figcaption>
       </figure>
 
       <!-- Enchant tips: a worn Bonebiter -->
@@ -451,7 +453,7 @@ main, [id] { scroll-margin-top: 70px; }
       <figure class="shot">
         <div class="stage">
           <a href="prices/"><img src="img/price-website.webp" width="1100" height="700" loading="lazy" decoding="async"
-             alt="Screenshot of the Goblin Ledger price website: Stranglekelp at 4 silver 20 copper with a one-day price chart, Target Buy 2 silver 87 copper and Target Sell 3 silver 91 copper, and a Favorites list of cloth, ore and herbs with their prices and daily change."></a>
+             alt="Screenshot of the Goblin Ledger price website: Stranglekelp at 4 silver 20 copper with a one-day price chart, Target Buy 2 silver 87 copper and Target Sell 3 silver 91 copper, and a Favorites list of cloth, ore, herbs and leather with their prices and daily change."></a>
         </div>
         <figcaption><h3><a href="prices/">Price website</a></h3><p class="sub">Price history for every item, on your phone too.</p></figcaption>
       </figure>
@@ -480,6 +482,7 @@ main, [id] { scroll-margin-top: 70px; }
     <details class="fold">
       <summary>Not working?</summary>
       <ul class="cmds">
+        <li><span>Asks for the game folder? Paste it in, don't just press Enter (README.txt in the zip shows how).</span></li>
         <li><span>Close WoW fully and start it again.</span></li>
         <li><span>Character screen: AddOns, tick Goblin Ledger.</span></li>
         <li><span>Can't copy? Right-click the installer, Run as administrator.</span></li>
