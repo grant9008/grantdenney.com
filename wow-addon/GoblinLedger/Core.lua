@@ -1305,7 +1305,8 @@ end
 --   ns.Big.Overlaps(rect): the first of the minimap's parts, the quest trackers and the buffs that
 --     rect covers (what the boat timer's small line avoids; the big timers too).
 --   ns.Big.Movable(h, key, placed), ns.Big.Spot(key), ns.Big.PlaceSpot(h, hw, hh, key): the spot
---     the player dragged it to (below), ns.Big.Tip(x, lines): the X's hover.
+--     the player dragged it to (below), ns.Big.Tip(x, lines): the X's hover; ns.Big.PassRight(o):
+--     the right button through o (the timer, or a line on it that takes a click: o.glPassRight).
 -- The place: centred, its top 290 below the top of the screen, or 30% of the screen height down
 -- when that is lower ("middle"), ending above 46% of the screen height (the camera looks at the
 -- character's head at the screen centre); where that does not fit, 18 below the top ("top", under
@@ -1320,7 +1321,8 @@ end
 -- while they show. Where neither fits, each timer has its own smaller way (the boat timer's line
 -- under the minimap, the flight timer's slim bar).
 -- The player's spot: either big timer can be dragged with the left mouse button anywhere on the
--- screen (nothing else shows meanwhile; a plain click on it does nothing). The right button goes
+-- screen (nothing else shows meanwhile; a plain click on it does nothing, but on the boat timer's
+-- "Boat in? Click here", Boats.lua). The right button goes
 -- through it to the world (SetPassThroughButtons), so the camera still turns where you hold it
 -- down on a timer; the client lets an addon call that only out of a fight, so a timer first made
 -- in a fight lets it through from its first look after the fight. Where it was put is saved as
@@ -1547,11 +1549,11 @@ do
     return x, y
   end
   BIG.Spot = spot
-  -- The right mouse button through h to the world, once (a timer the player can drag). Never in a
-  -- fight: the client blocks it then (tried again at the next look). h.glPass: true once done,
-  -- false where the client has no way.
+  -- The right mouse button through h to the world, once (a timer the player can drag, or a line on
+  -- it that takes a click: h.glPassRight). Never in a fight: the client blocks it then (tried again
+  -- at the next look). h.glPass: true once done, false where the client has no way.
   local function passRight(h)
-    if h.glPass ~= nil or not h.glDrag then return end
+    if h.glPass ~= nil or not (h.glDrag or h.glPassRight) then return end
     if type(h.SetPassThroughButtons) ~= "function" then
       h.glPass = false
       return
@@ -1563,6 +1565,7 @@ do
     end
     h.glPass = pcall(h.SetPassThroughButtons, h, "RightButton") and true or false
   end
+  BIG.PassRight = passRight
   -- The drag is over (save: where h got to is its spot).
   local function stopDrag(h)
     if not h.glMoving then return end

@@ -4800,7 +4800,8 @@ def partial_term(ref, name):
 # Scenarios
 # ===========================================================================
 MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServerTime", "UnitAffectingCombat",
-             "IsInInstance", "IsInGuild", "IsInGroup", "IsInRaid", "GetUnitSpeed", "IsFalling")
+             "IsInInstance", "IsInGuild", "IsInGroup", "IsInRaid", "GetUnitSpeed", "IsFalling", "GetNormalizedRealmName",
+             "GetRealmName")
 # The mocks' deliberate second definitions: the Blizzard bags (M.InstallBlizzardBags) put the
 # game's own bag functions over the plain mock's.
 MOCK_OVERRIDES = {n: ["MOCK_LUA", "MOCK_LUA"] for n in ("OpenAllBags", "CloseAllBags", "ToggleAllBags", "ToggleBackpack", "ToggleBag")}
@@ -28326,7 +28327,7 @@ function M.Fight(on)
 end
 M.guild, M.party, M.raid = false, false, false
 M.addonSent, M.prefixes, M.sendResult, M.sendCalls, M.prefixResult = {}, {}, 0, 0, 0
-M.realm, M.resetIn = "TestRealm", 3 * 86400
+M.realm, M.realmName, M.resetIn = "TestRealm", "Test Realm", 3 * 86400
 M.sbase = M.now - M.t
 function M.serverNow() return M.sbase + M.t end
 function GetUnitSpeed(unit) if unit == "player" then return M.speed, 7, 7, 4.72 end return 0, 7, 7, 4.72 end
@@ -28337,7 +28338,10 @@ function IsInInstance() return M.inInstance, M.inInstance and "party" or "none" 
 function IsInGuild() return M.guild end
 function IsInGroup() return M.party or M.raid end
 function IsInRaid() return M.raid end
+-- The realm: GetNormalizedRealmName gives M.realm, GetRealmName M.realmName (its spaces kept); nil:
+-- nothing (Forever 1.60.1.71037 gave nothing from GetNormalizedRealmName for a whole login).
 function GetNormalizedRealmName() return M.realm end
+function GetRealmName() return M.realmName end
 C_ChatInfo = C_ChatInfo or {}
 function C_ChatInfo.RegisterAddonMessagePrefix(p)
   if type(p) ~= "string" or #p > 16 then error("RegisterAddonMessagePrefix: bad prefix", 2) end
@@ -28400,12 +28404,15 @@ def bt_in_big(fn):
 
 
 def boat_world(ref, items, elvui=False, tracker=True, coords=False, saved=None, screen=None, faction="Alliance",
-               questie=False, login=(True, False), prefix_result=0, elvui_addon=False, style=""):
+               questie=False, login=(True, False), prefix_result=0, elvui_addon=False, style="", realm="TestRealm",
+               realm_name="Test Realm"):
     """style: "small" (the lines under the minimap), "big" (no setting: the default, the big
-    timer), "" (BT_STYLE's); a saved boatStyle wins over it."""
+    timer), "" (BT_STYLE's); a saved boatStyle wins over it. realm, realm_name: what
+    GetNormalizedRealmName and GetRealmName give from the start (None: nothing)."""
     style = style or BT_STYLE[0]
     def setup(w):
         w.loader(BOAT_MOCK_LUA, "@MOCK/boats.lua")
+        w.M.realm, w.M.realmName = realm, realm_name
         w.M.prefixResult = prefix_result
         w.M.InstallTopFrames()
         w.M.InstallMinimap(w.to_lua({"tracker": tracker, "coords": coords, "questie": questie}))
@@ -28516,15 +28523,25 @@ def bt_clock(sec):
     return "%d:%02d" % (sec // 60, sec % 60)
 
 
-def bt_want(key, j, rec, now, hint=True, reset_penalty=False):
-    """The line for stop j of route key, from the research data (not the addon's code)."""
+# The big timer's hint under an unknown or "about" big line, after the boat's kind: "Boat in? Click here".
+BT_CLICK = " in? Click here"
+
+
+def bt_want(key, j, rec, now, hint=True, reset_penalty=False, big=None):
+    """The line for stop j of route key, from the research data (not the addon's code). hint: with
+    the hint where the line has one; big (None: BT_STYLE's): the big timer's line 1, whose hint is
+    "Boat in? Click here" after an unknown or "about" line, else the small line's
+    "/gl boat now when it docks" after an unknown one."""
     routes, gen = boat_data()
     r = routes[key]
     P, sP = r["cycle_s"], gen.PERIOD_SIGMA[key]
     st = r["stops"][j]
     to = gen.dest_label(r["stops"], j)
-    head = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}[r["type"]] + " to " + to + ": "
-    unknown = head + "unknown, every " + bt_period(key) + (" - /gl boat now when it docks" if hint else "")
+    kind = {"boat": "Boat", "zeppelin": "Zeppelin", "skyship": "Skyship"}[r["type"]]
+    head = kind + " to " + to + ": "
+    big = BT_STYLE[0] == "big" if big is None else big
+    click = " - " + kind + BT_CLICK if hint and big else ""
+    unknown = head + "unknown, every " + bt_period(key) + (click if big else (" - /gl boat now when it docks" if hint else ""))
     if rec is None:
         return unknown
     err = lambda i: 0 if i == 0 else gen.STOP_SIGMA.get(key, 0.5)
@@ -28543,8 +28560,8 @@ def bt_want(key, j, rec, now, hint=True, reset_penalty=False):
     if sg <= 5:
         return head + ("docked, leaves in " + bt_clock(sec) if docked else bt_clock(sec))
     if docked or sec <= sg:
-        return head + "about now"
-    return head + "about %d min" % max(1, int(math.floor(sec / 60 + 0.5)))
+        return head + "about now" + click
+    return head + "about %d min" % max(1, int(math.floor(sec / 60 + 0.5))) + click
 
 
 def bt_rect_ok(sc, w, label, others):
@@ -29287,8 +29304,8 @@ def sc_boats_expiry(sc, ref, items):
     want_sg = 4 + (abs(n2 - rec["seen"]) / 329.316 + 1) * 0.01 + 1
     got_sg = B2b.Sigma(rt292, B2b.AnchorOf(rt292, n2), 2, n2)
     sc.check(abs(got_sg - want_sg) < 1e-6, "expiry: a second less sure in the next login (%.3f, want %.3f)" % (got_sg, want_sg))
-    sc.check(bt_lines(w2b) and bt_lines(w2b)[0] == "Boat to Menethil: about now", "expiry: a /gl boat now timer is about then (%s)"
-             % bt_lines(w2b))
+    sc.check(bt_lines(w2b) and bt_lines(w2b)[0] == "Boat to Menethil: about now" + (" - Boat" + BT_CLICK if BT_STYLE[0] == "big" else ""),
+             "expiry: a /gl boat now timer is about then (%s)" % bt_lines(w2b))
     sc.clean(w2b, "expiry relogin")
     # 31 days old: dropped.
     old = dict(saved_rec, seen=now - 31 * 86400, t0=rec["t0"] - 31 * 86400)
@@ -29297,7 +29314,7 @@ def sc_boats_expiry(sc, ref, items):
     bt_at(w3, x, y, inst)
     w3.settle(1.1)
     sc.eq(bt_anchor(w3, 292), None, "expiry: 31 days old: dropped")
-    sc.eq(bt_lines(w3), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "expiry: and unknown")
+    sc.eq(bt_lines(w3), [bt_want("menethil_theramore", 1, None, 0)], "expiry: and unknown")
     # Learned with other route data (a new version changed the round trip, or moved or
     # reordered the stops with the same round trip): dropped.
     for what, changed in (("round trip", dict(saved_rec, p0=329.4)), ("stops", dict(saved_rec, v="0badc0")),
@@ -29521,8 +29538,9 @@ def sc_boats_switch(sc, ref, items):
     for cmd in ("/gl boats", "/gl boat", "/gl boats status"):
         out = bt_slash(w, cmd)
         want = [BT_ON_STATUS,
-                "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. " + bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now())]
-        sc.eq(out, want, "switch: %s: two lines, the nearest dock and its boat" % cmd)
+                "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. " + bt_want("menethil_theramore", 1, bt_anchor(w, 292), B.Now()),
+                bt_saved_line(1)]
+        sc.eq(out, want, "switch: %s: three lines, the nearest dock and its boat, what is saved" % cmd)
     out = bt_slash(w, "/gl boats all")
     sc.eq(out[0], "Goblin Ledger: boat timers are on: at a dock, a line under the minimap says when the boat comes.",
           "switch: all: first line")
@@ -29539,7 +29557,7 @@ def sc_boats_switch(sc, ref, items):
     ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
     bt_at(w, ax + 30, ay, ainst)
     sc.eq(bt_slash(w, "/gl boats")[1:], ["Goblin Ledger: nearest dock: Auberdine, 30 yd. Stormwind unknown (every 4:07); Menethil, "
-                                         "Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"],
+                                         "Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)", bt_saved_line(1)],
           "switch: the nearest dock at Auberdine")
     bt_at(w, x, y, inst)
     sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, off, big, small, all or reset."],
@@ -29982,12 +30000,284 @@ def sc_boats_trust(sc, ref, items):
     B7.Observe(rt7, 1, n - 6 * 246.7, 1.0, "R")
     B7.Observe(rt7, 2, n + rt7.stops[2].arr, 1.0, "R")
     sc.eq(B7.Store().periods[11616], None, "trust: two sightings at different piers: the stops' error counts")
-    # From the future, or a round trip from other route data: not used.
+    # From the future (a server clock behind for a moment), or a round trip from other route data:
+    # not used; the one from the future set aside, not dropped.
     bt_set(w7, 292, n - 50, seen=n + 1000)
-    sc.eq(B7.AnchorOf(B7.byPath[292], n), None, "trust: a saved timer from the future is dropped")
+    sc.eq(B7.AnchorOf(B7.byPath[292], n), None, "trust: a saved timer from the future is not used")
+    sc.check(B7.Store()[292] is not None and B7.Store()[292].seen == n + 1000, "trust: but kept (a clock behind for a moment)")
+    B7.Store()[292] = None
     B7.Store().periods[292] = w7.to_lua({"P": 329.3, "sP": 0.002, "p0": 329.4})
     sc.eq(B7.Period(B7.byPath[292]), (329.316, 0.01), "trust: a round trip measured with other route data is not used")
     sc.clean(w7, "trust periods")
+
+
+BT_FIXTURES = os.path.join(HERE, "fixtures")
+# The realm the fixtures' timers are saved under (GetNormalizedRealmName's), and GetRealmName's name of it.
+BT_REALM, BT_REALM_NAME = "CAMWOWUS1Realm2PvP", "CAMWOW US1 Realm 2 PvP"
+
+
+def bt_fixture(name):
+    """A fixture: the boat parts of a player's saved settings as the game wrote them (SavedVariables/
+    GoblinLedger.lua: ["boatTimes"] = {...}, ["boatSession"] = n), as a dict for boat_world(saved=...)."""
+    lua = lua51.LuaRuntime(unpack_returned_tuples=True)
+    read = lua.eval("function(s) local f, e = loadstring('return {\\n' .. s .. '\\n}'); if not f then error(e) end; return f() end")
+    return lua_to_py(read(open(os.path.join(BT_FIXTURES, name), "rb").read().decode("ascii")))
+
+
+def bt_realms(w):
+    """The realms boat timers are saved under."""
+    T = w.ns.settings.boatTimes
+    return sorted(lua_to_py(T).keys()) if T is not None else []
+
+
+def sc_boats_realm(sc, ref, items):
+    """A boat you rode counts at the dock in a later login whatever the game's realm name does. The
+    player's own saved boats (fixtures/boats_menethil_1836.lua: the old build 600a03a298's save at a
+    /reload; the ride to Theramore 7.9 h before): on Forever 1.60.1.71037 GetNormalizedRealmName gave
+    nothing for the whole next login and Menethil said "unknown". GetRealmName without its spaces is
+    the same name; with neither, the one realm saved; on a /reload too; an empty or secret name is
+    none; the old client as before. Nothing is saved under another realm, and a boat learned in such
+    a login counts at the next one. What that login saved under "realm" (fixtures/
+    boats_menethil_1950.lua) joins the realm's: the later ride counts (with two realms saved it stays
+    apart: whose it is is not known). A loading screen with no name
+    keeps the name the game gave (two realms saved); a server clock behind for a moment sets the
+    timers aside (not dropped); a weekly reset "in more than a week" adds nothing. /gl boats says in
+    one line what they are kept under; your own shared sighting is still yours with no normalized name."""
+    SHOT = 1795224124.0   # the screenshot of "unknown" at Menethil: 2026-11-20 19:22:04 CST
+    x, y, inst = bt_stop("menethil_theramore", 0)   # Menethil's Theramore pier (the Southshore boat's beside it)
+    saved = bt_fixture("boats_menethil_1836.lua")
+    sc.eq((sorted(saved["boatTimes"]), saved["boatSession"], sorted(k for k in saved["boatTimes"][BT_REALM] if k != "periods")),
+          ([BT_REALM], 2, [241, 292]), "realm: the fixture: one realm, two rides, login 2 the last")
+    ride = dict(saved["boatTimes"][BT_REALM][292], earlier=True)   # (your own ride in an earlier login)
+    by_gr, by_saved = "from GetRealmName", "the one saved: the game gives none"
+
+    def at_menethil(label, realm, name, login=(True, False), state=saved, now=SHOT, rec=ride, came="the game's", logins=3,
+                    n=2, before=None, reset_penalty=False, realms=None):
+        w = boat_world(ref, items, saved=state, login=login, style="big", tracker=False, realm=realm, realm_name=name)
+        w.M.sbase = now - w.M.t
+        if before:
+            before(w)
+        bt_at(w, x + 3, y + 2, inst)
+        w.settle(2.5)
+        lines = bt_lines(w)
+        sc.eq(lines[:1], [bt_want("menethil_theramore", 0, rec, w.ns.Boats.ui.at, reset_penalty=reset_penalty, big=True)],
+              "%s: the ride counts at Menethil" % label)
+        sc.check(lines and ": unknown" not in lines[0] and ": about" not in lines[0], "%s: to the second (%s)" % (label, lines[:1]))
+        sc.eq(lines[1:], ["Boat to Southshore, Auberdine: unknown, every 8:06"], "%s: the Southshore boat: never ridden, unknown" % label)
+        sc.eq(bt_realms(w), realms or [BT_REALM], "%s: nothing saved under another realm" % label)
+        sc.eq(bt_slash(w, "/gl boats")[-1], bt_saved_line(n, logins, BT_REALM, came), "%s: /gl boats: what they are kept under" % label)
+        bt_big_ok(sc, w, label)
+        return w
+
+    # Forever 1.60.1.71037: GetNormalizedRealmName gives nothing all login; GetRealmName the realm.
+    w = at_menethil("71037 login", None, BT_REALM_NAME, came=by_gr)
+    B = w.ns.Boats
+    sc.eq((B.session, B.realmFrom), (3, "realm name"), "71037 login: login 3, the name from GetRealmName")
+    B.Observe(B.byPath[11167], 1, B.Now(), 1.5, "R")   # a ride learned that login
+    sc.check(bt_realms(w) == [BT_REALM] and w.ns.settings.boatTimes[BT_REALM][11167] is not None,
+             "71037 login: a boat learned then is saved under the realm (%s)" % bt_realms(w))
+    nxt = lua_to_py(w.g.ForeverAH_Settings)
+    sc.clean(w, "71037 login")
+    w = boat_world(ref, items, saved=nxt, style="big", tracker=False, realm=BT_REALM)   # the next login, the old client
+    w.M.sbase = SHOT + 600 - w.M.t
+    bt_at(w, x + 3, y + 2, inst)
+    w.settle(2.5)
+    sc.check(len(bt_lines(w)) == 2 and ": unknown" not in bt_lines(w)[1], "71037 next login: that boat counts too (%s)" % bt_lines(w))
+    sc.clean(w, "71037 next login")
+    for label, kw in (("71037 reload", dict(realm=None, name=BT_REALM_NAME, login=(False, True), came=by_gr, logins=2)),
+                      ("no realm name at all", dict(realm=None, name=None, came=by_saved)),
+                      ("an empty normalized name", dict(realm="", name=BT_REALM_NAME, came=by_gr)),
+                      ("the old client", dict(realm=BT_REALM, name=None, came="the game's")),
+                      ("a secret normalized name", dict(realm="SECRET", name=BT_REALM_NAME, came=by_gr,
+                                                        before=lambda w: w.lua.execute('issecretvalue = function(v) return v == "SECRET" end'))),
+                      ("a weekly reset in 7.5 days", dict(realm=BT_REALM, name=BT_REALM_NAME,
+                                                          before=lambda w: w.lua.execute("MOCK.resetIn = 7.5 * 86400")))):
+        realm, name = kw.pop("realm"), kw.pop("name")
+        w = at_menethil(label, realm, name, **kw)
+        w.lua.execute("issecretvalue = function() return false end")
+        sc.clean(w, label)
+    # The save the fix finds (19:50: that login's ride under "realm"): it joins the realm's, the
+    # later ride counts, the other ride stays; nothing left under "realm".
+    later = bt_fixture("boats_menethil_1950.lua")
+    junk = dict(later["boatTimes"]["realm"][292], earlier=True)
+    sc.eq((sorted(later["boatTimes"]), later["boatSession"], junk["ses"]), (sorted([BT_REALM, "realm"]), 3, 3),
+          "realm 19:50: the fixture: the ride of login 3 under \"realm\"")
+    for label, realm, name, came in (("19:50 state, 71037", None, BT_REALM_NAME, by_gr), ("19:50 state, no name", None, None, by_saved),
+                                     ("19:50 state, the old client", BT_REALM, None, "the game's")):
+        w = at_menethil(label, realm, name, state=later, now=SHOT + 2 * 3600, rec=junk, came=came, logins=4)
+        T = lua_to_py(w.ns.settings.boatTimes)[BT_REALM]
+        sc.eq((T[292]["t0"], T[292]["ses"], T[241]["t0"]), (junk["t0"], 3, later["boatTimes"][BT_REALM][241]["t0"]),
+              "%s: the later ride kept, the other ride too" % label)
+        sc.clean(w, label)
+    # Two realms saved besides "realm": whose its timers are is not known, so they stay apart.
+    other = {"periods": {}, 241: dict(later["boatTimes"][BT_REALM][241])}
+    three = {"boatTimes": dict(later["boatTimes"], OtherRealm=other), "boatSession": 3}
+    w = at_menethil("19:50 state, two realms", BT_REALM, None, state=three, now=SHOT + 2 * 3600, came="the game's", logins=4,
+                    realms=sorted([BT_REALM, "OtherRealm", "realm"]))
+    T = lua_to_py(w.ns.settings.boatTimes)
+    sc.eq((T[BT_REALM][292]["t0"], T["realm"][292]["t0"], sorted(map(str, T["OtherRealm"]))), (ride["t0"], junk["t0"], ["241", "periods"]),
+          "19:50 state, two realms: the realm's own ride used, \"realm\"'s left as it was")
+    sc.clean(w, "19:50 two realms")
+    # A hearth into Menethil, no realm name while its loading screen is up: the name the game gave
+    # this login is kept (two realms saved: the other's timer is 100 s off); nothing under "realm".
+    two = {"boatTimes": {BT_REALM: saved["boatTimes"][BT_REALM],
+                         "OtherRealm": {"periods": {}, 292: dict(saved["boatTimes"][BT_REALM][292], t0=ride["t0"] + 100)}},
+           "boatSession": 2}
+    w = boat_world(ref, items, saved=two, style="big", tracker=False, realm=BT_REALM, realm_name=BT_REALM_NAME)
+    w.M.sbase = SHOT - w.M.t
+    bt_at(w, -1200.0, 1700.0, 1)   # Desolace
+    w.settle(1.2)
+    w.M.realm, w.M.realmName = None, None
+    bt_hearth(w, x + 3, y + 2, inst)
+    sc.eq(bt_lines(w)[:1], [bt_want("menethil_theramore", 0, ride, w.ns.Boats.ui.at, big=True)], "loading: no realm name: the one given is kept")
+    sc.eq(bt_slash(w, "/gl boats")[-1], bt_saved_line(2, 3, BT_REALM, "kept: the game gives none now"), "loading: /gl boats says so")
+    w.M.realm, w.M.realmName = BT_REALM, BT_REALM_NAME
+    w.M.fire("LOADING_SCREEN_DISABLED")
+    w.settle(1.1)
+    sc.eq(bt_lines(w)[:1], [bt_want("menethil_theramore", 0, ride, w.ns.Boats.ui.at, big=True)], "loading: and after it")
+    sc.eq(bt_realms(w), sorted([BT_REALM, "OtherRealm"]), "loading: nothing saved under \"realm\"")
+    sc.clean(w, "loading")
+    # The server clock 9 h behind for a moment as you reach the dock: the timers set aside, not dropped.
+    w = boat_world(ref, items, saved=saved, style="big", tracker=False, realm=BT_REALM, realm_name=BT_REALM_NAME)
+    base = SHOT - w.M.t
+    w.M.sbase = base - 9 * 3600
+    bt_at(w, x + 3, y + 2, inst)
+    w.settle(0.3)
+    sc.eq(bt_lines(w)[:1], ["Boat to Theramore: unknown, every 5:29 - Boat" + BT_CLICK], "clock: 9 h behind: not used meanwhile")
+    sc.eq(bt_slash(w, "/gl boats")[-1], bt_saved_line(2, 3, BT_REALM, aside=2), "clock: /gl boats says they are set aside")
+    w.M.sbase = base
+    w.settle(1.1)
+    sc.check(w.ns.Boats.Store()[292] is not None and w.ns.Boats.Store()[241] is not None, "clock: both rides kept")
+    sc.eq(bt_lines(w)[:1], [bt_want("menethil_theramore", 0, ride, w.ns.Boats.ui.at, big=True)], "clock: right again: it counts")
+    sc.clean(w, "clock")
+    # Your own sighting shared back to you ("Name-Realm") is yours with no normalized realm name.
+    w = boat_world(ref, items, realm=None, realm_name="Test Realm")
+    B = w.ns.Boats
+    g0 = B.stats.got
+    bt_msg(w, bt_a1(w, 292, 1, round(B.Now() - 30, 1)), sender="Player-TestRealm")
+    sc.eq((B.stats.got, bt_anchor(w, 292)), (g0, None), "self: your own message: not read")
+    bt_msg(w, bt_a1(w, 292, 1, round(B.Now() - 30, 1)), sender="Other-TestRealm")
+    sc.eq(B.stats.got, g0 + 1, "self: another player's: read")
+    sc.clean(w, "self")
+
+
+def sc_boats_big_click(sc, ref, items):
+    """The big timer's hint: while its big line's boat is unknown or "about", "Boat in? Click here"
+    under it is a button of its own (just its words): a click on it does what /gl boat now does for
+    that boat (the same chat line, the same timer); its hover says so in one line; the right button
+    goes through it to the camera. A click anywhere else on the timer still does nothing and the
+    big line still drags it (the click line goes along). A known timer has none (no stray click can
+    spoil it). Zeppelins say Zeppelin; the small line keeps its own click."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    routes, _ = boat_data()
+    arr2, P = routes["menethil_theramore"]["stops"][1]["arrive_s"], routes["menethil_theramore"]["cycle_s"]
+    w = boat_world(ref, items, style="big")
+    B, M, g = w.ns.Boats, w.M, w.g
+    G = B.ui.big
+    tt = g.GameTooltip
+    bt_at(w, tx, ty, tinst)
+    w.settle(2.5)
+    click = "Boat" + BT_CLICK
+    sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - " + click], "click: unknown: the click line under the big line")
+    bt_big_ok(sc, w, "click unknown")
+    hb = G.hintBtn
+    M.enter(hb)
+    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, ["Click when this boat docks to set its timer."],
+          "click: its hover: one line")
+    M.leave(hb)
+    sc.check(not tt.IsShown(tt), "click: the hover goes")
+    # A press anywhere else on the timer (its big line, its middle, right of the click line): nothing.
+    mark = w.chat_mark()
+    l1, hr = w.rect(G.btn[1]), w.rect(hb)
+    for px, py in (((l1[0] + l1[2]) / 2, (l1[1] + l1[3]) / 2), (l1[0] + 2, (l1[1] + l1[3]) / 2), (hr[2] + 3, (hr[1] + hr[3]) / 2)):
+        f = M.frameAt(px, py, "LeftButton")
+        sc.check(w.same(f, G.holder), "click: the big timer itself at %.0f, %.0f (not the click line)" % (px, py))
+        M.press(f, "LeftButton")
+        M.release(f, "LeftButton")
+    w.settle(2)
+    sc.eq((w.chat(mark), bt_anchor(w, 292)), ([], None), "click: a click on the big timer: nothing said, no timer set")
+    # The click: /gl boat now for that boat.
+    mark = w.chat_mark()
+    M.enter(hb)
+    M.click(hb)
+    w.settle(0.1)
+    n = B.Now()
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."],
+          "click: the chat line /gl boat now says")
+    a = bt_anchor(w, 292)
+    sc.check(a is not None and (a["src"], a["s"], a["obs"], a["ses"]) == ("M", 4, 2, B.session) and abs(a["t0"] + arr2 - n) < 0.2,
+             "click: the timer /gl boat now sets (%s)" % a)
+    sc.check(bt_lines(w)[0] in ("Boat to Menethil: docked, leaves in 1:00", "Boat to Menethil: docked, leaves in 0:59"),
+             "click: and it counts at once (%s)" % bt_lines(w))
+    sc.check(not hb.IsVisible(hb) and not tt.IsShown(tt), "click: the click line and its hover gone")
+    bt_big_ok(sc, w, "click set")
+    sc.check(not w.same(M.frameAt((hr[0] + hr[2]) / 2, (hr[1] + hr[3]) / 2, "LeftButton"), hb),
+             "click: a known timer: nothing to click where the line was")
+    # The same in another world with /gl boat now: the same timer.
+    w2 = boat_world(ref, items, style="big")
+    bt_at(w2, tx, ty, tinst)
+    w2.settle(2.5)
+    sc.eq(bt_slash(w2, "/gl boat now"), ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "click: /gl boat now says the same")
+    a2 = bt_anchor(w2, 292)
+    sc.check(a2 is not None and {k: a2[k] for k in ("src", "s", "obs", "ok", "p0", "v")} == {k: a[k] for k in ("src", "s", "obs", "ok", "p0", "v")},
+             "click: /gl boat now sets the same timer (%s, %s)" % (a2, a))
+    sc.clean(w2, "click boat now")
+    # About (good to 30 s): the click line too; a click makes it sharp.
+    bt_set(w, 292, B.Now() - arr2 - (P - 120), s=10.0, src="R", obs=2)
+    B.Step()
+    sc.eq(bt_lines(w), ["Boat to Menethil: about 2 min - " + click], "click: about: the click line")
+    bt_big_ok(sc, w, "click about")
+    mark = w.chat_mark()
+    M.click(G.hintBtn)
+    w.settle(0.1)
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "click: about: set")
+    sc.check(bt_anchor(w, 292)["s"] == 4 and not G.hintBtn.IsVisible(G.hintBtn), "click: about: sharp now, no click line")
+    # Dragged with the click line up: the big line drags it, the click line goes along and works there.
+    B.Store()[292] = None
+    B.Step()
+    h = G.holder
+    sc.check(hb.IsVisible(hb), "drag: unknown again: the click line")
+    big_drag(w, h, 0.15 * M.screenW, 0.85 * M.screenH)
+    bt_placed_ok(sc, w, "drag with the click line")
+    mark = w.chat_mark()
+    M.click(hb)
+    w.settle(0.1)
+    sc.eq([strip_codes(c) for c in w.chat(mark)], ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "drag: a click there sets it")
+    bt_placed_ok(sc, w, "drag set")
+    bt_slash(w, "/gl boats reset")
+    # The small line: no click line (its own click, a second one for a good timer: boats-manual).
+    bt_slash(w, "/gl boats small")
+    B.Store()[292] = None
+    B.Step()
+    sc.check(B.ui.style == "small" and not h.IsVisible(h) and not hb.IsVisible(hb), "small: no big timer, no click line")
+    sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "small: its own words")
+    sc.clean(w, "click")
+    # Menethil, two boats: the click sets the big line's (the nearest pier's), not the other one.
+    mx, my, minst = bt_stop("menethil_theramore", 0)
+    w = boat_world(ref, items, style="big", tracker=False)
+    B, M = w.ns.Boats, w.M
+    bt_at(w, mx + 3, my + 2, minst)
+    w.settle(1.1)
+    sc.eq(bt_lines(w), ["Boat to Theramore: unknown, every 5:29 - " + click, "Boat to Southshore, Auberdine: unknown, every 8:06"],
+          "harbor: the click line under the big line only")
+    bt_big_ok(sc, w, "harbor")
+    mark = w.chat_mark()
+    M.click(B.ui.big.hintBtn)
+    w.settle(0.1)
+    sc.eq(([strip_codes(c) for c in w.chat(mark)], bt_anchor(w, 11167)), (["Goblin Ledger: boat timer set: the boat to Theramore docks now."], None),
+          "harbor: the click sets the big line's boat only")
+    sc.check(bt_anchor(w, 292) is not None and bt_anchor(w, 292)["obs"] == 1, "harbor: the boat to Theramore, at this pier")
+    sc.clean(w, "harbor")
+    # A zeppelin tower: "Zeppelin in? Click here", once, under the big line.
+    w = boat_world(ref, items, style="big")
+    ox, oy, oinst = bt_stop("orgrimmar_undercity", 0)
+    bt_at(w, ox, oy, oinst)
+    w.settle(1.1)
+    lines = bt_lines(w)
+    sc.check(len(lines) == 2 and lines[0] == "Zeppelin to Undercity: unknown, every 5:56 - Zeppelin" + BT_CLICK
+             and lines[1].startswith("Zeppelin to Grom'gol: unknown"), "zeppelin: its click line (%s)" % lines)
+    bt_big_ok(sc, w, "zeppelin", where=w.ns.Boats.ui.big.mode.split(" ")[0])
+    sc.clean(w, "zeppelin")
 
 
 def sc_boats_layout(sc, ref, items):
@@ -30055,6 +30345,12 @@ BT_ON_STATUS = ("Goblin Ledger: boat timers are on: small, under the minimap (/g
                 "/gl boats all lists every route.")
 BT_ON_BIG = ("Goblin Ledger: boat timers are on: big, in the middle of the screen (/gl boats small: under the minimap). "
              "/gl boats all lists every route.")
+
+
+def bt_saved_line(n, login=1, realm="TestRealm", came="the game's", aside=0):
+    """/gl boats' last line: what the timers here are kept under."""
+    return "Goblin Ledger: saved timers: %d for realm %s (%s)%s, login %d." % (
+        n, realm, came, ", %d set aside (seen after the server clock's now)" % aside if aside else "", login)
 
 
 def bt_hit(w, o):
@@ -30493,7 +30789,48 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
     sc.eq((takers, x is None or (x._otype == "Button" and x.GetScript(x, "OnClick") is not None)), ([], True),
           "%s: its lines take no mouse, the X is a button" % label)
     big_drag_ok(sc, w, h, G.btn[1], x, label)
+    bt_click_ok(sc, w, label)
     return r
+
+
+def bt_click_ok(sc, w, label, passed=True):
+    """The big timer's hint: under an unknown or "about" big line (none under a known one), "Boat
+    in? Click here" ("Zeppelin", "Skyship": the big line's kind), 13, as B.Lines says it; a button of
+    its own on the timer, just its words' size, under line 1, inside the timer, clear of the X's
+    hit area; the left button there is its click, the right one goes through to the world (passed:
+    once out of a fight); its click and hover scripts; line 1 is still the timer's (a drag)."""
+    B, M = w.ns.Boats, w.M
+    G = B.ui.big
+    hb, hf = G.hintBtn, G.hint
+    lines = bt_lines(w)
+    first = lines[0] if lines else ""
+    state = first.split(": ", 1)[1] if ": " in first else ""
+    want = B.ui.style == "big" and (state.startswith("unknown") or state.startswith("about"))
+    shown = hb is not None and bool(hb.IsVisible(hb))
+    if not sc.eq(shown, want, "%s: the click line %s (%s)" % (label, "shows" if want else "does not show", first)) or not want:
+        return
+    kind = first.split(" to ", 1)[0]
+    sc.eq((strip_codes(hf.GetText(hf) or ""), bt_font(hf)[1], hb._otype, w.same(hb.GetParent(hb), G.holder), first.endswith(" - " + kind + BT_CLICK)),
+          (kind + BT_CLICK, BT_BIG["hint"], "Button", True, True), "%s: the click line: its words, 13, a button on the timer" % label)
+    hr, fr, l1, r = w.rect(hb), w.rect(hf), w.rect(G.btn[1]), w.rect(G.holder)
+    if not sc.check(hr is not None and fr is not None and l1 is not None and r is not None, "%s: the click line has a place" % label):
+        return
+    sc.check(all(abs(hr[i] - fr[i]) < 0.6 for i in range(4)) and hb.GetHitRectInsets(hb) == (0, 0, 0, 0),
+             "%s: the click line takes just its words' place (%s vs %s)" % (label, fl_px(hr), fl_px(fr)))
+    sc.check(hr[3] <= l1[1] + 0.01 and hr[0] >= r[0] - 0.5 and hr[2] <= r[2] + 0.5 and hr[1] >= r[1] - 0.5,
+             "%s: the click line under line 1, inside the timer (%s, line 1 %s)" % (label, fl_px(hr), fl_px(l1)))
+    if G.x is not None and G.x.IsVisible(G.x):
+        sc.check(not bt_overlap(bt_hit(w, G.x), hr), "%s: the click line clear of the X" % label)
+    cx, cy = (hr[0] + hr[2]) / 2, (hr[1] + hr[3]) / 2
+    sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), hb), "%s: the left button on the click line: its click" % label)
+    if passed:
+        sc.check(w.same(M.frameAt(cx, cy, "RightButton"), w.g.WorldFrame), "%s: the right button on it: the world (the camera)" % label)
+    else:
+        sc.eq(hb._pass, None, "%s: the click line's right button not set in a fight" % label)
+    sc.check(hb.GetScript(hb, "OnClick") is not None and hb.GetScript(hb, "OnEnter") is not None and hb.GetScript(hb, "OnDragStart") is None,
+             "%s: the click line: a click and a hover, no drag of its own" % label)
+    sc.check(w.same(M.frameAt((l1[0] + l1[2]) / 2, (l1[1] + l1[3]) / 2, "LeftButton"), G.holder),
+             "%s: the big line still the timer's (a drag)" % label)
 
 
 def bt_tracker_way(sc, w, label, free):
@@ -30750,24 +31087,30 @@ def sc_boats_big_states(sc, ref, items):
     state: the countdown (good to 5 s), docked, about (good to 30 s), about now, and unknown with
     how often it comes (no timer, too old to trust, from before a weekly reset that moved the
     boats, with a round trip learned from your rides; the Dalaran skyship's measured 5:53); each
-    one's fonts and colours. At harbors: the nearest pier's boat big, the others 15 under it, the
-    hint once under the big line when it is unknown, none on the others' lines nor a joined line;
-    the joined forms "Theramore unknown (every 5:29)"."""
+    one's fonts and colours; under an unknown or "about" big line its hint "Boat in? Click here" (13).
+    At harbors: the nearest pier's boat big, the others 15 under it, the hint once under the big
+    line when it is unknown, none on the others' lines nor a joined line; the joined forms
+    "Theramore unknown (every 5:29)"."""
     routes, _ = boat_data()
     P = routes["menethil_theramore"]["cycle_s"]
     arr2 = routes["menethil_theramore"]["stops"][1]["arrive_s"]
     tx, ty, tinst = bt_stop("menethil_theramore", 1)
     gold = "|cffffd100"
+    click = "Boat" + BT_CLICK
+    # (name, the saved timer, the big timer's (line 1, countdown, hint), the small line's words, the big one's)
     cases = (
-        ("unknown", None, ("Boat to Menethil: unknown, every 5:29", None, BT_HINT),
-         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"),
-        ("countdown", lambda n: dict(t0=n - arr2 - (P - 101.5), s=1.0), ("Boat to Menethil", "1:42", None), "Boat to Menethil: 1:42"),
+        ("unknown", None, ("Boat to Menethil: unknown, every 5:29", None, click),
+         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks", "Boat to Menethil: unknown, every 5:29 - " + click),
+        ("countdown", lambda n: dict(t0=n - arr2 - (P - 101.5), s=1.0), ("Boat to Menethil", "1:42", None), "Boat to Menethil: 1:42",
+         "Boat to Menethil: 1:42"),
         ("docked", lambda n: dict(t0=n - arr2 - 25.5, s=1.0), ("Boat to Menethil: docked, leaves in", "0:35", None),
-         "Boat to Menethil: docked, leaves in 0:35"),
-        ("about", lambda n: dict(t0=n - arr2 - (P - 120), s=10.0), ("Boat to Menethil: about", "2 min", None), "Boat to Menethil: about 2 min"),
-        ("about now", lambda n: dict(t0=n - arr2 - (P - 8), s=10.0), ("Boat to Menethil: about", "now", None), "Boat to Menethil: about now"),
-        ("too old", lambda n: dict(t0=n - arr2 - 40, s=1.0, seen=n - 12 * 86400), ("Boat to Menethil: unknown, every 5:29", None, BT_HINT),
-         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"),
+         "Boat to Menethil: docked, leaves in 0:35", "Boat to Menethil: docked, leaves in 0:35"),
+        ("about", lambda n: dict(t0=n - arr2 - (P - 120), s=10.0), ("Boat to Menethil: about", "2 min", click), "Boat to Menethil: about 2 min",
+         "Boat to Menethil: about 2 min - " + click),
+        ("about now", lambda n: dict(t0=n - arr2 - (P - 8), s=10.0), ("Boat to Menethil: about", "now", click), "Boat to Menethil: about now",
+         "Boat to Menethil: about now - " + click),
+        ("too old", lambda n: dict(t0=n - arr2 - 40, s=1.0, seen=n - 12 * 86400), ("Boat to Menethil: unknown, every 5:29", None, click),
+         "Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks", "Boat to Menethil: unknown, every 5:29 - " + click),
     )
     for style in ("big", "small"):
         w = boat_world(ref, items, tracker=False, style=style, screen=bt_screen(1920, 1080, 0.8))
@@ -30775,13 +31118,13 @@ def sc_boats_big_states(sc, ref, items):
         G = B.ui.big
         bt_at(w, tx, ty, tinst)
         w.settle(2.5)
-        for name, mk, big, small in cases:
+        for name, mk, big, small, bigw in cases:
             lab = "states %s %s" % (style, name)
             B.Store()[292] = None
             if mk:
                 bt_set(w, 292, obs=2, src="R", **mk(B.Now()))
             B.Step()
-            sc.eq(bt_lines(w), [small], "%s: the words" % lab)
+            sc.eq(bt_lines(w), [bigw if style == "big" else small], "%s: the words" % lab)
             if style != "big":
                 sc.check(w.g.GoblinLedgerBoats.IsVisible(w.g.GoblinLedgerBoats) and B.ui.style == "small", "%s: the small line shows" % lab)
                 continue
@@ -30791,6 +31134,8 @@ def sc_boats_big_states(sc, ref, items):
             if value:
                 sc.eq((G.value.GetText(G.value), G.fs[1].GetText(G.fs[1]), bt_font(G.value)[1], bt_font(G.fs[1])[1]),
                       (gold + value + "|r", head, BT_BIG["value"], BT_BIG["head"]), "%s: only the number 32 and gold, the words 16 and white" % lab)
+                if hint:
+                    sc.eq(bt_font(G.hint)[1], BT_BIG["hint"], "%s: the hint 13 under it" % lab)
             else:
                 sc.eq((G.fs[1].GetText(G.fs[1]), bt_font(G.fs[1])[1], bt_font(G.hint)[1]),
                       ("Boat to Menethil: " + gold + "unknown, every 5:29|r", BT_BIG["med"], BT_BIG["hint"]),
@@ -30801,19 +31146,21 @@ def sc_boats_big_states(sc, ref, items):
         bt_set(w, 292, n - arr2 - 40, s=1.0, src="R", obs=2, seen=n - 5 * 86400)
         B.Store().resetKeeps = False
         B.Step()
-        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29 - /gl boat now when it docks"], "states %s: after a weekly reset" % style)
+        hint_ = " - " + (BT_HINT if style == "small" else click)
+        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:29" + hint_], "states %s: after a weekly reset" % style)
         B.Store().resetKeeps = None
         # A round trip learned from your own rides (it may be off the game data's by 0.5%).
         B.Store()[292] = None
         B.Store().periods[292] = w.to_lua({"P": 329.9, "sP": 0.003, "p0": P})
         B.Step()
-        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:30 - /gl boat now when it docks"], "states %s: a learned round trip" % style)
+        sc.eq(bt_lines(w), ["Boat to Menethil: unknown, every 5:30" + hint_], "states %s: a learned round trip" % style)
         B.Store().periods[292] = None
         # The Dalaran skyship (its round trip measured from the dockmasters' calls).
         dx, dy, dinst = bt_stop("dalaran_zephras", 0)
         bt_at(w, dx, dy, dinst)
         w.settle(1.1)
-        sc.eq(bt_lines(w), ["Skyship to Zephras Isle: unknown, every 5:53 - /gl boat now when it docks"], "states %s: the skyship" % style)
+        sc.eq(bt_lines(w), ["Skyship to Zephras Isle: unknown, every 5:53 - " + (BT_HINT if style == "small" else "Skyship" + BT_CLICK)],
+              "states %s: the skyship" % style)
         sc.clean(w, "states " + style)
     # Harbors with the big timer: three boats at Auberdine (UI scale 0.8: three lines).
     ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
@@ -30822,11 +31169,11 @@ def sc_boats_big_states(sc, ref, items):
     G = B.ui.big
     bt_at(w, ax + 4, ay + 4, ainst)
     w.settle(1.1)
-    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks", "Boat to Menethil, Southshore: unknown, every 8:06",
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - " + click, "Boat to Menethil, Southshore: unknown, every 8:06",
                         "Boat to Rut'theran: unknown, every 5:16"], "harbors big: Auberdine, three boats, the nearest pier's big")
     sc.eq((bt_font(G.fs[1])[1], bt_font(G.fs[2])[1], bt_font(G.fs[3])[1]), (BT_BIG["med"], BT_BIG["sub"], BT_BIG["sub"]),
           "harbors big: the others 15")
-    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 1, "harbors big: the hint once (%s)" % bt_big_words(w))
+    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 1, "harbors big: the hint once (%s)" % bt_big_words(w))
     sc.eq(G.hint.IsShown(G.hint), True, "harbors big: under the big line")
     bt_big_ok(sc, w, "harbors big three")
     bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
@@ -30834,7 +31181,7 @@ def sc_boats_big_states(sc, ref, items):
     lines = bt_lines(w)
     sc.eq(lines[1:], ["Boat to Menethil, Southshore: unknown, every 8:06", "Boat to Rut'theran: unknown, every 5:16"],
           "harbors big: the big line known: no hint on the other boats' lines (/gl boat now sets the big one)")
-    sc.eq((sum(t.count("/gl boat now") for t in bt_big_words(w)), G.hint.IsShown(G.hint)), (0, False), "harbors big: no hint")
+    sc.eq((sum(t.count("Click here") for t in bt_big_words(w)), G.hint.IsShown(G.hint)), (0, False), "harbors big: no hint")
     sc.check(lines[0].startswith("Boat to Stormwind: docked, leaves in 0:"), "harbors big: the big line (%s)" % lines[0])
     bt_big_ok(sc, w, "harbors big known")
     sc.clean(w, "harbors big")
@@ -30844,16 +31191,16 @@ def sc_boats_big_states(sc, ref, items):
     G = B.ui.big
     bt_at(w, ax + 4, ay + 4, ainst)
     w.settle(1.1)
-    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - /gl boat now when it docks",
+    sc.eq(bt_lines(w), ["Boat to Stormwind: unknown, every 4:07 - " + click,
                         "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"], "harbors big joined: the other two on one line")
     sc.eq(G.fs[2].GetText(G.fs[2]), "Menethil, Southshore " + gold + "unknown (every 8:06)|r; Rut'theran " + gold + "unknown (every 5:16)|r",
           "harbors big joined: the states gold")
-    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 1, "harbors big joined: the hint once")
+    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 1, "harbors big joined: the hint once")
     bt_big_ok(sc, w, "harbors big joined")
     bt_set(w, 11616, B.Now() - 30 - boat_data()[0]["stormwind_auberdine"]["stops"][1]["arrive_s"], s=1.0, src="R", obs=2)
     B.Step()
     sc.eq(bt_lines(w)[1], "Menethil, Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)", "harbors big joined: known big line")
-    sc.eq(sum(t.count("/gl boat now") for t in bt_big_words(w)), 0, "harbors big joined: no hint on a joined line")
+    sc.eq(sum(t.count("Click here") for t in bt_big_words(w)), 0, "harbors big joined: no hint on a joined line")
     sc.clean(w, "harbors big joined")
     # The small lines' joined form at Menethil (the tracker under the minimap).
     mx, my, minst = bt_stop("menethil_theramore", 0)
@@ -30880,7 +31227,7 @@ def sc_boats_big_setting(sc, ref, items):
     w.settle(1.1)
     bt_big_ok(sc, w, "setting default")
     nearest = "Goblin Ledger: nearest dock: Theramore Isle, 0 yd. Boat to Menethil: unknown, every 5:29"
-    sc.eq(bt_slash(w, "/gl boats status"), [BT_ON_BIG, nearest], "setting: status says big")
+    sc.eq(bt_slash(w, "/gl boats status"), [BT_ON_BIG, nearest, bt_saved_line(0)], "setting: status says big")
     sc.eq(bt_slash(w, "/gl boats small"), ["Goblin Ledger: boat timers are small now: a line under the minimap. /gl boats big makes them big again."],
           "setting: small")
     sc.eq(S.boatStyle, "small", "setting: small saved")
@@ -34078,6 +34425,7 @@ def bt_placed_ok(sc, w, label, passed=True):
         xr = w.rect(x)
         sc.check(xr[0] >= r[0] - 0.5 and xr[2] <= r[2] + 0.5 and xr[3] <= r[3] + 0.5, "%s: the X inside it" % label)
     big_drag_ok(sc, w, h, G.btn[1], x, label, passed=passed)
+    bt_click_ok(sc, w, label, passed=passed)
     return r
 
 
@@ -34666,6 +35014,8 @@ SCENARIOS = [
     ("boats-switch", sc_boats_switch),
     ("boats-ride-end", sc_boats_ride_end),
     ("boats-trust", sc_boats_trust),
+    ("boats-realm", sc_boats_realm),
+    ("boats-big-click", sc_boats_big_click),
     ("boats-layout", sc_boats_layout),
     ("boats-x", sc_boats_x),
     ("boats-big-place", sc_boats_big_place),

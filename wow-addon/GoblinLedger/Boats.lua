@@ -6,15 +6,17 @@ local ADDON_NAME, ns = ...
 --   "Boat to Theramore: about 2 min"                 (it may be off by up to 30 s)
 --   "Boat to Theramore: unknown, every 5:29 - /gl boat now when it docks"
 -- Big, the words are small and only the number (1:42, 0:35, 2 min) is about three times the
--- small line's size; an unknown boat is a size smaller, with the hint under it. A click on it
--- does nothing; drag it with the left mouse button to put it anywhere (saved as boatPos, kept
--- there; the right button goes through it for the camera; /gl boats reset puts it back in the
--- middle). On a flight (the game's taxi, or the flight timer's flight until its timer goes:
--- Flights.lua) the small line shows instead (one timer at a time), and in a fight too unless you
--- put it somewhere (the middle of the screen is the fight's); the big timer again the moment the
--- flight timer goes. A dock that several boats
--- use (Menethil, Auberdine, the zeppelin towers) gets one line per boat, nearest pier first (3
--- at most), the others smaller; when they would run into something they become one line.
+-- small line's size; an unknown boat is a size smaller. Under an unknown or "about" big line a
+-- small line "Boat in? Click here" is its own button: a click on it is /gl boat now for that boat
+-- (a known timer has none: no stray click can spoil it). A click anywhere else on the timer does
+-- nothing; drag it with the left mouse button to put it anywhere (saved as boatPos, kept there;
+-- the right button goes through it for the camera; /gl boats reset puts it back in the middle).
+-- On a flight (the game's taxi, or the flight timer's flight until its timer goes: Flights.lua)
+-- the small line shows instead (one timer at a time), and in a fight too unless you put it
+-- somewhere (the middle of the screen is the fight's); the big timer again the moment the flight
+-- timer goes. A dock that several boats use (Menethil, Auberdine, the zeppelin towers) gets one
+-- line per boat, nearest pier first (3 at most), the others smaller; when they would run into
+-- something they become one line.
 -- Zeppelins and skyships say Zeppelin and Skyship. A small X after the first line hides them
 -- until you leave that dock (250 yd from its piers; a /reload there keeps them hidden, the next
 -- visit shows them again) and says in one chat line that /gl boats on brings them back.
@@ -26,10 +28,12 @@ local ADDON_NAME, ns = ...
 --   - the skyship dockmasters' "has just arrived" lines (Dalaran, Zephras Isle);
 --   - /gl boat now (or a click on the small line) when the boat docks;
 --   - guild and group members with this addon (addon messages, prefix GLBoat).
--- What it learns is kept with the server time in the saved settings, per realm. The timer's
+-- What it learns is kept with the server time in the saved settings, per realm (the realm's
+-- name from the game, which can give none for a whole login: see realmKey). The timer's
 -- possible error grows with every round trip (and by 10 s after a weekly reset until sharp
 -- sightings show whether resets keep the schedule), so the line goes from m:ss to "about" to
--- "unknown" instead of showing a made-up time. Anything older than 30 days is dropped.
+-- "unknown" instead of showing a made-up time. Anything older than 30 days is dropped; one seen
+-- after the server clock's now is set aside (not used, kept: a clock behind for a moment).
 --
 -- Nothing runs away from docks and boats: a zone change starts a check every 3 s within
 -- 1500 yd of a dock, every second within 150 yd, while the line shows and while you ride (a
@@ -134,6 +138,9 @@ local MAX_LINES, LINE_H, GAP = 3, 12, 2
 local X_SIZE, X_GAP = 12, 4
 local HINT_WORDS = "/gl boat now when it docks"
 local HINT = " - " .. HINT_WORDS
+-- The big timer's hint, its own small button: "Boat in? Click here" ("Zeppelin in?", "Skyship in?").
+local CLICK_WORDS = " in? Click here"
+local function dockTip(rt) return "Click when this " .. slower(rt.kind) .. " docks to set its timer." end
 local X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
 local DRAG_TIP = "Drag the timer to move it; /gl boats reset puts it back."
 -- The big timer (font sizes and gaps in UI units). The small line uses the game's small font
@@ -278,25 +285,104 @@ end
 --   resetVotes = { k, m }: sharp sightings after weekly resets that kept (k) or moved (m) the
 --   boats; resetKeeps = true / false once one side leads by two (nil: not known yet)
 ---------------------------------------------------------------------------
-local function realmKey()
+-- The realm's name as the game gives it: GetNormalizedRealmName, else GetRealmName without its
+-- spaces and hyphens (the same name). Forever 1.60.1.71037 gave nothing from the first for a whole
+-- login (its timers went under "realm": unknown at the dock) while GetRealmName still gave the realm.
+local function gameRealm()
   local f = _G.GetNormalizedRealmName
   if type(f) == "function" then
     local ok, r = pcall(f)
-    if ok and type(r) == "string" and r ~= "" and not isSecret(r) then return r end
+    if ok and not isSecret(r) and type(r) == "string" and r ~= "" then return r, "game" end
   end
+  f = _G.GetRealmName
+  if type(f) == "function" then
+    local ok, r = pcall(f)
+    if ok and not isSecret(r) and type(r) == "string" then
+      r = r:gsub("[%s%-]", "")
+      if r ~= "" then return r, "realm name" end
+    end
+  end
+  return nil
+end
+B.GameRealm = gameRealm
+
+-- The one realm timers are saved for (not "realm"), or nil (none, or more than one).
+local function onlyRealm(T)
+  local only, n = nil, 0
+  for k, v in pairs(T) do
+    if type(k) == "string" and k ~= "realm" and type(v) == "table" then only, n = k, n + 1 end
+  end
+  return n == 1 and only or nil
+end
+
+-- The realm the timers are kept under: the game's name; when it gives none (before PLAYER_LOGIN, a
+-- loading screen, a client that gives none at all), the one it gave earlier this login, else the
+-- one realm timers are saved for (most players have one), else "realm". B.realmFrom says which:
+-- "game", "realm name" (GetRealmName), "kept", "saved", "none" (/gl boats status).
+local function realmKey()
+  local r, from = gameRealm()
+  if r then
+    B.realm, B.realmFrom = r, from
+    return r
+  end
+  if B.realm then
+    B.realmFrom = "kept"
+    return B.realm
+  end
+  local T = settings().boatTimes
+  local only = type(T) == "table" and onlyRealm(T) or nil
+  if only then
+    B.realmFrom = "saved"
+    return only
+  end
+  B.realmFrom = "none"
   return "realm"
+end
+B.RealmKey = realmKey
+
+-- A saved timer that can be used for route rt: its fields as this file writes them, for this
+-- route data (round trip and fingerprint).
+local function goodRec(rt, r)
+  local okStop = type(r.obs) == "number" and r.obs >= 0 and r.obs <= #rt.stops and r.obs == floor(r.obs)
+  return finite(r.t0) and finite(r.s) and finite(r.seen) and okStop and r.p0 == rt.P and r.v == rt.ver and r.s >= 0
+         and r.s <= 60 and type(r.src) == "string"
+end
+
+-- Timers saved under "realm" (a login in which the game gave no realm name) join the realm's
+-- (st) once it is known to be theirs (the only realm saved): per boat the later sighting stays;
+-- a measured round trip and what weekly resets do where the realm has none.
+local function fold(junk, st)
+  for p, rec in pairs(junk) do
+    local rt = byPath[p]
+    if rt and type(rec) == "table" and goodRec(rt, rec) then
+      local cur = st[p]
+      if not (type(cur) == "table" and goodRec(rt, cur) and cur.seen >= rec.seen) then st[p] = rec end
+    end
+  end
+  if type(junk.periods) == "table" then
+    for p, v in pairs(junk.periods) do
+      if st.periods[p] == nil then st.periods[p] = v end
+    end
+  end
+  if st.resetVotes == nil then st.resetVotes = junk.resetVotes end
+  if st.resetKeeps == nil then st.resetKeeps = junk.resetKeeps end
 end
 
 local function store()
   local S = settings()
   if type(S.boatTimes) ~= "table" then S.boatTimes = {} end
+  local T = S.boatTimes
   local key = realmKey()
-  local st = S.boatTimes[key]
+  local st = T[key]
   if type(st) ~= "table" then
     st = {}
-    S.boatTimes[key] = st
+    T[key] = st
   end
   if type(st.periods) ~= "table" then st.periods = {} end
+  if key ~= "realm" and type(T.realm) == "table" and onlyRealm(T) == key then
+    fold(T.realm, st)
+    T.realm = nil
+  end
   return st
 end
 B.Store = store
@@ -336,7 +422,8 @@ local function lastReset(now)
   local f = type(dt) == "table" and dt.GetSecondsUntilWeeklyReset
   if type(f) ~= "function" then return nil end
   local ok, s = pcall(f)
-  if not ok or not finite(s) or isSecret(s) or s < 0 or s > 8 * 86400 then return nil end
+  -- (more than a week: no reset known, not one in the future that every timer would be from before)
+  if not ok or isSecret(s) or not finite(s) or s < 0 or s > 7 * 86400 then return nil end
   return now + s - 7 * 86400
 end
 local function beforeReset(rec, now)
@@ -346,21 +433,17 @@ end
 
 local function own(src) return src ~= "G" end
 
--- The route's learned anchor, or nil (a bad, old or outdated one is dropped).
+-- The route's learned anchor, or nil (a bad, old or outdated one is dropped; one seen after the
+-- server clock's now is set aside, not dropped: a clock behind for a moment must not lose it).
 local function anchorOf(rt, now)
   local st = store()
   local r = st[rt.path]
   if type(r) ~= "table" then return nil end
-  local okStop = type(r.obs) == "number" and r.obs >= 0 and r.obs <= #rt.stops and r.obs == floor(r.obs)
-  if not (finite(r.t0) and finite(r.s) and finite(r.seen) and okStop and r.p0 == rt.P and r.v == rt.ver and r.s >= 0
-          and r.s <= 60 and type(r.src) == "string") then
+  if not goodRec(rt, r) or now - r.seen > MAX_AGE then
     st[rt.path] = nil
     return nil
   end
-  if now - r.seen > MAX_AGE or r.seen > now + 600 then
-    st[rt.path] = nil
-    return nil
-  end
+  if r.seen > now + 600 then return nil end
   return r
 end
 B.AnchorOf = anchorOf
@@ -1097,7 +1180,26 @@ local function lineTip(self)
   local tt, e = _G.GameTooltip, lineEntry(self)
   if type(tt) == "table" and e then
     pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
-    pcall(tt.SetText, tt, "Click when this " .. slower(e.st.rt.kind) .. " docks to set its timer.")
+    pcall(tt.SetText, tt, dockTip(e.st.rt))
+    pcall(tt.Show, tt)
+  end
+end
+-- The big timer's "Boat in? Click here": /gl boat now for the boat of its big line (B.HintClick,
+-- below); its hover says so in one line.
+local function hintClick(self)
+  local e = UI.list and UI.list[1]
+  local tt = _G.GameTooltip
+  if type(tt) == "table" and call(tt, "GetOwner") == self then pcall(tt.Hide, tt) end   -- (the line goes once it is set)
+  if e and UI.style == "big" and B.HintClick then
+    local ok, err = pcall(B.HintClick, e.st)
+    if not ok then B.lastError = err end
+  end
+end
+local function hintTip(self)
+  local tt, e = _G.GameTooltip, UI.list and UI.list[1]
+  if type(tt) == "table" and e then
+    pcall(tt.SetOwner, tt, self, "ANCHOR_BOTTOMLEFT")
+    pcall(tt.SetText, tt, dockTip(e.st.rt))
     pcall(tt.Show, tt)
   end
 end
@@ -1232,7 +1334,8 @@ local function buildBig()
   h:SetSize(10, 10)
   h:Hide()
   -- The timer takes the left button for a drag (ns.Big's: a click does nothing, the right button
-  -- goes through to the world); after a drag it is put at its spot at once. Its lines take no mouse.
+  -- goes through to the world); after a drag it is put at its spot at once. Its lines take no mouse
+  -- (but its hint, below: a button of its own).
   Big.Movable(h, "boatPos", function() B.Step() end)
   for i = 1, MAX_LINES do
     local b = _G.CreateFrame("Frame", nil, h)
@@ -1247,7 +1350,19 @@ local function buildBig()
   -- just after its right end.
   BG.value = BG.btn[1]:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   BG.value:SetJustifyH("LEFT")
-  BG.hint = h:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  -- The hint under an unknown or "about" big line: a button just its words' size (the only part
+  -- besides the X that takes a click; the right button goes through it as through the timer).
+  local hb = _G.CreateFrame("Button", nil, h)
+  hb:SetSize(10, BIG.hint)
+  hb:RegisterForClicks("LeftButtonUp")
+  hb:SetScript("OnClick", hintClick)
+  hb:SetScript("OnEnter", hintTip)
+  hb:SetScript("OnLeave", tipHide)
+  hb.glPassRight = true
+  hb:Hide()
+  BG.hintBtn = hb
+  BG.hint = hb:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
+  BG.hint:SetPoint("CENTER", hb, "CENTER", 0, 0)
   local x = Big.X(h, function() hideHere() end, BG.btn[1])
   Big.Tip(x, { X_TIP, DRAG_TIP })
   BG.x = x
@@ -1264,8 +1379,8 @@ local function numberW(fs, text)
 end
 
 -- Lays out the big timer: main = { head, value, state, lead, num } (the nearest pier's boat),
--- the hint under it when that one is unknown, then others (one text per line, coloured). Only
--- the number is big: the words before it ("docked, leaves in", "about") go with the route. The
+-- hint (its words: "Boat in? Click here", or nil) under it, then others (one text per line,
+-- coloured). Only the number is big: the words before it ("docked, leaves in", "about") go with the route. The
 -- lines are centred in the holder, which leaves room for the X after line 1 on both sides (so
 -- the words sit in the middle). Returns its width and height.
 local function bigApply(main, hint, others)
@@ -1296,18 +1411,23 @@ local function bigApply(main, hint, others)
   b1:ClearAllPoints()
   b1:SetPoint("TOP", h, "TOP", 0, 0)
   local y, wide = h1, w1
-  local hf = BG.hint
+  local hf, hb = BG.hint, BG.hintBtn
   if hint then
     setSize(hf, BIG.hint)
-    hf:SetText(HINT_WORDS)
-    hf:ClearAllPoints()
-    hf:SetPoint("TOP", h, "TOP", 0, -(y + BIG.gap))
+    hf:SetText(hint)
     hf:Show()
+    local hw = textW(hf, hint, BIG.hint)
+    hb:SetSize(hw, BIG.hint)
+    hb:ClearAllPoints()
+    hb:SetPoint("TOP", h, "TOP", 0, -(y + BIG.gap))
+    Big.PassRight(hb)
+    hb:Show()
     y = y + BIG.gap + BIG.hint
-    wide = max(wide, textW(hf, HINT_WORDS, BIG.hint))
+    wide = max(wide, hw)
   else
     hf:SetText("")
     hf:Hide()
+    hb:Hide()
   end
   for i = 2, MAX_LINES do
     local b, fs, t = BG.btn[i], BG.fs[i], others[i - 1]
@@ -1351,7 +1471,7 @@ local function bigFits(rect, top) return Big.Fits(rect, top, "boat", bigObstacle
 local function renderBig(list, r)
   buildBig()
   local main = { head = r.heads[1], value = r.values[1], state = r.states[1], lead = r.leads[1], num = r.nums[1] }
-  local hint = main.state == "unknown"
+  local hint = r.click
   local others, colJoined = {}, {}
   for i = 2, #list do
     others[#others + 1] = r.heads[i] .. ": |cffffd100" .. r.values[i] .. "|r"
@@ -1467,9 +1587,10 @@ B.Busy = busy
 local function givesWay() return onFlight() or (busy() and not Big.Spot("boatPos")) end
 B.GivesWay = givesWay
 
--- The words for the boats of list (the first unknown one gets the hint; the big timer's only
--- under its big line), then the big timer, or the small line(s) under the minimap (/gl boats
--- small, a fight or a flight, or no room for the big one).
+-- The words for the boats of list (on the small lines the first unknown one gets the hint; the
+-- big timer's hint, "Boat in? Click here", is only under its big line, while that one is unknown
+-- or "about"), then the big timer, or the small line(s) under the minimap (/gl boats small, a
+-- fight or a flight, or no room for the big one).
 local function render(list, now)
   local r = { heads = {}, values = {}, states = {}, shorts = {}, leads = {}, nums = {}, texts = {}, parts = {} }
   local plain, plainBig, hinted = {}, {}, false
@@ -1481,9 +1602,13 @@ local function render(list, now)
     end
     r.heads[i], r.values[i], r.states[i], r.shorts[i], r.leads[i], r.nums[i] = head, value, state, short, lead, num
     plain[i] = head .. ": " .. shownValue
-    plainBig[i] = head .. ": " .. (i == 1 and shownValue or value)
+    plainBig[i] = head .. ": " .. value
     r.texts[i] = head .. ": |cffffd100" .. shownValue .. "|r"
     r.parts[i] = e.st.to .. " " .. short
+  end
+  if r.states[1] == "unknown" or r.states[1] == "about" then
+    r.click = list[1].st.rt.kind .. CLICK_WORDS
+    plainBig[1] = plainBig[1] .. " - " .. r.click
   end
   local joinedPlain = #list > 1 and ("Boats: " .. tconcat(r.parts, "; ")) or plain[1]
   UI.list, UI.texts, UI.joined, UI.at = list, plain, joinedPlain, now
@@ -1503,7 +1628,7 @@ end
 
 -- What the line(s) say now, without colour codes (for /gl boats status and the tests); the
 -- big timer's lines say it in the same words (its route and countdown as "route: countdown",
--- the hint after its big line when that one is unknown).
+-- its hint after its big line: " - Boat in? Click here").
 function B.Lines()
   if not UI.shown then return {} end
   local out = {}
@@ -1631,7 +1756,7 @@ B.Wake = wake
 local function isSelf(sender)
   local me = callG("UnitName", "player")
   if type(me) ~= "string" then return false end
-  local realm = callG("GetNormalizedRealmName")
+  local realm = gameRealm() or B.realm
   return sender == me or (type(realm) == "string" and sender == me .. "-" .. realm)
 end
 
@@ -1762,6 +1887,14 @@ function B.Click(st)
   boatNow(st, now)
 end
 
+-- A click on the big timer's "Boat in? Click here" (it shows only while that boat's timer is
+-- unknown or "about"): /gl boat now for that boat.
+function B.HintClick(st)
+  local now = serverNow()
+  if not now or not isOn() then return end
+  boatNow(st, now)
+end
+
 local function sourceText(src)
   if src == "R" or src == "T" or src == "L" then return "your ride" end
   if src == "A" then return "the dockmaster" end
@@ -1794,7 +1927,25 @@ local function whereText()
   return bigStyle() and ("a big timer " .. (bigWords())) or "a line under the minimap"
 end
 
--- /gl boats: two lines (on or off, big or small, and the nearest dock with its boats).
+-- What the timers here are kept under, in one line (a bug report tells the causes of an unknown
+-- line apart with it): how many boats are saved for this realm (and set aside: seen after the
+-- server clock's now), the realm and where its name came from, this login's number.
+local REALM_FROM = { game = "the game's", ["realm name"] = "from GetRealmName", kept = "kept: the game gives none now",
+                     saved = "the one saved: the game gives none", none = "none: the game gives no realm name" }
+local function savedText(now)
+  local st, key = store(), realmKey()
+  local n, aside = 0, 0
+  for p, rec in pairs(st) do
+    if byPath[p] and type(rec) == "table" then
+      n = n + 1
+      if now and finite(rec.seen) and rec.seen > now + 600 then aside = aside + 1 end
+    end
+  end
+  return sformat("saved timers: %d for realm %s (%s)%s, login %d.", n, key, REALM_FROM[B.realmFrom] or "?",
+                 aside > 0 and sformat(", %d set aside (seen after the server clock's now)", aside) or "", sessionId())
+end
+
+-- /gl boats: three lines (on or off, big or small, the nearest dock with its boats, what is saved).
 local function status()
   if not isOn() then
     say("boat timers are off. /gl boats on turns them on.")
@@ -1814,6 +1965,7 @@ local function status()
   local now = serverNow()
   local t = now and nearestText(now)
   if t then say(t) end
+  say(savedText(now))
 end
 
 -- /gl boats all: every route, what is known about it, and the nearest dock.
@@ -1941,6 +2093,7 @@ if type(_G.CreateFrame) == "function" then
           wake()
         elseif event == "PLAYER_LOGIN" then
           registerPrefix()
+          realmKey()   -- (the game gives the realm's name from here on: kept for its loading screens)
           wake()
         elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_CONTROL_LOST"
             or event == "PLAYER_CONTROL_GAINED" or event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
