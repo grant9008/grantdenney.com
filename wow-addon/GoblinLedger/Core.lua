@@ -2186,7 +2186,8 @@ ns.VsUsual = vsUsual
 --   the usual price ("+12% vs usual", "+88% vs usual: spike"), then the one
 --   price to sell at (ns.SellPrices): "Usual price" and "Sell now", or, when
 --   Sell now is under 70% of the usual price, a yellow "Sell now (38% under
---   usual)" and "Sell at" the usual price (nothing listed: "Sell at" alone);
+--   usual)" and "Sell at" the usual price (nothing listed: "Sell at" alone),
+--   and a "5-day average" (ns.FiveDayAverage) under the usual price's spot;
 --   a sell price is red when it nets no more than a vendor pays (Sell now
 --   too when it is yellow, then only its price). Then for a
 --   stack what it brings at the verdict's price after the AH cut (only under
@@ -2325,6 +2326,11 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     local atLine = P and P.at and (under or not P.now)
     local u = not atLine and money(usual)
     if u then tt:AddDoubleLine("Usual price" .. tag, u, tx[1], tx[2], tx[3], 1, 1, 1) end
+    -- The 5-day average (ns.FiveDayAverage), history like the usual price, so
+    -- it shows the same way: under it, or where it would be when Sell at
+    -- takes its place, and not at all with under 5 days of prices.
+    local a5 = money(type(ns.FiveDayAverage) == "function" and ns.FiveDayAverage(item.id) or nil)
+    if a5 then tt:AddDoubleLine("5-day average" .. tag, a5, tx[1], tx[2], tx[3], 1, 1, 1) end
     if P and P.now then
       local label = (P.live and "Sell now (live)" or "Sell now")
       local c = P.nowVendor and ng or wh

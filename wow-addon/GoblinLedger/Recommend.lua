@@ -178,6 +178,35 @@ local function usualPrice(itemID)
 end
 ns.UsualPrice = usualPrice
 
+-- The 5-day average: the mean of the item's hourly market prices over the
+-- last 5 days (the 5D chart's 120 hours), whole copper. Hours with nothing
+-- listed have no price and are left out; the price file's repeats over a gap
+-- of up to 6 hours count, as for the usual price. A mean, not a middle: one
+-- dear day moves it, which is what an average over days should show next to
+-- the usual price. Only when the prices really span 5 days, else nil (an
+-- item first listed 2 days ago gets no line, never a "5-day" average of 2
+-- days): at least 24 hours with a price (a few scattered listings are not an
+-- average) and the oldest of them at least 108 hours (4.5 days) before the
+-- window's newest hour. Half a day of slack, as nothing may have been listed
+-- in the window's first hours.
+local AVG5_HOURS = 24   -- hours with a price, at least
+local AVG5_SPAN = 108   -- hours from the oldest of them to the window's newest hour, at least
+function ns.FiveDayAverage(itemID)
+  local s = type(ns.GetSeries) == "function" and ns.GetSeries(itemID, "5D") or nil
+  if not s then return nil end
+  local n = s.n or 0
+  local sum, cnt, first = 0, 0, nil
+  for i = 1, n do
+    local m = s.market[i]
+    if m and m > 0 then
+      sum, cnt = sum + m, cnt + 1
+      first = first or i
+    end
+  end
+  if cnt < AVG5_HOURS or n - first < AVG5_SPAN then return nil end
+  return floor(sum / cnt + 0.5)
+end
+
 -- Rule G, the one rule for the price to sell at (Recommend and SellPrices
 -- both use it): Sell now (now; nil when nothing is listed), unless it is
 -- under 70% of the usual price, then the usual price. Returns that price

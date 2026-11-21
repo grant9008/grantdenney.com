@@ -60,7 +60,7 @@ TOC_HEADER = [
     "## X-Credits: Price data from Blizzard Entertainment",
     "## X-Website: https://grantdenney.com/goblin-ledger/",
     "## SavedVariables: ForeverAH_Settings",
-    "## Version: 1.1.0",
+    "## Version: 1.1.1",
 ]
 PLACEHOLDER = ("-- Goblin Ledger price data placeholder. Run Install-Goblin-Ledger.bat.\n"
                "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }")
@@ -4141,6 +4141,11 @@ def ref_usual(ref, iid):
     return rec_model.usual_price(ref.window(iid, "1W")["market"])
 
 
+def ref_avg5(ref, iid):
+    """ns.FiveDayAverage: the mean of the 5D window's hourly market prices, only over 5 days of them."""
+    return rec_model.five_day_average(ref.window(iid, "5D")["market"])
+
+
 def week_range(ref, iid):
     return rec_model.week_range(ref.window(iid, "1W")["cheap"])
 
@@ -4315,6 +4320,8 @@ def expected_tooltip(ref, iid, age, mult=1, compact=False, count=None, live=None
         at_line = P is not None and P["at"] is not None and (under is not None or P["now"] is None)
         if not at_line and m(usual):
             add("Usual price" + tag, m(usual), "text", "white")
+        if m(ref_avg5(ref, iid)):
+            add("5-day average" + tag, m(ref_avg5(ref, iid)), "text", "white")
         if P is not None:
             if P["now"] is not None:
                 label = "Sell now (live)" if P["live"] else "Sell now"
@@ -4445,7 +4452,8 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=
     multiplied by Shift)."""
     it = ref.items[iid]
     P = ref_sell_prices(ref, iid, tf, live, own)
-    want = {"AH value": it["market"], "Usual price": ref_usual(ref, iid), "Vendor pays": it["vendor"],
+    want = {"AH value": it["market"], "Usual price": ref_usual(ref, iid), "5-day average": ref_avg5(ref, iid),
+            "Vendor pays": it["vendor"],
             "Sell now": P["now"], "Sell now (live)": P["now"], "Sell at": P["at"], "AH value (live)": live}
     seen = set()
     for left, right in lines:
@@ -4472,6 +4480,8 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=
     at_line = P["at"] is not None and (P["now"] is None or P["under"] is not None)
     if ref_usual(ref, iid) and not at_line:
         sc.check("Usual price" in seen, "%s: the usual price shown (%s)" % (label, sorted(seen)))
+    sc.eq("5-day average" in seen, ref_avg5(ref, iid) is not None,
+          "%s: a 5-day average exactly with 5 days of prices (%s)" % (label, sorted(seen)))
 
 
 def check_series_and_recommend(sc, w, ref, ids=None, tfs=TFS):
@@ -12188,6 +12198,207 @@ def sc_stack_photo(sc, ref, items):
     for slot in (1, 2):
         sc.eq(got[slot], ("auction", 37981, False), "photo old + browse row: the bag panel in 0:%d, as the tooltip" % slot)
     w.close_ah_modern()
+    sc.clean(w)
+
+
+def sc_avg5(sc, ref, items):
+    """The owner's ask (21 Nov, a Thorium Ore tooltip): "add 5 day average". A
+    "5-day average" line right under Usual price: the mean of the 5D window's
+    hourly market prices that have one (the 120 newest hours; nothing listed is
+    left out, never a 0), rounded half up to whole copper, worked out here from
+    the series as written, not with the addon's helper nor rec_model. Only over
+    5 days of prices: at least 24 priced hours, the oldest of them at least 108
+    hours before the window's newest hour; else no line. Shift multiplies it
+    with the "(xN)" tag; old prices get the "~" as Usual price does; it has
+    Usual price's colours; compact mode leaves it out. When Sell at shows
+    instead of Usual price, it sits right after AH value, before Sell now."""
+    from fractions import Fraction
+    picks = [i for i in other_items(ref, items, 400)
+             if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0
+             and i not in ref.variants and i not in ref.base_of]
+    if not sc.check(len(picks) >= 10, "avg5: enough items to test with (%d)" % len(picks)):
+        return
+    VENDOR = 75
+
+    def hours(k, f):
+        return [f(j) for j in range(k)]
+
+    # A full week. The 2 days before the window at 90s (a 1W mean would show them), then in the
+    # window a day near 20s, 10 hours with nothing listed, a dear day at 52s (the mean moves, the
+    # middle does not), and the last day near 24s (the usual price).
+    def full_week(j):
+        k = j - 48
+        if k < 0:
+            return 9000
+        if k < 24:
+            return 2000 + (k * 37) % 300
+        if k < 34:
+            return None
+        if k < 58:
+            return 5200
+        if k < 96:
+            return 2100 + (k * 53) % 400
+        return 2400 + (k * 11) % 60
+    week = hours(168, full_week)
+    cases = [
+        # key, hourly market prices (oldest first), cheapest and market now, shown?
+        ("full", week, 2440, 2440, True),
+        ("dumped", week, 1200, 1200, True),                      # Sell now under 70% of the usual price: Sell at
+        ("two days", hours(48, lambda j: 2400 + j % 7), 2440, 2440, False),
+        ("109 hours", hours(109, lambda j: 2300 + (j * 7) % 90), 2350, 2350, True),    # the oldest 108 hours back
+        ("108 hours", hours(108, lambda j: 2300 + (j * 7) % 90), 2350, 2350, False),   # 107 hours back
+        # a week of hours, but nothing listed in the window's first 11 / 12 hours
+        ("late 11", hours(168, lambda j: None if 48 <= j < 59 else 2500 + j % 13), 2510, 2510, True),
+        ("late 12", hours(168, lambda j: None if 48 <= j < 60 else 2500 + j % 13), 2510, 2510, False),
+        # a price every 5th hour of the window: 24 of them, then 23 (the first one left out)
+        ("24 priced", hours(168, lambda j: (2600 + j) if j >= 48 and (j - 48) % 5 == 0 else None), 2700, 2700, True),
+        ("23 priced", hours(168, lambda j: (2600 + j) if j >= 53 and (j - 48) % 5 == 0 else None), 2700, 2700, False),
+        # a mean of exactly 20s 0.5c: rounded up to 20s 1c
+        ("half", hours(168, lambda j: 2000 + j % 2), 2000, 2000, True),
+    ]
+    made, keys = {}, {}
+    for (key, mk, cheapest, market, _), iid in zip(cases, picks):
+        ch = [v - 5 if v else None for v in mk]
+        sold = [1 if v else 0 for v in mk]
+        made[iid] = "%d|%d|50|20|%d|%d|%s|%s|20" % (
+            cheapest, market, market, VENDOR, enc_series(ch, mk, sold),
+            enc_series([cheapest] * 5, [market] * 5, [24] * 5))
+        keys[key] = iid
+    text = rewrite_items(ref.text, lambda iid, fl: [fl[0]] + made[iid].split("|") if iid in made else None)
+    r2 = RefData(text=text)
+
+    def mean5(mk):
+        """From the hourly prices as written: the last 120 hours, the ones with a price."""
+        win = mk[-120:]
+        priced = [(k, v) for k, v in enumerate(win) if v]
+        if len(priced) < 24 or (len(win) - 1) - priced[0][0] < 108:
+            return None
+        q = Fraction(sum(v for _, v in priced), len(priced))
+        return math.floor(q + Fraction(1, 2))
+    want_avg = {keys[key]: mean5(mk) for key, mk, _, _, _ in cases}
+    for key, mk, _, _, shown in cases:
+        iid = keys[key]
+        sc.eq(want_avg[iid] is not None, shown, "avg5 %s: the case is what it says (%s)" % (key, want_avg[iid]))
+        sc.eq(rec_model.five_day_average(r2.window(iid, "5D")["market"]), want_avg[iid],
+              "avg5 %s: the harness's model agrees with the series" % key)
+    full = want_avg[keys["full"]]
+    wk = [v for v in week if v]
+    win_vals = sorted(v for v in week[-120:] if v)
+    sc.check(full != rec_model.pct(win_vals, 0.5) and full != (sum(wk) * 2 + len(wk)) // (2 * len(wk))
+             and full != sum(win_vals) // 120 and full != ref_usual(r2, keys["full"]),
+             "avg5: the full week's mean (%d) is not its middle, the 1W mean, a mean with the gap as 0 "
+             "or the usual price" % full)
+    sc.eq(want_avg[keys["half"]], 2001, "avg5: 20s 0.5c rounds up to 20s 1c")
+
+    def world(now=None):
+        w = World(r2, items, data_src=text, now=now)
+        for iid in made:
+            w.M["items"][iid].vendor = VENDOR
+            w.M["items"][iid].quality = 1
+        for slot, iid in enumerate(made, 1):
+            w.put_bag(0, slot, iid, 20)
+        return w
+    slot_of = {iid: slot for slot, iid in enumerate(made, 1)}
+
+    def hover(w, iid, shift, bag=True):
+        tt = w.g.GameTooltip
+        w.M.shift = shift
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        if bag:
+            tt.SetBagItem(tt, 0, slot_of[iid])
+        else:
+            tt.SetItemByID(tt, iid)
+        lines = w.lines(tt)
+        w.M.shift = False
+        return tt, lines
+
+    def avg_lines(lines):
+        return [(l, r) for l, r in lines if (l or "").startswith("5-day")]
+
+    w = world()
+    age = w.now - r2.updated
+    for key, mk, _, _, shown in cases:
+        iid = keys[key]
+        a = want_avg[iid]
+        for bag, shift in ((False, False), (True, False), (True, True)):
+            mult = 20 if shift else 1
+            lab = "avg5 %s%s%s" % (key, " bag x20" if bag else "", " Shift" if shift else "")
+            tt, lines = hover(w, iid, shift, bag)
+            want, want_st = expected_tooltip(r2, iid, age, mult=mult, count=20 if bag else None, styles=True)
+            sc.eq(lines, want, lab + " tooltip")
+            tooltip_values_ok(sc, r2, iid, lines, mult, lab)
+            tooltip_style_ok(sc, w, tt, want_st, lab)
+            got = avg_lines(lines)
+            if not shown:
+                sc.eq(got, [], lab + ": no 5-day average with under 5 days of prices")
+                continue
+            sc.eq(got, [("5-day average" + (" (x20)" if shift else ""), money_icons(a * mult))],
+                  lab + ": the 5-day average, times the stack with Shift")
+            left = [l for l, _ in lines]
+            i = left.index(got[0][0]) if got else -1
+            usual = [k for k, l in enumerate(left) if (l or "").startswith("Usual price")]
+            if key == "dumped":
+                sc.check(0 < i < len(left) - 2 and not usual and left[i - 1].startswith("AH value")
+                         and left[i + 1].startswith("Sell now (") and "Sell at" + (" (x20)" if shift else "") in left[i + 2:],
+                         "%s: no Usual price; the average after AH value, before Sell now and Sell at (%s)" % (lab, left))
+            else:
+                sc.check(len(usual) == 1 and i == usual[0] + 1, "%s: right under Usual price (%s)" % (lab, left))
+                st = tooltip_styles(w, tt)
+                first = int(tt._blz or 0)
+                if len(usual) == 1 and i > 0:
+                    sc.eq(st[first + i][:2], st[first + usual[0]][:2], lab + ": the colours of the Usual price line")
+    # the Thorium Ore photo's lines, with the average where the owner asked for it
+    tt, lines = hover(w, keys["full"], False)
+    sc.eq([l for l, _ in lines][2:6], ["AH value", "Usual price", "5-day average", "Sell now"],
+          "avg5 full: AH value, Usual price, 5-day average, Sell now (%s)" % lines)
+    # compact mode: one line, never the average
+    w.slash("/gl compact")
+    for key, _, _, _, _ in cases:
+        iid = keys[key]
+        for shift in (False, True):
+            tt, lines = hover(w, iid, shift)
+            want, want_st = expected_tooltip(r2, iid, age, mult=20 if shift else 1, count=20, compact=True, styles=True)
+            sc.eq(lines, want, "avg5 %s compact%s" % (key, " Shift" if shift else ""))
+            sc.check(not any("5-day" in (l or "") + (r or "") for l, r in lines), "avg5 %s compact: no average" % key)
+    w.slash("/gl compact")
+    tt, lines = hover(w, keys["full"], False)
+    sc.eq(len(avg_lines(lines)), 1, "avg5: back from compact, the average again")
+    sc.clean(w)
+
+    # 4-hour-old prices: a "~" on the average, as on the usual price (both from the file)
+    w = world(now=r2.updated + 4 * 3600)
+    age = w.now - r2.updated
+    for key in ("full", "dumped", "two days"):
+        iid = keys[key]
+        for shift in (False, True):
+            mult = 20 if shift else 1
+            lab = "avg5 old %s%s" % (key, " Shift" if shift else "")
+            tt, lines = hover(w, iid, shift)
+            sc.eq(lines, expected_tooltip(r2, iid, age, mult=mult, count=20, loaded_age=age), lab + " tooltip")
+            tooltip_values_ok(sc, r2, iid, lines, mult, lab)
+            a = want_avg[iid]
+            sc.eq(avg_lines(lines), [("5-day average" + (" (x20)" if shift else ""), "~" + money_icons(a * mult))]
+                  if a else [], lab + ": the average with a ~")
+            u = [r for l, r in lines if (l or "").startswith("Usual price")]
+            sc.check(all(r.startswith("~") for r in u), "%s: the usual price has its ~ too (%s)" % (lab, u))
+    sc.clean(w)
+
+    # every item of the data under test (a sample of a big file): the line exactly when its
+    # 5D window has 5 days of prices, at their mean, worked out here from the window. The
+    # simulated data has a week of them; a real file from a collector's first days may have
+    # none yet (the 19 Nov file: 30 hours), then no item gets the line.
+    w = World(ref, items)
+    tt = w.g.GameTooltip
+    shown = 0
+    for iid in sample_ids(ref, SAMPLE):
+        a = mean5(ref.window(iid, "5D")["market"])
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetItemByID(tt, iid)
+        got = avg_lines(w.lines(tt))
+        sc.eq(got, [("5-day average", money_icons(a))] if a else [], "avg5 data %d: the 5-day average" % iid)
+        shown += bool(got)
+    if R.SIM:
+        sc.check(shown > 0, "avg5 data: the simulated items have 5 days of prices (%d)" % shown)
     sc.clean(w)
 
 
@@ -35501,6 +35712,7 @@ SCENARIOS = [
     ("old-data-format", with_history(sc_old_format)),
     ("stack-verdicts", sc_stack_verdicts),
     ("stack-photo", sc_stack_photo),
+    ("avg5", sc_avg5),
     ("tooltip-verdicts", sc_tooltip_verdicts),
     ("tooltip-fonts", sc_tooltip_fonts),
     ("tooltip-big-lines", sc_tooltip_big_lines),

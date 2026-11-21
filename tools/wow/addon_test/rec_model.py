@@ -122,6 +122,22 @@ def usual_price(market_week):
     return pct(sorted(vals), 0.5)
 
 
+AVG5_HOURS = 24   # hours with a price, at least
+AVG5_SPAN = 108   # hours (4.5 days) from the oldest of them to the window's newest hour, at least
+
+
+def five_day_average(market_5d):
+    """ns.FiveDayAverage: the mean of the hourly 5D window's market prices (None = nothing
+    listed, left out), rounded half up to whole copper, only when at least 24 hours have a
+    price and the oldest of them is at least 108 hours before the window's newest hour.
+    Whole-number arithmetic, not the Lua's division."""
+    priced = [(i, v) for i, v in enumerate(market_5d) if v and v > 0]
+    if len(priced) < AVG5_HOURS or (len(market_5d) - 1) - priced[0][0] < AVG5_SPAN:
+        return None
+    total, cnt = sum(v for _, v in priced), len(priced)
+    return (2 * total + cnt) // (2 * cnt)
+
+
 def money_text(c):
     v = math.floor(abs(c) + 0.5)
     g, s, k = v // 10000, (v % 10000) // 100, v % 100
