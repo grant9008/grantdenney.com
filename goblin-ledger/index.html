@@ -15,9 +15,9 @@
                            Older version (its "List At" box is "Sell at" now).
                            Shown at full size: on phones it scrolls sideways.
     img/bag-cleanup.png    the Bag cleanup panel                           REAL 222 x 254
-    img/auction-house.png  sell window + chart                             REAL, NOT SHOWN:
-                           it still has the old Suggested button.
-    img/og.png             link preview for Discord and texts, 1200 x 630 (a graphic)
+    img/og.png             link preview for Discord and texts, 1200 x 630 (a graphic).
+                           Linked as og.png?v=110: bump v when the picture changes,
+                           so Discord fetches it again.
 
   DRAWINGS (HTML/CSS, captioned with a "Drawing" tag: not a screenshot), in
   the game's look: the colours, font sizes and layout from the addon's code.
@@ -32,8 +32,10 @@
     consumes  the Consumes panel for a level 47 warrior (melee), Best: as the
               game lays it out at its 631 px width, two columns (sections side
               by side, the taller one sets the height). Item icons are plain
-              squares. Under 620 px wide one column, without POTIONS and
-              STONES AND OILS (the part the drawing is about stays)
+              squares. Under 860 px wide one column, without POTIONS and
+              STONES AND OILS (the part the drawing is about stays); under
+              480 px the food rows leave out their "+5% XP" (the same on
+              every row) so the buffs fit
     flights   flight map, Stormwind to Ironforge; the big timer as the flight
               starts ("Ironforge 4:19", the strip under it = time left)
     boats     the big boat timer at the Theramore dock, a learned boat counting
@@ -62,9 +64,12 @@
     <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
 
   The install steps match tools/goblin-ledger/install.ps1 and README.txt (the
-  GoblinLedger.zip release, built by make_release.ps1). The Download links
-  work once GoblinLedger.zip is attached to a GitHub release of
-  grant9008/grantdenney.com (releases/latest/download/...).
+  GoblinLedger.zip release, built by make_release.ps1): the Windows warning,
+  then the game folder (only when it is not found), then two Y/N questions
+  that a plain Enter answers with yes. The Download links point at
+  releases/latest/download/GoblinLedger.zip of grant9008/grantdenney.com:
+  publish the 1.1.0 release (with that zip) before or together with this
+  page, or friends get the older version the page does not describe.
 -->
 <html lang="en">
 <head>
@@ -82,9 +87,9 @@
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="Goblin Ledger">
 <meta property="og:url" content="https://grantdenney.com/goblin-ledger/">
-<meta property="og:title" content="Goblin Ledger">
+<meta property="og:title" content="Goblin Ledger: auction house prices in your tooltips">
 <meta property="og:description" content="Auction house prices in your WoW Forever tooltips, plus enchant, consumes, crafting, flight and boat tips. Free, installs in about 3 minutes. Alliance PvP realms.">
-<meta property="og:image" content="https://grantdenney.com/goblin-ledger/img/og.png">
+<meta property="og:image" content="https://grantdenney.com/goblin-ledger/img/og.png?v=110">
 <meta property="og:image:width" content="1200">
 <meta property="og:image:height" content="630">
 <meta property="og:image:alt" content="Goblin Ledger: auction house prices in your tooltips, for Alliance PvP realms.">
@@ -240,6 +245,10 @@ h1 {
   font-size: clamp(19px, 2.4vw, 23px); font-weight: 700; line-height: 1.35;
 }
 .fine { margin: 14px 0 0; color: var(--muted); font-size: 14px; }
+.fine a { font-weight: 700; }
+/* Only on a phone or tablet: the zip is for a Windows PC. */
+.tap-only { display: none; }
+@media (hover: none) and (pointer: coarse) { .tap-only { display: block; } }
 
 /* ---- sections ---- */
 .section { padding: 48px 0; border-bottom: 1px solid var(--hair); }
@@ -273,6 +282,7 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 /* Picture and bullets side by side only where the picture still fits at full size. */
 @media (min-width: 1100px) {
   .tile.wide { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); }
+  .tile.wide.cons { grid-template-columns: minmax(0, 2.6fr) minmax(0, 1fr); }   /* the panel's rows need the room */
   .tile.wide .stage { border-bottom: 0; border-right: 1px solid var(--hair); }
   .tile.wide .tile-body { align-self: center; }
 }
@@ -395,22 +405,23 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 
 /* ---- the Consumes panel (Consumes.lua's look: header 18, rows 16, two columns) ---- */
 .cpanel {
-  width: 100%; max-width: 700px; margin: 0 auto; border: 1px solid #333342; border-radius: 2px;
+  width: 100%; max-width: 740px; margin: 0 auto; border: 1px solid #333342; border-radius: 2px;
   background: rgba(11, 14, 20, 0.96); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); color: #E6E0D6;
   font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
   font-size: 12.5px; font-weight: 600; line-height: 18px; text-align: left;
 }
 .cpanel p { margin: 0; }
-.cp-head { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; }
+.cp-head { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; white-space: nowrap; }
 .cp-head .cp-go { margin-left: auto; }
+.cp-head .cp-ttl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .cp-btn { padding: 0 6px; border-radius: 2px; background: #1A1D24; color: #8C8273; font-size: 11.5px; line-height: 17px; }
 .cp-gold { color: #E5B842; }
 .cp-mut { color: #8C8273; }
 .cp-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; padding: 1px 6px 4px; }
-@media (min-width: 620px) { .cp-body { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 619px) { .cp-wide { display: none; } }
+@media (min-width: 860px) { .cp-body { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 859px) { .cp-wide { display: none; } }
 .cp-t { padding-left: 2px; color: #8C8273; font-size: 11.5px; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cp-r { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
+.cp-r { display: flex; align-items: center; gap: 3px; min-width: 0; white-space: nowrap; }
 .cp-r .ic {
   flex: none; width: 14px; height: 14px; margin-left: 1px; border: 1px solid rgba(0, 0, 0, 0.6); border-radius: 2px;
   background: linear-gradient(135deg, var(--ic, #6A5A3A), #1A1610);
@@ -421,6 +432,11 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 .cp-r .xp { color: #40CC73; }
 .cp-r .pc { flex: none; color: #8C8273; }
 .cp-r .pr { flex: none; padding-right: 2px; }
+/* Phones: the food rows drop their "+5% XP" (the same on every row), so the buffs fit. */
+@media (max-width: 479px) {
+  .cp-food .xp { display: none; }
+  .stage-cons { padding-left: 8px; padding-right: 8px; }
+}
 /* the price website card (a drawing too) */
 .sitecard { max-width: 380px; overflow: hidden; }
 .sc-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
@@ -461,6 +477,18 @@ kbd {
   background: var(--panel); color: var(--strong); font-family: inherit; font-size: 14px; font-weight: 700;
 }
 .cmds span { color: var(--muted); font-size: 15px; }
+/* The rest of the commands, folded (works without scripts). */
+.more-cmds { margin: 14px 0 0; }
+.more-cmds > summary {
+  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 8px 16px;
+  border: 1px solid var(--line-2); border-radius: 10px; background: var(--panel); color: var(--strong);
+  font-weight: 800; cursor: pointer; list-style: none;
+}
+.more-cmds > summary::-webkit-details-marker { display: none; }
+.more-cmds > summary::before { content: "+"; color: var(--accent); font-size: 20px; line-height: 1; }
+.more-cmds[open] > summary::before { content: "\2212"; }
+.more-cmds > summary:hover { border-color: var(--accent-2); }
+.more-cmds .cmds { margin-top: 10px; }
 .cols { display: grid; gap: 14px; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); }
 .card { padding: 18px 20px; border: 1px solid var(--hair); border-radius: 12px; background: var(--panel); }
 .card h3 { font-size: 18.5px; margin-bottom: 10px; }
@@ -533,7 +561,8 @@ kbd {
         Price website
       </a>
     </div>
-    <p class="fine">Free. Version 1.1.0. About 3 minutes to install. US PvP realms.</p>
+    <p class="fine">Free. Version 1.1.0. <span class="nw">US PvP realms.</span> <a class="nw" href="#install">How to install: 4 steps, 3 min</a></p>
+    <p class="fine tap-only">On your phone? Install it from your Windows PC.</p>
   </div>
 </section>
 
@@ -552,7 +581,7 @@ kbd {
             <p class="tip-item">Iron Ore</p>
             <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="t-mut">25m ago</span></p>
             <p class="tip-row big"><span class="t-pos">Auction it</span><span class="t-pos">+48% vs vendor</span></p>
-            <p class="tip-row big"><span>AH value</span><span><span class="m-s">2s</span> <span class="m-c">44c</span> <span class="t-mut sm">0% vs usual</span></span></p>
+            <p class="tip-row big"><span>AH value</span><span><span class="m-s">2s</span> <span class="m-c">44c</span> <span class="t-mut">0% vs usual</span></span></p>
             <p class="tip-row"><span>Usual price</span><span><span class="m-s">2s</span> <span class="m-c">43c</span></span></p>
             <p class="tip-row"><span>Sell now</span><span><span class="m-s">2s</span> <span class="m-c">34c</span></span></p>
             <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">44s</span> <span class="m-c">46c</span></span></p>
@@ -583,8 +612,8 @@ kbd {
         <div class="tile-body">
           <h3>At the auction house</h3>
           <ul class="ticks">
-            <li><b>Price chart</b> under the AH: 1D, 5D, 1W, 1M, 1Y</li>
-            <li><b>Sell now</b> button fills the price (gear: whole silver); you click Post</li>
+            <li><b>Price chart</b> under the AH: the last day, week or month</li>
+            <li><b>Sell now</b> / <b>Sell at</b> buttons fill the price (gear: whole silver); posting stays your click</li>
             <li>Tiny <b>up/down arrows</b> in the gold, silver, copper boxes</li>
             <li>No results? When it was last listed, for how much; craft costs</li>
             <li>Sidebar: your <b>watchlist</b> and <b>flip ideas</b> (experimental, up to 20g)</li>
@@ -624,16 +653,16 @@ kbd {
       </article>
 
       <!-- Consumes: drawing of the panel, real lines (level 47 warrior, melee, Best) -->
-      <article class="tile wide">
-        <figure class="stage">
+      <article class="tile wide cons">
+        <figure class="stage stage-cons">
           <div class="cpanel" role="img" aria-label="Drawing of the Goblin Ledger Consumes panel for melee, level 47, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon plus 40 AP plus 5% XP, best, 3 silver 94 copper; Smoked Desert Dumplings, best, 16 silver 98; Grilled Squid 62%; Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose plus 25 Agility plus 2% crit, best, 90 silver 66; or Greater Agility 33%; Brute Force 57%, 1 gold 99 silver; or Ogre Strength 21%; Winterfall Firewater 31%; or Distilled Firewater 31%. SCROLLS - 2 at once: Strength III best; or Strength II 69%; Agility III 50%; or Agility II 34%. Wide screens also show POTIONS and STONES AND OILS.">
             <div class="cp-head">
               <span class="cp-mut">v</span>
-              <span><span class="cp-gold">Consumes</span> for melee, level 47</span>
+              <span class="cp-ttl"><span class="cp-gold">Consumes</span> for melee, level 47</span>
               <span class="cp-btn cp-go">Best</span><span class="cp-btn">All</span>
             </div>
             <div class="cp-body">
-              <div>
+              <div class="cp-food">
                 <p class="cp-t">FOOD - 1 at a time</p>
                 <p class="cp-r"><i class="ic" style="--ic:#C9773A"></i><span class="nm">Poached Sunscale Salmon <span class="bf">+40 AP</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">3s 94c</span></p>
                 <p class="cp-r"><i class="ic" style="--ic:#B88A4A"></i><span class="nm">Smoked Desert Dumplings <span class="bf">+20 Str</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">16s 98c</span></p>
@@ -704,7 +733,7 @@ kbd {
         <div class="tile-body">
           <h3>Flight timer</h3>
           <ul class="ticks">
-            <li>The flight map shows each flight's time</li>
+            <li>Flight map: hover a place to see its flight time</li>
             <li>Flying: a big countdown up top; the strip is time left</li>
             <li>Drag it anywhere, it stays; X hides it till you land</li>
           </ul>
@@ -720,7 +749,7 @@ kbd {
           <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
         </figure>
         <div class="tile-body">
-          <h3>Boat and zeppelin timer</h3>
+          <h3>Boat timer</h3>
           <ul class="ticks">
             <li>At a dock: a big countdown, or "docked, leaves in 0:35"</li>
             <li>Learns from your rides and guild mates with the addon</li>
@@ -761,7 +790,7 @@ kbd {
       <!-- Bag cleanup: real photo -->
       <article class="tile">
         <figure class="stage">
-          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" decoding="async"
+          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" loading="lazy" decoding="async"
                alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button."></a>
           <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
         </figure>
@@ -771,6 +800,7 @@ kbd {
             <li>A <b>Bag cleanup</b> button on your bags (ElvUI too)</li>
             <li>Cheapest stacks first, stacks to merge</li>
             <li><b>Drop cheapest</b> always asks first</li>
+            <li>At a vendor: <b>Sell junk</b>, or click a row to sell it</li>
             <li>Quest items say "Can drop" or "Keep" (best with Questie)</li>
           </ul>
         </div>
@@ -820,13 +850,15 @@ kbd {
       <li>
         <p class="k">Unzip it</p>
         <p class="s">Right-click the zip, Extract All, Extract.</p>
+        <p class="s">Keep that folder: its installer also gets fresh prices.</p>
       </li>
       <li>
         <p class="k">Run the installer</p>
-        <p>Double-click <b>Install-Goblin-Ledger.bat</b>, press Y twice.</p>
-        <p class="s">Y, Y: prices every 30 min, new versions by themselves.</p>
+        <p>Double-click <b>Install-Goblin-Ledger.bat</b>.</p>
         <p class="s">Windows warns? More info, Run anyway.</p>
-        <p class="s">Game not found? It asks: paste your _forever_ folder.</p>
+        <p class="s">Game not found? It shows how to paste your _forever_ folder.</p>
+        <p>Two questions: press <b>Enter</b> for each.</p>
+        <p class="s">Yes: prices every 30 min, new versions by themselves.</p>
       </li>
       <li>
         <p class="k">Start WoW</p>
@@ -846,24 +878,32 @@ kbd {
       <li><code>/gl help</code> <span>every command</span></li>
       <li><code>/reload</code> <span>load the new prices</span></li>
       <li><code>/gl compact</code> <span>one-line tooltips</span></li>
-      <li><code>/gl tooltip</code> <span>prices off or on</span></li>
       <li><code>/gl chart Linen Cloth</code> <span>chart any item</span></li>
-      <li><code>/gl watch Runecloth</code> <span>add to your AH watchlist</span></li>
+      <li><code>/gl watch Runecloth</code> <span>add to watchlist</span></li>
       <li><code>/gl flips</code> <span>flip ideas in chat</span></li>
       <li><code>/gl bags</code> <span>cleanup list in chat</span></li>
-      <li><code>/gl keep Silk Cloth</code> <span>never suggest dropping it</span></li>
-      <li><code>/gl enchants top2</code> <span>best two only</span></li>
-      <li><code>/gl enchants tank</code> <span>set your role (auto: talents)</span></li>
-      <li><code>/gl consumes budget</code> <span>cheaper picks</span></li>
       <li><code>/gl boat now</code> <span>boat just docked: learn it</span></li>
-      <li><code>/gl boats small</code> <span>a line under the minimap</span></li>
-      <li><code>/gl flights small</code> <span>a slim flight bar</span></li>
-      <li><code>/gl boats reset</code> <span>boat timer back to the middle</span></li>
-      <li><code>/gl flights reset</code> <span>flight timer back too</span></li>
       <li><code>/gl update</code> <span>your version, how to update</span></li>
       <li><kbd>Shift</kbd> <span>hold: whole stack, every mat</span></li>
     </ul>
-    <p class="note"><code>off</code> turns enchants, consumes, crafts, flights or boats off; <code>on</code> brings it back (enchants: <code>auto</code>).</p>
+    <details class="more-cmds">
+      <summary>More commands</summary>
+      <ul class="cmds">
+        <li><code>/gl tooltip</code> <span>prices off or on</span></li>
+        <li><code>/gl sidebar</code> <span>AH sidebar away or back</span></li>
+        <li><code>/gl keep Runecloth</code> <span>bag cleanup skips it</span></li>
+        <li><code>/gl enchants top2</code> <span>best two only</span></li>
+        <li><code>/gl enchants tank</code> <span>pick your role</span></li>
+        <li><code>/gl consumes budget</code> <span>cheaper picks</span></li>
+        <li><code>/gl boats small</code> <span>line under the minimap</span></li>
+        <li><code>/gl boats big</code> <span>big again</span></li>
+        <li><code>/gl flights small</code> <span>a slim flight bar</span></li>
+        <li><code>/gl flights big</code> <span>big again</span></li>
+        <li><code>/gl boats reset</code> <span>back to the middle</span></li>
+        <li><code>/gl flights reset</code> <span>same for flights</span></li>
+      </ul>
+      <p class="note">Turn a part off: <code>/gl boats off</code>, and <code>on</code> brings it back. Works for enchants, consumes, crafts, flights and boats (enchants come back with <code>auto</code>, which also reads your role from talents).</p>
+    </details>
   </div>
 </section>
 
@@ -878,9 +918,9 @@ kbd {
         <ul class="ticks">
           <li>Prices update by themselves every 30 min; <code>/reload</code> loads them</li>
           <li>3+ hours old? They get a ~ and the tooltip says what to do</li>
-          <li>New versions install by themselves (you said Y)</li>
-          <li>Or a chat line says one is out: run <b>Update-Goblin-Ledger.bat</b></li>
-          <li>Had the first version (1.0.0)? Run the new installer once</li>
+          <li>New versions install by themselves (if you said yes)</li>
+          <li>Or a chat line says one is out: <code class="nw">/gl update</code> says how</li>
+          <li>Had 1.0.0? Download the zip again and run its installer once</li>
         </ul>
       </div>
       <div class="card">
