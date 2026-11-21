@@ -9,59 +9,49 @@
   source; on a wide screen the grid fills gaps (grid-auto-flow: dense), so
   the enchant tile sits beside the tooltip tile.
 
-  PICTURES. Real photos (from the game, cropped, no names in them):
+  PICTURES. Real photos (from the game, 21 Nov 2026, Goblin Ledger 1.1.0;
+  cropped, no names in them), at their own pixel size (never scaled up,
+  smaller only in a narrower tile):
 
-    img/chart.png          the price chart under the AH                   REAL 693 x 222
-                           Older version (its "List At" box is "Sell at" now).
-                           Shown at full size: on phones it scrolls sideways.
-    img/bag-cleanup.png    the Bag cleanup panel                           REAL 222 x 254
-    img/og.png             link preview for Discord and texts, 1200 x 630 (a graphic).
-                           Linked as og.png?v=110: bump v when the picture changes,
-                           so Discord fetches it again.
+    img/tooltip-gloves.webp      233 x 281  worn gear: AH value, usual price, Sell now,
+                                            best enchant (the end of a name in the window
+                                            title showed through the tooltip: painted over)
+    img/tooltip-elixir.webp      261 x 131  20 Elixir of Strength, Shift held: Auction it
+                                            and the x20 prices, cut off above the stack line
+    img/enchants-bonebiter.webp  214 x 274  a worn two-hand axe: enchant Top 5 and mats
+    img/consumes.webp            538 x 223  the Consumes panel only (a nameplate behind it
+                                            showed through: painted over). On phones it
+                                            scrolls sideways at full size.
+    img/boat-countdown.webp      295 x 115  the big boat timer over the sea at Menethil
+    img/boat-docked.webp         430 x 240  the ship docked at Theramore (two tiny
+                                            nameplates on the deck: painted over)
+    img/crafts-chest.webp        214 x 237  a crafted chest from its Sell Price line down:
+                                            Make, Mats, enchant tips (the maker's line
+                                            above is left out)
+    img/bag-cleanup.webp         394 x 275  the Bag cleanup panel and the bags' button.
+                                            On phones it scrolls sideways at full size.
+    img/chart.png                693 x 222  the price chart under the AH, an older version
+                                            (its "List At" box is "Sell at" now). On
+                                            phones it scrolls sideways at full size.
+    img/og.png                   link preview for Discord and texts, 1200 x 630 (a graphic).
+                                 Linked as og.png?v=110: bump v when the picture changes,
+                                 so Discord fetches it again.
 
-  DRAWINGS (HTML/CSS, captioned with a "Drawing" tag: not a screenshot), in
-  the game's look: the colours, font sizes and layout from the addon's code.
-  Every line in them is one the addon really prints (Goblin Ledger 1.1.0 in
-  tools/wow/addon_test/harness.py's mock game, on the real price file of
-  18 Nov 2026). Names are items and places, never players.
+  DRAWINGS (HTML/CSS, captioned with a "Drawing" tag: not a screenshot), only
+  where there is no photo yet, in the game's look:
 
-    tooltip   Iron Ore, a stack of 20 in the bags
-    enchants  Chief Brigadier Boots with Mithril Spurs, worn by a level 47
-              warrior, Top 5 (the default): the speed stays a choice, so the
-              stat options show under a grey line that names it
-    consumes  the Consumes panel for a level 47 warrior (melee), Best: as the
-              game lays it out at its 631 px width, two columns (sections side
-              by side, the taller one sets the height). Item icons are plain
-              squares. Under 860 px wide one column, without POTIONS and
-              STONES AND OILS (the part the drawing is about stays); under
-              480 px the food rows leave out their "+5% XP" (the same on
-              every row) so the buffs fit
     flights   flight map, Stormwind to Ironforge; the big timer as the flight
-              starts ("Ironforge 4:19", the strip under it = time left)
-    boats     the big boat timer at the Theramore dock, a learned boat counting
-              ("Boat to Menethil 1:42")
-    crafts    Thorium Ore (with Mining) and Plans: Mithril Spurs: only the craft lines
+              starts ("Ironforge 4:19", the strip under it = time left), as
+              Core.lua's ns.Big draws it (the game's font with an outline; the
+              place 16, white; the countdown 32, gold |cffffd100; the X 14, 6
+              after the line; the strip 3 high, 3 under the line, gold)
     website   a made-up price line
 
-  The big timers: Core.lua's ns.Big (the game's font with an outline; the
-  route or place 16, white; the countdown 32, gold |cffffd100; the X 14,
-  6 after the line; the flight strip 3 high, 3 under the line, gold).
-  The Consumes panel: Consumes.lua (header 18, rows 16, titles and "or" grey,
-  % grey, the panel #0B0E14 at 96% with a #333342 edge).
-
-  To swap a drawing for a real photo: save the photo in goblin-ledger/img/
-  under the name below, replace the drawing (the element with role="img")
-  with the <img> line (set width/height to the photo's pixel size), and change
-  its figcaption to: <span class="tag tag-real">Real screenshot</span>
-  Check each alt text against the photo.
-
-    <img src="img/tooltip.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: the Auction it call, AH value, usual price, Sell now and the stack after the AH cut.">
-    <img src="img/enchants.png" width="400" height="360" loading="lazy" decoding="async" alt="Screenshot of worn boots' tooltip with the Goblin Ledger enchant tips: the best enchants for your role, their mats and their cost.">
-    <img src="img/consumes.png" width="640" height="260" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger Consumes panel under the character screen, with ELIXIRS - 3 at once and grey or rows.">
-    <img src="img/crafts.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of a plan's tooltip with what it makes, its mats with their cost, and the profit after the AH cut.">
-    <img src="img/flight.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the big Goblin Ledger flight timer counting down to Ironforge.">
-    <img src="img/boat.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the big Goblin Ledger boat timer at a dock saying when the boat comes.">
-    <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
+  To swap a drawing for a photo: save it in goblin-ledger/img/, replace the
+  element with role="img" with an <img> (width/height = the photo's pixel
+  size, loading="lazy", an alt text checked against the photo) and change its
+  figcaption to: <span class="tag tag-real">Real screenshot</span>
+  Never a name in a photo: crop it, or paint it over.
 
   The install steps match tools/goblin-ledger/install.ps1 and README.txt (the
   GoblinLedger.zip release, built by make_release.ps1): the Windows warning,
@@ -282,7 +272,6 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 /* Picture and bullets side by side only where the picture still fits at full size. */
 @media (min-width: 1100px) {
   .tile.wide { display: grid; grid-template-columns: minmax(0, 2.2fr) minmax(0, 1fr); }
-  .tile.wide.cons { grid-template-columns: minmax(0, 2.6fr) minmax(0, 1fr); }   /* the panel's rows need the room */
   .tile.wide .stage { border-bottom: 0; border-right: 1px solid var(--hair); }
   .tile.wide .tile-body { align-self: center; }
 }
@@ -320,7 +309,7 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 .tag-real { border: 1px solid #3F6E50; background: rgba(64, 204, 115, 0.08); color: #8EDBA9; }
 .tile-body { padding: 16px 18px 18px; }
 
-/* ---- drawings (not screenshots), in the game's tooltip look ---- */
+/* ---- drawings (not screenshots), in the game's tooltip look: the flight map, the website ---- */
 .mock-box {
   width: 100%; margin: 0 auto; border: 1px solid #2C3A50; border-radius: 9px;
   background: linear-gradient(180deg, #10141C, #0B0E14);
@@ -333,44 +322,14 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 .pair { display: grid; gap: 12px; justify-items: center; width: 100%; }
 .tip-line { padding: 2px 0; }
 .tip-item { margin-bottom: 6px; color: #FFFFFF; font-size: 16.5px; font-weight: 700; }
-.tip-head {
-  display: flex; justify-content: space-between; gap: 12px; margin-bottom: 3px; padding-bottom: 6px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.07); font-size: 14px; font-weight: 700;
-}
-.tip-row {
-  display: flex; flex-wrap: wrap; justify-content: space-between; align-items: baseline; gap: 0 12px;
-  padding: 2px 0;
-}
-.tip-row > :last-child { margin-left: auto; color: #FFFFFF; text-align: right; white-space: nowrap; }
 .nw { white-space: nowrap; }
-.tip-row.big { padding: 3px 0; font-size: 18.5px; font-weight: 700; }
-.tip-mats { padding: 0 0 3px 12px; color: #8C8273; font-size: 14px; }
-.tl-brand { color: #38BDF7; }
-.mock-box .t-pos, .tip-row > .t-pos { color: #40CC73; }
-.mock-box .t-neg, .tip-row > .t-neg { color: #E65454; }
-.mock-box .t-mut, .tip-row .t-mut { color: #8C8273; }
-.sm { font-size: 0.8em; }
-.m-g { color: #FFD24D; }
-.m-s { color: #D3D3DB; }
-.m-c { color: #E0915A; }
-.tip-gray { padding: 2px 0; color: #8C8273; }
-.t-item-green { color: #1EFF00; }
-/* The enchant drawing: a long name wraps inside its own column, the price stays on its first line. */
-.ench .tip-row { flex-wrap: nowrap; }
-.ench .tip-row > :first-child { flex: 1 1 auto; min-width: 0; }
-@media (max-width: 480px) { .ench { font-size: 14px; } .ench .tip-mats { font-size: 13px; } }
 
-/* ---- the big timers (boat at a dock, flight in the air): words over the game world ---- */
+/* ---- the big flight timer: words over the game world ---- */
 /* No panel in the game: the scene behind is only there so the outlined words read as they do. */
 .scene {
   position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
   width: 100%; max-width: 400px; min-height: 120px; margin: 0 auto; padding: 22px 10px 26px; overflow: hidden;
   border: 1px solid #2C3A50; border-radius: 9px; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
-}
-.scene-sea {
-  background:
-    repeating-linear-gradient(172deg, rgba(255, 255, 255, 0) 0 13px, rgba(190, 170, 200, 0.07) 13px 15px),
-    linear-gradient(180deg, #2B2635 0%, #3A3042 45%, #2A2433 100%);
 }
 .scene-sky {
   background:
@@ -403,40 +362,6 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 .strip { height: 3px; margin: 4px 21px 0; background: rgba(0, 0, 0, 0.5); }
 .strip i { display: block; height: 100%; background: rgba(255, 209, 0, 0.9); }
 
-/* ---- the Consumes panel (Consumes.lua's look: header 18, rows 16, two columns) ---- */
-.cpanel {
-  width: 100%; max-width: 740px; margin: 0 auto; border: 1px solid #333342; border-radius: 2px;
-  background: rgba(11, 14, 20, 0.96); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); color: #E6E0D6;
-  font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
-  font-size: 12.5px; font-weight: 600; line-height: 18px; text-align: left;
-}
-.cpanel p { margin: 0; }
-.cp-head { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; white-space: nowrap; }
-.cp-head .cp-go { margin-left: auto; }
-.cp-head .cp-ttl { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.cp-btn { padding: 0 6px; border-radius: 2px; background: #1A1D24; color: #8C8273; font-size: 11.5px; line-height: 17px; }
-.cp-gold { color: #E5B842; }
-.cp-mut { color: #8C8273; }
-.cp-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; padding: 1px 6px 4px; }
-@media (min-width: 860px) { .cp-body { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
-@media (max-width: 859px) { .cp-wide { display: none; } }
-.cp-t { padding-left: 2px; color: #8C8273; font-size: 11.5px; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.cp-r { display: flex; align-items: center; gap: 3px; min-width: 0; white-space: nowrap; }
-.cp-r .ic {
-  flex: none; width: 14px; height: 14px; margin-left: 1px; border: 1px solid rgba(0, 0, 0, 0.6); border-radius: 2px;
-  background: linear-gradient(135deg, var(--ic, #6A5A3A), #1A1610);
-}
-.cp-r .or { flex: none; width: 13px; padding-left: 2px; color: #8C8273; }
-.cp-r .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.cp-r .bf { color: #8C8273; }
-.cp-r .xp { color: #40CC73; }
-.cp-r .pc { flex: none; color: #8C8273; }
-.cp-r .pr { flex: none; padding-right: 2px; }
-/* Phones: the food rows drop their "+5% XP" (the same on every row), so the buffs fit. */
-@media (max-width: 479px) {
-  .cp-food .xp { display: none; }
-  .stage-cons { padding-left: 8px; padding-right: 8px; }
-}
 /* the price website card (a drawing too) */
 .sitecard { max-width: 380px; overflow: hidden; }
 .sc-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
@@ -574,19 +499,16 @@ kbd {
 
     <div class="tiles">
 
-      <!-- Tooltip: drawing, real lines (Iron Ore x20 in the bags) -->
+      <!-- Tooltip: real photos (worn gloves; 20 Elixir of Strength with Shift, cut off above the stack line) -->
       <article class="tile">
         <figure class="stage">
-          <div class="mock-box gametip" role="img" aria-label="Drawing of an Iron Ore tooltip for a stack of 20 with the Goblin Ledger lines: prices 25 minutes old; Auction it, 48 percent more than a vendor pays; AH value 2 silver 44 copper, 0 percent versus usual; usual price 2 silver 43 copper; Sell now 2 silver 34 copper; this stack of 20 after the AH cut 44 silver 46 copper.">
-            <p class="tip-item">Iron Ore</p>
-            <p class="tip-head"><span class="tl-brand">Goblin Ledger</span><span class="t-mut">25m ago</span></p>
-            <p class="tip-row big"><span class="t-pos">Auction it</span><span class="t-pos">+48% vs vendor</span></p>
-            <p class="tip-row big"><span>AH value</span><span><span class="m-s">2s</span> <span class="m-c">44c</span> <span class="t-mut">0% vs usual</span></span></p>
-            <p class="tip-row"><span>Usual price</span><span><span class="m-s">2s</span> <span class="m-c">43c</span></span></p>
-            <p class="tip-row"><span>Sell now</span><span><span class="m-s">2s</span> <span class="m-c">34c</span></span></p>
-            <p class="tip-row"><span>This stack (20), after AH cut</span><span><span class="m-s">44s</span> <span class="m-c">46c</span></span></p>
+          <div class="pair">
+            <a href="img/tooltip-gloves.webp"><img src="img/tooltip-gloves.webp" width="233" height="281" decoding="async"
+               alt="Screenshot of a Gloves of Holy Might tooltip with the Goblin Ledger lines: prices 54 minutes old; AH value 25 gold 75 silver 98 copper, 0% vs usual; usual price 25 gold 75 silver 98 copper; Sell now 25 gold 75 silver 97 copper; best enchant Superior Strength +15, about 299 gold, and its mats."></a>
+            <a href="img/tooltip-elixir.webp"><img src="img/tooltip-elixir.webp" width="261" height="131" loading="lazy" decoding="async"
+               alt="Screenshot of the tooltip for 20 Elixir of Strength with Shift held: Auction it, 21x vendor; AH value for 20, 3 gold 44 silver, 29% under usual; usual price 4 gold 89 silver 80 copper; Sell now 3 gold 43 silver 80 copper."></a>
           </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span>cropped</figcaption>
         </figure>
         <div class="tile-body">
           <h3>Prices on every item</h3>
@@ -621,24 +543,12 @@ kbd {
         </div>
       </article>
 
-      <!-- Enchant tips: drawing, real lines (Chief Brigadier Boots with Mithril Spurs, level 47 warrior, Top 5) -->
+      <!-- Enchant tips: real photo (a worn Bonebiter, Top 5) -->
       <article class="tile">
         <figure class="stage">
-          <div class="mock-box gametip ench" role="img" aria-label="Drawing of the enchant tips on worn Chief Brigadier Boots that have Mithril Spurs, for a level 47 warrior: a grey line Has Mithril Spurs. Stat options:, then best enchant Forceful Thick Armor Kit about 56 silver, a Leatherworking kit; 2nd Greater Agility plus 7 about 19 gold, 8 Greater Eternal Essence; 3rd Forceful Heavy Armor Kit about 33 silver; 4th Forceful Medium Armor Kit about 9 silver; 5th Lesser Agility plus 4 about 4 silver, 1 Soul Dust.">
-            <p class="tip-item t-item-green">Chief Brigadier Boots</p>
-            <p class="tip-gray">Has Mithril Spurs. Stat options:</p>
-            <p class="tip-row"><span>Best enchant: Forceful Thick Armor Kit</span><span class="m-s">~56s</span></p>
-            <p class="tip-mats">Leatherworking kit, use it on the item</p>
-            <p class="tip-row"><span>2nd: Greater Agility +7</span><span class="m-g">~19g</span></p>
-            <p class="tip-mats">8 Greater Eternal Essence</p>
-            <p class="tip-row"><span>3rd: Forceful Heavy Armor Kit</span><span class="m-s">~33s</span></p>
-            <p class="tip-mats">Leatherworking kit, use it on the item</p>
-            <p class="tip-row"><span>4th: Forceful Medium Armor Kit</span><span class="m-s">~9s</span></p>
-            <p class="tip-mats">Leatherworking kit, use it on the item</p>
-            <p class="tip-row"><span>5th: Lesser Agility +4</span><span class="m-s">~4s</span></p>
-            <p class="tip-mats">1 Soul Dust</p>
-          </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <a href="img/enchants-bonebiter.webp"><img src="img/enchants-bonebiter.webp" width="214" height="274" decoding="async"
+             alt="Screenshot of a worn Bonebiter two-hand axe's tooltip with the Goblin Ledger enchant tips, Top 5: best enchant Crusader, about 30 gold, 4 Large Brilliant Shard and 2 Righteous Orb; 2nd Fiery Weapon, about 3 gold 68 silver; 3rd Iron Counterweight, about 7 silver, your Blacksmithing; 4th Lesser Strength +15, about 1 gold 59 silver; 5th Greater Impact +7, about 2 gold 20 silver."></a>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Enchant tips</h3>
@@ -652,54 +562,14 @@ kbd {
         </div>
       </article>
 
-      <!-- Consumes: drawing of the panel, real lines (level 47 warrior, melee, Best) -->
-      <article class="tile wide cons">
-        <figure class="stage stage-cons">
-          <div class="cpanel" role="img" aria-label="Drawing of the Goblin Ledger Consumes panel for melee, level 47, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon plus 40 AP plus 5% XP, best, 3 silver 94 copper; Smoked Desert Dumplings, best, 16 silver 98; Grilled Squid 62%; Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose plus 25 Agility plus 2% crit, best, 90 silver 66; or Greater Agility 33%; Brute Force 57%, 1 gold 99 silver; or Ogre Strength 21%; Winterfall Firewater 31%; or Distilled Firewater 31%. SCROLLS - 2 at once: Strength III best; or Strength II 69%; Agility III 50%; or Agility II 34%. Wide screens also show POTIONS and STONES AND OILS.">
-            <div class="cp-head">
-              <span class="cp-mut">v</span>
-              <span class="cp-ttl"><span class="cp-gold">Consumes</span> for melee, level 47</span>
-              <span class="cp-btn cp-go">Best</span><span class="cp-btn">All</span>
-            </div>
-            <div class="cp-body">
-              <div class="cp-food">
-                <p class="cp-t">FOOD - 1 at a time</p>
-                <p class="cp-r"><i class="ic" style="--ic:#C9773A"></i><span class="nm">Poached Sunscale Salmon <span class="bf">+40 AP</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">3s 94c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#B88A4A"></i><span class="nm">Smoked Desert Dumplings <span class="bf">+20 Str</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">16s 98c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#A85A4A"></i><span class="nm">Grilled Squid <span class="bf">+1% crit</span> <span class="xp">+5% XP</span></span><span class="pc">62%</span><span class="pr">4s 67c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#9A4A32"></i><span class="nm">Flank au Poivre <span class="bf">+20 Agi</span> <span class="xp">+5% XP</span></span><span class="pc">50%</span><span class="pr">27s</span></p>
-              </div>
-              <div class="cp-wide">
-                <p class="cp-t">POTIONS</p>
-                <p class="cp-r"><i class="ic" style="--ic:#C23A3A"></i><span class="nm">Major Healing <span class="bf">heals 1050-1750</span></span><span class="pc">best</span><span class="pr">28s 47c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#D0642C"></i><span class="nm">Superior Frenzy <span class="bf">+56 AP, 30 sec</span></span><span class="pc">best</span><span class="pr">60s</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#B0302A"></i><span class="nm">Mighty Rage <span class="bf">45-75 rage, +60 Str, 20 sec</span></span><span class="pc">best</span><span class="pr">59s 98c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#8A8A9A"></i><span class="nm">Limited Invulnerability <span class="bf">immune to physical, 6 sec</span></span><span class="pc">best</span><span class="pr">75s 96c</span></p>
-              </div>
-              <div>
-                <p class="cp-t">ELIXIRS - 3 at once</p>
-                <p class="cp-r"><i class="ic" style="--ic:#3A7AD0"></i><span class="nm">Mongoose <span class="bf">+25 Agi, +2% crit, 30 min</span></span><span class="pc">best</span><span class="pr">90s 66c</span></p>
-                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#4A9A5A"></i><span class="nm">Greater Agility <span class="bf">+25 Agi, 1 hr</span></span><span class="pc">33%</span><span class="pr">23s</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#C04A3A"></i><span class="nm">Brute Force <span class="bf">+18 Str, +18 Sta, 1 hr</span></span><span class="pc">57%</span><span class="pr">1g 99s</span></p>
-                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#9A6A3A"></i><span class="nm">Ogre Strength <span class="bf">+8 Str, 1 hr</span></span><span class="pc">21%</span><span class="pr">3s 78c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#C9A43A"></i><span class="nm">Winterfall Firewater <span class="bf">+35 AP, 20 min</span></span><span class="pc">31%</span><span class="pr">36s 11c</span></p>
-                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B08A3A"></i><span class="nm">Distilled Firewater <span class="bf">+35 AP, 20 min</span></span><span class="pc">31%</span><span class="pr">99s 94c</span></p>
-              </div>
-              <div>
-                <p class="cp-t">SCROLLS - 2 at once</p>
-                <p class="cp-r"><i class="ic" style="--ic:#C8B88A"></i><span class="nm">Strength III <span class="bf">+13 Str, 30 min</span></span><span class="pc">best</span><span class="pr">11s 48c</span></p>
-                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B8A87A"></i><span class="nm">Strength II <span class="bf">+9 Str, 30 min</span></span><span class="pc">69%</span><span class="pr">3s</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#C8B88A"></i><span class="nm">Agility III <span class="bf">+13 Agi, 30 min</span></span><span class="pc">50%</span><span class="pr">10s 68c</span></p>
-                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B8A87A"></i><span class="nm">Agility II <span class="bf">+9 Agi, 30 min</span></span><span class="pc">34%</span><span class="pr">3s 57c</span></p>
-              </div>
-              <div class="cp-wide">
-                <p class="cp-t">STONES AND OILS</p>
-                <p class="cp-r"><i class="ic" style="--ic:#7A7A82"></i><span class="nm">Dense Weightstone <span class="bf">+8 weapon dmg, 30 min</span></span><span class="pc">best</span><span class="pr">4s 48c</span></p>
-                <p class="cp-r"><i class="ic" style="--ic:#8A8A92"></i><span class="nm">Dense Sharpening Stone <span class="bf">+8 weapon dmg, 30 min</span></span><span class="pc">best</span><span class="pr">4s 76c</span></p>
-              </div>
-            </div>
+      <!-- Consumes: real photo of the panel (level 50 warrior, melee, Best), wide -->
+      <article class="tile wide">
+        <figure class="stage">
+          <div class="shot-scroll">
+            <a href="img/consumes.webp"><img src="img/consumes.webp" width="538" height="223" loading="lazy" decoding="async"
+               alt="Screenshot of the Goblin Ledger Consumes panel for melee, level 50, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon best, Smoked Desert Dumplings best, Grilled Squid 62%, Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose best, or Greater Agility 33%; Greater Strength 66%, or Elixir of Strength 26%; Winterfall Firewater 31%, or Distilled Firewater 31%. STONES AND OILS, POTIONS, and SCROLLS - 2 at once: Strength III best, or Strength II 69%; Agility III 50%, or Agility II 34%. Each row has its price."></a>
           </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span><span class="swipe">swipe to see it all</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Consumes</h3>
@@ -740,13 +610,16 @@ kbd {
         </div>
       </article>
 
-      <!-- Boat timer: drawing, a real line (the Theramore dock, a learned boat counting) -->
+      <!-- Boat timer: real photos (Menethil, counting; Theramore, the ship docked) -->
       <article class="tile">
         <figure class="stage">
-          <div class="scene scene-sea" role="img" aria-label="Drawing of the big boat timer at the Theramore dock: Boat to Menethil in white, 1:42 large in gold, and a small X.">
-            <p class="bigline"><span class="bw">Boat to Menethil</span><span class="bn">1:42</span><span class="bx"></span></p>
+          <div class="pair">
+            <a href="img/boat-countdown.webp"><img src="img/boat-countdown.webp" width="295" height="115" loading="lazy" decoding="async"
+               alt="Screenshot at the Menethil Harbor dock: the big Goblin Ledger boat timer over the sea, Boat to Theramore 0:19 with a small X, and under it Boat to Southshore, Auberdine: unknown, every 8:06."></a>
+            <a href="img/boat-docked.webp"><img src="img/boat-docked.webp" width="430" height="240" loading="lazy" decoding="async"
+               alt="Screenshot at the Theramore dock with the ship in: the big boat timer says Boat to Menethil: docked, leaves in 0:58."></a>
           </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span>cropped</figcaption>
         </figure>
         <div class="tile-body">
           <h3>Boat timer</h3>
@@ -759,27 +632,18 @@ kbd {
         </div>
       </article>
 
-      <!-- Crafting profit: drawing, real lines (Thorium Ore with Smelting; Plans: Mithril Spurs) -->
+      <!-- Crafting: real photo (a crafted chest from its Sell Price line down: Make, Mats, enchant tips) -->
       <article class="tile">
         <figure class="stage">
-          <div class="pair" role="img" aria-label="Drawing of two tooltips. Thorium Ore: smelt to Thorium Bar, 2 silver 87 copper profit each. Plans: Mithril Spurs: makes Mithril Spurs, which sells for 3 silver 87 copper; mats 4 Mithril Bar at 42 silver 24 copper and 3 Solid Grinding Stone at 29 silver 22 copper; mats 71 silver 46 copper, profit minus 67 silver 79 copper, in red.">
-            <div class="mock-box gametip">
-              <p class="tip-item">Thorium Ore</p>
-              <p class="tip-row"><span>Smelt to Thorium Bar</span><span class="t-pos">+2s 87c each</span></p>
-            </div>
-            <div class="mock-box gametip">
-              <p class="tip-item">Plans: Mithril Spurs</p>
-              <p class="tip-row"><span>Makes: Mithril Spurs</span><span><span class="m-s">3s</span> <span class="m-c">87c</span></span></p>
-              <p class="tip-mats"><span class="nw">4 Mithril Bar 42s 24c</span>, <span class="nw">3 Solid Grinding Stone 29s 22c</span></p>
-              <p class="tip-row"><span class="nw">Mats: 71s 46c</span><span class="t-neg">Profit: -67s 79c</span></p>
-            </div>
-          </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <a href="img/crafts-chest.webp"><img src="img/crafts-chest.webp" width="214" height="237" loading="lazy" decoding="async"
+             alt="Screenshot of the lower part of a crafted Veteran's Silvered Chain Shirt tooltip: Sell Price 24 silver 64 copper; Make: 20 Bronze Bar 29 silver 40 copper (from 10 Copper Bar and 10 Tin Bar), 6 Pristine Leather 29 silver 40 copper, plus 3 others; Mats: 1 gold 9 silver; then its enchant tips, Top 5, best Greater Stats +4 about 49 gold."></a>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span>cropped</figcaption>
         </figure>
         <div class="tile-body">
           <h3>Crafting profit</h3>
           <ul class="ticks">
             <li>Plans and patterns: mats cost and profit after the AH cut</li>
+            <li>Items your recipes make: their mats and what they cost</li>
             <li>Ore and bars: what your own recipes make of them</li>
             <li>One line in the Professions window too</li>
             <li>Crafted items priced at the tooltip's Sell now</li>
@@ -787,12 +651,14 @@ kbd {
         </div>
       </article>
 
-      <!-- Bag cleanup: real photo -->
+      <!-- Bag cleanup: real photo (the panel and the bag window's button) -->
       <article class="tile">
         <figure class="stage">
-          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" loading="lazy" decoding="async"
-               alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button."></a>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
+          <div class="shot-scroll">
+            <a href="img/bag-cleanup.webp"><img src="img/bag-cleanup.webp" width="394" height="275" loading="lazy" decoding="async"
+               alt="Screenshot of the Bag cleanup panel beside the bags in WoW Forever: 15 of 68 slots free; an old quest item, The Pariah's Instructions, to check in the quest log; Worth the least, 8 of 29 stacks, from Carved Centaur Totem x2 at 3 silver 51 copper up to Greater Healing Potion x5 at 19 silver 90 copper; a Drop cheapest button. The bag window's Bag cleanup button says 15 free."></a>
+          </div>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span><span class="swipe">swipe to see it all</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Bag cleanup</h3>
