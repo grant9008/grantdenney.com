@@ -4754,33 +4754,91 @@ MOCK_APIS = ("UnitGUID", "C_SpellBook", "UnitPosition", "UnitOnTaxi", "GetServer
 MOCK_OVERRIDES = {n: ["MOCK_LUA", "MOCK_LUA"] for n in ("OpenAllBags", "CloseAllBags", "ToggleAllBags", "ToggleBackpack", "ToggleBag")}
 
 
+def lua_table_depths(body):
+    """How deep in table constructors ({ less }) each line of a Lua chunk starts, outside its
+    strings and comments: an indented X = function at 0 sets a global, inside { } a field."""
+    out, d = [], 0
+    for line in body.split("\n"):
+        out.append(d)
+        code = re.sub(r'"(?:\\.|[^"\\])*"' + r"|'(?:\\.|[^'\\])*'", '""', line).split("--", 1)[0]
+        d += code.count("{") - code.count("}")
+    return out
+
+
 def mock_defs():
-    """Every game function or table the Lua mocks (the *_LUA chunks) define at column 0, and
-    every global function they define indented (inside an install helper), as
-    {name: [chunk, ...]}: one mock per API means each name in one chunk, once."""
+    """Every game function or table the Lua mocks (the *_LUA chunks) define: at column 0 (and each
+    local function there); indented (inside an install helper) a global function or a method of a
+    global (function X(, function FontString:Y() ...) and a global X = function or { outside a
+    table. As {name: [chunk, ...]}: one mock per API means each name in one chunk, once."""
     out = {}
     for cname, body in sorted(globals().items()):
         if not (cname.endswith("_LUA") and isinstance(body, str)):
             continue
-        for m in re.finditer(r"^(?:function ([A-Za-z_][\w.:]*)\s*\(|([A-Za-z_][\w.]*)\s*=(?!=)|[ \t]+function ([A-Za-z_]\w*)\s*\()",
-                             body, re.M):
-            name = m.group(1) or m.group(2) or m.group(3)
-            if not name.startswith("M.") and name != "M":
+        depths = lua_table_depths(body)
+        for i, line in enumerate(body.split("\n")):
+            m = re.match(r"(?:function ([A-Za-z_][\w.:]*)\s*\(|([A-Za-z_][\w.]*)\s*=(?!=)|local function (\w+)\s*\(|local (\w+)\s*=\s*function\b)", line)
+            if m:
+                name = m.group(1) or m.group(2) or "local " + (m.group(3) or m.group(4))
+            else:
+                m = re.match(r"[ \t]+(?:function ([A-Za-z_]\w*|[A-Z_]\w*[.:][\w.:]+)\s*\(|([A-Z_][\w.]*)\s*=\s*(?:function\b|\{))", line)
+                if not m or (m.group(2) and depths[i]):
+                    continue
+                name = m.group(1) or m.group(2)
+            name = re.sub(r"^MOCK\b", "M", name)
+            if not name.startswith(("M.", "M:")) and name != "M":
                 out.setdefault(name, []).append(cname)
     return out
 
 
-# The mock helpers' deliberate second definitions: the crafts mock's tooltip data over the main one's.
-MOCK_HELPER_OVERRIDES = {"M.TooltipData": ["CRAFTS_MOCK_LUA", "MOCK_LUA"]}
+# The mock helpers' deliberate second definitions: the crafts mock's tooltip data over the main
+# one's; the Questie slicing test's clock, which wraps the mock's to log each tick.
+MOCK_HELPER_OVERRIDES = {"M.TooltipData": ["CRAFTS_MOCK_LUA", "MOCK_LUA"], "M.tick": ["MOCK_LUA", "sc_bag_questie_slicing"]}
+
+
+def harness_strings():
+    """Every string in this file's source, with where it is: the top-level name it is assigned to
+    (a *_LUA chunk) or the function it is in. [(where, text)]"""
+    import ast
+    out = []
+
+    def walk(node, where):
+        for ch in ast.iter_child_nodes(node):
+            at = where
+            if where is None and isinstance(ch, (ast.FunctionDef, ast.ClassDef)):
+                at = ch.name
+            elif where is None and isinstance(ch, ast.Assign) and len(ch.targets) == 1 and isinstance(ch.targets[0], ast.Name):
+                at = ch.targets[0].id
+            if isinstance(ch, ast.Constant) and isinstance(ch.value, str):
+                out.append((at or "line %d" % ch.lineno, ch.value))
+            walk(ch, at)
+    walk(ast.parse(open(os.path.abspath(__file__), "rb").read().decode("utf-8")), None)
+    return out
 
 
 def mock_helpers():
-    """Every MOCK helper the Lua mocks define (function M.X, at any indent), as {name: [chunk, ...]}."""
+    """Every MOCK helper defined anywhere in this file's Lua (function M.X or MOCK.X, at any indent or
+    inline, or M.X = function), in a mock chunk or a test's own Lua, as {M.X: [where, ...]}."""
     out = {}
-    for cname, body in sorted(globals().items()):
-        if cname.endswith("_LUA") and isinstance(body, str):
-            for m in re.finditer(r"^[ \t]*function (M\.[\w.:]+)\s*\(|^[ \t]*(M\.[\w.]+)\s*=\s*function\b", body, re.M):
-                out.setdefault(m.group(1) or m.group(2), []).append(cname)
+    pat = (r"(?:^|[\s;(])function ((?:M|MOCK)\.[\w.:]+)\s*\(|(?:^|[\s;(])((?:M|MOCK)\.[\w.]+)\s*=\s*function\b")
+    for where, text in harness_strings():
+        for m in re.finditer(pat, text, re.M):
+            out.setdefault(re.sub(r"^MOCK\.", "M.", m.group(1) or m.group(2)), []).append(where)
+    return out
+
+
+# Frames the mocks make by name (CreateFrame's or CreateFontString's name, or the start of one: a
+# numbered frame's): each in one place in this file, as a second copy of the top-centre frames would
+# not be. But these, as often as listed: the game's bag windows and their buttons, the auction house
+# and its tabs, ElvUI's bags (M.InstallElvUIBags and M.InstallElvUIBagsReal: one or the other).
+FRAME_NAME_REPEATS = {"ContainerFrame": 2, "AuctionHouseFrame": 2, "ElvUIParent": 2, "ElvUI_ContainerFrame": 2,
+                      "ElvUI_ContainerFrameBag": 4}
+
+
+def mock_frame_names(text):
+    """{name: how many times this text makes a frame or font string by that name (or that start of one)}"""
+    out = {}
+    for n in re.findall(r'CreateFrame\(\s*"\w+"\s*,\s*"(\w+)"', text) + re.findall(r'CreateFontString\(\s*"(\w+)"', text):
+        out[n] = out.get(n, 0) + 1
     return out
 
 
@@ -4800,9 +4858,11 @@ def sc_static(sc, ref, items):
     # all of this file, Lua or Python
     twice = dict((k, v) for k, v in mock_defs().items() if len(v) > 1 and MOCK_OVERRIDES.get(k) != v)
     sc.eq(twice, {}, "mocks: each game API defined once in the Lua mocks")
-    twice = dict((k, v) for k, v in mock_helpers().items() if len(v) > 1 and MOCK_HELPER_OVERRIDES.get(k) != v)
+    twice = dict((k, v) for k, v in mock_helpers().items() if len(v) > 1 and sorted(MOCK_HELPER_OVERRIDES.get(k, [])) != sorted(v))
     sc.eq(twice, {}, "mocks: each MOCK helper (the font sizes, the top-centre frames, the minimap...) defined once")
     me = open(os.path.abspath(__file__), "rb").read().decode("utf-8")
+    twice = dict((k, n) for k, n in mock_frame_names(me).items() if n > 1 and FRAME_NAME_REPEATS.get(k) != n)
+    sc.eq(twice, {}, "mocks: each frame the mocks name (the top-centre messages, the minimap, the trackers...) made in one place")
     for api in MOCK_APIS:
         n = len(re.findall(mock_api_pattern(api), me))
         sc.eq(n, 1, "mocks: %s is defined once in the harness" % api)
@@ -26896,7 +26956,7 @@ def sc_flights_slash(sc, ref, items):
     sc.check(fl_bar_line(w) is not None, "slash: on in the air: back")
     M.click(FL.Bar().x)
     out = [strip_codes(c) for c in w.slash("/gl flights status")]
-    sc.check(out[-1].endswith("left (bar hidden)."), "slash: status says the bar is hidden (%s)" % out[-1:])
+    sc.check(out[-1].endswith("left (timer hidden)."), "slash: status says the timer is hidden (%s)" % out[-1:])
     w.slash("/gl flights on")
     sc.check(fl_bar_line(w) is not None, "slash: on brings a hidden bar back")
     for alias in ("/gl fly status", "/gl flight status", "/gl FLIGHTS status"):
@@ -27344,7 +27404,12 @@ def sc_flights_big(sc, ref, items):
                     w = fl_top_world(ref, items, (pw, ph, s), elvui=elv)
                     slot = fl_open(w, names={FL_IF: dest + ", Somewhere"})
                     fl_take(w, slot[FL_IF])
+                    FL = w.ns.Flights
+                    at0 = (FL.spot, FL.Bar().GetName(FL.Bar()), tuple(round(v, 3) for v in w.rect(FL.Bar())))
                     want = fl_tracker_way(sc, w, label)
+                    # (the trackers back as they were at take-off, the timer looked again: the same)
+                    sc.eq(at0, (FL.spot, FL.Bar().GetName(FL.Bar()), tuple(round(v, 3) for v in w.rect(FL.Bar()))),
+                          "%s: at take-off already where it stays (%s)" % (label, want))
                     if want != "middle":
                         tops.append(label + " " + want)
                     if pw * 9 >= ph * 16 and not elv:
@@ -27507,7 +27572,7 @@ def sc_flights_style(sc, ref, items):
           ("reload", "small", "GoblinLedgerFlightBar"), "style: /reload in the air: still the slim bar")
     sc.eq(fl_bar_line(w2), fl_line("Ironforge", fl_state(w2)[0].est, fl_el(w2)), "style: after the reload, the same clock")
     out = [strip_codes(c) for c in w2.slash("/gl flights big")]
-    sc.eq(out, ["Goblin Ledger: flight timer: big, in the upper middle of the screen. /gl flights small for the slim bar."],
+    sc.eq(out, ["Goblin Ledger: flight timer: big, in the middle of the screen. /gl flights small for the slim bar."],
           "style: big, one line")
     b2 = w2.ns.Flights.Bar()
     sc.eq((w2.ns.settings.flightStyle, b2.GetName(b2), fl_shown(w2.ns.Flights.Bars().small)),
@@ -28013,6 +28078,92 @@ def sc_flights_side(sc, ref, items):
     sc.clean(w, "side toast")
 
 
+def fl_tracker_beside(w, gap=4):
+    """The game's quest tracker moved (Edit Mode) just right of the big timer where it is now, gap
+    units from its right end, level with it: the timer fits beside it until its line gets longer."""
+    g, b = w.g, w.ns.Flights.Bar()
+    es, r = b.GetEffectiveScale(b), w.rect(b)
+    o = g.ObjectiveTrackerFrame
+    o.ClearAllPoints(o)
+    o.SetPoint(o, "TOPLEFT", g.UIParent, "TOPLEFT", r[2] / es + gap, -(w.M.screenH - r[3]) / es)
+    return o
+
+
+def fl_grow_watch(sc, w, secs, label):
+    """secs of 0.1 s ticks: the ticks the big timer covers the minimap's parts, a tracker, the buffs
+    (fl_side_parts) [(t, line, spot)], and the lines it said."""
+    FL = w.ns.Flights
+    over, said = [], []
+    for _ in range(int(round(secs * 10))):
+        fl_wait(w, 0.1)
+        b = FL.Bar()
+        if b is None or not b.IsVisible(b):
+            continue
+        line = fl_bar_line(w)
+        if not said or said[-1] != line:
+            said.append(line)
+        r = w.rect(b)
+        if any(fl_hit(r, w.rect(o)) for _, o in fl_side_parts(w)):
+            over.append((round(fl_el(w), 1), line, FL.spot))
+    return over, said
+
+
+def sc_flights_grow(sc, ref, items):
+    """The big flight timer's line gets longer: "+0:00" after "0:01" (one more letter), "10:00 so far"
+    after "9:59 so far", an early landing to a place with a longer name. With the quest tracker just
+    right of it (Edit Mode) it would reach over it: the timer looks for its place again at once, so
+    it never covers the tracker, not for one tick (the top, where the middle has no room)."""
+    # Over its time: Stormwind > Ironforge, 4:19.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL = w.ns.Flights
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    fl_tracker_beside(w)
+    fl_wait(w, 1.1)
+    sc.eq(FL.spot, "middle", "over: the tracker 4 right of the timer: it still fits in the middle")
+    est = fl_state(w)[0].est
+    fl_wait(w, est - fl_el(w) - 2.05, dt=0.5)
+    over, said = fl_grow_watch(sc, w, 4.0, "over")
+    sc.check(any(l.startswith("Ironforge 0:01") for l in said) and any(l.startswith("Ironforge +0:00") for l in said),
+             "over: it said 0:01, then +0:00 (%s)" % said)
+    sc.eq(over, [], "over: one letter more (+0:00): never over the tracker, not for a tick")
+    fl_big_place_checks(sc, w, "over: +0:0x", spot="top")
+    sc.clean(w, "grow over")
+    # Counting up (no time in the data): 9:59 so far, then 10:00 so far.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL = w.ns.Flights
+    slot = fl_open(w, routes={999: [FL_SW, 999]}, names={999: "Frostwolf Keep, Alterac"}, extra=())
+    fl_take(w, slot[999])
+    fl_tracker_beside(w)
+    fl_wait(w, 1.1)
+    sc.eq(FL.spot, "middle", "so far: the tracker 4 right of the timer: it still fits in the middle")
+    fl_wait(w, 598 - fl_el(w), dt=0.5)
+    over, said = fl_grow_watch(sc, w, 3.0, "so far")
+    sc.check("Frostwolf Keep 9:59 so far" in said and "Frostwolf Keep 10:00 so far" in said,
+             "so far: it said 9:59 so far, then 10:00 so far (%s)" % said)
+    sc.eq(over, [], "so far: 10:00 after 9:59: never over the tracker, not for a tick")
+    fl_big_place_checks(sc, w, "so far: 10:00", spot="top")
+    sc.clean(w, "grow so far")
+    # An early landing (the leave button): to Ironforge, here named as the longest place there is,
+    # on the way to Menethil Harbor (a shorter name): at once where it fits.
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL = w.ns.Flights
+    slot = fl_open(w, names={FL_IF: FL_LONGEST + ", Somewhere"})
+    fl_take(w, slot[FL_MEN])
+    fl_tracker_beside(w)
+    fl_wait(w, 100.35)
+    sc.eq((FL.spot, fl_state(w)[0].dest), ("middle", "Menethil Harbor"), "early: to Menethil Harbor in the middle, the tracker beside it")
+    w.g.TaxiRequestEarlyLanding()
+    b = FL.Bar()
+    sc.eq(fl_state(w)[0].dest, FL_LONGEST, "early: now to %s" % FL_LONGEST)
+    sc.check(not any(fl_hit(w.rect(b), w.rect(o)) for _, o in fl_side_parts(w)),
+             "early: the longer name at once where it fits, not over the tracker (%s, %s)" % (FL.spot, fl_px(w.rect(b))))
+    over, _ = fl_grow_watch(sc, w, 2.0, "early")
+    sc.eq(over, [], "early: never over the tracker after it")
+    fl_big_place_checks(sc, w, "early: %s" % FL_LONGEST, spot="top")
+    sc.clean(w, "grow early")
+
+
 def sc_boats_big_flight(sc, ref, items):
     """The boat timer's avoid list names the flight timer's frames (the big one, GoblinLedgerFlightTimer,
     and the slim bar, GoblinLedgerFlightBar) only while they show: after a flight the hidden big
@@ -28074,6 +28225,11 @@ def sc_boats_big_flight(sc, ref, items):
     sc.eq(out[0], "Goblin Ledger: boat timers are on: big, in the middle of the screen, but on a flight or in a fight the line under "
                   "the minimap (/gl boats small: always there). /gl boats all lists every route.", "status: /gl boats on a flight over the dock")
     sc.check(fl_boat_small(w), "status: meanwhile the small line (%s)" % B.ui.style)
+    w.slash("/gl boats small")
+    sc.eq([strip_codes(c) for c in w.slash("/gl boats big")],
+          ["Goblin Ledger: boat timers are big now: in the middle of the screen, but on a flight or in a fight the line under the "
+           "minimap (/gl boats small: always there)."], "big: /gl boats big on a flight says the small line shows meanwhile")
+    sc.check(fl_boat_small(w), "big: on the flight still the small line (%s)" % B.ui.style)
     M.Land(tx, ty)
     sc.eq([strip_codes(c) for c in w.slash("/gl boats status")][0], BT_ON_BIG, "status: landed: big again")
     # Both styles saved, both kept over a /reload; big is nothing saved for either.
@@ -33920,6 +34076,7 @@ SCENARIOS = [
     ("flights-boats", sc_flights_boats),
     ("flights-boats-land", sc_flights_boats_land),
     ("flights-side", sc_flights_side),
+    ("flights-grow", sc_flights_grow),
     ("boats-big-flight", sc_boats_big_flight),
     ("flights-small-bar", fl_in_small(sc_flights_bar)),
     ("flights-small-x", fl_in_small(sc_flights_x)),

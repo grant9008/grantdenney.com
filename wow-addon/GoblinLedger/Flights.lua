@@ -1217,17 +1217,19 @@ end
 
 -- The timer's words and its strip (the slim bar's fill) for the flight now. Called a few times a
 -- second while it shows. The big timer looks for its place again once a second (and at a new UI
--- scale or screen size), as the big boat timer does: a widget at the top, a new UI scale.
+-- scale or screen size), as the big boat timer does: a widget at the top, a new UI scale; and at
+-- once when its line gets longer ("+0:00" after "0:01", "10:00"), not over the tracker meanwhile.
 local function draw()
   local f, b = cur, bar
   if not b or not f or not b:IsShown() then return end
   local t = now()
   if not t then return end
-  if wantBig() and (not FL.placedAt or t - FL.placedAt >= 1 or t < FL.placedAt) then
-    b = arrange(t) or b
-  end
   local left, frac, over = timeLeft(f, t)
   local line = f.dest .. " " .. left
+  local grew = b == bars.big and type(b.glLine) == "string" and #line > #b.glLine
+  if wantBig() and (grew or not FL.placedAt or t - FL.placedAt >= 1 or t < FL.placedAt) then
+    b = arrange(t) or b
+  end
   if line ~= b.glLine then
     b.glLine = line
     if b == bars.big then
@@ -1391,6 +1393,7 @@ local function earlyLanding()
     end
   end
   if bar then bar.glLine = nil end
+  FL.placedAt = nil   -- (another place's name: the big timer's place again now)
   draw()
 end
 
@@ -1634,7 +1637,7 @@ local function nowLine()
   else
     where = clock(el) .. " so far"
   end
-  return "flying to " .. f.dest .. ": " .. where .. (f.hidden and " (bar hidden)" or "") .. "."
+  return "flying to " .. f.dest .. ": " .. where .. (f.hidden and " (timer hidden)" or "") .. "."
 end
 
 -- Where the big timer is in the air, when that is not the upper middle (nil: there, or on the ground).
@@ -1670,7 +1673,7 @@ local function setBig(big)
   if cur then cur.hidden = false end
   showBar()
   local note = big and spotNote()
-  local msg = big and ("flight timer: big, " .. (note or "in the upper middle of the screen") .. ". /gl flights small for the slim bar.")
+  local msg = big and ("flight timer: big, " .. (note or "in the middle of the screen") .. ". /gl flights small for the slim bar.")
               or "flight timer: the slim bar at the top. /gl flights big for the big one."
   say(isOn() and msg or (msg .. " Flight timers are off: /gl flights on turns them on."))
 end

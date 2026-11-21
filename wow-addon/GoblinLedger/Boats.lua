@@ -1818,6 +1818,7 @@ local function boatsCommand(rest)
   elseif rest == "big" or rest == "small" then
     S.boatStyle = rest == "small" and "small" or nil   -- (saved; big is the default)
     local msg = rest == "small" and "boat timers are small now: a line under the minimap. /gl boats big makes them big again."
+                or busy() and "boat timers are big now: in the middle of the screen, but on a flight or in a fight the line under the minimap (/gl boats small: always there)."
                 or "boat timers are big now: in the middle of the screen. /gl boats small puts them under the minimap."
     say(isOn() and msg or (msg .. " They are off: /gl boats on turns them on."))
     wake()
