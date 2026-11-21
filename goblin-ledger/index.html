@@ -13,7 +13,8 @@
   or painted over so no names show; they show at their own size and only get
   smaller in a narrower card (tap one for full size). chart.png is an older
   version (its "List At" box is "Sell at" now), so its caption says older
-  look. The flight timer has no photo yet: it is an HTML/CSS drawing marked
+  look. The crafting card shows two Blacksmithing window photos side by side
+  (stacked on phones). The flight timer has no photo yet: it is an HTML/CSS drawing marked
   (drawing). img/price-website.webp is the live price website at 1100 x 700.
   To swap the drawing for a photo: save it in img/, put an <img> (width and
   height = the photo's pixel size, an alt text checked against it) in place of
@@ -221,6 +222,8 @@ main, [id] { scroll-margin-top: 70px; }
   background: radial-gradient(520px 260px at 50% 0%, rgba(56, 189, 247, 0.07), transparent 70%), #0A0D12;
 }
 .stage a { display: block; max-width: 100%; }
+/* Two photos side by side when they fit (the crafting card), else stacked. */
+.stage.row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; }
 /* Photos show at their own size, smaller only when the card is narrower (tap one for full size). */
 .stage img {
   box-sizing: content-box; max-width: calc(100% - 2px);
@@ -357,7 +360,6 @@ main, [id] { scroll-margin-top: 70px; }
 <section class="section" id="features" aria-label="What it does">
   <div class="wrap">
     <div class="shots">
-
       <!-- Tooltip: worn gloves -->
       <figure class="shot">
         <div class="stage">
@@ -385,6 +387,17 @@ main, [id] { scroll-margin-top: 70px; }
         <figcaption><h3>Price chart at the auction house</h3><p class="sub">The last day, week or month of prices. <span class="old">(older look)</span></p></figcaption>
       </figure>
 
+      <!-- Crafting: the Blacksmithing window, profit line and mats total -->
+      <figure class="shot wide">
+        <div class="stage row">
+          <a href="img/crafts-window.webp"><img src="img/crafts-window.webp" width="374" height="520" loading="lazy" decoding="async"
+             alt="Screenshot of the Blacksmithing window with Dense Sharpening Stone picked: reagent 1 Dense Stone, and at the bottom the Goblin Ledger line Mats 3 silver 49 copper, sells 5 silver 20 copper, plus 1 silver 45 copper after AH cut."></a>
+          <a href="img/crafts-pauldrons.webp"><img src="img/crafts-pauldrons.webp" width="292" height="553" loading="lazy" decoding="async"
+             alt="Screenshot of the Blacksmithing window with Officer's Pauldrons picked and its tooltip: Make, 20 Mithril Bar 1 gold 82 silver, 6 Sandpaper 1 gold 7 silver, plus 4 others, Mats 4 gold 21 silver; reagents 20 Mithril Bar, 8 Jade, 2 Solid Grinding Stone, 1 Large Glowing Shard, 6 Sandpaper, 4 Sulfuric Acid; and at the bottom the line Mats 4 gold 21 silver, bind on pickup."></a>
+        </div>
+        <figcaption><h3>Crafting profit</h3><p class="sub">Mats cost and profit, right in the crafting window.</p></figcaption>
+      </figure>
+
       <!-- Enchant tips: a worn Bonebiter -->
       <figure class="shot">
         <div class="stage">
@@ -394,13 +407,13 @@ main, [id] { scroll-margin-top: 70px; }
         <figcaption><h3>Best enchants for your gear</h3><p class="sub">Top 5 for your role, with mats and cost.</p></figcaption>
       </figure>
 
-      <!-- Crafting: a crafted chest, Make and Mats -->
+      <!-- Bag cleanup -->
       <figure class="shot">
         <div class="stage">
-          <a href="img/crafts-chest.webp"><img src="img/crafts-chest.webp" width="214" height="237" loading="lazy" decoding="async"
-             alt="Screenshot of the lower part of a crafted Veteran's Silvered Chain Shirt tooltip: Sell Price 24 silver 64 copper; Make: 20 Bronze Bar 29 silver 40 copper (from 10 Copper Bar and 10 Tin Bar), 6 Pristine Leather 29 silver 40 copper, plus 3 others; Mats: 1 gold 9 silver; then its enchant tips, Top 5, best Greater Stats +4 about 49 gold."></a>
+          <a href="img/bag-cleanup.webp"><img src="img/bag-cleanup.webp" width="394" height="275" loading="lazy" decoding="async"
+             alt="Screenshot of the Bag cleanup panel beside the bags in WoW Forever: 15 of 68 slots free; an old quest item, The Pariah's Instructions, to check in the quest log; Worth the least, 8 of 29 stacks, from Carved Centaur Totem x2 at 3 silver 51 copper up to Greater Healing Potion x5 at 19 silver 90 copper; a Drop cheapest button. The bag window's Bag cleanup button says 15 free."></a>
         </div>
-        <figcaption><h3>What crafting costs</h3><p class="sub">Mats cost and profit after the AH cut.</p></figcaption>
+        <figcaption><h3>Bag cleanup</h3><p class="sub">Sell junk, find your cheapest stacks.</p></figcaption>
       </figure>
 
       <!-- Consumes panel, wide -->
@@ -440,17 +453,8 @@ main, [id] { scroll-margin-top: 70px; }
         <figcaption><h3>Flight timer</h3><p class="sub">Counts down while you fly. Drag it anywhere. <span class="old">(drawing)</span></p></figcaption>
       </figure>
 
-      <!-- Bag cleanup -->
-      <figure class="shot">
-        <div class="stage">
-          <a href="img/bag-cleanup.webp"><img src="img/bag-cleanup.webp" width="394" height="275" loading="lazy" decoding="async"
-             alt="Screenshot of the Bag cleanup panel beside the bags in WoW Forever: 15 of 68 slots free; an old quest item, The Pariah's Instructions, to check in the quest log; Worth the least, 8 of 29 stacks, from Carved Centaur Totem x2 at 3 silver 51 copper up to Greater Healing Potion x5 at 19 silver 90 copper; a Drop cheapest button. The bag window's Bag cleanup button says 15 free."></a>
-        </div>
-        <figcaption><h3>Bag cleanup</h3><p class="sub">Sell junk, find your cheapest stacks.</p></figcaption>
-      </figure>
-
       <!-- Price website: the live site, 21 Nov 2026 -->
-      <figure class="shot">
+      <figure class="shot wide">
         <div class="stage">
           <a href="prices/"><img src="img/price-website.webp" width="1100" height="700" loading="lazy" decoding="async"
              alt="Screenshot of the Goblin Ledger price website: Stranglekelp at 4 silver 20 copper with a one-day price chart, Target Buy 2 silver 87 copper and Target Sell 3 silver 91 copper, and a Favorites list of cloth, ore, herbs and leather with their prices and daily change."></a>
