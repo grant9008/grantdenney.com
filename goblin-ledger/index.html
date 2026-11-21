@@ -11,7 +11,9 @@
 
   PICTURES. Real photos (from the game, 21 Nov 2026, Goblin Ledger 1.1.0;
   cropped, no names in them), at their own pixel size (never scaled up,
-  smaller only in a narrower tile):
+  smaller only in a narrower tile). The ones cut from PNGs are lossless WebP
+  (lossy WebP blurs the coloured game text); the rest came as lossy WebP
+  and are saved at quality 90:
 
     img/tooltip-gloves.webp      233 x 281  worn gear: AH value, usual price, Sell now,
                                             best enchant (the end of a name in the window
@@ -22,9 +24,11 @@
     img/consumes.webp            538 x 223  the Consumes panel only (a nameplate behind it
                                             showed through: painted over). On phones it
                                             scrolls sideways at full size.
-    img/boat-countdown.webp      295 x 115  the big boat timer over the sea at Menethil
-    img/boat-docked.webp         430 x 240  the ship docked at Theramore (two tiny
-                                            nameplates on the deck: painted over)
+    img/boat-countdown.webp      292 x 115  the big boat timer over the sea at Menethil
+    img/boat-docked.webp         296 x 230  the ship docked at Theramore (two tiny
+                                            nameplates on the deck and bits of one
+                                            behind the timer's words: painted over);
+                                            narrow, so it shows 1:1 on a phone
     img/crafts-chest.webp        214 x 237  a crafted chest from its Sell Price line down:
                                             Make, Mats, enchant tips (the maker's line
                                             above is left out)
@@ -508,7 +512,7 @@ kbd {
             <a href="img/tooltip-elixir.webp"><img src="img/tooltip-elixir.webp" width="261" height="131" loading="lazy" decoding="async"
                alt="Screenshot of the tooltip for 20 Elixir of Strength with Shift held: Auction it, 21x vendor; AH value for 20, 3 gold 44 silver, 29% under usual; usual price 4 gold 89 silver 80 copper; Sell now 3 gold 43 silver 80 copper."></a>
           </div>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span>cropped</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Prices on every item</h3>
@@ -567,7 +571,7 @@ kbd {
         <figure class="stage">
           <div class="shot-scroll">
             <a href="img/consumes.webp"><img src="img/consumes.webp" width="538" height="223" loading="lazy" decoding="async"
-               alt="Screenshot of the Goblin Ledger Consumes panel for melee, level 50, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon best, Smoked Desert Dumplings best, Grilled Squid 62%, Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose best, or Greater Agility 33%; Greater Strength 66%, or Elixir of Strength 26%; Winterfall Firewater 31%, or Distilled Firewater 31%. STONES AND OILS, POTIONS, and SCROLLS - 2 at once: Strength III best, or Strength II 69%; Agility III 50%, or Agility II 34%. Each row has its price."></a>
+               alt="Screenshot of the Goblin Ledger Consumes panel for melee, level 50, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon best, Smoked Desert Dumplings best, Grilled Squid 62%, Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose best, or Greater Agility 33%; Greater Strength 66%, or Elixir of Strength 26%; Winterfall Firewater 31%, or Distilled Firewater 31%. STONES AND OILS: Dense Weightstone and Dense Sharpening Stone, both best. POTIONS: four, each best. SCROLLS - 2 at once: Strength III best, or Strength II 69%; Agility III 50%, or Agility II 34%. Each row has its price."></a>
           </div>
           <figcaption class="cap"><span class="tag tag-real">Real screenshot</span><span class="swipe">swipe to see it all</span></figcaption>
         </figure>
@@ -614,12 +618,12 @@ kbd {
       <article class="tile">
         <figure class="stage">
           <div class="pair">
-            <a href="img/boat-countdown.webp"><img src="img/boat-countdown.webp" width="295" height="115" loading="lazy" decoding="async"
+            <a href="img/boat-countdown.webp"><img src="img/boat-countdown.webp" width="292" height="115" loading="lazy" decoding="async"
                alt="Screenshot at the Menethil Harbor dock: the big Goblin Ledger boat timer over the sea, Boat to Theramore 0:19 with a small X, and under it Boat to Southshore, Auberdine: unknown, every 8:06."></a>
-            <a href="img/boat-docked.webp"><img src="img/boat-docked.webp" width="430" height="240" loading="lazy" decoding="async"
+            <a href="img/boat-docked.webp"><img src="img/boat-docked.webp" width="296" height="230" loading="lazy" decoding="async"
                alt="Screenshot at the Theramore dock with the ship in: the big boat timer says Boat to Menethil: docked, leaves in 0:58."></a>
           </div>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span>cropped</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshots</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Boat timer</h3>
@@ -637,7 +641,7 @@ kbd {
         <figure class="stage">
           <a href="img/crafts-chest.webp"><img src="img/crafts-chest.webp" width="214" height="237" loading="lazy" decoding="async"
              alt="Screenshot of the lower part of a crafted Veteran's Silvered Chain Shirt tooltip: Sell Price 24 silver 64 copper; Make: 20 Bronze Bar 29 silver 40 copper (from 10 Copper Bar and 10 Tin Bar), 6 Pristine Leather 29 silver 40 copper, plus 3 others; Mats: 1 gold 9 silver; then its enchant tips, Top 5, best Greater Stats +4 about 49 gold."></a>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span>cropped</figcaption>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
         </figure>
         <div class="tile-body">
           <h3>Crafting profit</h3>
@@ -783,7 +787,7 @@ kbd {
         <h3>Updates</h3>
         <ul class="ticks">
           <li>Prices update by themselves every 30 min; <code>/reload</code> loads them</li>
-          <li>3+ hours old? They get a ~ and the tooltip says what to do</li>
+          <li>3+ hours old? Prices get a ~ and the tooltip says what to do (on enchant costs, ~ just means about)</li>
           <li>New versions install by themselves (if you said yes)</li>
           <li>Or a chat line says one is out: <code class="nw">/gl update</code> says how</li>
           <li>Had 1.0.0? Download the zip again and run its installer once</li>

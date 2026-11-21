@@ -2144,6 +2144,8 @@ local function liveFor(id)
   end
   return p, own
 end
+-- The bag panel values stacks with this too, so its value is the tooltip's stack line.
+ns.TooltipLive = liveFor
 
 -- The live cheapest buyout the open auction house showed for an id, from its
 -- listings or its browse row (AH.lua), for the AH value line.

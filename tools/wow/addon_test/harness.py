@@ -4412,19 +4412,26 @@ def verdict_line_ok(sc, ref, iid, lines, label, tf="1D", live=None, own=False, c
             sc.eq(parse_coins(r), display_copper(V["unit"] * n * 95 // 100), "%s: the stack at the verdict's price" % label)
 
 
-def stack_vs_sell_line(sc, lines, mult, n, stack, label):
-    """No model: the stack line is the price on the sell line the tooltip shows
-    (Sell at when that line shows, else Sell now: the price its button fills)
-    times n, less the 5% cut. Never more than that line times n. The sell
-    lines show the price times mult (Shift); copper is dropped from 100g up."""
-    sell = None
+def stack_vs_sell_line(sc, lines, mult, n, stack_text, label):
+    """No model: the stack line (stack_text, its right side as shown) is the
+    price on the sell line the tooltip shows (Sell at when that line shows,
+    else Sell now: the price its button fills) times n, less the 5% cut. Never
+    more than that line times n. It has a "~" (an old price from the file)
+    exactly when that sell line has one. The sell lines show the price times
+    mult (Shift); copper is dropped from 100g up."""
+    sell = sell_text = None
     for left, right in lines:
         base = (left or "").split(" (x")[0]
         if base == "Sell at" or (base.startswith("Sell now") and sell is None):
-            sell = parse_coins((right or "").lstrip("~"))
+            sell_text = right or ""
+            sell = parse_coins(sell_text.lstrip("~"))
+    stack_text = stack_text or ""
+    stack = parse_coins(stack_text.lstrip("~"))
     if not sc.check(sell is not None and sell > 0 and stack is not None,
                     "%s: a stack line has a sell line above it (%s)" % (label, lines)):
         return
+    sc.eq(stack_text.startswith("~"), sell_text.startswith("~"),
+          "%s: the stack has a ~ exactly when the sell line it follows has one (%r, %r)" % (label, stack_text, sell_text))
     sc.check(stack * mult <= sell * n, "%s: the stack (%d) is not above the sell line x %d (%d / %d)" % (label, stack, n, sell, mult))
     if sell < 1000000 and sell % mult == 0:
         sc.eq(stack, display_copper((sell // mult) * n * 95 // 100),
@@ -4444,7 +4451,9 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=
     for left, right in lines:
         base = (left or "").split(" (x")[0]
         if base.startswith("Sell now (") and "% under usual)" in base:
-            base = "Sell now (live)" if base.startswith("Sell now (live)") else "Sell now"
+            base = "Sell now (live)" if base.startswith("Sell now (live") else "Sell now"
+        if base.startswith("AH value (live, x"):   # Shift held: "AH value (live, x20)"
+            base = "AH value (live)"
         coins = (right or "").split("  ")[0].split(", ")[0].lstrip("~")   # "+3% vs usual" after two spaces; "~", ", 3h old"
         if base in want and coins and parse_coins(coins) is not None:
             seen.add(base)
@@ -4457,7 +4466,7 @@ def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=
             if V and V["unit"]:
                 sc.eq(parse_coins(right.lstrip("~")), display_copper(rec_model.stack_after_cut(V["unit"], n)),
                       "%s stack of %d at the verdict's price" % (label, n))
-            stack_vs_sell_line(sc, lines, mult, n, parse_coins(right.lstrip("~")), label)
+            stack_vs_sell_line(sc, lines, mult, n, right, label)
     if it["market"] > 0 or live:
         sc.check(("AH value (live)" if live else "AH value") in seen, "%s: AH value shown (%s)" % (label, sorted(seen)))
     at_line = P["at"] is not None and (P["now"] is None or P["under"] is not None)
@@ -12030,7 +12039,11 @@ def sc_stack_photo(sc, ref, items):
     someone dumping it (Sell now 51% under the usual price): the stack is at
     the Sell at line, the price the Sell at button fills (4g 65s 31c, not at
     Sell now or the AH value). The bag panel values both stacks the same, and
-    the sell frame's buttons fill those prices."""
+    the sell frame's buttons fill those prices. With 4-hour-old prices and the
+    AH open (live listings at 17s 20c and 12s), the stack's "~" follows its
+    sell line: none at the live Sell now, "~" at the dumped one's Sell at (the
+    usual price, from the file), and the bag panel's rough flag with it. A
+    newer browse row (20s) moves the tooltip and the bag panel alike."""
     picks = [i for i in other_items(ref, items, 80, avoid=SIDEBAR_WATCH)
              if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0 and i not in ref.variants]
     if not sc.check(len(picks) >= 2, "photo: enough items to test with"):
@@ -12045,15 +12058,36 @@ def sc_stack_photo(sc, ref, items):
         return [fl[0]] + made[iid].split("|") if iid in made else None
     text = rewrite_items(ref.text, fn)
     r2 = RefData(text=text)
-    w = World(r2, items, data_src=text)
+
+    def photo_world(now=None):
+        w = World(r2, items, data_src=text, now=now)
+        for iid in made:
+            w.M["items"][iid].vendor = 75     # the game's vendor price, as in the data
+            w.M["items"][iid].quality = 1
+        w.put_bag(0, 1, e, 20)
+        w.put_bag(0, 2, f, 20)
+        return w
+
+    def hover(w, slot, shift):
+        tt = w.g.GameTooltip
+        w.M.shift = shift
+        tt.SetOwner(tt, w.g.UIParent, "ANCHOR_RIGHT")
+        tt.SetBagItem(tt, 0, slot)
+        lines = w.lines(tt)
+        w.M.shift = False
+        return lines
+
+    def panel(w):
+        s = w.ns.BagScan()
+        rows = {(s.drop[i].bag, s.drop[i].slot): s.drop[i] for i in range(1, len(s.drop) + 1)}
+        return {slot: ((rows[(0, slot)].source, rows[(0, slot)].value, bool(rows[(0, slot)].unsure))
+                       if (0, slot) in rows else None) for slot in (1, 2)}
+
+    w = photo_world()
     ns, M = w.ns, w.M
-    for iid in made:
-        M["items"][iid].vendor = 75     # the game's vendor price, as in the data
-        M["items"][iid].quality = 1
     tt = w.g.GameTooltip
     age = w.now - r2.updated
-    w.put_bag(0, 1, e, 20)
-    w.put_bag(0, 2, f, 20)
+    stacks = {}   # the tooltip's stack line, in copper
     want_lines = {
         e: [("Auction it", "21x vendor"), ("Usual price (x20)", money_icons(48980)), ("Sell now (x20)", money_icons(34380)),
             ("This stack (20), after AH cut", money_icons(32661))],
@@ -12074,6 +12108,8 @@ def sc_stack_photo(sc, ref, items):
             tooltip_style_ok(sc, w, tt, want_st, lab)
             stack = [r for l, r in lines if l.startswith("This stack")]
             sc.eq(stack, [want_lines[iid][-1][1]], lab + ": the stack line")
+            if len(stack) == 1:
+                stacks[iid] = parse_coins(stack[0])
             if shift:
                 for x in want_lines[iid]:
                     sc.check(x in lines, "%s: %r (%s)" % (lab, x, lines))
@@ -12083,12 +12119,9 @@ def sc_stack_photo(sc, ref, items):
                              "%s: AH value (x20) 3g 44s, -29%% vs usual (%s)" % (lab, ah))
     M.shift = False
     # the bag panel: the same stacks, the same values
-    s = ns.BagScan()
-    rows = {(s.drop[i].bag, s.drop[i].slot): s.drop[i] for i in range(1, len(s.drop) + 1)}
+    got = panel(w)
     for slot, value in ((1, 32661), (2, 46531)):
-        r = rows.get((0, slot))
-        got = (r.source, r.value) if r else None
-        sc.check(got == ("auction", value), "photo: the bag panel values the stack in 0:%d at %d (%r)" % (slot, value, got))
+        sc.eq(got[slot], ("auction", value, False), "photo: the bag panel values the stack in 0:%d at %d" % (slot, value))
     # the game's sell frame: Sell now fills 17s 19c; dumped, Sell at fills 24s 49c
     w.open_ah_modern()
     ah = w.g.AuctionHouseFrame
@@ -12100,7 +12133,60 @@ def sc_stack_photo(sc, ref, items):
         want = ref_buttons(r2, iid, "1D")
         buttons_ok(sc, pair, want, "photo sell frame %d" % slot)
         sc.eq(pair[kind].price, price, "photo sell frame %d: the button the tooltip's stack follows fills %d" % (slot, price))
-        sc.eq(price * 20 * 95 // 100, (32661, 46531)[slot - 1], "photo sell frame %d: the stack line is that price x 20 less 5%%" % slot)
+        sc.eq(pair[kind].price * 20 * 95 // 100 if pair[kind].price else None, stacks.get(iid),
+              "photo sell frame %d: the tooltip's stack line is that button's price x 20 less 5%%" % slot)
+    w.close_ah_modern()
+    sc.clean(w)
+
+    # Prices 4 hours old (stale: "~" on what comes from the file) with the AH open. The elixir
+    # listed live at 17s 20c: Sell now (live) 17s 19c, from now, so its stack 32,661 has no "~".
+    # The dumped one listed live at 12s: Sell now (live, 51% under usual) 11s 99c; its stack is at
+    # the Sell at line, the usual price from the file: "~" 46,531, as that line. The bag panel's
+    # rough flag ("~", "about") is the stack line's "~".
+    w = photo_world(now=r2.updated + 4 * 3600)
+    M = w.M
+    age = w.now - r2.updated
+    w.open_ah_modern()
+    for iid, lp in ((e, 1720), (f, 1200)):
+        w.set_commodity_results(iid, [(lp, 30, False)])
+        M.fire("COMMODITY_SEARCH_RESULTS_UPDATED", iid)
+    w.settle(0.3)
+    old_live = {
+        e: [("Sell now (live) (x20)", money_icons(34380)), ("This stack (20), after AH cut", money_icons(32661))],
+        f: [("Sell now (live, 51% under usual) (x20)", money_icons(23980)), ("Sell at (x20)", "~" + money_icons(48980)),
+            ("This stack (20), after AH cut", "~" + money_icons(46531))],
+    }
+    for slot, iid, lp in ((1, e, 1720), (2, f, 1200)):
+        sc.eq(w.live(iid), lp, "photo old + live: the listing at %d read" % lp)
+        for shift in (True, False):
+            lines = hover(w, slot, shift)
+            mult = 20 if shift else 1
+            lab = "photo old + live %s%s" % ("dumped" if iid == f else "elixir", " Shift" if shift else "")
+            want = expected_tooltip(r2, iid, age, mult=mult, count=20, live=lp, loaded_age=age)
+            sc.eq(lines, want, lab + " tooltip")
+            tooltip_values_ok(sc, r2, iid, lines, mult, lab, live=lp)
+            sc.eq([r for l, r in lines if l.startswith("This stack")], [old_live[iid][-1][1]], lab + ": the stack line")
+            if shift:
+                for x in old_live[iid]:
+                    sc.check(x in lines, "%s: %r (%s)" % (lab, x, lines))
+    got = panel(w)
+    sc.eq(got[1], ("auction", 32661, False), "photo old + live: the bag panel's elixir, exact (the live Sell now)")
+    sc.eq(got[2], ("auction", 46531, True), "photo old + live: the bag panel's dumped stack, rough (the usual price, old)")
+    # A newer browse row (searched again): 20s for both. The tooltip sells at 19s 99c (not dumped any
+    # more: 82% of the usual price), live, so 37,981 with no "~"; the bag panel gives the same.
+    w.tick(1, 0.5)
+    es_search(w, "c", results=[(e, 2000, 50), (f, 2000, 50)])
+    for slot, iid in ((1, e), (2, f)):
+        lab = "photo old + browse row %s" % ("dumped" if iid == f else "elixir")
+        sc.eq(w.ns.LivePrice(iid), (2000, False, "browse"), lab + ": ns.LivePrice is the browse row")
+        lines = hover(w, slot, False)
+        want = expected_tooltip(r2, iid, age, count=20, live=2000, loaded_age=age)
+        sc.eq(lines, want, lab + " tooltip")
+        tooltip_values_ok(sc, r2, iid, lines, 1, lab, live=2000)
+        sc.eq([r for l, r in lines if l.startswith("This stack")], [money_icons(37981)], lab + ": the stack line")
+    got = panel(w)
+    for slot in (1, 2):
+        sc.eq(got[slot], ("auction", 37981, False), "photo old + browse row: the bag panel in 0:%d, as the tooltip" % slot)
     w.close_ah_modern()
     sc.clean(w)
 

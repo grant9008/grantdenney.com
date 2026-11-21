@@ -1517,9 +1517,13 @@ end
 ---------------------------------------------------------------------------
 -- What a stack is worth
 ---------------------------------------------------------------------------
+-- The live price the tooltip sells at (Core's ns.TooltipLive: the loaded
+-- listings, or a browse row that came in later), so the panel's value is the
+-- tooltip's stack line; the loaded listings alone without it.
 local function LiveFor(id)
-  if type(ns.LiveCheapest) ~= "function" then return nil end
-  local ok, p, own = pcall(ns.LiveCheapest, id)
+  local f = type(ns.TooltipLive) == "function" and ns.TooltipLive or ns.LiveCheapest
+  if type(f) ~= "function" then return nil end
+  local ok, p, own = pcall(f, id)
   if ok and Num(p) and p > 0 then return p, own == true end
   return nil
 end
@@ -1535,9 +1539,8 @@ local function AuctionUnit(pid, cache)
     local ok, sp = pcall(ns.SellPrices, pid, "1D", live, own)
     if ok and type(sp) == "table" then
       -- Listed now: the same price per item the tooltip's verdict judges
-      -- (the price to sell at, ns.SellPrices). Totals can still differ by a few
-      -- copper: the panel takes the 5% cut per item, the tooltip's stack line
-      -- on the whole stack.
+      -- (the price to sell at, ns.SellPrices); the scan takes the 5% cut on
+      -- the whole stack, as the tooltip's stack line does.
       local it = type(ns.GetItem) == "function" and ns.GetItem(pid) or nil
       local u = it and (Num(it.market) or 0) > 0 and type(ns.SellVerdictPrice) == "function" and ns.SellVerdictPrice(it, sp) or nil
       if u or (Num(sp.now) and sp.now > 0) then
@@ -1555,8 +1558,12 @@ local function AuctionUnit(pid, cache)
       -- "unreliable": a few listed far above what a vendor pays. That is one
       -- player's asking price, not money you would get.
       -- Prices 3 hours old or more (ns.AgeState): rough too ("~", "about"), as
-      -- the tooltip marks them, unless a live listing gave the price.
-      if unit and not live and type(ns.AgeState) == "function" and ns.AgeState() == "stale" then unsure = true end
+      -- the tooltip's stack line marks them, unless the price is the live
+      -- Sell now (someone dumping: the usual price from the file stays rough).
+      if unit and not (sp.live and unit == sp.now) and type(ns.AgeState) == "function"
+        and ns.AgeState() == "stale" then
+        unsure = true
+      end
     end
   end
   cache[pid] = { unit = unit, unsure = unsure }
