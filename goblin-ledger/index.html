@@ -3,33 +3,49 @@
   Goblin Ledger: the page to send friends (grantdenney.com/goblin-ledger/).
   One static file: inline CSS, no scripts, no analytics. Kept out of search
   on purpose (robots meta below) and NOT listed in sitemap.xml.
-  Short on purpose: a hero, one tile per feature (a picture and 2-3 bullets),
-  install in 4 steps, the commands, then help. It describes 1.1.0.
+  Short on purpose: a hero, one tile per feature (a picture and 3-5 short
+  bullets, most useful first), install in 4 steps, the commands, then help.
+  It describes 1.1.0. On a phone the tiles come in the order of the page
+  source; on a wide screen the grid fills gaps (grid-auto-flow: dense), so
+  the enchant tile sits beside the tooltip tile.
 
   PICTURES. Real photos (from the game, cropped, no names in them):
 
     img/chart.png          the price chart under the AH                   REAL 693 x 222
                            Older version (its "List At" box is "Sell at" now).
                            Shown at full size: on phones it scrolls sideways.
-    img/consumes.png       the Consumes panel                              REAL 538 x 182
-    img/consumes-phone.png the same pixels, its two columns stacked        REAL 271 x 292
-                           (phones get this one). Older version: no Best /
-                           Budget switch or % per row yet.
     img/bag-cleanup.png    the Bag cleanup panel                           REAL 222 x 254
     img/auction-house.png  sell window + chart                             REAL, NOT SHOWN:
                            it still has the old Suggested button.
     img/og.png             link preview for Discord and texts, 1200 x 630 (a graphic)
 
-  DRAWINGS (HTML/CSS, captioned with a "Drawing" tag: not a screenshot).
-  Every line in them is one the addon really prints. Names are items and
-  places, never players.
+  DRAWINGS (HTML/CSS, captioned with a "Drawing" tag: not a screenshot), in
+  the game's look: the colours, font sizes and layout from the addon's code.
+  Every line in them is one the addon really prints (Goblin Ledger 1.1.0 in
+  tools/wow/addon_test/harness.py's mock game, on the real price file of
+  18 Nov 2026). Names are items and places, never players.
 
     tooltip   Iron Ore, a stack of 20 in the bags
-    enchants  Bonebiter worn by a level 47 warrior, Top 5 (the default)
+    enchants  Chief Brigadier Boots with Mithril Spurs, worn by a level 47
+              warrior, Top 5 (the default): the speed stays a choice, so the
+              stat options show under a grey line that names it
+    consumes  the Consumes panel for a level 47 warrior (melee), Best: as the
+              game lays it out at its 631 px width, two columns (sections side
+              by side, the taller one sets the height). Item icons are plain
+              squares. Under 620 px wide one column, without POTIONS and
+              STONES AND OILS (the part the drawing is about stays)
+    flights   flight map, Stormwind to Ironforge; the big timer as the flight
+              starts ("Ironforge 4:19", the strip under it = time left)
+    boats     the big boat timer at the Theramore dock, a learned boat counting
+              ("Boat to Menethil 1:42")
     crafts    Thorium Ore (with Mining) and Plans: Mithril Spurs: only the craft lines
-    flights   flight map, Stormwind to Ironforge; the bar 60 s into that flight
-    boats     at the Theramore dock
     website   a made-up price line
+
+  The big timers: Core.lua's ns.Big (the game's font with an outline; the
+  route or place 16, white; the countdown 32, gold |cffffd100; the X 14,
+  6 after the line; the flight strip 3 high, 3 under the line, gold).
+  The Consumes panel: Consumes.lua (header 18, rows 16, titles and "or" grey,
+  % grey, the panel #0B0E14 at 96% with a #333342 edge).
 
   To swap a drawing for a real photo: save the photo in goblin-ledger/img/
   under the name below, replace the drawing (the element with role="img")
@@ -38,10 +54,11 @@
   Check each alt text against the photo.
 
     <img src="img/tooltip.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of an item tooltip in WoW Forever with the Goblin Ledger lines: the Auction it call, AH value, usual price, Sell now and the stack after the AH cut.">
-    <img src="img/enchants.png" width="400" height="360" loading="lazy" decoding="async" alt="Screenshot of a worn weapon's tooltip with the Goblin Ledger enchant tips: the best enchants for your role, their mats and their cost.">
+    <img src="img/enchants.png" width="400" height="360" loading="lazy" decoding="async" alt="Screenshot of worn boots' tooltip with the Goblin Ledger enchant tips: the best enchants for your role, their mats and their cost.">
+    <img src="img/consumes.png" width="640" height="260" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger Consumes panel under the character screen, with ELIXIRS - 3 at once and grey or rows.">
     <img src="img/crafts.png" width="400" height="300" loading="lazy" decoding="async" alt="Screenshot of a plan's tooltip with what it makes, its mats with their cost, and the profit after the AH cut.">
-    <img src="img/flight.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger flight bar counting down to the next flight point.">
-    <img src="img/boat.png" width="300" height="240" loading="lazy" decoding="async" alt="Screenshot of the minimap with the Goblin Ledger boat line under it saying when the boat comes.">
+    <img src="img/flight.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the big Goblin Ledger flight timer counting down to Ironforge.">
+    <img src="img/boat.png" width="400" height="200" loading="lazy" decoding="async" alt="Screenshot of the big Goblin Ledger boat timer at a dock saying when the boat comes.">
     <img src="img/prices-site.png" width="1280" height="800" loading="lazy" decoding="async" alt="Screenshot of the Goblin Ledger price website with an item's price history chart and a favorites list.">
 
   The install steps match tools/goblin-ledger/install.ps1 and README.txt (the
@@ -249,7 +266,8 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 /* ---- feature tiles ---- */
 .tiles { display: grid; gap: 18px; grid-template-columns: minmax(0, 1fr); }
 @media (min-width: 860px) {
-  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  /* dense: a half tile after a wide one fills the gap beside the one before it */
+  .tiles { grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-flow: row dense; }
   .tile.wide { grid-column: 1 / -1; }
 }
 /* Picture and bullets side by side only where the picture still fits at full size. */
@@ -325,39 +343,84 @@ h3 { margin: 0 0 8px; color: var(--strong); font-size: 20px; font-weight: 800; l
 .m-g { color: #FFD24D; }
 .m-s { color: #D3D3DB; }
 .m-c { color: #E0915A; }
-/* the flight bar: slim, dark, filled in the addon's blue */
-.flybar {
-  position: relative; width: 100%; max-width: 300px; height: 26px; margin: 4px auto 0;
-  border: 1px solid #3A4458; border-radius: 3px; background: rgba(8, 10, 14, 0.85); overflow: hidden;
-  color: #E6E0D6; font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
-  font-size: 14px; font-weight: 700; line-height: 24px; text-align: center;
+.tip-gray { padding: 2px 0; color: #8C8273; }
+.t-item-green { color: #1EFF00; }
+/* The enchant drawing: a long name wraps inside its own column, the price stays on its first line. */
+.ench .tip-row { flex-wrap: nowrap; }
+.ench .tip-row > :first-child { flex: 1 1 auto; min-width: 0; }
+@media (max-width: 480px) { .ench { font-size: 14px; } .ench .tip-mats { font-size: 13px; } }
+
+/* ---- the big timers (boat at a dock, flight in the air): words over the game world ---- */
+/* No panel in the game: the scene behind is only there so the outlined words read as they do. */
+.scene {
+  position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  width: 100%; max-width: 400px; min-height: 120px; margin: 0 auto; padding: 22px 10px 26px; overflow: hidden;
+  border: 1px solid #2C3A50; border-radius: 9px; box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5);
 }
-/* the fill is the time left: 3:19 of 4:19 */
-.flybar .fill { position: absolute; inset: 0 auto 0 0; width: 77%; background: rgba(56, 189, 247, 0.45); }
-.flybar .txt { position: relative; }
-.xbox {
-  position: absolute; right: 3px; top: 50%; width: 16px; height: 16px; margin-top: -8px;
-  border: 1px solid #5A6478; border-radius: 3px; color: #C9C2B4; font-size: 11px; line-height: 14px; text-align: center;
-}
-/* the minimap and the boat line under it */
-.minimap {
-  position: relative; width: 132px; height: 132px; margin: 0 auto; border: 4px solid #7A6A48; border-radius: 50%;
+.scene-sea {
   background:
-    linear-gradient(118deg, transparent 0 53%, rgba(255, 255, 255, 0.1) 53% 55%, transparent 55%),
-    linear-gradient(118deg, #3F5A35 0 46%, #6B5B3E 46% 54%, #23506E 54%);
-  box-shadow: 0 0 0 2px #1A160F, inset 0 0 18px rgba(0, 0, 0, 0.55), 0 10px 26px rgba(0, 0, 0, 0.5);
+    repeating-linear-gradient(172deg, rgba(255, 255, 255, 0) 0 13px, rgba(190, 170, 200, 0.07) 13px 15px),
+    linear-gradient(180deg, #2B2635 0%, #3A3042 45%, #2A2433 100%);
 }
-.minimap::after {
-  content: ""; position: absolute; left: 50%; top: 50%; margin: -9px 0 0 -6px;
-  border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 16px solid #F2D49B;
-  transform: rotate(-30deg);
+.scene-sky {
+  background:
+    radial-gradient(260px 90px at 70% 110%, rgba(80, 110, 70, 0.55), transparent 70%),
+    linear-gradient(180deg, #1C2740 0%, #2C3B58 55%, #34433A 100%);
 }
-.boatline {
-  position: relative; display: inline-block; max-width: 100%; margin: 10px auto 0; padding: 2px 26px 2px 6px;
-  color: #FFFFFF; font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
-  font-size: 14px; font-weight: 700; text-align: center; text-shadow: 0 1px 2px #000;
+/* The game's font with an outline (ns.Big.SetFont): words 16, white; the countdown 32, gold. */
+.bigline {
+  display: inline-flex; align-items: flex-end; max-width: 100%;
+  padding-left: 21px;   /* as much room left of the words as the X takes on the right: the words sit centred */
+  font-family: "Arial Narrow", "Avenir Next Condensed", "Roboto Condensed", "sans-serif-condensed", "Trebuchet MS", sans-serif;
+  font-stretch: condensed; font-weight: 700; line-height: 1; white-space: nowrap;
+  text-shadow: -1px -1px 0 #000, 1px -1px 0 #000, -1px 1px 0 #000, 1px 1px 0 #000, 0 0 3px rgba(0, 0, 0, 0.8);
 }
-.boatwrap { text-align: center; }
+.bigline .bw { margin: 0 8px 5px 0; color: #FFFFFF; font-size: 17px; }
+.bigline .bn { color: #FFD100; font-size: 34px; letter-spacing: 0.5px; }
+/* The game's small red close X (14), 6 after the line, at its top. */
+.bigline .bx {
+  position: relative; align-self: flex-start; flex: none; width: 15px; height: 15px; margin-left: 6px;
+  border: 1px solid #C9A15A; border-radius: 3px; background: radial-gradient(circle at 40% 35%, #C8322A, #6E120D);
+  text-shadow: none;
+}
+.bigline .bx::before, .bigline .bx::after {
+  content: ""; position: absolute; left: 3px; top: 6px; width: 7px; height: 1.6px; background: #F4E9D8;
+  transform: rotate(45deg);
+}
+.bigline .bx::after { transform: rotate(-45deg); }
+.bigwrap { display: inline-flex; flex-direction: column; align-items: stretch; max-width: 100%; }
+/* The flight timer's strip: 3 high, 3 under the line, as wide as it; gold = time left. */
+.strip { height: 3px; margin: 4px 21px 0; background: rgba(0, 0, 0, 0.5); }
+.strip i { display: block; height: 100%; background: rgba(255, 209, 0, 0.9); }
+
+/* ---- the Consumes panel (Consumes.lua's look: header 18, rows 16, two columns) ---- */
+.cpanel {
+  width: 100%; max-width: 700px; margin: 0 auto; border: 1px solid #333342; border-radius: 2px;
+  background: rgba(11, 14, 20, 0.96); box-shadow: 0 10px 26px rgba(0, 0, 0, 0.5); color: #E6E0D6;
+  font-family: "Trebuchet MS", -apple-system, BlinkMacSystemFont, Roboto, Ubuntu, sans-serif;
+  font-size: 12.5px; font-weight: 600; line-height: 18px; text-align: left;
+}
+.cpanel p { margin: 0; }
+.cp-head { display: flex; align-items: center; gap: 5px; height: 22px; padding: 0 6px; }
+.cp-head .cp-go { margin-left: auto; }
+.cp-btn { padding: 0 6px; border-radius: 2px; background: #1A1D24; color: #8C8273; font-size: 11.5px; line-height: 17px; }
+.cp-gold { color: #E5B842; }
+.cp-mut { color: #8C8273; }
+.cp-body { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0 12px; padding: 1px 6px 4px; }
+@media (min-width: 620px) { .cp-body { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 619px) { .cp-wide { display: none; } }
+.cp-t { padding-left: 2px; color: #8C8273; font-size: 11.5px; letter-spacing: 0.3px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cp-r { display: flex; align-items: center; gap: 4px; min-width: 0; white-space: nowrap; }
+.cp-r .ic {
+  flex: none; width: 14px; height: 14px; margin-left: 1px; border: 1px solid rgba(0, 0, 0, 0.6); border-radius: 2px;
+  background: linear-gradient(135deg, var(--ic, #6A5A3A), #1A1610);
+}
+.cp-r .or { flex: none; width: 13px; padding-left: 2px; color: #8C8273; }
+.cp-r .nm { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.cp-r .bf { color: #8C8273; }
+.cp-r .xp { color: #40CC73; }
+.cp-r .pc { flex: none; color: #8C8273; }
+.cp-r .pr { flex: none; padding-right: 2px; }
 /* the price website card (a drawing too) */
 .sitecard { max-width: 380px; overflow: hidden; }
 .sc-bar { display: flex; align-items: center; gap: 6px; padding: 9px 12px; border-bottom: 1px solid #222B38; background: #0E1219; }
@@ -470,7 +533,7 @@ kbd {
         Price website
       </a>
     </div>
-    <p class="fine">Free. About 3 minutes to install. US PvP realms.</p>
+    <p class="fine">Free. Version 1.1.0. About 3 minutes to install. US PvP realms.</p>
   </div>
 </section>
 
@@ -499,26 +562,11 @@ kbd {
         <div class="tile-body">
           <h3>Prices on every item</h3>
           <ul class="ticks">
-            <li>Big call: <b>Auction it</b>, <b>Vendor it</b>, <b>Close call</b> or <b>Maybe auction</b></li>
-            <li>AH value vs usual, and <b>Sell now</b>: 1c under the cheapest</li>
-            <li>Someone dumping? It says "52% under usual" and gives a <b>Sell at</b></li>
-          </ul>
-        </div>
-      </article>
-
-      <!-- Bag cleanup: real photo -->
-      <article class="tile">
-        <figure class="stage">
-          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" decoding="async"
-               alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button."></a>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
-        </figure>
-        <div class="tile-body">
-          <h3>Bag cleanup</h3>
-          <ul class="ticks">
-            <li>A <b>Bag cleanup</b> button on your bags (ElvUI too)</li>
-            <li>Cheapest stacks, old quest items, stacks to merge</li>
-            <li>Never deletes on its own: dropping always asks first</li>
+            <li>Big call: <b>Auction it</b> or <b>Vendor it</b>, counting the AH deposit</li>
+            <li><b>AH value</b> vs the usual price: "+88% vs usual: spike"</li>
+            <li><b>Sell now</b>: 1c under the cheapest listing</li>
+            <li>Someone dumping? "38% under usual" and a <b>Sell at</b> price</li>
+            <li>Stack worth after the AH cut; live prices at the AH</li>
           </ul>
         </div>
       </article>
@@ -535,37 +583,149 @@ kbd {
         <div class="tile-body">
           <h3>At the auction house</h3>
           <ul class="ticks">
-            <li>A <b>price chart</b> under the AH: 1D, 5D, 1W, 1M, 1Y</li>
-            <li><b>Sell now</b> button fills the price; arrows nudge it</li>
-            <li>No results? Last listed, sold a day, plan mats cost</li>
+            <li><b>Price chart</b> under the AH: 1D, 5D, 1W, 1M, 1Y</li>
+            <li><b>Sell now</b> button fills the price (gear: whole silver); you click Post</li>
+            <li>Tiny <b>up/down arrows</b> in the gold, silver, copper boxes</li>
+            <li>No results? When it was last listed, for how much; craft costs</li>
+            <li>Sidebar: your <b>watchlist</b> and <b>flip ideas</b> (experimental, up to 20g)</li>
           </ul>
         </div>
       </article>
 
-      <!-- Enchant tips: drawing, real lines (Bonebiter, level 47 warrior, Top 5) -->
+      <!-- Enchant tips: drawing, real lines (Chief Brigadier Boots with Mithril Spurs, level 47 warrior, Top 5) -->
       <article class="tile">
         <figure class="stage">
-          <div class="mock-box gametip" role="img" aria-label="Drawing of the enchant tips on a worn Bonebiter for a level 47 warrior: best enchant Crusader about 33 gold, from 4 Large Brilliant Shard and 2 Righteous Orb; 2nd Fiery Weapon about 4 gold 21 silver; 3rd Lesser Strength plus 15 about 1 gold 50 silver; 4th Greater Impact plus 7 about 2 gold 3 silver; 5th Impact plus 6 about 50 silver; each with its mats.">
-            <p class="tip-item">Bonebiter</p>
-            <p class="tip-row"><span>Best enchant: Crusader</span><span><span class="m-g">~33g</span></span></p>
-            <p class="tip-mats"><span class="nw">4 Large Brilliant Shard</span>, <span class="nw">2 Righteous Orb</span></p>
-            <p class="tip-row"><span>2nd: Fiery Weapon</span><span><span class="m-g">~4g</span> <span class="m-s">21s</span></span></p>
-            <p class="tip-mats"><span class="nw">2 Small Radiant Shard</span>, <span class="nw">1 Essence of Fire</span></p>
-            <p class="tip-row"><span>3rd: Lesser Strength +15</span><span><span class="m-g">~1g</span> <span class="m-s">50s</span></span></p>
-            <p class="tip-mats"><span class="nw">1 Vision Dust</span>, <span class="nw">1 Large Glowing Shard</span>, <span class="nw">2 Lesser Nether Essence</span></p>
-            <p class="tip-row"><span>4th: Greater Impact +7</span><span><span class="m-g">~2g</span> <span class="m-s">3s</span></span></p>
-            <p class="tip-mats"><span class="nw">1 Large Radiant Shard</span>, <span class="nw">1 Dream Dust</span></p>
-            <p class="tip-row"><span>5th: Impact +6</span><span><span class="m-s">~50s</span></span></p>
-            <p class="tip-mats"><span class="nw">2 Vision Dust</span>, <span class="nw">1 Large Glowing Shard</span></p>
+          <div class="mock-box gametip ench" role="img" aria-label="Drawing of the enchant tips on worn Chief Brigadier Boots that have Mithril Spurs, for a level 47 warrior: a grey line Has Mithril Spurs. Stat options:, then best enchant Forceful Thick Armor Kit about 56 silver, a Leatherworking kit; 2nd Greater Agility plus 7 about 19 gold, 8 Greater Eternal Essence; 3rd Forceful Heavy Armor Kit about 33 silver; 4th Forceful Medium Armor Kit about 9 silver; 5th Lesser Agility plus 4 about 4 silver, 1 Soul Dust.">
+            <p class="tip-item t-item-green">Chief Brigadier Boots</p>
+            <p class="tip-gray">Has Mithril Spurs. Stat options:</p>
+            <p class="tip-row"><span>Best enchant: Forceful Thick Armor Kit</span><span class="m-s">~56s</span></p>
+            <p class="tip-mats">Leatherworking kit, use it on the item</p>
+            <p class="tip-row"><span>2nd: Greater Agility +7</span><span class="m-g">~19g</span></p>
+            <p class="tip-mats">8 Greater Eternal Essence</p>
+            <p class="tip-row"><span>3rd: Forceful Heavy Armor Kit</span><span class="m-s">~33s</span></p>
+            <p class="tip-mats">Leatherworking kit, use it on the item</p>
+            <p class="tip-row"><span>4th: Forceful Medium Armor Kit</span><span class="m-s">~9s</span></p>
+            <p class="tip-mats">Leatherworking kit, use it on the item</p>
+            <p class="tip-row"><span>5th: Lesser Agility +4</span><span class="m-s">~4s</span></p>
+            <p class="tip-mats">1 Soul Dust</p>
           </div>
           <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
         </figure>
         <div class="tile-body">
           <h3>Enchant tips</h3>
           <ul class="ticks">
-            <li>On the gear you wear (character screen)</li>
-            <li>Best enchants for your class and role, mats and AH cost</li>
-            <li>Top 5 by default; the <b>Top 2</b> button shows the two best</li>
+            <li>On the gear you wear: <b>Top 5</b> (or Top 2), mats and AH cost</li>
+            <li>Your role from your talents; kits, scopes, blacksmith items too</li>
+            <li>Speed boots keep their stat options</li>
+            <li>Best already on? One grey line says so</li>
+            <li>A tick box on the character screen turns them off</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Consumes: drawing of the panel, real lines (level 47 warrior, melee, Best) -->
+      <article class="tile wide">
+        <figure class="stage">
+          <div class="cpanel" role="img" aria-label="Drawing of the Goblin Ledger Consumes panel for melee, level 47, with Best and All buttons. FOOD - 1 at a time: Poached Sunscale Salmon plus 40 AP plus 5% XP, best, 3 silver 94 copper; Smoked Desert Dumplings, best, 16 silver 98; Grilled Squid 62%; Flank au Poivre 50%. ELIXIRS - 3 at once: Mongoose plus 25 Agility plus 2% crit, best, 90 silver 66; or Greater Agility 33%; Brute Force 57%, 1 gold 99 silver; or Ogre Strength 21%; Winterfall Firewater 31%; or Distilled Firewater 31%. SCROLLS - 2 at once: Strength III best; or Strength II 69%; Agility III 50%; or Agility II 34%. Wide screens also show POTIONS and STONES AND OILS.">
+            <div class="cp-head">
+              <span class="cp-mut">v</span>
+              <span><span class="cp-gold">Consumes</span> for melee, level 47</span>
+              <span class="cp-btn cp-go">Best</span><span class="cp-btn">All</span>
+            </div>
+            <div class="cp-body">
+              <div>
+                <p class="cp-t">FOOD - 1 at a time</p>
+                <p class="cp-r"><i class="ic" style="--ic:#C9773A"></i><span class="nm">Poached Sunscale Salmon <span class="bf">+40 AP</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">3s 94c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#B88A4A"></i><span class="nm">Smoked Desert Dumplings <span class="bf">+20 Str</span> <span class="xp">+5% XP</span></span><span class="pc">best</span><span class="pr">16s 98c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#A85A4A"></i><span class="nm">Grilled Squid <span class="bf">+1% crit</span> <span class="xp">+5% XP</span></span><span class="pc">62%</span><span class="pr">4s 67c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#9A4A32"></i><span class="nm">Flank au Poivre <span class="bf">+20 Agi</span> <span class="xp">+5% XP</span></span><span class="pc">50%</span><span class="pr">27s</span></p>
+              </div>
+              <div class="cp-wide">
+                <p class="cp-t">POTIONS</p>
+                <p class="cp-r"><i class="ic" style="--ic:#C23A3A"></i><span class="nm">Major Healing <span class="bf">heals 1050-1750</span></span><span class="pc">best</span><span class="pr">28s 47c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#D0642C"></i><span class="nm">Superior Frenzy <span class="bf">+56 AP, 30 sec</span></span><span class="pc">best</span><span class="pr">60s</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#B0302A"></i><span class="nm">Mighty Rage <span class="bf">45-75 rage, +60 Str, 20 sec</span></span><span class="pc">best</span><span class="pr">59s 98c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#8A8A9A"></i><span class="nm">Limited Invulnerability <span class="bf">immune to physical, 6 sec</span></span><span class="pc">best</span><span class="pr">75s 96c</span></p>
+              </div>
+              <div>
+                <p class="cp-t">ELIXIRS - 3 at once</p>
+                <p class="cp-r"><i class="ic" style="--ic:#3A7AD0"></i><span class="nm">Mongoose <span class="bf">+25 Agi, +2% crit, 30 min</span></span><span class="pc">best</span><span class="pr">90s 66c</span></p>
+                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#4A9A5A"></i><span class="nm">Greater Agility <span class="bf">+25 Agi, 1 hr</span></span><span class="pc">33%</span><span class="pr">23s</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#C04A3A"></i><span class="nm">Brute Force <span class="bf">+18 Str, +18 Sta, 1 hr</span></span><span class="pc">57%</span><span class="pr">1g 99s</span></p>
+                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#9A6A3A"></i><span class="nm">Ogre Strength <span class="bf">+8 Str, 1 hr</span></span><span class="pc">21%</span><span class="pr">3s 78c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#C9A43A"></i><span class="nm">Winterfall Firewater <span class="bf">+35 AP, 20 min</span></span><span class="pc">31%</span><span class="pr">36s 11c</span></p>
+                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B08A3A"></i><span class="nm">Distilled Firewater <span class="bf">+35 AP, 20 min</span></span><span class="pc">31%</span><span class="pr">99s 94c</span></p>
+              </div>
+              <div>
+                <p class="cp-t">SCROLLS - 2 at once</p>
+                <p class="cp-r"><i class="ic" style="--ic:#C8B88A"></i><span class="nm">Strength III <span class="bf">+13 Str, 30 min</span></span><span class="pc">best</span><span class="pr">11s 48c</span></p>
+                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B8A87A"></i><span class="nm">Strength II <span class="bf">+9 Str, 30 min</span></span><span class="pc">69%</span><span class="pr">3s</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#C8B88A"></i><span class="nm">Agility III <span class="bf">+13 Agi, 30 min</span></span><span class="pc">50%</span><span class="pr">10s 68c</span></p>
+                <p class="cp-r"><span class="or">or</span><i class="ic" style="--ic:#B8A87A"></i><span class="nm">Agility II <span class="bf">+9 Agi, 30 min</span></span><span class="pc">34%</span><span class="pr">3s 57c</span></p>
+              </div>
+              <div class="cp-wide">
+                <p class="cp-t">STONES AND OILS</p>
+                <p class="cp-r"><i class="ic" style="--ic:#7A7A82"></i><span class="nm">Dense Weightstone <span class="bf">+8 weapon dmg, 30 min</span></span><span class="pc">best</span><span class="pr">4s 48c</span></p>
+                <p class="cp-r"><i class="ic" style="--ic:#8A8A92"></i><span class="nm">Dense Sharpening Stone <span class="bf">+8 weapon dmg, 30 min</span></span><span class="pc">best</span><span class="pr">4s 76c</span></p>
+              </div>
+            </div>
+          </div>
+          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Consumes</h3>
+          <ul class="ticks">
+            <li>Under your character screen: food, potions, elixirs, scrolls, flasks</li>
+            <li>"ELIXIRS - 3 at once"; a grey <b>or</b> row is one to take instead</li>
+            <li>Food and flasks: 1 at a time; hover a title for the stacking rule</li>
+            <li>Price and % of the best on every row</li>
+            <li><b>Best</b>, <b>Budget</b> (cheaper picks) or <b>All</b></li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Flight timer: drawing, real lines (Stormwind to Ironforge, as the flight starts) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="pair" role="img" aria-label="Drawing of the flight map tooltip for Ironforge, Dun Morogh, with the line Flight time: about 4:19, and below it the big flight timer as you take off: Ironforge in white, 4:19 large in gold, a thin gold strip under it for the time left, and a small X.">
+            <div class="mock-box gametip">
+              <p class="tip-item">Ironforge, Dun Morogh</p>
+              <p class="tip-line">Flight time: about 4:19</p>
+            </div>
+            <div class="scene scene-sky">
+              <div class="bigwrap">
+                <p class="bigline"><span class="bw">Ironforge</span><span class="bn">4:19</span><span class="bx"></span></p>
+                <div class="strip"><i style="width: 100%"></i></div>
+              </div>
+            </div>
+          </div>
+          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Flight timer</h3>
+          <ul class="ticks">
+            <li>The flight map shows each flight's time</li>
+            <li>Flying: a big countdown up top; the strip is time left</li>
+            <li>Drag it anywhere, it stays; X hides it till you land</li>
+          </ul>
+        </div>
+      </article>
+
+      <!-- Boat timer: drawing, a real line (the Theramore dock, a learned boat counting) -->
+      <article class="tile">
+        <figure class="stage">
+          <div class="scene scene-sea" role="img" aria-label="Drawing of the big boat timer at the Theramore dock: Boat to Menethil in white, 1:42 large in gold, and a small X.">
+            <p class="bigline"><span class="bw">Boat to Menethil</span><span class="bn">1:42</span><span class="bx"></span></p>
+          </div>
+          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+        </figure>
+        <div class="tile-body">
+          <h3>Boat and zeppelin timer</h3>
+          <ul class="ticks">
+            <li>At a dock: a big countdown, or "docked, leaves in 0:35"</li>
+            <li>Learns from your rides and guild mates with the addon</li>
+            <li>Unknown? "every 5:29" and a "Click when the boat docks" button</li>
+            <li>Drag it anywhere, it stays; X hides it till you leave</li>
           </ul>
         </div>
       </article>
@@ -591,71 +751,27 @@ kbd {
           <h3>Crafting profit</h3>
           <ul class="ticks">
             <li>Plans and patterns: mats cost and profit after the AH cut</li>
-            <li>Ore and bars: what your own recipes pay for them</li>
+            <li>Ore and bars: what your own recipes make of them</li>
             <li>One line in the Professions window too</li>
+            <li>Crafted items priced at the tooltip's Sell now</li>
           </ul>
         </div>
       </article>
 
-      <!-- Consumes: real photo -->
-      <article class="tile wide">
-        <figure class="stage">
-          <a href="img/consumes.png"><picture>
-            <source media="(max-width: 619px)" srcset="img/consumes-phone.png" width="271" height="292">
-            <img src="img/consumes.png" width="538" height="182" loading="lazy" decoding="async"
-               alt="Screenshot of the Goblin Ledger Consumes panel for melee, level 47: food like Poached Sunscale Salmon with plus 5% XP, elixirs like Mongoose, potions like Major Healing and Mighty Rage, scrolls of Strength III and Agility III, and weapon stones, each with its price.">
-          </picture></a>
-          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span>older version</figcaption>
-        </figure>
-        <div class="tile-body">
-          <h3>Consumes</h3>
-          <ul class="ticks">
-            <li>Hangs under your character screen</li>
-            <li>Best food, potions, elixirs, scrolls for your role and level</li>
-            <li>Prices, % of best, and a <b>Best / Budget</b> switch</li>
-          </ul>
-        </div>
-      </article>
-
-      <!-- Flight timer: drawing, real lines (Stormwind to Ironforge) -->
+      <!-- Bag cleanup: real photo -->
       <article class="tile">
         <figure class="stage">
-          <div class="pair" role="img" aria-label="Drawing of the flight map tooltip for Ironforge, Dun Morogh, with the line Flight time: about 4:19, and below it the flight bar while you fly: Ironforge 3:19, with an X to hide it.">
-            <div class="mock-box gametip">
-              <p class="tip-item">Ironforge, Dun Morogh</p>
-              <p class="tip-line">Flight time: about 4:19</p>
-            </div>
-            <div class="flybar">
-              <span class="fill"></span><span class="txt">Ironforge 3:19</span><span class="xbox">x</span>
-            </div>
-          </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
+          <a href="img/bag-cleanup.png"><img src="img/bag-cleanup.png" width="222" height="254" decoding="async"
+               alt="Screenshot of the Bag cleanup panel in WoW Forever: 30 of 68 slots free, then Worth the least, 8 of 16 stacks from Silk Cloth at 1 silver 90 copper up to Greater Healing Potion times 5 at 21 silver 13 copper, and a Drop cheapest button."></a>
+          <figcaption class="cap"><span class="tag tag-real">Real screenshot</span></figcaption>
         </figure>
         <div class="tile-body">
-          <h3>Flight timer</h3>
+          <h3>Bag cleanup</h3>
           <ul class="ticks">
-            <li>The flight map shows each flight's time</li>
-            <li>A big countdown up top while you fly (<code>/gl flights small</code>: a slim bar)</li>
-            <li>Drag it anywhere; its X hides it until you land</li>
-          </ul>
-        </div>
-      </article>
-
-      <!-- Boat timer: drawing, a real line (at the Theramore dock) -->
-      <article class="tile">
-        <figure class="stage">
-          <div class="boatwrap" role="img" aria-label="Drawing of the minimap with the line Boat to Menethil: docked, leaves in 0:41 under it, and an X to hide it.">
-            <div class="minimap"></div>
-            <p class="boatline">Boat to Menethil: docked, leaves in 0:41<span class="xbox" aria-hidden="true">x</span></p>
-          </div>
-          <figcaption class="cap"><span class="tag tag-draw">Drawing</span>not a screenshot</figcaption>
-        </figure>
-        <div class="tile-body">
-          <h3>Boat timer</h3>
-          <ul class="ticks">
-            <li>At a dock: a big timer says when the boat or zeppelin comes</li>
-            <li>Learns from your rides, or click "Click when the boat docks"</li>
-            <li>Drag it anywhere; X hides it until you leave</li>
+            <li>A <b>Bag cleanup</b> button on your bags (ElvUI too)</li>
+            <li>Cheapest stacks first, stacks to merge</li>
+            <li><b>Drop cheapest</b> always asks first</li>
+            <li>Quest items say "Can drop" or "Keep" (best with Questie)</li>
           </ul>
         </div>
       </article>
@@ -679,8 +795,8 @@ kbd {
         <div class="tile-body">
           <h3>Price website</h3>
           <ul class="ticks">
-            <li>Price history charts for every item</li>
-            <li>Favorites lists; works on your phone</li>
+            <li>Price history for every item, on your phone too</li>
+            <li>Favorites lists, plus auto lists of the most traded greens, blues and epics</li>
           </ul>
           <p class="more"><a class="btn btn-ghost btn-sm" href="prices/">Open the price website</a></p>
         </div>
@@ -708,10 +824,13 @@ kbd {
       <li>
         <p class="k">Run the installer</p>
         <p>Double-click <b>Install-Goblin-Ledger.bat</b>, press Y twice.</p>
+        <p class="s">Y, Y: prices every 30 min, new versions by themselves.</p>
         <p class="s">Windows warns? More info, Run anyway.</p>
+        <p class="s">Game not found? It asks: paste your _forever_ folder.</p>
       </li>
       <li>
-        <p class="k">Restart WoW</p>
+        <p class="k">Start WoW</p>
+        <p class="s">Was it open? Close it fully first.</p>
         <p class="s">Hover an item: the prices are there.</p>
       </li>
     </ol>
@@ -729,15 +848,22 @@ kbd {
       <li><code>/gl compact</code> <span>one-line tooltips</span></li>
       <li><code>/gl tooltip</code> <span>prices off or on</span></li>
       <li><code>/gl chart Linen Cloth</code> <span>chart any item</span></li>
+      <li><code>/gl watch Runecloth</code> <span>add to your AH watchlist</span></li>
+      <li><code>/gl flips</code> <span>flip ideas in chat</span></li>
       <li><code>/gl bags</code> <span>cleanup list in chat</span></li>
+      <li><code>/gl keep Silk Cloth</code> <span>never suggest dropping it</span></li>
       <li><code>/gl enchants top2</code> <span>best two only</span></li>
-      <li><code>/gl enchants tank</code> <span>set your role</span></li>
+      <li><code>/gl enchants tank</code> <span>set your role (auto: talents)</span></li>
       <li><code>/gl consumes budget</code> <span>cheaper picks</span></li>
-      <li><code>/gl flights small</code> <span>slim flight bar</span></li>
-      <li><code>/gl update</code> <span>check your version</span></li>
+      <li><code>/gl boat now</code> <span>boat just docked: learn it</span></li>
+      <li><code>/gl boats small</code> <span>a line under the minimap</span></li>
+      <li><code>/gl flights small</code> <span>a slim flight bar</span></li>
+      <li><code>/gl boats reset</code> <span>boat timer back to the middle</span></li>
+      <li><code>/gl flights reset</code> <span>flight timer back too</span></li>
+      <li><code>/gl update</code> <span>your version, how to update</span></li>
       <li><kbd>Shift</kbd> <span>hold: whole stack, every mat</span></li>
     </ul>
-    <p class="note"><code>off</code> works for crafts, boats and consumes too; <code>on</code> brings it back.</p>
+    <p class="note"><code>off</code> turns enchants, consumes, crafts, flights or boats off; <code>on</code> brings it back (enchants: <code>auto</code>).</p>
   </div>
 </section>
 
@@ -750,18 +876,20 @@ kbd {
       <div class="card">
         <h3>Updates</h3>
         <ul class="ticks">
-          <li>Prices update every 30 min; <code>/reload</code> shows them</li>
-          <li>Keep the unzipped folder: its installer gets fresh prices now</li>
-          <li>New versions install themselves</li>
-          <li>Had the first version? Run the new installer once</li>
+          <li>Prices update by themselves every 30 min; <code>/reload</code> loads them</li>
+          <li>3+ hours old? They get a ~ and the tooltip says what to do</li>
+          <li>New versions install by themselves (you said Y)</li>
+          <li>Or a chat line says one is out: run <b>Update-Goblin-Ledger.bat</b></li>
+          <li>Had the first version (1.0.0)? Run the new installer once</li>
         </ul>
       </div>
       <div class="card">
         <h3>Safe and simple</h3>
         <ul class="ticks">
-          <li>Never buys, bids or posts for you</li>
+          <li>Never buys, bids or posts; buttons only fill the price box</li>
+          <li>Sells or drops only when you click; dropping asks first</li>
+          <li>Works with ElvUI, Auctionator and Questie; no scanning</li>
           <li>Alliance, US PvP realms; Windows only</li>
-          <li>Unlike Auctionator, no scanning; runs fine next to it</li>
         </ul>
       </div>
       <div class="card">
