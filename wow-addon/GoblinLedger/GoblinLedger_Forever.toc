@@ -4,7 +4,7 @@
 ## X-Credits: Price data from Blizzard Entertainment
 ## X-Website: https://grantdenney.com/goblin-ledger/
 ## SavedVariables: ForeverAH_Settings
-## Version: 1.0.0
+## Version: 1.1.0
 Data.lua
 Latest.lua
 Core.lua

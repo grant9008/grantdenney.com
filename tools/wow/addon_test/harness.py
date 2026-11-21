@@ -60,7 +60,7 @@ TOC_HEADER = [
     "## X-Credits: Price data from Blizzard Entertainment",
     "## X-Website: https://grantdenney.com/goblin-ledger/",
     "## SavedVariables: ForeverAH_Settings",
-    "## Version: 1.0.0",
+    "## Version: 1.1.0",
 ]
 PLACEHOLDER = ("-- Goblin Ledger price data placeholder. Run Install-Goblin-Ledger.bat.\n"
                "ForeverAH_Data = ForeverAH_Data or { v = 1, updated = 0, items = {} }")
