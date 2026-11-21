@@ -1440,12 +1440,13 @@ def test_daily_points():
         left = [ln[0] for ln in lines_of(M.ShowItem(G.GameTooltip, iid, None))]
         check(not any(x.startswith(("7-day low", "7-day high", "Market", "Cheapest", "Best price", "Listed ")) for x in left),
               "%d: none of the old tooltip lines" % iid, left)
-    # the multi-day average is not shown any more; the usual price is (the middle of the last 24
-    # hourly market prices, at least 4 of them)
+    # no 5-day average: these fixtures have under 5 days of hourly prices (ns.FiveDayAverage needs
+    # 24 priced hours, the oldest 108 hours back); the usual price is the middle of the last 24
+    # hourly market prices, at least 4 of them
     for iid in (2589, 13468, 7228, 4306):
         got = lines_of(M.ShowItem(G.GameTooltip, iid, None))
         left = [ln[0] for ln in got]
-        eq([x for x in left if x.endswith("-day average")], [], "%d: no average line" % iid)
+        eq([x for x in left if x.endswith("-day average")], [], "%d: no 5-day average with under 5 days of prices" % iid)
         u = ns.UsualPrice(iid)
         s1w = ns.GetSeries(iid, "1W")
         want_u = rec_model.usual_price([v or None for v in lua_list(s1w.market, s1w.n)]) if s1w else None

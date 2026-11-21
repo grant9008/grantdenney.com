@@ -179,31 +179,43 @@ end
 ns.UsualPrice = usualPrice
 
 -- The 5-day average: the mean of the item's hourly market prices over the
--- last 5 days (the 5D chart's 120 hours), whole copper. Hours with nothing
--- listed have no price and are left out; the price file's repeats over a gap
--- of up to 6 hours count, as for the usual price. A mean, not a middle: one
--- dear day moves it, which is what an average over days should show next to
--- the usual price. Only when the prices really span 5 days, else nil (an
--- item first listed 2 days ago gets no line, never a "5-day" average of 2
--- days): at least 24 hours with a price (a few scattered listings are not an
--- average) and the oldest of them at least 108 hours (4.5 days) before the
--- window's newest hour. Half a day of slack, as nothing may have been listed
--- in the window's first hours.
+-- last 5 days (the newest 120 hours, the 5D chart's), whole copper. They are
+-- read from the week the usual price already read, so a hover keeps no
+-- second window. Hours with nothing listed have no price and are left out;
+-- the price file's repeats over a gap of up to 6 hours count, as for the
+-- usual price. A mean, not a middle: one dear day moves it, which is what an
+-- average over days should show next to the usual price. But an hour over 3x
+-- the 5 days' middle price is one odd listing, not the price, and is left
+-- out: kept in, one silly listing (and the file's repeats of it over a gap)
+-- would put a cheap fish's average at 3x its usual price. Only when the
+-- prices really span 5 days, else nil (an item first listed 2 days ago gets
+-- no line, never a "5-day" average of 2 days): at least 24 hours with a price
+-- (a few scattered listings are not an average) and the oldest of them at
+-- least 108 hours (4.5 days) before the window's newest hour. Half a day of
+-- slack, as nothing may have been listed in the window's first hours.
+local AVG5_N = 120      -- the newest hours of the week, 5 days
 local AVG5_HOURS = 24   -- hours with a price, at least
 local AVG5_SPAN = 108   -- hours from the oldest of them to the window's newest hour, at least
+local AVG5_SPIKE = 3    -- an hour over 3x the middle price is left out
 function ns.FiveDayAverage(itemID)
-  local s = type(ns.GetSeries) == "function" and ns.GetSeries(itemID, "5D") or nil
+  local s = type(ns.GetSeries) == "function" and ns.GetSeries(itemID, "1W") or nil
   if not s then return nil end
   local n = s.n or 0
-  local sum, cnt, first = 0, 0, nil
-  for i = 1, n do
+  local vals, first = {}, nil
+  for i = max(1, n - AVG5_N + 1), n do
     local m = s.market[i]
     if m and m > 0 then
-      sum, cnt = sum + m, cnt + 1
+      vals[#vals + 1] = m
       first = first or i
     end
   end
-  if cnt < AVG5_HOURS or n - first < AVG5_SPAN then return nil end
+  if #vals < AVG5_HOURS or n - first < AVG5_SPAN then return nil end
+  sort(vals)
+  local cap = percentile(vals, 0.5) * AVG5_SPIKE
+  local sum, cnt = 0, 0
+  for k = 1, #vals do
+    if vals[k] <= cap then sum, cnt = sum + vals[k], cnt + 1 end
+  end
   return floor(sum / cnt + 0.5)
 end
 

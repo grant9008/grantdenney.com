@@ -4447,8 +4447,8 @@ def stack_vs_sell_line(sc, lines, mult, n, stack_text, label):
 
 def tooltip_values_ok(sc, ref, iid, lines, mult, label, live=None, tf="1D", own=False):
     """Value-level check, independent of wording: every price on the tooltip
-    equals the data file (AH value) or the model (the usual price, Sell now,
-    Sell at, and the stack at the verdict's price after the 5% cut, never
+    equals the data file (AH value) or the model (the usual price, the 5-day
+    average, Sell now, Sell at, and the stack at the verdict's price after the 5% cut, never
     multiplied by Shift)."""
     it = ref.items[iid]
     P = ref_sell_prices(ref, iid, tf, live, own)
@@ -12205,7 +12205,8 @@ def sc_avg5(sc, ref, items):
     """The owner's ask (21 Nov, a Thorium Ore tooltip): "add 5 day average". A
     "5-day average" line right under Usual price: the mean of the 5D window's
     hourly market prices that have one (the 120 newest hours; nothing listed is
-    left out, never a 0), rounded half up to whole copper, worked out here from
+    left out, never a 0; an hour over 3x their middle price is one odd listing,
+    left out too), rounded half up to whole copper, worked out here from
     the series as written, not with the addon's helper nor rec_model. Only over
     5 days of prices: at least 24 priced hours, the oldest of them at least 108
     hours before the window's newest hour; else no line. Shift multiplies it
@@ -12216,7 +12217,7 @@ def sc_avg5(sc, ref, items):
     picks = [i for i in other_items(ref, items, 400)
              if ref.items[i]["cheapest"] >= 3 and ref.items[i]["market"] > 0
              and i not in ref.variants and i not in ref.base_of]
-    if not sc.check(len(picks) >= 10, "avg5: enough items to test with (%d)" % len(picks)):
+    if not sc.check(len(picks) >= 11, "avg5: enough items to test with (%d)" % len(picks)):
         return
     VENDOR = 75
 
@@ -12255,6 +12256,10 @@ def sc_avg5(sc, ref, items):
         ("23 priced", hours(168, lambda j: (2600 + j) if j >= 53 and (j - 48) % 5 == 0 else None), 2700, 2700, False),
         # a mean of exactly 20s 0.5c: rounded up to 20s 1c
         ("half", hours(168, lambda j: 2000 + j % 2), 2000, 2000, True),
+        # one silly listing at 10x, repeated by the file over a gap (4 hours), and one hour at
+        # exactly 3x the middle (kept) and one a copper over (left out)
+        ("spike", hours(168, lambda j: 20000 if 150 <= j < 154 else 6000 if j == 100 else 6001 if j == 101
+                        else 2000), 2000, 2000, True),
     ]
     made, keys = {}, {}
     for (key, mk, cheapest, market, _), iid in zip(cases, picks):
@@ -12268,12 +12273,16 @@ def sc_avg5(sc, ref, items):
     r2 = RefData(text=text)
 
     def mean5(mk):
-        """From the hourly prices as written: the last 120 hours, the ones with a price."""
+        """From the hourly prices as written: the last 120 hours, the ones with a price, but
+        not an hour over 3x their middle (the two middle ones' mean, rounded half up)."""
         win = mk[-120:]
         priced = [(k, v) for k, v in enumerate(win) if v]
         if len(priced) < 24 or (len(win) - 1) - priced[0][0] < 108:
             return None
-        q = Fraction(sum(v for _, v in priced), len(priced))
+        vals = sorted(v for _, v in priced)
+        mid = (vals[(len(vals) - 1) // 2] + vals[len(vals) // 2] + 1) // 2
+        kept = [v for v in vals if v <= 3 * mid]
+        q = Fraction(sum(kept), len(kept))
         return math.floor(q + Fraction(1, 2))
     want_avg = {keys[key]: mean5(mk) for key, mk, _, _, _ in cases}
     for key, mk, _, _, shown in cases:
@@ -12289,6 +12298,8 @@ def sc_avg5(sc, ref, items):
              "avg5: the full week's mean (%d) is not its middle, the 1W mean, a mean with the gap as 0 "
              "or the usual price" % full)
     sc.eq(want_avg[keys["half"]], 2001, "avg5: 20s 0.5c rounds up to 20s 1c")
+    # 114 hours at 20s and the one at 60s: 2034.8; with the 10x hours and the 60s 1c one 2666.7
+    sc.eq(want_avg[keys["spike"]], 2035, "avg5 spike: the hours over 3x the middle left out, the one at 3x kept")
 
     def world(now=None):
         w = World(r2, items, data_src=text, now=now)
@@ -12363,6 +12374,12 @@ def sc_avg5(sc, ref, items):
     w.slash("/gl compact")
     tt, lines = hover(w, keys["full"], False)
     sc.eq(len(avg_lines(lines)), 1, "avg5: back from compact, the average again")
+    # bind on pickup: no verdict, but the usual price and the average still show
+    w.M["items"][keys["full"]].bind = 1
+    tt, lines = hover(w, keys["full"], False, bag=False)
+    sc.eq(lines, expected_tooltip(r2, keys["full"], age, verdict=False), "avg5 full bound: the average, no verdict")
+    sc.eq(len(avg_lines(lines)), 1, "avg5 full bound: the 5-day average shown")
+    w.M["items"][keys["full"]].bind = 0
     sc.clean(w)
 
     # 4-hour-old prices: a "~" on the average, as on the usual price (both from the file)
