@@ -498,7 +498,7 @@ local function NowText(info, postWord)
     lines[#lines + 1] = "Only a few are listed, so this price may not be reliable."
   end
   if info and info.nowVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
-  lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
+  lines[#lines + 1] = postWord and ("Nothing is posted: you still click " .. postWord .. ".") or "Nothing is posted: you post it yourself."
   return table.concat(lines, " ")
 end
 
@@ -514,7 +514,7 @@ local function BestText(info, postWord)
   end
   lines[#lines + 1] = VersionText(info)
   if info and info.atVendor then lines[#lines + 1] = "A vendor pays more than this after the 5% cut." end
-  lines[#lines + 1] = "Nothing is posted: you still click " .. (postWord or "Post") .. "."
+  lines[#lines + 1] = postWord and ("Nothing is posted: you still click " .. postWord .. ".") or "Nothing is posted: you post it yourself."
   return table.concat(lines, " ")
 end
 
@@ -571,7 +571,9 @@ local function SmallFont(b)
   if type(b.SetHighlightFontObject) == "function" then pcall(b.SetHighlightFontObject, b, "GameFontHighlightSmall") end
 end
 
--- place(pair, both) anchors the buttons (both = the two are shown).
+-- place(pair, both) anchors the buttons (both = the two are shown). The
+-- tooltips name no button here: the game's sell frame says Create Auction,
+-- Auctionator's Post (SetPairPrices gets the word for each).
 local function NewPair(parent, isCommodity, place, onClick)
   local pair = { isCommodity = isCommodity, place = place }
   for _, kind in ipairs({ "now", "best" }) do
@@ -582,8 +584,8 @@ local function NewPair(parent, isCommodity, place, onClick)
     b:Hide()
     pair[kind] = b
   end
-  AttachTooltip(pair.now, "Sell now", "Fills the price box with 1 copper under the cheapest listing. Nothing is posted: you still click Post.")
-  AttachTooltip(pair.best, "Sell at", "Fills the price box with the usual price. Nothing is posted: you still click Post.")
+  AttachTooltip(pair.now, "Sell now", "Fills the price box with 1 copper under the cheapest listing. Nothing is posted: you post it yourself.")
+  AttachTooltip(pair.best, "Sell at", "Fills the price box with the usual price. Nothing is posted: you post it yourself.")
   return pair
 end
 
@@ -1262,7 +1264,7 @@ local function UpdateUseButton(sf)
   if not pair then return end
   local now, best, info
   if AH.open then now, best, info = SellAdvice(sellIDs[sf], pair.isCommodity, sellVer[sf]) end
-  SetPairPrices(pair, now, best, info, "Post")
+  SetPairPrices(pair, now, best, info, "Create Auction")   -- the game's button (Auctionator's says Post)
 end
 
 -- Fills the price box with the Sell now ("now") or Sell at ("best") price.

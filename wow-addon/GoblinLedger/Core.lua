@@ -2344,7 +2344,9 @@ function ns.AddTooltipLines(tt, itemID, count, opts)
     if rec and (rec.vendorFar or rec.thinListings) and not (V and V.right == "few listed") then
       tt:AddLine("Few listed: the price may not be reliable", mu[1], mu[2], mu[3])
     end
-    -- The stack at the verdict's price, never multiplied by Shift.
+    -- The stack at the verdict's price, never multiplied by Shift. That is P.at
+    -- (ns.SellVerdictPrice): the Sell at line's price when it shows, else Sell
+    -- now's, so it is that line x count less the 5% cut, never more.
     if V and V.unit and count > 1 and (V.kind == "auction" or V.kind == "close") then
       local fromFile = stale and not (P.live and V.unit == P.now)
       tt:AddDoubleLine("This stack (" .. count .. "), after AH cut",
