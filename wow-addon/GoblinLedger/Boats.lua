@@ -6,10 +6,13 @@ local ADDON_NAME, ns = ...
 --   "Boat to Theramore: about 2 min"                 (it may be off by up to 30 s)
 --   "Boat to Theramore: unknown, every 5:29 - /gl boat now when it docks"
 -- Big, the words are small and only the number (1:42, 0:35, 2 min) is about three times the
--- small line's size; an unknown boat is a size smaller, with the hint under it. It takes no
--- clicks. In a fight or on a flight (the game's taxi, or the flight timer's flight until its timer
--- goes: Flights.lua) the middle of the screen is for that: the small line shows instead, and the
--- big timer again the moment the flight timer goes. A dock that several boats
+-- small line's size; an unknown boat is a size smaller, with the hint under it. A click on it
+-- does nothing; drag it with the left mouse button to put it anywhere (saved as boatPos, kept
+-- there; the right button goes through it for the camera; /gl boats reset puts it back in the
+-- middle). On a flight (the game's taxi, or the flight timer's flight until its timer goes:
+-- Flights.lua) the small line shows instead (one timer at a time), and in a fight too unless you
+-- put it somewhere (the middle of the screen is the fight's); the big timer again the moment the
+-- flight timer goes. A dock that several boats
 -- use (Menethil, Auberdine, the zeppelin towers) gets one line per boat, nearest pier first (3
 -- at most), the others smaller; when they would run into something they become one line.
 -- Zeppelins and skyships say Zeppelin and Skyship. A small X after the first line hides them
@@ -31,7 +34,7 @@ local ADDON_NAME, ns = ...
 -- Nothing runs away from docks and boats: a zone change starts a check every 3 s within
 -- 1500 yd of a dock, every second within 150 yd, while the line shows and while you ride (a
 -- ride ends at the next dock, 20 s after the boat should have got there, or when you are
--- off its track). /gl boats [on|off|big|small|all], /gl boat now. Plain ASCII only.
+-- off its track). /gl boats [on|off|big|small|all|reset], /gl boat now. Plain ASCII only.
 
 ADDON_NAME = ADDON_NAME or "GoblinLedger"
 ns = ns or {}
@@ -132,13 +135,15 @@ local X_SIZE, X_GAP = 12, 4
 local HINT_WORDS = "/gl boat now when it docks"
 local HINT = " - " .. HINT_WORDS
 local X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+local DRAG_TIP = "Drag the timer to move it; /gl boats reset puts it back."
 -- The big timer (font sizes and gaps in UI units). The small line uses the game's small font
 -- (10), so the countdown is about three times its size. Its place is the big flight timer's too
 -- (Core.lua's ns.Big: centred, its top 290 below the top of the screen or 30% of the screen height
 -- down, above the character, clear of the game's messages at the top centre, the minimap, the
 -- quest trackers and the buffs, and of the flight timer while it shows). Where it does not fit,
 -- the other boats join in one line; then it goes above the timer bars (18 below the top); else
--- the small line is used. Its fonts, its X and its countdown's width are ns.Big's too.
+-- the small line is used. Dragged somewhere by the player, it stays there instead (ns.Big's
+-- spot). Its fonts, its X and its countdown's width are ns.Big's too.
 local Big = ns.Big
 local BIG = { value = 32, head = 16, med = 20, hint = 13, sub = 15, gap = 3, hgap = 8, lift = 3, x = Big.x, xgap = Big.xgap }
 local X_SAID = "boat timers hidden until you leave this dock. /gl boats on brings them back."
@@ -1069,8 +1074,8 @@ end
 local overlapsAny = Big.Overlaps
 B.OverlapsAny = overlapsAny
 
--- The boat a small line is for (one joined line: the nearest pier's). The big timer takes no
--- clicks: in the middle of the screen they are for the world (targeting, the camera).
+-- The boat a small line is for (one joined line: the nearest pier's). A click on the big timer
+-- does nothing (a stray click must not set and share a wrong timer): it is for dragging it.
 local function lineEntry(self)
   local list = UI.list
   return list and list[UI.mode == "stacked" and self.idx or 1]
@@ -1226,7 +1231,9 @@ local function buildBig()
   h:SetFrameStrata("LOW")
   h:SetSize(10, 10)
   h:Hide()
-  -- Its lines let clicks and camera drags through (only the X takes the mouse).
+  -- The timer takes the left button for a drag (ns.Big's: a click does nothing, the right button
+  -- goes through to the world); after a drag it is put at its spot at once. Its lines take no mouse.
+  Big.Movable(h, "boatPos", function() B.Step() end)
   for i = 1, MAX_LINES do
     local b = _G.CreateFrame("Frame", nil, h)
     b:SetSize(10, 10)
@@ -1242,7 +1249,7 @@ local function buildBig()
   BG.value:SetJustifyH("LEFT")
   BG.hint = h:CreateFontString(nil, "OVERLAY", "GameFontHighlight")
   local x = Big.X(h, function() hideHere() end, BG.btn[1])
-  if x then xTip(x) end
+  Big.Tip(x, { X_TIP, DRAG_TIP })
   BG.x = x
   BG.holder = h
   return h
@@ -1351,6 +1358,18 @@ local function renderBig(list, r)
     colJoined[#colJoined + 1] = list[i].st.to .. " |cffffd100" .. r.shorts[i] .. "|r"
   end
   BG.joined = #list > 2 and tconcat(r.parts, "; ", 2, #list) or nil
+  -- Being dragged: its words change, its place is the mouse's. Put somewhere by the player: there
+  -- (whole on the screen), every line, whatever is around it.
+  local h = BG.holder
+  if h.glMoving or Big.Spot("boatPos") then
+    local hw, hh = bigApply(main, hint, others)
+    local rect = not h.glMoving and Big.PlaceSpot(h, hw, hh, "boatPos") or nil
+    if h.glMoving or rect then
+      BG.mode, BG.rect = "placed", rect
+      h:Show()
+      return true
+    end
+  end
   local tries = { { "middle" }, { "middle", true }, { "top" }, { "top", true } }
   for _, tr in ipairs(tries) do
     if not tr[2] or #others > 1 then
@@ -1436,12 +1455,17 @@ B.HideHere = hideHere
 -- taxi, or the flight timer's flight (Flights.lua) until its timer goes (it stays up for half a
 -- second after you touch down: a blip off the taxi is no landing); Flights.lua tells this file
 -- as a flight starts and ends (B.FlightChanged), so the change shows at once.
-local function busy()
-  if callG("UnitAffectingCombat", "player") == true or callG("UnitOnTaxi", "player") == true then return true end
+local function onFlight()
+  if callG("UnitOnTaxi", "player") == true then return true end
   local FL = ns.Flights
   return type(FL) == "table" and type(FL.InAir) == "function" and FL.InAir() == true
 end
+local function busy() return callG("UnitAffectingCombat", "player") == true or onFlight() end
 B.Busy = busy
+-- When the big timer gives way to the small line: on a flight always (one timer at a time); in a
+-- fight unless the player put it somewhere (the fight's rule is only about the middle).
+local function givesWay() return onFlight() or (busy() and not Big.Spot("boatPos")) end
+B.GivesWay = givesWay
 
 -- The words for the boats of list (the first unknown one gets the hint; the big timer's only
 -- under its big line), then the big timer, or the small line(s) under the minimap (/gl boats
@@ -1463,7 +1487,7 @@ local function render(list, now)
   end
   local joinedPlain = #list > 1 and ("Boats: " .. tconcat(r.parts, "; ")) or plain[1]
   UI.list, UI.texts, UI.joined, UI.at = list, plain, joinedPlain, now
-  if bigStyle() and not busy() and renderBig(list, r) then
+  if bigStyle() and not givesWay() and renderBig(list, r) then
     if UI.holder then UI.holder:Hide() end
     UI.style, UI.texts = "big", plainBig
   else
@@ -1760,9 +1784,14 @@ local function nearestText(now)
   return sformat("nearest dock: %s, %d yd. %s", st.place, floor(d + 0.5), tconcat(parts, "; "))
 end
 
+-- Where the big timer is, and when it gives way to the small line, for the chat lines.
+local function bigWords()
+  if Big.Spot("boatPos") then return "where you put it", "on a flight" end
+  return "in the middle of the screen", "on a flight or in a fight"
+end
 -- Where the timers show, for the chat lines.
 local function whereText()
-  return bigStyle() and "a big timer in the middle of the screen" or "a line under the minimap"
+  return bigStyle() and ("a big timer " .. (bigWords())) or "a line under the minimap"
 end
 
 -- /gl boats: two lines (on or off, big or small, and the nearest dock with its boats).
@@ -1774,10 +1803,11 @@ local function status()
   local x, y, inst = pos()
   if x and hiddenHere(x, y, inst, docksHere(x, y, inst, 0)) then
     say("boat timers are on (" .. (bigStyle() and "big" or "small") .. "), hidden at this dock until you leave it (/gl boats on shows them).")
-  elseif bigStyle() and busy() then   -- (a flight or a fight: the small line shows meanwhile)
-    say("boat timers are on: big, in the middle of the screen, but on a flight or in a fight the line under the minimap (/gl boats small: always there). /gl boats all lists every route.")
+  elseif bigStyle() and givesWay() then   -- (a flight or a fight: the small line shows meanwhile)
+    local at, way = bigWords()
+    say("boat timers are on: big, " .. at .. ", but " .. way .. " the line under the minimap (/gl boats small: always there). /gl boats all lists every route.")
   elseif bigStyle() then
-    say("boat timers are on: big, in the middle of the screen (/gl boats small: under the minimap). /gl boats all lists every route.")
+    say("boat timers are on: big, " .. (bigWords()) .. " (/gl boats small: under the minimap). /gl boats all lists every route.")
   else
     say("boat timers are on: small, under the minimap (/gl boats big: in the middle of the screen). /gl boats all lists every route.")
   end
@@ -1817,10 +1847,15 @@ local function boatsCommand(rest)
     wake()
   elseif rest == "big" or rest == "small" then
     S.boatStyle = rest == "small" and "small" or nil   -- (saved; big is the default)
+    local at, way = bigWords()
     local msg = rest == "small" and "boat timers are small now: a line under the minimap. /gl boats big makes them big again."
-                or busy() and "boat timers are big now: in the middle of the screen, but on a flight or in a fight the line under the minimap (/gl boats small: always there)."
-                or "boat timers are big now: in the middle of the screen. /gl boats small puts them under the minimap."
+                or givesWay() and ("boat timers are big now: " .. at .. ", but " .. way .. " the line under the minimap (/gl boats small: always there).")
+                or ("boat timers are big now: " .. at .. ". /gl boats small puts them under the minimap.")
     say(isOn() and msg or (msg .. " They are off: /gl boats on turns them on."))
+    wake()
+  elseif rest == "reset" then
+    S.boatPos = nil   -- (the spot it was dragged to: back to its own place)
+    say(bigStyle() and "boat timer back in the middle of the screen." or "boat timer back in the middle of the screen (when big: /gl boats big).")
     wake()
   elseif rest == "off" then
     S.boats = false
@@ -1833,7 +1868,7 @@ local function boatsCommand(rest)
   elseif rest == "now" then
     B.BoatNow()
   else
-    say("unknown choice. Use /gl boats on, off, big, small or all.")
+    say("unknown choice. Use /gl boats on, off, big, small, all or reset.")
   end
 end
 
@@ -1872,7 +1907,7 @@ function ns.HandleSlash(msg)
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "help" or cmd == "?" then
-    say("/gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer")
+    say("/gl boats : at a dock, when the boat comes (on, off, big, small, all, reset); /gl boat now as a boat docks sets its timer")
   end
 end
 
@@ -1885,7 +1920,8 @@ if type(_G.CreateFrame) == "function" then
     B.eventFrame = f
     for _, ev in ipairs({ "PLAYER_LOGIN", "PLAYER_ENTERING_WORLD", "ZONE_CHANGED", "ZONE_CHANGED_INDOORS",
                           "ZONE_CHANGED_NEW_AREA", "LOADING_SCREEN_ENABLED", "PLAYER_LEAVING_WORLD", "CHAT_MSG_ADDON",
-                          "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED" }) do
+                          "PLAYER_REGEN_DISABLED", "PLAYER_REGEN_ENABLED", "PLAYER_CONTROL_LOST", "PLAYER_CONTROL_GAINED",
+                          "UI_SCALE_CHANGED", "DISPLAY_SIZE_CHANGED" }) do
       pcall(f.RegisterEvent, f, ev)   -- an event this client does not have is skipped
     end
     pcall(f.SetScript, f, "OnEvent", function(_, event, a1, a2, a3, a4)
@@ -1907,9 +1943,10 @@ if type(_G.CreateFrame) == "function" then
           registerPrefix()
           wake()
         elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" or event == "PLAYER_CONTROL_LOST"
-            or event == "PLAYER_CONTROL_GAINED" then
-          -- A fight or a flight starts or ends: at a dock, the small line or the big timer at once
-          -- (not at the next second's update); anywhere else nothing to do.
+            or event == "PLAYER_CONTROL_GAINED" or event == "UI_SCALE_CHANGED" or event == "DISPLAY_SIZE_CHANGED" then
+          -- A fight or a flight starts or ends, a new UI scale or screen size: at a dock, the small
+          -- line or the big timer (at its place) at once, not at the next second's update; anywhere
+          -- else nothing to do.
           if UI.shown then B.Step() end
         else
           wake()

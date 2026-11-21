@@ -13,7 +13,9 @@ local ADDON_NAME, ns = ...
 -- /gl flights small puts a slim bar at the top instead, where the game shows its
 -- own timer bars (breath, fatigue): "Ironforge 1:23"; /gl flights big goes back
 -- (saved as flightStyle, as the boat timers' boatStyle). The small X just after the time
--- hides it until you land; /gl flights brings it back. When you land, the real
+-- hides it until you land; /gl flights brings it back. Drag the big timer with the left mouse
+-- button to put it anywhere (saved as flightPos, kept there; a click on it does nothing, the
+-- right button goes through it for the camera); /gl flights reset puts it back. When you land, the real
 -- time is kept for that route (the last 5, the middle one counts), when it was a
 -- plain flight: landed where it was going, seen landing, no loading screen on
 -- the way, within 15% of the data's time. A /reload in the air carries on;
@@ -702,7 +704,10 @@ local BAR_W, BAR_H, X_SIZE = 180, 16, 14
 -- fonts, X and the time's width are the boat timer's (Core.lua's ns.Big): centred, its top 290
 -- below the top of the screen or 30% of the screen height down, above your character, clear of
 -- the game's messages at the top centre, the minimap, the quest trackers and the buffs; where that
--- does not fit, 18 below the top of the screen (under widgets there); else the slim bar.
+-- does not fit, 18 below the top of the screen (under widgets there); else the slim bar. Dragged
+-- somewhere by the player, it stays there instead (ns.Big's spot, whole on the screen).
+local X_TIP = "Hide until you land (/gl flights brings it back)"
+local DRAG_TIP = "Drag the timer to move it; /gl flights reset puts it back."
 local Big = ns.Big
 local BIG = { head = 16, time = 32, hgap = 8, lift = 3, x = Big.x, xgap = Big.xgap, sgap = 3, strip = 3, gold = { 1, 0.82, 0 } }
 FL.BIG = BIG
@@ -1102,12 +1107,12 @@ local function build(which)
   local b
   if which == "big" then
     -- No panel: words over the world, on the big boat timer's strata (under the windows you
-    -- open); clicks and camera drags go through it, except on the X.
+    -- open). It takes the left button for a drag (ns.Big's: a click does nothing, the right button
+    -- goes through to the world), and is put at its spot at once after one; its line takes no mouse.
     b = _G.CreateFrame("Frame", "GoblinLedgerFlightTimer", _G.UIParent)
     FL.builds = FL.builds + 1
     b:SetFrameStrata("LOW")
     b:SetSize(10, 10)
-    b:EnableMouse(false)
     local line = _G.CreateFrame("Frame", nil, b)
     line:SetSize(10, BIG.time)
     line:SetPoint("TOP", b, "TOP", 0, 0)
@@ -1136,6 +1141,11 @@ local function build(which)
     fill:SetColorTexture(BIG.gold[1], BIG.gold[2], BIG.gold[3], 0.9)
     b.line, b.dest, b.text, b.track, b.fill = line, d, t, track, fill
     b.x = Big.X(b, function() hideForFlight() end, line)
+    Big.Tip(b.x, { X_TIP, DRAG_TIP })
+    Big.Movable(b, "flightPos", function()
+      FL.placedAt = nil
+      FL.Draw()   -- (draw: below)
+    end)
   else
     b = panel("GoblinLedgerFlightBar", BAR_W, BAR_H)
     if b.x then b.x:SetPoint("RIGHT", b, "RIGHT", -1, 0) end
@@ -1197,7 +1207,13 @@ local function arrange(t)
     local left = t and timeLeft(f, t) or ""
     local hw, hh = bigLayout(b, f.dest, left)
     b.glLine = f.dest .. " " .. left
-    if not placeBig(b, hw, hh) then b = nil end
+    if b.glMoving then
+      FL.spot = "placed"   -- (being dragged: its place is the mouse's)
+    elseif Big.PlaceSpot(b, hw, hh, "flightPos") then
+      FL.spot, FL.anchor = "placed", "UIParent"   -- (where the player put it, whole on the screen)
+    elseif not placeBig(b, hw, hh) then
+      b = nil
+    end
   end
   if not b then
     if not build("small") then return nil end
@@ -1640,9 +1656,12 @@ local function nowLine()
   return "flying to " .. f.dest .. ": " .. where .. (f.hidden and " (timer hidden)" or "") .. "."
 end
 
--- Where the big timer is in the air, when that is not the upper middle (nil: there, or on the ground).
+-- Where the big timer is, when that is not the upper middle (nil: there). On the ground: where the
+-- player put it, or nil.
 local function spotNote()
-  if not (cur and bar and bar:IsShown() and wantBig()) then return nil end
+  if not wantBig() then return nil end
+  if not (cur and bar and bar:IsShown()) then return Big.Spot("flightPos") and "where you put it" or nil end
+  if FL.spot == "placed" then return "where you put it" end
   if FL.spot == "top" then return "at the top: no room in the middle" end
   if FL.spot == "slim" then return "no room for it now: the slim bar shows" end
   return nil
@@ -1706,8 +1725,13 @@ local function flightsCommand(rest)
     setBig(rest == "big")
   elseif rest == "status" then
     statusLines()
+  elseif rest == "reset" then
+    settings().flightPos = nil   -- (the spot it was dragged to: back to its own place)
+    FL.placedAt = nil
+    if cur then showBar() end
+    say(wantBig() and "flight timer back in the middle of the screen." or "flight timer back in the middle of the screen (when big: /gl flights big).")
   else
-    say("unknown choice. Use /gl flights on, off, big, small or status.")
+    say("unknown choice. Use /gl flights on, off, big, small, status or reset.")
   end
 end
 FL.Command = flightsCommand
@@ -1727,7 +1751,7 @@ function ns.HandleSlash(msg)
   end
   if type(baseSlash) == "function" then baseSlash(msg) end
   if cmd == "help" or cmd == "?" then
-    say("/gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)")
+    say("/gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)")
   end
 end
 

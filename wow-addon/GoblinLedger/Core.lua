@@ -1304,6 +1304,8 @@ end
 --   ns.Big.Place(h, hw, hh, where) and ns.Big.Fits(rect, top, owner[, looks]): the place.
 --   ns.Big.Overlaps(rect): the first of the minimap's parts, the quest trackers and the buffs that
 --     rect covers (what the boat timer's small line avoids; the big timers too).
+--   ns.Big.Movable(h, key, placed), ns.Big.Spot(key), ns.Big.PlaceSpot(h, hw, hh, key): the spot
+--     the player dragged it to (below), ns.Big.Tip(x, lines): the X's hover.
 -- The place: centred, its top 290 below the top of the screen, or 30% of the screen height down
 -- when that is lower ("middle"), ending above 46% of the screen height (the camera looks at the
 -- character's head at the screen centre); where that does not fit, 18 below the top ("top", under
@@ -1317,6 +1319,15 @@ end
 -- too). At the top also the unit frames (shown or not: a target comes and goes) and ElvUI's buffs
 -- while they show. Where neither fits, each timer has its own smaller way (the boat timer's line
 -- under the minimap, the flight timer's slim bar).
+-- The player's spot: either big timer can be dragged with the left mouse button anywhere on the
+-- screen (nothing else shows meanwhile; a plain click on it does nothing). The right button goes
+-- through it to the world (SetPassThroughButtons), so the camera still turns where you hold it
+-- down on a timer; the client lets an addon call that only out of a fight, so a timer first made
+-- in a fight lets it through from its first look after the fight. Where it was put is saved as
+-- settings[key] (boatPos, flightPos) = { x, y }: its top centre from the screen's centre, in screen
+-- widths and heights, so a new UI scale or screen size keeps it in the same place. Once put
+-- somewhere, the place rule above no longer moves it: it stays there, whole on the screen.
+-- /gl boats reset and /gl flights reset forget the spot.
 local BIG = { top = 290, frac = 0.30, char = 0.46, band = 18, timerW = 206, timerH = 96, x = 14, xgap = 6,
               fonts = {}, digit = {} }
 ns.Big = BIG
@@ -1395,6 +1406,23 @@ do
     local x = type(ns.CloseX) == "function" and ns.CloseX(parent, onClick, BIG.x) or nil
     if x then x:SetPoint("TOPLEFT", after, "TOPRIGHT", BIG.xgap, 0) end
     return x
+  end
+  -- The X's hover: lines[1] (what it does), then the others (hooked: ElvUI's X colours itself on
+  -- hover with its own hooks).
+  function BIG.Tip(x, lines)
+    if type(x) ~= "table" then return end
+    call(x, "HookScript", "OnEnter", function(self)
+      local tt = _G.GameTooltip
+      if type(tt) ~= "table" then return end
+      call(tt, "SetOwner", self, "ANCHOR_BOTTOMLEFT")
+      call(tt, "SetText", lines[1])
+      for i = 2, #lines do call(tt, "AddLine", lines[i], 1, 1, 1) end
+      call(tt, "Show")
+    end)
+    call(x, "HookScript", "OnLeave", function(self)
+      local tt = _G.GameTooltip
+      if call(tt, "GetOwner") == self then call(tt, "Hide") end
+    end)
   end
 
   -- What it must not cover -----------------------------------------------
@@ -1504,10 +1532,99 @@ do
     return out
   end
 
+  -- The player's spot ---------------------------------------------------------
+  -- settings[key]'s x, y, or nil (none; one that is not a spot on the screen is dropped).
+  local function spot(key)
+    local S = ns.settings
+    local p = type(S) == "table" and S[key]
+    if p == nil then return nil end
+    local x, y
+    if type(p) == "table" then x, y = num(p.x), num(p.y) end
+    if not (x and y) or abs(x) > 0.5 or abs(y) > 0.5 then
+      S[key] = nil
+      return nil
+    end
+    return x, y
+  end
+  BIG.Spot = spot
+  -- The right mouse button through h to the world, once (a timer the player can drag). Never in a
+  -- fight: the client blocks it then (tried again at the next look). h.glPass: true once done,
+  -- false where the client has no way.
+  local function passRight(h)
+    if h.glPass ~= nil or not h.glDrag then return end
+    if type(h.SetPassThroughButtons) ~= "function" then
+      h.glPass = false
+      return
+    end
+    local lock = _G.InCombatLockdown
+    if type(lock) == "function" then
+      local ok, v = pcall(lock)
+      if not ok or v ~= false then return end
+    end
+    h.glPass = pcall(h.SetPassThroughButtons, h, "RightButton") and true or false
+  end
+  -- The drag is over (save: where h got to is its spot).
+  local function stopDrag(h)
+    if not h.glMoving then return end
+    h.glMoving = nil
+    call(h, "StopMovingOrSizing")
+    call(h, "SetUserPlaced", false)   -- (the spot is the addon's, not the game's layout file's)
+    local l, b, r, t = rect(h)
+    local sl, sb, sr, st = rect(_G.UIParent)
+    if l and sl and sr - sl > 1 and st - sb > 1 and type(ns.settings) == "table" then
+      local x = ((l + r) / 2 - (sl + sr) / 2) / (sr - sl)
+      local y = (t - (sb + st) / 2) / (st - sb)
+      ns.settings[h.glDrag] = { x = max(-0.5, min(0.5, x)), y = max(-0.5, min(0.5, y)) }
+    end
+  end
+  -- h (a big timer) can be dragged with the left mouse button; its spot is settings[key]; placed()
+  -- puts it there after a drag (on its own anchor, whole on the screen). Hidden in a drag (a flight
+  -- lands, you walk off the pier), it stays where it got to.
+  function BIG.Movable(h, key, placed)
+    h.glDrag = key
+    call(h, "EnableMouse", true)
+    call(h, "SetMovable", true)
+    call(h, "SetClampedToScreen", true)
+    call(h, "SetDontSavePosition", true)
+    call(h, "RegisterForDrag", "LeftButton")
+    passRight(h)
+    call(h, "SetScript", "OnDragStart", function(self)
+      if pcall(self.StartMoving, self) then self.glMoving = true end
+    end)
+    call(h, "SetScript", "OnDragStop", function(self)
+      if not self.glMoving then return end
+      stopDrag(self)
+      if type(placed) == "function" then
+        local ok, err = pcall(placed)
+        if not ok then ns.lastError = err end
+      end
+    end)
+    call(h, "HookScript", "OnHide", stopDrag)
+  end
+  -- Puts h (hw x hh) at its spot (settings[key]), whole on the screen; gives the screen rectangle it
+  -- takes, or nil: no spot (or no screen to measure), the place rule's to place it.
+  function BIG.PlaceSpot(h, hw, hh, key)
+    passRight(h)
+    local fx, fy = spot(key)
+    if not fx then return nil end
+    local P = _G.UIParent
+    local sl, sb, sr, st = rect(P)
+    local es = num(call(h, "GetEffectiveScale"))
+    if not sl or not es or es <= 0 then return nil end
+    local W, H = hw * es, hh * es
+    local mx, my = (sl + sr) / 2, (sb + st) / 2
+    local cx = max(sl + W / 2, min(sr - W / 2, mx + fx * (sr - sl)))
+    local top = min(st, max(sb + H, my + fy * (st - sb)))
+    h:ClearAllPoints()
+    h:SetPoint("TOP", P, "CENTER", (cx - mx) / es, (top - my) / es)
+    return { cx - W / 2, top - H, cx + W / 2, top }
+  end
+
   -- The place -------------------------------------------------------------
   -- Puts h (hw x hh) centred at "middle" or "top"; gives the screen rectangle it takes (nil: no
   -- screen to measure; then it sits at the middle spot as at UI scale 1).
   function BIG.Place(h, hw, hh, where)
+    passRight(h)
     local P = _G.UIParent
     local sl, sb, sr, st = rect(P)
     local es = num(call(h, "GetEffectiveScale"))

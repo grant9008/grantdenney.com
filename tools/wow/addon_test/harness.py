@@ -712,6 +712,11 @@ local function dependsOn(a, b, depth)
   return false
 end
 
+-- A frame the player drags (StartMoving) is the mouse's to place until StopMovingOrSizing: the
+-- addon setting its points meanwhile would fight the drag.
+local function movingCheck(o, what)
+  if rawget(o, "_moving") then M.violations[#M.violations + 1] = what .. " on " .. tostring(o) .. " while the player drags it" end
+end
 function Region:SetPoint(point, a, b, c, d)
   if not POINTS[point] then apiError("SetPoint: invalid point " .. tostring(point)) end
   local rel, relPoint, x, y
@@ -732,13 +737,17 @@ function Region:SetPoint(point, a, b, c, d)
   x, y = x or 0, y or 0
   if not finite(x) or not finite(y) then apiError("SetPoint: bad offset " .. tostring(x) .. "," .. tostring(y)) end
   if rel == self then apiError("SetPoint: cannot anchor to itself") end
+  movingCheck(self, "SetPoint")
   if rel and dependsOn(rel, self) then apiError("SetPoint: anchor family connection would create a loop") end
   for i, p in ipairs(self._points) do
     if p[1] == point then table.remove(self._points, i); break end
   end
   table.insert(self._points, { point, rel or false, relPoint, x, y })
 end
-function Region:ClearAllPoints() self._points = {} end
+function Region:ClearAllPoints()
+  movingCheck(self, "ClearAllPoints")
+  self._points = {}
+end
 function Region:GetNumPoints() return #self._points end
 function Region:GetPoint(i)
   local p = self._points[i or 1]
@@ -1129,14 +1138,29 @@ function Frame:StartMoving()
   self._moving = true
 end
 function Frame:StopMovingOrSizing()
-  if self._moving and M.dragTo then
+  local was = self._moving
+  self._moving = false
+  if was and M.dragTo then
     self._points = {}
     self:SetPoint(M.dragTo[1], M.UIParent, M.dragTo[2], M.dragTo[3], M.dragTo[4])
   end
-  self._moving = false
 end
+-- The mouse buttons that go through the frame to what is under it (M.frameAt: the world, the
+-- camera). Forever 1.60.1 (as retail since 10.1.5) lets an addon call it only out of a fight.
+local MOUSE_BUTTONS = { LeftButton = 1, RightButton = 1, MiddleButton = 1, Button4 = 1, Button5 = 1 }
+function Frame:SetPassThroughButtons(...)
+  if M.combat == true then
+    M.violations[#M.violations + 1] = "SetPassThroughButtons in a fight on " .. tostring(self)
+    return
+  end
+  for i = 1, select("#", ...) do
+    if not MOUSE_BUTTONS[select(i, ...)] then apiError("SetPassThroughButtons: bad button " .. tostring(select(i, ...))) end
+  end
+  self._pass = { ... }
+end
+function InCombatLockdown() return M.combat == true end
 function Frame:SetUserPlaced(v) end
-function Frame:SetDontSavePosition(v) end
+function Frame:SetDontSavePosition(v) self._dontSave = v end
 function Frame:SetClampedToScreen(v) self._clamped = v end
 -- The click area: the frame's rectangle moved in by these (left, right, top, bottom); less than 0 is out.
 function Frame:SetHitRectInsets(l, r, t, b)
@@ -1726,6 +1750,34 @@ function M.drag(f, point, relPoint, x, y)
   M.fireScript(f, "OnDragStart", "LeftButton")
   M.fireScript(f, "OnDragStop")
   M.dragTo = nil
+end
+-- Where a press of button (LeftButton, RightButton) at screen point x, y goes, as the game finds
+-- it: the top visible frame there that takes the mouse (a button does unless told not to; its hit
+-- rect insets count; strata, then level, then the newest) and does not let that button through
+-- (SetPassThroughButtons); else WorldFrame (the world: what you click on, the camera you turn).
+local STRATA_ORDER = { BACKGROUND = 1, LOW = 2, MEDIUM = 3, HIGH = 4, DIALOG = 5, FULLSCREEN = 6, FULLSCREEN_DIALOG = 7, TOOLTIP = 8 }
+function M.frameAt(x, y, button)
+  local best, key
+  for i, f in ipairs(M.frames) do
+    local takes = rawget(f, "_mouse")
+    if takes == nil then takes = f._otype == "Button" or f._otype == "CheckButton" end
+    if f ~= UIParent and f ~= WorldFrame and takes and f:IsVisible() then
+      local through = false
+      for _, b in ipairs(rawget(f, "_pass") or {}) do if b == button then through = true end end
+      local l, b, r, t = M.rect(f)
+      if l and not through then
+        local il, ir, it, ib = f:GetHitRectInsets()
+        local es = M.eff(f)
+        if x >= l + il * es and x <= r - ir * es and y >= b + ib * es and y <= t - it * es then
+          local k = { STRATA_ORDER[f._strata] or 3, f._level or 0, i }
+          if not key or k[1] > key[1] or (k[1] == key[1] and (k[2] > key[2] or (k[2] == key[2] and k[3] > key[3]))) then
+            best, key = f, k
+          end
+        end
+      end
+    end
+  end
+  return best or WorldFrame
 end
 function M.lineCount(tt) return #tt._lines end
 function M.addonLines(tt)
@@ -26573,7 +26625,8 @@ def sc_flights_bar(sc, ref, items):
         sc.eq((FL.spot, b.GetName(b)), ("middle", "GoblinLedgerFlightTimer"), "bar: big, in the upper middle")
         sc.check(abs((r[0] + r[2]) / 2 - sw / 2) < 0.01 and abs(r[3] - (sh - 290)) < 0.01, "bar: centred, 290 under the top (%s)" % (r,))
         fl_big_place_checks(sc, w, "bar")
-    sc.check(not b.IsMouseEnabled(b), "bar: clicks go through it")
+    sc.check(not b.IsMouseEnabled(b) if small else bool(b.IsMouseEnabled(b)),
+             "bar: clicks go through the slim bar (the big timer takes the left button for a drag: fl_big_place_checks)")
     sc.eq((w.same(b.GetParent(b), w.g.UIParent), b.GetFrameStrata(b)), (True, "MEDIUM" if small else "LOW"),
           "bar: on the game's interface (Alt+Z hides it), at its strata (slim: middle; big: low, as the boat timer)")
     x = b.x
@@ -26925,7 +26978,7 @@ def sc_flights_slash(sc, ref, items):
     w = fl_world(ref, items, pos=fl_pos(FL_SW))
     M, FL, S = w.M, w.ns.Flights, w.ns.settings
     out = [strip_codes(c) for c in w.slash("/gl help")]
-    want = "Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)"
+    want = "Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)"
     kind = " (slim bar)" if fl_small(w) else " (big timer)"
     sc.eq(sum(1 for t in out if t == want), 1, "slash: /gl help says it once")
     sc.check(any("/gl consumes" in t for t in out) and any("/gl chart" in t for t in out), "slash: the other lines stay")
@@ -26963,7 +27016,7 @@ def sc_flights_slash(sc, ref, items):
         out = [strip_codes(c) for c in w.slash(alias)]
         sc.check(out and out[0].startswith("Goblin Ledger: flight timers are on%s." % kind), "slash: %s" % alias)
     out = [strip_codes(c) for c in w.slash("/gl flights maybe")]
-    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl flights on, off, big, small or status."], "slash: unknown choice")
+    sc.eq(out, ["Goblin Ledger: unknown choice. Use /gl flights on, off, big, small, status or reset."], "slash: unknown choice")
     fl_wait(w, cur.est - fl_el(w) + 1, dt=0.5)
     fl_land(w, FL_SW)
     out = [strip_codes(c) for c in w.slash("/gl flights status")]
@@ -27253,8 +27306,8 @@ def fl_tracker_way(sc, w, label):
 
 def fl_big_place_checks(sc, w, label, spot="middle"):
     """The big timer's place, size and look (the big boat timer's): centred at its spot, above the
-    character, clear of every message frame; no panel, on the boat timer's strata, clicks go
-    through; one line, the place (16, white) before the time (32, gold) on its baseline, 8 apart;
+    character, clear of every message frame; no panel, on the boat timer's strata, the mouse as
+    big_drag_ok says; one line, the place (16, white) before the time (32, gold) on its baseline, 8 apart;
     the 14 X 6 after the line; the 3 strip 3 under the line, as wide. Gives its rectangle."""
     FL, M = w.ns.Flights, w.M
     b = FL.Bar()
@@ -27295,8 +27348,9 @@ def fl_big_place_checks(sc, w, label, spot="middle"):
         if fl_hit(r, w.rect(o)):
             hits.append("%s %s" % (n, fl_px(w.rect(o))))
     sc.eq(hits, [], "%s: clear of the game's messages, the timer bars, the minimap, the trackers, the buffs (%s)" % (label, fl_px(r)))
-    sc.eq((b.GetFrameStrata(b), b.IsMouseEnabled(b), ln.IsMouseEnabled(ln), b._backdrop, b._template),
-          ("LOW", False, False, None, None), "%s: no panel, under the windows (the boat timer's strata), clicks go through" % label)
+    sc.eq((b.GetFrameStrata(b), ln.IsMouseEnabled(ln), b._backdrop, b._template),
+          ("LOW", False, None, None), "%s: no panel, under the windows (the boat timer's strata), its line takes no mouse" % label)
+    big_drag_ok(sc, w, b, ln, x, label)
     sc.check(abs((lr[0] + lr[2]) / 2 - (r[0] + r[2]) / 2) < 0.01 and abs(lr[3] - r[3]) < 0.01
              and abs((lr[2] - lr[0]) - lw * es) < 0.01 and abs((lr[3] - lr[1]) - 32 * es) < 0.01,
              "%s: the line centred at the top, 32 high (%s)" % (label, fl_px(lr)))
@@ -27545,7 +27599,7 @@ def sc_flights_style(sc, ref, items):
     FL, M, S = w.ns.Flights, w.M, w.ns.settings
     out = [strip_codes(c) for c in w.slash("/gl help")]
     sc.eq([t for t in out if "/gl flights" in t],
-          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)"],
+          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)"],
           "style: one help line")
     sc.eq([strip_codes(c) for c in w.slash("/gl flights status")],
           ["Goblin Ledger: flight timers are on (big timer). Your own times for 0 routes."], "style: status says big")
@@ -28213,8 +28267,8 @@ def sc_boats_big_flight(sc, ref, items):
     # /gl help: each timer's line once.
     out = [strip_codes(c) for c in w.slash("/gl help")]
     sc.eq([t for t in out if "/gl flights" in t or "/gl boats" in t],
-          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status)",
-           "Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer"],
+          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)",
+           "Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all, reset); /gl boat now as a boat docks sets its timer"],
           "help: one line for each timer")
     # /gl boats status at the dock, then on a flight over it (the small line shows: it says so).
     out = [strip_codes(c) for c in w.slash("/gl boats status")]
@@ -29488,10 +29542,10 @@ def sc_boats_switch(sc, ref, items):
                                          "Southshore unknown (every 8:06); Rut'theran unknown (every 5:16)"],
           "switch: the nearest dock at Auberdine")
     bt_at(w, x, y, inst)
-    sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, off, big, small or all."],
+    sc.eq(bt_slash(w, "/gl boats sideways"), ["Goblin Ledger: unknown choice. Use /gl boats on, off, big, small, all or reset."],
           "switch: a wrong choice")
     help_ = bt_slash(w, "/gl help")
-    sc.eq([l for l in help_ if "boat" in l], ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); "
+    sc.eq([l for l in help_ if "boat" in l], ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all, reset); "
                                                "/gl boat now as a boat docks sets its timer"], "switch: one help line")
     bt_slash(w, "/gl boats off")
     sc.eq(bt_slash(w, "/gl boats"), ["Goblin Ledger: boat timers are off. /gl boats on turns them on."], "switch: off: one line")
@@ -29990,6 +30044,10 @@ def sc_boats_layout(sc, ref, items):
 
 
 BT_X_TIP = "Hide until you leave this dock (/gl boats off turns boat timers off)"
+# The big timers' X: one more line, how to move the timer and put it back (ns.Big.Tip).
+BT_DRAG_TIP = "Drag the timer to move it; /gl boats reset puts it back."
+FL_X_TIP = "Hide until you land (/gl flights brings it back)"
+FL_DRAG_TIP = "Drag the timer to move it; /gl flights reset puts it back."
 BT_X_SAID = "Goblin Ledger: boat timers hidden until you leave this dock. /gl boats on brings them back."
 BT_HIDDEN_STATUS = "Goblin Ledger: boat timers are on (small), hidden at this dock until you leave it (/gl boats on shows them)."
 BT_HIDDEN_BIG = "Goblin Ledger: boat timers are on (big), hidden at this dock until you leave it (/gl boats on shows them)."
@@ -30381,8 +30439,8 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
     messages, above the character) or "top" (above the timer bars); it covers none of the top
     messages, the timer bars' and flight bar's spot, the character, the minimap's parts and the
     quest trackers (what the small line avoids: at either place), nor extra; its words inside it;
-    the X (14 px) just after line 1, at its top, clear of all of them; nothing of it but the X
-    takes the mouse. Returns its rectangle."""
+    the X (14 px) just after line 1, at its top, clear of all of them; its lines take no mouse, the
+    timer only the left button for a drag (big_drag_ok). Returns its rectangle."""
     B = w.ns.Boats
     G = B.ui.big
     h = G.holder
@@ -30431,9 +30489,10 @@ def bt_big_ok(sc, w, label, where="middle", extra=()):
         for name, q in others:
             if q is not None:
                 sc.check(not bt_overlap(hit, q), "%s: the X does not cover %s" % (label, name))
-    takers = [n for n, o in [("the timer", h)] + [("line %d" % i, G.btn[i]) for i in (1, 2, 3)] if o.IsMouseEnabled(o)]
+    takers = [n for n, o in [("line %d" % i, G.btn[i]) for i in (1, 2, 3)] if o.IsMouseEnabled(o)]
     sc.eq((takers, x is None or (x._otype == "Button" and x.GetScript(x, "OnClick") is not None)), ([], True),
-          "%s: only the X takes the mouse (a button)" % label)
+          "%s: its lines take no mouse, the X is a button" % label)
+    big_drag_ok(sc, w, h, G.btn[1], x, label)
     return r
 
 
@@ -30867,7 +30926,7 @@ def sc_boats_big_setting(sc, ref, items):
     sc.eq(bt_slash(w, "/gl boats on"), ["Goblin Ledger: boat timers are on: at a dock, a big timer in the middle of the screen says when the "
                                         "boat comes."], "setting: on says where (big)")
     help_ = [l for l in bt_slash(w, "/gl help") if "boat" in l]
-    sc.eq(help_, ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all); /gl boat now as a boat docks sets its timer"],
+    sc.eq(help_, ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all, reset); /gl boat now as a boat docks sets its timer"],
           "setting: one help line")
     sc.clean(w, "setting")
 
@@ -30876,8 +30935,9 @@ def sc_boats_big_x(sc, ref, items):
     """The big timer's X and the mouse: its hover says what it does; a click hides the timer until
     you leave that dock (one chat line says how to undo it), a /reload there keeps it hidden,
     leaving and coming back shows it, /gl boats says it is hidden. Its lines take no clicks and no
-    hover (in the middle of the screen the mouse is for the world: a stray click must not set and
-    share a wrong timer, a camera drag must not stop on it): /gl boat now sets the timer."""
+    hover, and a click on the timer does nothing (a stray click must not set and share a wrong timer;
+    the timer takes the left button only for a drag, the right one goes through it for the camera:
+    big_drag_ok): /gl boat now sets the timer."""
     tx, ty, tinst = bt_stop("menethil_theramore", 1)
     arr2 = boat_data()[0]["menethil_theramore"]["stops"][1]["arrive_s"]
     w = boat_world(ref, items, style="big")
@@ -30894,7 +30954,7 @@ def sc_boats_big_x(sc, ref, items):
         b = G.btn[i]
         sc.check(b._otype == "Frame" and not b.IsMouseEnabled(b) and b.GetScript(b, "OnEnter") is None,
                  "big x: line %d takes no clicks and no hover" % i)
-    sc.check(not G.holder.IsMouseEnabled(G.holder), "big x: nor the timer itself")
+    big_drag_ok(sc, w, G.holder, G.btn[1], x, "big x")
     sc.eq(bt_anchor(w, 292), None, "big x: nothing set")
     sc.eq(bt_slash(w, "/gl boat now"), ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "big x: /gl boat now sets it")
     sc.check(G.value.IsShown(G.value) and strip_codes(G.fs[1].GetText(G.fs[1])) == "Boat to Menethil: docked, leaves in"
@@ -30902,7 +30962,7 @@ def sc_boats_big_x(sc, ref, items):
     bt_big_ok(sc, w, "big x set")
     # The X.
     M.enter(x)
-    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, [BT_X_TIP], "big x: the X's hover")
+    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, [BT_X_TIP, BT_DRAG_TIP], "big x: the X's hover")
     mark = w.chat_mark()
     M.click(x)
     sc.eq(bt_lines(w), [], "big x: the X hides it")
@@ -33906,6 +33966,512 @@ def sc_tooltip_all_modules(sc, ref, items):
     sc.clean(w, "all modules")
 
 
+
+# --- the big timers dragged where the player wants them (Core.lua's ns.Big.Movable) ---
+# Either big timer moves with the left mouse button (OnDragStart: StartMoving, OnDragStop:
+# StopMovingOrSizing); a plain click on it does nothing; the right button goes through it to the
+# world (SetPassThroughButtons, never called in a fight). Its spot is saved (boatPos, flightPos: its
+# top centre from the screen's centre in screen widths and heights) and kept: the place rule no
+# longer moves it, it only stays whole on the screen.
+BIG_FRAMES_LUA = """function()
+  local n, v = #MOCK.frames, 0
+  for _, f in ipairs(MOCK.frames) do if f:IsVisible() then v = v + 1 end end
+  return n, v
+end"""
+
+
+def big_drag_ok(sc, w, h, line, x, label, passed=True):
+    """A big timer and the mouse: it takes the left button for a drag and nothing else (a Frame, no
+    press or release script: a plain click does nothing), kept on screen while dragged, its spot not
+    in the game's layout file; the right button goes through it to the world (passed: once out of a
+    fight), its line takes no mouse, the X takes its own click."""
+    M = w.M
+    sc.eq((h._otype, bool(h.IsMouseEnabled(h)), bool(h.IsMovable(h)), h._clamped, h._dontSave, lua_to_py(h._drag)),
+          ("Frame", True, True, True, True, {1: "LeftButton"}),
+          "%s: the timer takes the left button for a drag, kept on screen, not in the game's layout file" % label)
+    sc.check(all(h.GetScript(h, s) is None for s in ("OnMouseDown", "OnMouseUp", "OnEnter"))
+             and h.GetScript(h, "OnDragStart") is not None and h.GetScript(h, "OnDragStop") is not None,
+             "%s: no click, press or hover of its own: only the drag" % label)
+    sc.eq(lua_to_py(h._pass), {1: "RightButton"} if passed else None,
+          "%s: the right button %s" % (label, "goes through it" if passed else "not set in a fight"))
+    sc.check(not line.IsMouseEnabled(line), "%s: its line takes no mouse" % label)
+    lr = w.rect(line)
+    if lr is None or not h.IsVisible(h):
+        return
+    cx, cy = (lr[0] + lr[2]) / 2, (lr[1] + lr[3]) / 2
+    sc.check(w.same(M.frameAt(cx, cy, "LeftButton"), h), "%s: the left button on it: the timer (a drag)" % label)
+    if passed:
+        sc.check(w.same(M.frameAt(cx, cy, "RightButton"), w.g.WorldFrame), "%s: the right button on it: the world (the camera)" % label)
+    if x is not None and x.IsVisible(x):
+        xr = w.rect(x)
+        sc.check(w.same(M.frameAt((xr[0] + xr[2]) / 2, (xr[1] + xr[3]) / 2, "LeftButton"), x), "%s: the X takes its click" % label)
+
+
+def big_drag(w, h, left, top, during=0.0, wait=None):
+    """The player drags h with the left mouse button (the game starts moving it) and lets go with its
+    top left at left, top (screen pixels); during: seconds of dragging first, wait(seconds) the
+    world's clock (the addon's updates go on meanwhile). Gives the frames' count and the shown ones'
+    during the drag, and h's width (pixels) as it is let go."""
+    M = w.M
+    M.fireScript(h, "OnDragStart", "LeftButton")
+    if during:
+        wait(during)
+    seen = w.lua.eval(BIG_FRAMES_LUA)()
+    r = w.rect(h)
+    es = h.GetEffectiveScale(h)
+    M.dragTo = w.to_lua(["TOPLEFT", "BOTTOMLEFT", left / es, top / es])
+    M.fireScript(h, "OnDragStop")
+    M.dragTo = None
+    return seen, (r[2] - r[0]) if r else None
+
+
+def big_spot_want(w, left, top, width):
+    """The spot a drop with the top left at left, top (pixels) of a width wide timer saves."""
+    SW, SH = w.M.screenW, w.M.screenH
+    return (max(-0.5, min(0.5, (left + width / 2.0 - SW / 2.0) / SW)), max(-0.5, min(0.5, (top - SH / 2.0) / SH)))
+
+
+def big_spot(w, key):
+    p = w.ns.settings[key]
+    if p is None:
+        return None
+    return (p.x, p.y)
+
+
+def big_at_spot(sc, w, h, key, label):
+    """h at its saved spot: its top centre there, or as near as keeps it whole on the screen. Gives its
+    rectangle."""
+    sp = big_spot(w, key)
+    r = w.rect(h)
+    if not sc.check(sp is not None and r is not None, "%s: a saved spot (%s) and a place" % (label, sp)):
+        return r
+    SW, SH = w.M.screenW, w.M.screenH
+    wd, ht = r[2] - r[0], r[3] - r[1]
+    cx = max(wd / 2, min(SW - wd / 2, SW / 2.0 + sp[0] * SW))
+    top = min(SH, max(ht, SH / 2.0 + sp[1] * SH))
+    sc.check(abs((r[0] + r[2]) / 2 - cx) < 0.6 and abs(r[3] - top) < 0.6,
+             "%s: its top centre at its spot (%.1f, %.1f; the spot %.1f, %.1f)" % (label, (r[0] + r[2]) / 2, r[3], cx, top))
+    sc.check(r[0] >= -0.5 and r[2] <= SW + 0.5 and r[1] >= -0.5 and r[3] <= SH + 0.5, "%s: whole on the screen (%s)" % (label, fl_px(r)))
+    return r
+
+
+def bt_placed_ok(sc, w, label, passed=True):
+    """The big boat timer at the player's spot: shown (the small lines not), "placed", where the addon
+    worked out, its words and the X inside it and on screen, the mouse as big_drag_ok says. Gives its
+    rectangle."""
+    B = w.ns.Boats
+    G = B.ui.big
+    h = G.holder
+    if not sc.check(h is not None and h.IsVisible(h) and B.ui.style == "big" and G.mode == "placed",
+                    "%s: the big timer at the player's spot (%s, %s)" % (label, B.ui.style, G.mode)):
+        return None
+    sm = B.ui.holder
+    sc.check(sm is None or not sm.IsVisible(sm), "%s: the small lines do not show" % label)
+    r, want = w.rect(h), G.rect
+    sc.check(want is not None and all(abs(r[i] - want[i + 1]) < 0.6 for i in range(4)), "%s: where the addon worked out" % label)
+    r = big_at_spot(sc, w, h, "boatPos", label)
+    for name, q in bt_big_parts(w):
+        sc.check(q is not None and q[0] >= r[0] - 0.5 and q[2] <= r[2] + 0.5 and q[1] >= r[1] - 0.5 and q[3] <= r[3] + 0.5,
+                 "%s: %s inside the timer" % (label, name))
+    x = G.x
+    if sc.check(x is not None and x.IsVisible(x), "%s: the X shows" % label):
+        xr = w.rect(x)
+        sc.check(xr[0] >= r[0] - 0.5 and xr[2] <= r[2] + 0.5 and xr[3] <= r[3] + 0.5, "%s: the X inside it" % label)
+    big_drag_ok(sc, w, h, G.btn[1], x, label, passed=passed)
+    return r
+
+
+def big_cover(w, o, r, extra=0):
+    """Puts frame o (shown) over the screen rectangle r (pixels), extra more on each side. Gives the
+    way back (its points, size and shown as they were)."""
+    g = w.g
+    pts = [o.GetPoint(o, i) for i in range(1, o.GetNumPoints(o) + 1)]
+    size, shown = (o._w, o._h), bool(o.IsShown(o))
+    es = o.GetEffectiveScale(o)
+    o.ClearAllPoints(o)
+    o.SetPoint(o, "TOPLEFT", g.UIParent, "BOTTOMLEFT", (r[0] - extra) / es, (r[3] + extra) / es)
+    o.SetSize(o, (r[2] - r[0] + 2 * extra) / es, (r[3] - r[1] + 2 * extra) / es)
+    o.Show(o)
+
+    def back():
+        o.ClearAllPoints(o)
+        for p in pts:
+            o.SetPoint(o, p[0], p[1], p[2], p[3], p[4])
+        o.SetSize(o, size[0], size[1])
+        if not shown:
+            o.Hide(o)
+    return back
+
+
+def sc_boats_big_drag(sc, ref, items):
+    """The big boat timer dragged where the player wants it: a plain click on it does nothing (sets no
+    timer); the left button drags it (nothing new shows meanwhile and the addon leaves its place to
+    the mouse); let go, it is saved (boatPos) and stays there: the quest tracker, a toast, the zone's
+    name and the raid warnings over it do not move it; big in a fight (on a flight the small line, one
+    timer at a time); in the same place at a new UI scale and screen size, over a /reload and a login;
+    whole on the screen (a corner, three boats, a smaller screen); the X still hides it, its hover
+    says how to move it and put it back; /gl boats reset puts it back in the middle; a bad saved spot
+    is dropped; a timer first made in a fight lets the right button through after the fight."""
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    w = boat_world(ref, items, screen=bt_screen(1920, 1080, 1.0), style="big")
+    B, M, S, g = w.ns.Boats, w.M, w.ns.settings, w.g
+    G = B.ui.big
+    bt_at(w, tx, ty, tinst)
+    w.settle(2.5)
+    r0 = bt_big_ok(sc, w, "drag before")
+    h = G.holder
+    # A plain click (and a right click) on it: nothing.
+    mark = w.chat_mark()
+    for b in ("LeftButton", "RightButton"):
+        M.press(h, b)
+        M.release(h, b)
+    w.settle(6)
+    sc.eq((w.chat(mark), bt_anchor(w, 292), S.boatPos, G.mode), ([], None, None, "middle"),
+          "click: nothing said, no timer set, no spot, still in the middle")
+    sc.check(all(abs(a - b) < 0.01 for a, b in zip(w.rect(h), r0)), "click: it did not move")
+    # The drag: 2.5 s of it (the timer goes on counting), nothing new shows, its place is the mouse's.
+    sc.eq(bt_slash(w, "/gl boat now"), ["Goblin Ledger: boat timer set: the boat to Menethil docks now."], "drag: a timer to watch")
+    before = w.lua.eval(BIG_FRAMES_LUA)()
+    renders = B.stats.renders
+    SW, SH = M.screenW, M.screenH
+    left, top = 0.10 * SW, 0.82 * SH
+    seen, width = big_drag(w, h, left, top, during=2.5, wait=w.settle)
+    sc.eq(seen, before, "drag: nothing new made or shown meanwhile (frames, shown frames)")
+    sc.check(B.stats.renders >= renders + 2, "drag: the timer goes on meanwhile (%d renders)" % (B.stats.renders - renders))
+    sc.check(not g.GameTooltip.IsShown(g.GameTooltip), "drag: no tooltip")
+    want = big_spot_want(w, left, top, width)
+    sp = big_spot(w, "boatPos")
+    sc.check(sp is not None and abs(sp[0] - want[0]) < 1e-6 and abs(sp[1] - want[1]) < 1e-6,
+             "drag: let go, its spot saved: its top centre from the screen's centre (%s, want %s)" % (sp, want))
+    r1 = bt_placed_ok(sc, w, "drag let go")
+    sc.check(r1 is not None and abs(r1[0] - left) < 0.6 and abs(r1[3] - top) < 0.6, "drag: where it was let go (%s)" % (fl_px(r1) if r1 else None))
+    pt = h.GetPoint(h)
+    sc.check(not h._moving and not h.glMoving and h.GetNumPoints(h) == 1 and (pt[0], pt[2]) == ("TOP", "CENTER")
+             and w.same(pt[1], g.UIParent), "drag: over, on the addon's own anchor (its top from the screen's centre: %s)" % (pt,))
+    es = h.GetEffectiveScale(h)
+    c = h.GetCenter(h)
+    sc.check(r1 is not None and abs(c[0] * es - (r1[0] + r1[2]) / 2) < 0.01 and abs(c[1] * es - (r1[1] + r1[3]) / 2) < 0.01,
+             "drag: GetCenter after the move: where it was let go (%s)" % (c,))
+    # The place rule leaves it alone: the tracker, a toast, the zone's name, the raid warnings on it.
+    for name, n in (("the quest tracker", "ObjectiveTrackerFrame"), ("a toast", "EventToastManagerFrame"),
+                    ("the zone's name", "ZoneTextFrame"), ("the raid warnings", "RaidWarningFrame")):
+        back = big_cover(w, g[n], r1, extra=4)
+        w.settle(1.1)
+        r = w.rect(h)
+        sc.check(G.mode == "placed" and B.ui.style == "big" and all(abs(a - b) < 0.01 for a, b in zip(r, r1)),
+                 "kept: %s over it: it stays (%s, %s)" % (name, G.mode, fl_px(r)))
+        back()
+    w.settle(1.1)
+    # A fight: still big there (in the middle the fight's rule; this is the player's place).
+    M.Fight(True)
+    sc.check(B.ui.style == "big" and w.rect(h) is not None and all(abs(a - b) < 0.01 for a, b in zip(w.rect(h), r1)),
+             "fight: big at its spot at once (%s)" % B.ui.style)
+    w.settle(3)
+    bt_placed_ok(sc, w, "fight")
+    sc.eq(bt_slash(w, "/gl boats")[0], "Goblin Ledger: boat timers are on: big, where you put it (/gl boats small: under the minimap). "
+          "/gl boats all lists every route.", "fight: /gl boats says where it is")
+    M.Fight(False)
+    bt_placed_ok(sc, w, "fight over")
+    # A flight over the dock: the small line (one timer at a time), back at its spot as you land.
+    M.onTaxi = True
+    M.fire("PLAYER_CONTROL_LOST")
+    sc.check(B.ui.style == "small" and not h.IsVisible(h), "flight: the small line at once (%s)" % B.ui.style)
+    sc.eq(bt_slash(w, "/gl boats")[0], "Goblin Ledger: boat timers are on: big, where you put it, but on a flight the line under the "
+          "minimap (/gl boats small: always there). /gl boats all lists every route.", "flight: /gl boats says so")
+    M.onTaxi = False
+    M.fire("PLAYER_CONTROL_GAINED")
+    r = bt_placed_ok(sc, w, "landed")
+    sc.check(r is not None and all(abs(a - b) < 0.01 for a, b in zip(r, r1)), "landed: at its spot at once")
+    # A new UI scale, other screens: the same place on the screen, at once.
+    for label, scr, ev in (("UI scale 0.62", bt_screen(1920, 1080, 0.62), "UI_SCALE_CHANGED"),
+                           ("3440x1440", bt_screen(3440, 1440, 1.0), "DISPLAY_SIZE_CHANGED"),
+                           ("1280x1024 at 0.8", bt_screen(1280, 1024, 0.8), "DISPLAY_SIZE_CHANGED")):
+        M.SetScreen(*scr)
+        M.fire(ev)
+        sc.check(all(abs(a - b) < 1e-9 for a, b in zip(big_spot(w, "boatPos"), sp)), "%s: the spot kept" % label)
+        r = bt_placed_ok(sc, w, label)
+        sc.check(r is not None and abs((r[0] + r[2]) / 2 / M.screenW - (r1[0] + r1[2]) / 2 / SW) < 0.6 / M.screenW
+                 and abs(r[3] / M.screenH - r1[3] / SH) < 0.6 / M.screenH, "%s: the same place on the screen" % label)
+    M.SetScreen(*bt_screen(1920, 1080, 1.0))
+    M.fire("UI_SCALE_CHANGED")
+    # /reload and a login: there again.
+    saved = lua_to_py(g.ForeverAH_Settings)
+    sc.check(set(saved.get("boatPos", {})) == {"x", "y"}, "saved: boatPos is x, y (%s)" % saved.get("boatPos"))
+    for label, login in (("reload", (False, True)), ("login", (True, False))):
+        w2 = boat_world(ref, items, saved=saved, login=login, screen=bt_screen(1920, 1080, 1.0), style="big")
+        bt_at(w2, tx + 3, ty - 3, tinst)
+        w2.settle(2.5)
+        r = bt_placed_ok(sc, w2, label)
+        sc.check(r is not None and abs((r[0] + r[2]) / 2 - (r1[0] + r1[2]) / 2) < 0.6 and abs(r[3] - r1[3]) < 0.6,
+                 "%s: where it was (its top centre)" % label)
+        sc.clean(w2, label)
+    # The X: its hover says how to move it and put it back; a click hides it; /gl boats on: back there.
+    x = G.x
+    tt = g.GameTooltip
+    M.enter(x)
+    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, [BT_X_TIP, BT_DRAG_TIP], "x: its hover, one line on the drag")
+    M.leave(x)
+    mark = w.chat_mark()
+    M.click(x)
+    sc.eq(([strip_codes(c) for c in w.chat(mark)], bt_lines(w)), ([BT_X_SAID], []), "x: hides it, one chat line")
+    bt_slash(w, "/gl boats on")
+    bt_placed_ok(sc, w, "x: /gl boats on")
+    # Whole on the screen: let go in the bottom right corner; three boats there; a smaller screen.
+    seen, width = big_drag(w, h, SW - 10, 20)
+    sp2 = big_spot(w, "boatPos")
+    sc.check(sp2 is not None and sp2[0] <= 0.5 and sp2[1] >= -0.5, "corner: a spot on the screen (%s)" % (sp2,))
+    rc = bt_placed_ok(sc, w, "corner")
+    sc.check(rc is not None and abs(rc[2] - SW) < 0.6 and abs(rc[1]) < 0.6, "corner: in the bottom right corner, whole (%s)"
+             % (fl_px(rc) if rc else None))
+    ax, ay, ainst = bt_stop("stormwind_auberdine", 1)
+    bt_at(w, ax + 4, ay + 4, ainst)
+    w.settle(1.1)
+    sc.eq(len(bt_lines(w)), 3, "corner: three boats at Auberdine, three lines (%s)" % bt_lines(w))
+    bt_placed_ok(sc, w, "corner three")
+    M.SetScreen(*bt_screen(1280, 1024, 1.0))
+    M.fire("DISPLAY_SIZE_CHANGED")
+    bt_placed_ok(sc, w, "corner three, 1280x1024")
+    M.SetScreen(*bt_screen(1920, 1080, 1.0))
+    M.fire("DISPLAY_SIZE_CHANGED")
+    # /gl boats reset: back in the middle at once, nothing saved.
+    bt_at(w, tx, ty, tinst)
+    w.settle(1.1)
+    sc.eq(bt_slash(w, "/gl boats reset"), ["Goblin Ledger: boat timer back in the middle of the screen."], "reset: one line")
+    sc.eq(S.boatPos, None, "reset: no spot")
+    bt_big_ok(sc, w, "reset")
+    sc.check("boatPos" not in lua_to_py(g.ForeverAH_Settings), "reset: nothing saved")
+    M.Fight(True)
+    sc.check(B.ui.style == "small", "reset: in a fight the small line again (%s)" % B.ui.style)
+    M.Fight(False)
+    sc.eq([l for l in bt_slash(w, "/gl help") if "/gl boats" in l],
+          ["Goblin Ledger: /gl boats : at a dock, when the boat comes (on, off, big, small, all, reset); /gl boat now as a boat docks sets its timer"],
+          "help: one line, with reset")
+    sc.clean(w, "drag")
+    # Hidden in a drag (you walk off the pier holding it): the drag ends there, the spot is where it got
+    # to; back at the pier it is there. A fight coming in a drag of a timer in the middle: the small
+    # line, the drag ends (the spot saved); then big at that spot (the player put it there).
+    bt_slash(w, "/gl boats reset")
+    M.fireScript(h, "OnDragStart", "LeftButton")
+    rm = w.rect(h)
+    bt_at(w, tx + 400, ty, tinst, zone=False)
+    w.settle(3.5)
+    sc.check(not h.IsVisible(h) and not h._moving and not h.glMoving, "hidden in a drag: the drag is over")
+    spm = big_spot(w, "boatPos")
+    sc.check(spm is not None and abs(spm[1] - (rm[3] - M.screenH / 2.0) / M.screenH) < 1e-6, "hidden in a drag: the spot where it got to")
+    bt_at(w, tx, ty, tinst, zone=False)
+    w.settle(3.5)
+    r = bt_placed_ok(sc, w, "hidden in a drag, back")
+    sc.check(r is not None and abs(r[3] - rm[3]) < 0.6, "hidden in a drag, back: there")
+    bt_slash(w, "/gl boats reset")
+    M.fireScript(h, "OnDragStart", "LeftButton")
+    M.Fight(True)
+    sc.check(B.ui.style == "small" and not h._moving and big_spot(w, "boatPos") is not None,
+             "a fight in a drag: the small line at once, the drag over, the spot saved (%s)" % B.ui.style)
+    w.settle(1.1)
+    bt_placed_ok(sc, w, "a fight in a drag, then")
+    M.Fight(False)
+    bt_slash(w, "/gl boats reset")
+    sc.clean(w, "drag hidden")
+    # A bad saved spot is dropped: the middle.
+    for label, bad in (("off the screen", {"x": 2, "y": 0.1}), ("not a spot", "left"), ("no y", {"x": 0.1})):
+        w2 = boat_world(ref, items, saved={"boatPos": bad}, screen=bt_screen(1920, 1080, 1.0), style="big")
+        bt_at(w2, tx, ty, tinst)
+        w2.settle(1.1)
+        bt_big_ok(sc, w2, "bad spot %s" % label)
+        sc.eq(w2.ns.settings.boatPos, None, "bad spot %s: dropped" % label)
+        sc.clean(w2, "bad spot %s" % label)
+    # First made in a fight (a saved spot: big in the fight): the right button is let through only
+    # after it (the client blocks that call in a fight).
+    w2 = boat_world(ref, items, saved=saved, screen=bt_screen(1920, 1080, 1.0), style="big")
+    w2.M.Fight(True)
+    bt_at(w2, tx, ty, tinst)
+    w2.settle(2.5)
+    bt_placed_ok(sc, w2, "made in a fight", passed=False)
+    w2.M.Fight(False)
+    w2.settle(1.1)
+    bt_placed_ok(sc, w2, "after the fight")
+    sc.clean(w2, "made in a fight")
+
+
+def sc_flights_big_drag(sc, ref, items):
+    """The big flight timer dragged where the player wants it: a plain click on it does nothing; the
+    left button drags it (nothing new shows meanwhile, the addon leaves its place to the mouse); let
+    go, it is saved (flightPos) and stays there: the quest tracker, a toast, a capture bar at the top
+    do not move it (nor push it to the slim bar), its line growing ("+0:05") keeps it there whole on
+    the screen; in the same place at a new UI scale and screen size, over a /reload in the air and on
+    the next flight after a login; the X still hides it, its hover says how to move it and put it back;
+    /gl flights reset puts it back in the middle; the slim bar is not dragged."""
+    w = fl_top_world(ref, items, (1920, 1080, 1.0))
+    FL, M, S, g = w.ns.Flights, w.M, w.ns.settings, w.g
+    slot = fl_open(w)
+    fl_take(w, slot[FL_IF])
+    r0 = fl_big_place_checks(sc, w, "drag before")
+    b = FL.Bar()
+    mark = w.chat_mark()
+    for btn in ("LeftButton", "RightButton"):
+        M.press(b, btn)
+        M.release(b, btn)
+    fl_wait(w, 2)
+    sc.eq((w.chat(mark), S.flightPos, FL.spot), ([], None, "middle"), "click: nothing said, no spot, still in the middle")
+    sc.check(all(abs(p - q) < 0.01 for p, q in zip(w.rect(b), r0)), "click: it did not move")
+    before = w.lua.eval(BIG_FRAMES_LUA)()
+    places = FL.places
+    SW, SH = M.screenW, M.screenH
+    left, top = 0.06 * SW, 0.62 * SH
+    seen, width = big_drag(w, b, left, top, during=2.5, wait=lambda s: fl_wait(w, s))
+    sc.eq(seen, before, "drag: nothing new made or shown meanwhile")
+    sc.check(FL.places >= places + 2, "drag: the timer goes on meanwhile (%d looks)" % (FL.places - places))
+    sc.check(not g.GameTooltip.IsShown(g.GameTooltip), "drag: no tooltip")
+    want = big_spot_want(w, left, top, width)
+    sp = big_spot(w, "flightPos")
+    sc.check(sp is not None and abs(sp[0] - want[0]) < 1e-6 and abs(sp[1] - want[1]) < 1e-6,
+             "drag: let go, its spot saved (%s, want %s)" % (sp, want))
+    sc.eq((FL.spot, b.GetName(b), b._moving, b.glMoving), ("placed", "GoblinLedgerFlightTimer", False, None), "drag: let go, big there")
+    r1 = big_at_spot(sc, w, b, "flightPos", "drag let go")
+    sc.check(abs(r1[0] - left) < 0.6 and abs(r1[3] - top) < 0.6, "drag: where it was let go (%s)" % fl_px(r1))
+    big_drag_ok(sc, w, b, b.line, b.x, "drag let go")
+    pt, es, c = b.GetPoint(b), b.GetEffectiveScale(b), b.GetCenter(b)
+    sc.check(b.GetNumPoints(b) == 1 and (pt[0], pt[2]) == ("TOP", "CENTER") and w.same(pt[1], g.UIParent)
+             and abs(c[0] * es - (r1[0] + r1[2]) / 2) < 0.01 and abs(c[1] * es - (r1[1] + r1[3]) / 2) < 0.01,
+             "drag: over, on the addon's own anchor; GetCenter where it was let go (%s, %s)" % (pt, c))
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights status")][0],
+          "Goblin Ledger: flight timers are on (big timer, where you put it). Your own times for 0 routes.", "status: where you put it")
+    for name, n in (("the quest tracker", "ObjectiveTrackerFrame"), ("a toast", "EventToastManagerFrame"),
+                    ("a capture bar", "UIWidgetTopCenterContainerFrame")):
+        o = g[n]
+        if n.startswith("UIWidget"):
+            o.SetSize(o, 300, 60)
+            back = lambda: o.SetSize(o, 10, 10)
+        else:
+            back = big_cover(w, o, r1, extra=4)
+        fl_wait(w, 1.1)
+        r = w.rect(FL.Bar())
+        sc.check(FL.spot == "placed" and w.same(FL.Bar(), b) and all(abs(p - q) < 0.01 for p, q in zip(r, r1)),
+                 "kept: %s: it stays (%s, %s)" % (name, FL.spot, fl_px(r)))
+        back()
+    for label, scr, ev in (("UI scale 0.62", (1920, 1080, 1080 / 768.0 * 0.62), "UI_SCALE_CHANGED"),
+                           ("3440x1440", (3440, 1440, 1440 / 768.0), "DISPLAY_SIZE_CHANGED"),
+                           ("1280x1024 at 0.8", (1280, 1024, 1024 / 768.0 * 0.8), "DISPLAY_SIZE_CHANGED")):
+        M.SetScreen(*scr)
+        M.fire(ev)
+        r = big_at_spot(sc, w, b, "flightPos", label)
+        sc.check(FL.spot == "placed" and abs((r[0] + r[2]) / 2 / M.screenW - (r1[0] + r1[2]) / 2 / SW) < 0.6 / M.screenW
+                 and abs(r[3] / M.screenH - r1[3] / SH) < 0.6 / M.screenH, "%s: the same place on the screen, at once" % label)
+    M.SetScreen(1920, 1080, 1080 / 768.0)
+    M.fire("UI_SCALE_CHANGED")
+    # In the corner: its line grows past its time, it stays whole on the screen.
+    big_drag(w, b, SW - 5, SH)
+    rc = big_at_spot(sc, w, b, "flightPos", "corner")
+    sc.check(abs(rc[2] - SW) < 0.6 and abs(rc[3] - SH) < 0.6, "corner: in the top right corner (%s)" % fl_px(rc))
+    est = fl_state(w)[0].est
+    fl_wait(w, est - fl_el(w) + 6, dt=0.5)
+    sc.check(fl_bar_line(w).startswith("Ironforge +0:0"), "grow: over its time (%s)" % fl_bar_line(w))
+    rg = big_at_spot(sc, w, b, "flightPos", "grow")
+    sc.check(rg[2] - rg[0] > rc[2] - rc[0] + 1 and abs(rg[2] - SW) < 0.6, "grow: longer, still whole in the corner (%s)" % fl_px(rg))
+    # /reload in the air: there again.
+    big_drag(w, b, left, top)
+    sp = big_spot(w, "flightPos")
+    rb = big_at_spot(sc, w, b, "flightPos", "back")
+    saved = lua_to_py(g.ForeverAH_Settings)
+    sc.check(set(saved.get("flightPos", {})) == {"x", "y"}, "saved: flightPos is x, y (%s)" % saved.get("flightPos"))
+    w2 = fl_top_world(ref, items, (1920, 1080, 1.0), saved=saved, login=(False, True), t=w.M.t + 3, now=w.M.now + 3, on_taxi=True)
+    fl_wait(w2, 1.0)
+    b2 = w2.ns.Flights.Bar()
+    sc.eq((w2.ns.Flights.spot, b2.GetName(b2) if b2 else None), ("placed", "GoblinLedgerFlightTimer"), "reload: big at its spot")
+    r = big_at_spot(sc, w2, b2, "flightPos", "reload")
+    sc.check(big_spot(w2, "flightPos") == sp and abs((r[0] + r[2]) / 2 - (rb[0] + rb[2]) / 2) < 0.6 and abs(r[3] - rb[3]) < 0.6,
+             "reload: where it was (its top centre)")
+    sc.clean(w2, "reload")
+    # The X: its hover says how to move it and put it back; a click hides it; /gl flights: back there.
+    x = b.x
+    tt = g.GameTooltip
+    M.enter(x)
+    sc.eq([l for l, _ in w.all_lines(tt)] if tt.IsShown(tt) else None, [FL_X_TIP, FL_DRAG_TIP], "x: its hover, one line on the drag")
+    M.leave(x)
+    sc.check(not tt.IsShown(tt), "x: the hover goes")
+    mark = w.chat_mark()
+    M.click(x)
+    sc.eq(([strip_codes(c) for c in w.chat(mark)], fl_bar_line(w)), (["Goblin Ledger: " + FL_HIDDEN_LINE], None), "x: hides it")
+    w.slash("/gl flights")
+    sc.check(FL.spot == "placed" and fl_bar_line(w) is not None, "x: /gl flights: back at its spot")
+    big_at_spot(sc, w, b, "flightPos", "x back")
+    # /gl flights reset: the middle at once, nothing saved.
+    sc.eq([strip_codes(c) for c in w.slash("/gl flights reset")], ["Goblin Ledger: flight timer back in the middle of the screen."],
+          "reset: one line")
+    sc.eq(S.flightPos, None, "reset: no spot")
+    fl_big_place_checks(sc, w, "reset")
+    sc.eq([t for t in [strip_codes(c) for c in w.slash("/gl help")] if "/gl flights" in t],
+          ["Goblin Ledger: /gl flights : flight times on the flight map, and a countdown while you fly (on, off, big, small, status, reset)"],
+          "help: one line, with reset")
+    # The slim bar: not dragged (its old ways).
+    big_drag(w, b, left, top)
+    w.slash("/gl flights small")
+    sb = FL.Bar()
+    sc.eq((sb.GetName(sb), FL.spot, bool(sb.IsMouseEnabled(sb)), sb.GetScript(sb, "OnDragStart")),
+          ("GoblinLedgerFlightBar", "slim", False, None), "slim: the slim bar shows, takes no mouse, no drag")
+    w.slash("/gl flights big")
+    sc.eq(FL.spot, "placed", "slim: big again: at its spot")
+    sc.clean(w, "drag")
+    # The next flight after a login: at its spot.
+    saved = lua_to_py(g.ForeverAH_Settings)
+    saved.pop("flightNow", None)   # (this flight: not the next login's)
+    w3 = fl_top_world(ref, items, (1920, 1080, 1.0), saved=saved)
+    slot = fl_open(w3)
+    fl_take(w3, slot[FL_IF])
+    b3 = w3.ns.Flights.Bar()
+    sc.eq(w3.ns.Flights.spot, "placed", "login: the next flight at its spot")
+    r = big_at_spot(sc, w3, b3, "flightPos", "login")
+    sc.check(big_spot(w3, "flightPos") == sp and abs((r[0] + r[2]) / 2 - (rb[0] + rb[2]) / 2) < 0.6 and abs(r[3] - rb[3]) < 0.6,
+             "login: where it was (its top centre)")
+    sc.clean(w3, "login")
+
+
+def sc_boats_flights_drag(sc, ref, items):
+    """Both timers put somewhere by the player: at Ratchet's pier the big boat timer at its spot; taking
+    off, the boat's small line at once and the flight timer at its own spot, never both big, the flight
+    timer staying at its spot all the way; landing at Theramore's pier, the boat timer big at its spot
+    again as the flight timer goes; a fight there: still big."""
+    rx, ry, rinst = bt_stop("bootybay_ratchet", 1)
+    w = fl_boat_world(ref, items)
+    M, FL, B, g = w.M, w.ns.Flights, w.ns.Boats, w.g
+    M.pos = w.to_lua([rx, ry, 0, rinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    h = B.ui.big.holder
+    SW, SH = M.screenW, M.screenH
+    big_drag(w, h, 0.62 * SW, 0.40 * SH)
+    rb = bt_placed_ok(sc, w, "both: the boat timer placed")
+    slot = fl_open(w, routes={FL_THERAMORE: [FL_RATCHET, FL_THERAMORE]}, current=FL_RATCHET, extra=())
+    fl_take(w, slot[FL_THERAMORE])
+    sc.check(fl_boat_small(w), "both: taking off, the boat's small line at once (%s)" % B.ui.style)
+    b = FL.Bar()
+    big_drag(w, b, 0.05 * SW, 0.75 * SH)
+    sc.eq(FL.spot, "placed", "both: the flight timer placed")
+    rf = big_at_spot(sc, w, b, "flightPos", "both: the flight timer")
+    watch = FlWatch(w, spot="placed")
+    track = fl_track("%d>%d" % (FL_RATCHET, FL_THERAMORE))
+    fl_fly_track(w, [(rx, ry)] + track[1:], rinst, watch, upto=40)
+    tx, ty, tinst = bt_stop("menethil_theramore", 1)
+    M.pos = w.to_lua([tx, ty, 0, tinst])
+    M.fire("ZONE_CHANGED")
+    fl_wait(w, 1.2)
+    watch.see()
+    sc.check(fl_boat_small(w) and w.rect(b) is not None and all(abs(p - q) < 0.01 for p, q in zip(w.rect(b), rf)),
+             "both: over Theramore's pier, the small line; the flight timer at its spot")
+    ticks = fl_land_at(w, tx, ty, tinst, watch, secs=2.0)
+    watch.report(sc, "both")
+    sc.check(not any(f and bb for f, bb, _ in ticks), "both: landing, never both big")
+    sc.check(fl_boat_big(w) and not fl_vis(b), "both: landed: the flight timer gone, the boat timer big (%s)" % B.ui.style)
+    r = bt_placed_ok(sc, w, "both landed")
+    sc.check(r is not None and abs((r[0] + r[2]) / 2 - (rb[0] + rb[2]) / 2) < 0.6 and abs(r[3] - rb[3]) < 0.6,
+             "both landed: at its spot")
+    M.Fight(True)
+    fl_wait(w, 1.2)
+    bt_placed_ok(sc, w, "both: a fight at the pier")
+    M.Fight(False)
+    sc.clean(w, "both")
+
+
 SCENARIOS = [
     ("static-source", sc_static),
     ("load", sc_load),
@@ -34109,6 +34675,9 @@ SCENARIOS = [
     ("boats-big-far", sc_boats_big_far),
     ("boats-big-steady", sc_boats_big_steady),
     ("boats-big-busy", sc_boats_big_busy),
+    ("boats-big-drag", sc_boats_big_drag),
+    ("flights-big-drag", sc_flights_big_drag),
+    ("boats-flights-drag", sc_boats_flights_drag),
     ("boats-big-countdown", bt_in_big(sc_boats_countdown)),
     ("boats-big-manual", bt_in_big(sc_boats_manual)),
     ("boats-big-ride", bt_in_big(sc_boats_ride)),
