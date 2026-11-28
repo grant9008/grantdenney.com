@@ -1,1 +1,0 @@
-var e={ad:{show:()=>Promise.resolve(`none`)},purchase:{price:()=>Promise.resolve(null),buy:()=>Promise.resolve(`failed`),owned:()=>Promise.resolve(null),restore:()=>Promise.resolve(`failed`),watch:()=>{}}};export{e as shop};
